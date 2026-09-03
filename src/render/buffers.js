@@ -18,7 +18,7 @@
   // enough to verify the read path is bit-identical and to measure what it costs.
   // NOTHING here is allocated unless the probe is on. Sized for players it would be ~1 GB of JS heap and
   // ~1 GB of GPU buffer that no frame ever reads - a far bigger regression than the feature is a win.
-  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles.
+  const POOL_FRAC = 0.25;                              // slots as a fraction of all bricks. With sealed rock sharing one page the real figure is ~12%; this is 2x headroom for the transient before sealing settles. MIRRORED as GPOOL1 in core/gpu.js, which needs the pool's size before this fragment runs to ask the device for a big enough binding - change one and change both
   // ── AND THE RING IS SIZED OFF THE GPU GRID, NOT THE CPU ONE ── a storage buffer cannot grow, so the pool
   // has to be allocated for the widest window it will ever hold. At GMUL 2 that is four times the bricks, and
   // the fraction comes down because the measured steady state is ~13%: the 2x headroom POOL_FRAC carries is
@@ -26,7 +26,7 @@
   // slab in hand), so it never needs that headroom.
   // THE ALLOCATION IS WHAT DECIDES WHETHER A MACHINE CAN RUN THIS, not the fraction of it that ends up
   // occupied: ~1.03 GB at GMUL 2 against 402 MB at GMUL 1. That is the whole reason GMUL rides the adapter.
-  const POOL_FRAC_RING = 0.17;
+  const POOL_FRAC_RING = 0.17;                         // MIRRORED as GPOOL2 in core/gpu.js - see POOL_FRAC above
   const POOL_SLOTS = GMUL > 1 ? Math.ceil(GBX * GBY * GBZ * POOL_FRAC_RING) : Math.ceil(BX * BY * BZ * POOL_FRAC);
   // bdesc, the water bits and the L2 bits are all on the GPU GRID (see TWO WINDOWS in world/window.js):
   // they cover the far ring as well, and the shader indexes nothing else. airFree stays on the CPU grid,
@@ -49,11 +49,31 @@
   // and flushed instead: same number of bytes uploaded, 8 MB of heap rather than 400.
   const POOL_CHUNK = 16384;                            // slots per staged upload (8 MB)
   const poolCPU = new Uint8Array(POOL_CHUNK * 512);
+  // ── THE ALLOCATION THAT DECIDES WHETHER THIS MACHINE CAN RUN THE GAME ── the pool is ~1.04 GB at a 2048
+  // window (see POOL_FRAC_RING above) and it is by far the largest thing the game asks any driver for. WebGPU
+  // does not throw when a buffer will not fit: createBuffer hands back an INVALID buffer and the first frame
+  // that binds it takes the device down with a lost-device 'unknown' and no other trace - which is exactly the
+  // report this was written for (2026-09-02, a gaming laptop, always at load).
+  // AND THIS SCOPE IS THE BELT, NOT THE BRACES. The spec says a buffer that will not fit generates a
+  // GPUOutOfMemoryError, and on this backend it simply does not: MEASURED 2026-09-02 on a 12 GB RTX 4070,
+  // twenty-three consecutive 2 GB storage buffers - 46 GB - were all created with an empty error scope every
+  // time. D3D12 commits lazily, so nothing fails at the call that asked. Keep the scope because it costs one
+  // await at boot and other backends (and other drivers) do report honestly, but do NOT read a clean pop as
+  // proof the memory is there. The mechanism that actually catches this machine is the device dying during
+  // load, handled in core/telemetry.js, and safeStepDown is deliberately shared by both.
+  device.pushErrorScope('out-of-memory');
   const bdescBuf = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC for __vb.gpudiff()
   const gwbBuf = device.createBuffer({ size: gwb.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const gb2Buf = device.createBuffer({ size: gb2.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const poolBuf = device.createBuffer({ size: POOL_SLOTS * 512, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });   // COPY_SRC: __vb.gpudiff() reads the pool back to verify it still matches W
-  const bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  // ── ALLOCATED ONLY IF SOMETHING ASKS FOR IT ── the staging buffer __vb.gpudiff() reads the descriptors back
+  // through, and its ONLY caller is that one debug command. At a 2048 window it is 50 MB, and MAP_READ means
+  // 50 MB of HOST-VISIBLE memory - the scarcest kind there is on a laptop whose GPU shares system RAM, handed
+  // out at boot on every machine that will never run a diagnostic. Lazy costs one `||` on a dev path.
+  let bdescRead = null;
+  const bdescReadBuf = () => bdescRead || (bdescRead = device.createBuffer({ size: bdesc.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
+  { const oom = await device.popErrorScope();
+    if (oom && safeStepDown('brick pool (' + (((POOL_SLOTS * 512) / 1048576) | 0) + ' MB) would not allocate')) await new Promise(() => {}); }   // never resolves: the reload is already scheduled, and letting boot carry on would bind the invalid buffer and lose the device before it lands
   let poolUsed = 0, poolOverflow = 0, poolSealed = 0;
   // ── WHAT A SEALED BRICK READS AS, AND IT MUST BE ROCK ── every sealed brick in the window shares ONE page,
   // so whatever fills that page is what shows anywhere a ray does reach one. This was the literal 71, chosen

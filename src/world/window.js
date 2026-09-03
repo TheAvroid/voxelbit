@@ -23,7 +23,18 @@
   // for it") rather than accidental.
   // The SMALLER WORLD TIERS ARE UNTOUCHED: at WY 256 or 192 LIFT is already 0 and HMAX was already pinned
   // by WY - 158, so both terms below evaluate exactly as they did.
-  const LIFT = WY >= 384 ? 50 : 0;                     // terrain floats this far above bedrock
+  const LIFT = WY >= 384 ? 84 : 0;                     // terrain floats this far above bedrock
+  // ── 50 -> 84, WHICH IS WHERE DEEPER WATER HAS TO COME FROM (user 2026-09-02: "the water needs to be deeper
+  // within the biomes … if you need to take up more surface area away from the terrain so be it") ── measured
+  // first, and the measurement is the whole argument: the DEEPEST water in the world already reaches 67 of a
+  // theoretical 68 (WL 74 minus bedrock at 6). The basins carve to the floor and DEEP_SPAN was 66 against a
+  // 68 ceiling. There was no room left under the waterline at all, so no tuning of the lake terms could have
+  // made water deeper — the only way down is to move the waterline UP, and LIFT is the constant that does it.
+  // WL is 24 + LIFT, so the room below goes 68 -> 102, half again as deep.
+  // WHAT IT COSTS is the thing that was offered: above-water range is HMAX - WL, and HMAX is pinned by the
+  // TREE RESERVE at 226, so it falls 152 -> 118. The mountains lose 22% of their height to buy the lakes 50%
+  // of their depth. Everything else keyed to LIFT (WL, PINE_FLOOR, baseH's floor, basinLow, the basin window)
+  // is LIFT-relative by design and simply moves with it — see the note at the head of this file.
   const BX = WX >> 3, BY = WY >> 3, BZ = WZ >> 3;     // 8³ brick occupancy for empty-space skipping
   const HALF = WX >> 1;
   let poolTouchHook = null;                            // set by render/buffers.js once the pool exists; terrain.js, patch.js and gen-pool.js all run BEFORE that fragment and reach the pool through this hook. Without the declaration the assignment there throws in strict mode and the module aborts silently — the boot parks on "uploading world".
@@ -72,7 +83,7 @@
   let lgtPaint = () => {};                             // panel repaint — held here so __vb.lgt() from the console keeps the buttons honest instead of silently disagreeing with the image
   const LGT_ALL = 0xffffff;                            // 24 lighting/shading terms, all enabled = the normal image (see the top-right panel / LG() in the shader). Bits 18-23 are the WATER group (user 2026-08-05). Stays exact in the f32 uniform: integers are exact to 2^24.
   const LGT_WATER = 0xfc0000;                          // bits 18-23 — the WATER group, and the only terms the panel exposes (user 2026-08-05: "I only want buttons that change the water")
-  const LGT2_ALL = 0x3f;                                // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BITS 2-5 ARE THE REST OF THE WATER GROUP (user 2026-08-30: "every single water setting") — 2 caustics, 3 the underwater look, 4 splash/wake ripples, 5 shoreline surf; see WBIT2/LGT2_WATER below and the [Y] panel. Bit 2's last tenant before them was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit was spare for the water rows to take; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. The 25 bits above bit 5 are still free.
+  const LGT2_ALL = 0x3f;                                 // ── SECOND TERM MASK (u.lgt.z) ── lgt.x is full at 24 bits (an f32 is exact only to 2^24, so a 25th bit there would round), so this is where a 25th term goes. Three groups have lived and died here on 2026-08-09: the water soft glisten (bit 0), the tier-1 LOOK set (bits 1-6) and the tier-2 set (bits 0-3). BIT 0 IS NOW THE SUN SHEEN ON STONE (user 2026-08-16) — __vb.lgt2(0) turns it off and __vb.lgt2(1) back on, which is the A/B this effect is judged with; BIT 1 IS THE GRASS/SUBPIXEL CROSS-FACE SPATIAL FALLBACK (see SPATIAL in render/wgsl/denoise.js) — __vb.lgt2(1) off / __vb.lgt2(3) on, and it is a LIVE toggle rather than a URL flag on purpose: the world seed differs between loads, so a cross-load A/B compares two different forests and is worthless here. BITS 2-5 ARE THE REST OF THE WATER GROUP (user 2026-08-30: "every single water setting") — 2 caustics, 3 the underwater look, 4 splash/wake ripples, 5 shoreline surf; see WBIT2/LGT2_WATER below and the [Y] panel. Bit 2's last tenant before them was the SVGF HISTORY FIX (user 2026-08-29, "address the noise issue … the noise is worse on the grass") — a silhouette pixel that fails the temporal depth test borrows a neighbour's converged history instead of rendering one raw ray. It lived on [Y] for exactly as long as it took the user to look at the A/B and was BAKED IN the same day, which is why the bit was spare for the water rows to take; see HISTORY FIX in render/wgsl/denoise.js. Before it the bit held SURFACE RINGS — the ring a splash leaves and the wake behind a swimmer or a duck — which was BAKED IN on 2026-08-29 and now runs unconditionally; see ripHF in render/wgsl/pre.js. A RIVER/LAKE wave character sat here briefly the same day and was reverted (the wave sum sampled in each water body's own frame; the generator's riverAt already carries the flow direction and width, so it is buildable again if it ever comes back). Before those the bit held, and lost, WHITECAPS on the crests (removed on request), the per-pixel waterline and SNELL'S WINDOW (both reverted on sight — do not rebuild either), and the ported cloud deck. Earlier still, a per-pixel sun accumulation window and variance-driven spatial filtering, both measured and REVERTED — the sun window is arithmetically a no-op at 1x, and the variance radius measured -5.4% residual noise, inside the run-to-run scatter. BIT 6 AND BIT 7 ARE NOT FREE, whatever an older draft of this note said: 6 is the CLOUD-DENSITY PROBE in composite (it stores a density slice over the whole frame and returns, so a frame with it set has no sky at all) and 7 is the TAA sigma-K A/B in taa.js. Both were parked here BECAUSE they sat above LGT2_ALL and so could not be reached by the panel, the bake or a stored mask — which means LGT2_ALL can never be widened THROUGH them. That is exactly how it was broken on 2026-09-02: far AO was given bit 6, LGT2_ALL went 0x3f -> 0x7f to cover it, and switching far AO on switched the cloud probe on with it — a black sky over a correctly lit world, which cost an hour of bisection because the effect looked like night. Far AO was then measured, found not to fix the complaint it was built for and REMOVED (see the note in trace.js), so LGT2_ALL is back at 0x3f and the panel carries a SLIDER instead of a bit. Bits 8 and up are free; a new panel term takes one of those and ORs it into LGT2_ALL individually, never by extending the range across 6 and 7.
   const LGT2_WATER = 0x3c;                             // bits 2-5 of the SECOND mask — the four water terms that overflowed lgt.x (caustics, underwater, ripples, shore surf). The only bits of lgt.z the panel exposes and the only ones restored from storage, exactly as LGT_WATER is for lgt.x.
   // ══ WATER BAKE (user 2026-08-05) ══ THE defaults for every water control. Tune with the top-right panel,
   // hit `copy` on its bake row, and paste the line it gives you OVER this one — that is the whole workflow.
@@ -125,15 +136,38 @@
   const WATER_BAKE = { reflect: 1, refract: 1, foam: 1, ice: 1, pixelGlisten: 1, waves: 0, reflection: 0.45,
                        caustics: 1, underwater: 1, ripples: 1, shoreSurf: 1 };
   const WBIT = { reflect: 18, refract: 19, foam: 20, ice: 21, pixelGlisten: 22, waves: 23 };   // …their bits in u.lgt.x
+  // ── THE FOG DENSITY (user 2026-09-02: "yes add a fog slider to y", then "make this default then remove it
+  // from the l toggle") ── it scales the DENSITY of the distance
+  // haze in composite's worldFog, which is the term measured to own the "distant trees look flat" complaint:
+  // the same far-treeline band with the fog off reads +73% local contrast, against -3.6% for extending the AO
+  // ray past 50 m — which is why that was built, measured and removed, and this is here instead.
+  // THE SLIDER IS GONE and this is a plain constant again: it existed to choose this number and the number is
+  // chosen. fogK is still a `let` and still read every frame into physC.w, so re-exposing it is putting the
+  // slider rows back in ui/settings.js — nothing here or in the shader has to change.
+  // 0.50 IS THE SHIPPED VALUE (user 2026-09-02, after dragging the slider): half the density worldFog's
+  // 0.0006 coefficient describes. 1.00 is what the game looked like before, 0 is no haze at all. Measured at
+  // a fixed vantage with the sun pinned, 0.50 is +23% local contrast in the far treeline band and 0 is +71%,
+  // so this keeps most of the aerial perspective and buys back most of the depth.
+  // IT SCALES THE EXPONENTIAL ONLY, deliberately. worldFog's second term is a smoothstep ramp into the
+  // render-distance wall, and that one is not a look choice — it exists to hide the hard edge where the
+  // generated world stops (user 2026-08-31, "large slice in the terrain"). A slider that could switch it off
+  // would hand that bug back at its lowest setting, so the ramp is deliberately out of its reach.
+  const LOOK_BAKE = { fog: 0.50 };
+  const lBakeFog = () => { const v = +LOOK_BAKE.fog; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
+  let fogK = lBakeFog();                               // …NOT restored from vb_fog, for the reason lgtMask and lgtMask2 are not: the slider that wrote that key is gone, so a stored value could only strand a player at a haze they can no longer change. A stale vb_fog is inert rather than wrong.
   const WBIT2 = { caustics: 2, underwater: 3, ripples: 4, shoreSurf: 5 };                      // …and these four in u.lgt.z (LG2)
   const wBakeMask = () => { let m = LGT_ALL & ~LGT_WATER; for (const k in WBIT) if (WATER_BAKE[k]) m |= (1 << WBIT[k]); return m; };
-  const wBakeMask2 = () => { let m = LGT2_ALL & ~LGT2_WATER; for (const k in WBIT2) if (WATER_BAKE[k]) m |= (1 << WBIT2[k]); return m; };   // …and the non-water bits of the second mask are forced on, so `reset` also puts the rock sheen and the cross-face fallback back
+  const wBakeMask2 = () => { let m = LGT2_ALL; for (const k in WBIT2) m |= (1 << WBIT2[k]); return m; };   // every bit in the second mask is forced on: the panel carries a SLIDER now, not a bit, so nothing in here has a switch left and a stored value could only ever strand a term off
   const wBakeRefl = () => { const v = +WATER_BAKE.reflection; return (isFinite(v) && v >= 0 && v <= 2) ? v : 1; };
   // Everything OUTSIDE the water group is FORCED ON at load. The panel used to carry all 24 terms, so a
   // saved mask can have sun shadow / AO / fog / TAA switched off from an earlier bisection — and with those
   // rows gone there would be no way left to switch them back. Only the water bits are restored from storage.
-  let lgtMask = (() => { try { const v = localStorage.getItem('vb_lgt');
-    return v === null ? wBakeMask() : (((parseInt(v, 10) & LGT_WATER) | (LGT_ALL & ~LGT_WATER)) & LGT_ALL); } catch (e) { return wBakeMask(); } })();
+  // ── AND THE WATER GROUP IS PINNED TO THE BAKE (user 2026-09-02: "remove the water settings of the y toggle
+  // to make room for it") ── with the rows gone there is no UI left that can reach lgt.x at all, so restoring a
+  // saved water mask could only ever strand a term OFF with no way back — the same argument the note above
+  // makes for the whole-scene bits, now true of the water ones too. WATER_BAKE is unchanged and remains the
+  // single description of the shipped water; __vb.lgt(mask) still reaches every bit from the console.
+  let lgtMask = wBakeMask();
   // ── AO RAY REACH ── how far the ambient-occlusion ray marches, in voxels. Lives out here in the shared scope
   // rather than beside its writer in tick-emit, which bundle.py wraps in its own module IIFE. Rides in the spare
   // physC.z uniform lane so it can be swept LIVE with __vb.aoReach(n): rebooting between A/B configs re-rolls the
@@ -142,8 +176,7 @@
   let AO_REACH = 24;
   // ── THE SECOND MASK IS PERSISTED THE SAME WAY, AND ONLY ITS WATER BITS ARE ── identical rule to lgtMask
   // above: bits 2-5 (the four new water terms) come back from storage, everything else is forced on at load.
-  let lgtMask2 = (() => { try { const v = localStorage.getItem('vb_lgt2');
-    return v === null ? wBakeMask2() : (((parseInt(v, 10) & LGT2_WATER) | (LGT2_ALL & ~LGT2_WATER)) & LGT2_ALL); } catch (e) { return wBakeMask2(); } })();   // …and it starts at the bake when there is nothing stored. It used to be deliberately NOT restored, because every bit in here was a whole-scene look term and a player who bisected one off in an old session must not be stuck with it. Bits 2-5 are WATER now, so they follow lgtMask's rule instead: the water group survives a reload, the whole-scene bits (0 rock sheen, 1 cross-face fallback) are still forced on at load.
+  let lgtMask2 = wBakeMask2();                         // …pinned to the bake for the same reason lgtMask is: with the water rows gone and the panel carrying a slider, no bit in EITHER mask has a switch left in the UI. __vb.lgt2(mask) still reaches them all from the console.
   // ── WATER REFLECTION STRENGTH (user 2026-08-05) ── multiplies the Fresnel mirror/transmission split.
   // 1 = physical (pure Schlick, what it has always been), 0 = no mirror at all, 2 = twice as reflective.
   let wReflK = (() => { try { const v = parseFloat(localStorage.getItem('vb_wrefl')); return (isFinite(v) && v >= 0 && v <= 2) ? v : wBakeRefl(); } catch (e) { return wBakeRefl(); } })();
@@ -223,10 +256,39 @@
   //   m   double-smoothstepped massif noise, 0..1: the shape of the country
   //   k   = m*m, and THAT is what makes the low country broad. Squaring pushes the mass of the distribution
   //       down, so a peak reads as a peak precisely because the land around it does not rise to meet it.
-  const PINE_FLOOR  = WL - 4;                          // the valley floor, and it sits INSIDE H's beach window
-  // [WL-5, WL] deliberately: H lifts ground in that window onto a beach, so flats become sand instead of
-  // staying drowned. A floor UNDER the window is the "sinking sand" failure — the ground never gets lifted,
-  // and treeAt then refuses those columns for being too low, which reads as bald patches in the forest.
+  // ── RAISING THIS TO KILL THE PUDDLES WAS TRIED, MEASURED AND REVERTED (user 2026-09-02: "remove any small
+  // puddles/very shallow water … make the water 50% deeper … just make the water lakes bigger") ── the depth
+  // half shipped (see DEEP_SPAN). The other half did not, and the reason is worth writing down so it is not
+  // attempted again the same way.
+  // THE IDEA WAS SOUND: 12.4% of every wet column in the world is 3 voxels deep or less, and that film comes
+  // from this floor sitting UNDER the waterline, so any broad flat at the bottom of the field is drowned by a
+  // few voxels quite independently of where the lakes are. Lift the floor over WL and the film cannot form;
+  // give the area back through BASIN_T and the lakes grow.
+  // WHAT IT COSTS IS THE BANKS, AND THAT COST IS MECHANICAL. Once the ambient field never dips under WL,
+  // every shoreline in the world is a BASIN RIM, and a rim's slope is m' * (h - BASIN_BED) — the lake's whole
+  // depth spread over however far the mask takes to go 0 -> 1. Measured over a fixed window: lake banks went
+  // from 34 columns of sand to 10, three times steeper, while the lakes came out SMALLER than they started
+  // (wet 0.265 -> 0.215). Widening BASIN_RAMP buys the banks back but puts the shallow water back with them,
+  // because a gentle rim IS shallow water — the two are the same fact. Eight configurations were measured
+  // across the pair and none of them held banks, area and film at once.
+  // So if this is revisited: the lever is NOT this constant. It is either a rim profile that is flat near the
+  // waterline and steep below it (a real shelf, which nothing in the carve can express today), or accepting
+  // that broad shallow margins on big lakes are what a flat bank looks like.
+  const PINE_FLOOR  = WL - 4;                          // the valley floor, four voxels UNDER the waterline
+  // ── +8 WAS TOO HIGH, AND THE BANKS PAID FOR IT (user 2026-09-02: "dont make the terrain steeper. keep the
+  // flatness of the banks") ── the puddle fix only needs the field's MINIMUM to clear the waterline, and the
+  // minimum is FLOOR - PINE_BOWL, not FLOOR. At +8 the floor itself was four voxels above the top of the sand
+  // band, so the only land left inside WL..WL+4 was the steep rim of a basin, and lake beaches measured 3
+  // columns against the 24 they had. At +2 with the bowl cut to 1 the minimum is WL + 1 — still no puddle
+  // anywhere — and the broad flat bottom of the field sits INSIDE the sand band again, which is what a wide
+  // beach is made of.
+  // — which is now what it looks like: it used to sit inside H's beach window [WL-5, WL] so that the lift
+  // there dried the flats out into sand, and with that lift deleted (see the note in H) a floor at WL-4 is
+  // simply the shallow end of the water. It is deliberately left where it is rather than raised back over
+  // WL: raising it would restore the old dry flats and the old water area, but only by capping the bed at
+  // an 11-voxel maximum against the 15 it reaches here, and the depth was asked for by name.
+  // The "sinking sand" failure the old note warned about does not apply to this: those columns are not
+  // low ground treeAt refuses, they are lake, and treeAt refusing lake is the correct answer.
   const PINE_CREST  = HMAX;                            // …and the top of the range IS the ceiling, so no summit is flattened by the clamp
   // ── THE WATERLINE SHELF WAS BUILT, MEASURED AND REMOVED (user 2026-09-01: "make the sand steps have
   // much more surface area") ── the idea was to flatten dh/dm where the land crosses WL, since a terrace's
@@ -240,14 +302,228 @@
   // 6.50 -> 12.38 (+90%) at the same coordinates, and the depth it used to supply now comes from
   // deepen() instead - which only touches columns UNDER the waterline and so costs the shore nothing.
   const PINE_RELIEF = PINE_CREST - PINE_FLOOR;
-  const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
-  const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
-    const a = fbm(x * 0.0018 + 61.3, z * 0.0018 + 77.9);   // the massifs, ~550 voxels across
+  const PINE_BOWL   = 6;                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches                              // how far under the floor the lowest country is pulled — a lake wants a RIM, not a flat pan, and the rim is what the beach rule catches
+  // ── THE BIRCH FOREST IS THE PINE FIELD, HALVED, WITH A LAKE BETWEEN THEM (user 2026-09-02) ── three
+  // requests and all three land in THIS function, which is the point of it being one shared scalar: H,
+  // makeHRow and makeHCol all call it, so the birch band, its halved relief and the water that separates it
+  // from the pine arrive in all three copies of the height field at once and gtest cannot go non-zero.
+  //   "use the exact same terrain generation as the pine forest" — there is no birchBase. It is the same
+  //     massif/shoulder/ridge sum, the same constants, the same noise; only the OUTPUT is scaled.
+  //   "reduce the terrain elevation in half" — measured from the WATERLINE, not from bedrock: a birch column
+  //     sits at WL + (pine - WL) * BIRCH_ELEV. Scaling the raw height instead would drag the whole field
+  //     toward y=0 and drown the biome, because PINE_FLOOR is 4 UNDER WL and half of a number below the
+  //     waterline is further below it, not nearer. This way the shoreline is exactly where it would have
+  //     been and only the hills come down, which is what "elevation" means here.
+  //   "split the birch from the pine forest with water … we are merely putting terrain in water like we are
+  //     currently doing vs putting water in terrain" — so there is no channel carve and nothing river-shaped.
+  //     BIRCH_GAP simply PULLS THE GROUND DOWN in a strip centred on the band edge, and the global waterline
+  //     floods whatever ends up under it, exactly as basinM's bowls do. It runs BEFORE deepen() (see bedH),
+  //     so the strait gets the same cubic depth curve and the same 1-voxel bed stepping as every other lake.
+  const BIRCH_ELEV = 0.5;                              // half the relief above the waterline
+  // ── THE STRAIT IS A LERP TOWARD A BED, NOT A FIXED SUBTRACTION — WHICH IS WHAT basinM ALREADY DOES ──
+  // and that is the real answer to "you're treating the water generation between the 2 biomes differently
+  // then to say the water within the biomes itself? create consistency here". It was: every lake in the world
+  // is `h = h - m * (h - bed)`, a weighted pull toward a floor, and this one alone was `h = h - depth * m`, a
+  // fixed amount dug out of whatever was there. The two behave differently in both directions that matter:
+  //   * A FIXED SUBTRACTION CANNOT GUARANTEE THE SPLIT. The natural ground along the band edge runs anywhere
+  //     from the waterline to 35 voxels over it, so one depth is either overkill on the low ground or too
+  //     little on the high — at 28 it left LAND BRIDGES on 10 of 41 sampled lines, dry walks from one forest
+  //     straight into the other. A lerp lands on the bed at m = 1 no matter what was above it.
+  //   * AND IT IS STEEPER AT THE SHORE, which is the sand complaint. The added gradient of a subtraction is
+  //     depth * |m'|; of a lerp it is |m'| * (h - bed), and near the shore h is AT the waterline so that
+  //     bracket is small. Same bump, gentler where the beach is, deeper where the channel is.
+  // ── HALF THE WATER, AND THE BEACHES KEPT (user 2026-09-02: "reduce the space of water in between the pine
+  // and birch by 50%") ── the two numbers move TOGETHER, and that is the whole point of the lerp form.
+  // Water reaches out to wherever the pull is strong enough to take the ground under: h(1-m) + m*bed <= WL,
+  // i.e. m >= H / (H + BED) for ground H above the waterline. Halving GAPW halves the distance every m sits
+  // at, so it halves the water — but the shore gradient is |m'| * (h - bed) and |m'| goes as 1/GAPW, so
+  // halving the width alone would DOUBLE the gradient and hand back exactly the sand that was just widened.
+  // Halving the BED with it keeps the ratio BED/GAPW, and that ratio is the gradient. So: both halved, the
+  // water comes in to ~half its width, the beaches measure the same, and the split still cannot fail —
+  // at m = 1 the ground lands on the bed whatever was above it.
+  // The strait is shallower for it (bed 12 under WL, ~27 voxels after deepen, against ~37) and that is the
+  // honest cost of the request; it is still deeper than a typical lake in either forest.
+  // ── AND A BANK APRON, BECAUSE THE CHANNEL ALONE CANNOT MAKE MORE SAND (user 2026-09-02: "give even more
+  // relief to the sand banks between the biomes") ── how much sand you see is 6 / the shore's gradient, and
+  // the channel term can only ADD to that gradient: every setting of it makes the beach the same or thinner,
+  // never wider. Measured, a natural pine lake shore runs ~0.13 voxels of drop per voxel, which is the 31
+  // columns of sand both shores now read. The only way past it is to make the LAND approaching the strait
+  // flatter than the countryside behind it — an actual coastal bank rather than a hillside that happens to
+  // reach the water.
+  // So: a second, wider, weaker pull, toward a level just ABOVE the waterline instead of below it. At weight
+  // BANKK the surviving gradient is (1 - BANKK) of what it was, so 0.5 halves it and doubles the sand. It
+  // runs BEFORE the channel, so the channel then cuts through the apron it made.
+  // THIS IS A DELIBERATE DIFFERENCE from an in-biome lake, unlike the last round: the ask there was to make
+  // the strait behave like the lakes (it now does, through the lerp), and the ask here is for these banks
+  // specifically to carry more sand than a lake shore does. Keeping 50% of the relief means it still reads
+  // as ground, not as a table — the flat is a beach, not a plain.
+  const BIRCH_BANKW = 900;                             // half-width of the apron, in voxels — kept under BIRCHH (1080) so it cannot reach over the band's own centre line from both edges at once
+  const BIRCH_BANKY = 1;                               // …the height ABOVE the waterline it flattens toward. ONE, not the middle of the sand band: with min() the apron only ever touches ground ABOVE this line, so a target of 3 left the WL..WL+3 part of the beach — most of it — at the natural gradient and did almost nothing (median 34 against a lake's 27). At 1 the whole sand band is inside the compression: a lerp toward a constant scales the gradient by (1 - k), so at k 0.75 the band that used to be the top 4 voxels of a 13-voxel slope is now the top 4 of a 4-voxel one, and the sand stretches with it. It cannot drown anything either — (1-k)h + k*(WL+1) is >= WL+1 for any h above it
+  const BIRCH_BANKK = 0.75;                            // …and how hard it pulls. The shore keeps (1 - this) of its gradient. NOT the full apron weight at the beach: the bump peaks at the channel's centre line, which is under water, and the shore sits ~280 voxels out where the cosine has fallen to ~0.56 of peak — so 0.75 buys about 0.42 at the waterline, and the sand roughly doubles rather than quadrupling. 0.5 measured only +18% over a lake shore, which was not "even more"
+  const BIRCH_GAPBED = 12;                             // how far UNDER the waterline the strait's bed is pulled, before deepen() takes it the rest of the way
+  // ── WIDER BANKS, AND A SHORE THAT WANDERS LIKE A LAKE'S (user 2026-09-02: "add more relief to the sand banks
+  // between the 2 biomes … it seems maybe you're treating the water generation between the 2 biomes differently
+  // then to say the water within the biomes itself? create consistency here") ── two separate faults, and the
+  // measurement only found the second one.
+  //   SAND WIDTH: the band fillColumn paints is a fixed 6 voxels of HEIGHT (WL..WL+6), so how much sand you see
+  //     is 6 / the shore's gradient — nothing else. The trough's own contribution peaks at GAPD*pi/(2*GAPW),
+  //     which was 0.117 against the pine field's natural ~0.08, so it roughly doubled the gradient at the one
+  //     shore in the world that is not natural. 620 -> 1150 takes it to 0.063, and the beach widens with it.
+  //     The DEPTH is deliberately untouched at 46 — "if this makes the water more shallow, thats fine" allowed
+  //     the trade, but it does not have to be made: widening costs nothing but the strait's own footprint, and
+  //     the trough still has to reach under WL everywhere or the two forests touch on dry land.
+  //   AND THE SHORELINE ITSELF, which is the inconsistency actually visible in the screenshot: measured, the
+  //     strait's beaches (15-56 columns) and the pine forest's lake beaches (21-45) are the same WIDTH. What
+  //     differs is their SHAPE. Every other shore in the world is where a noise field happens to cross the
+  //     waterline, so it wanders; this one was a clean cosine of the distance to a band edge, so it ran as a
+  //     smooth regular curve and read as a canal. Wobbling the distance the trough is measured at, on a
+  //     low-frequency fbm, is the whole fix — the shore now crosses WL at an irregular line like a lake's,
+  //     with no change to the depth, the width or the biome mask. It is the same trick desWob already plays on
+  //     the BAND edge, one octave lower and applied to the water rather than to the biome.
+  const BIRCH_GAPW = 500;                              // …and the half-width it is pulled over, in voxels. CAPPED BY BIRCHH (1080): the trough is centred on each band EDGE, so a half-width past that reaches over the band's own centre line and the two troughs start flooding the birch forest between them
+  const BIRCH_GAPWOB = 150;                            // how far the strait's shoreline wanders off the band edge, peak to peak — SCALED WITH GAPW (300 -> 150): the wobble is a fraction of the channel, and at the old amplitude a half-width strait would have been pinched shut in places and bulged to its old size in others
+  // ── LAKE DISTRICTS (see the note inside pineBase) ── the constants, and the one formula both the field and the
+  // debug tap read. lakeZoneOf takes the octave VALUE so pineBase, which already has it, does not pay for it twice;
+  // lakeZone(x, z) is the standalone form for taps and tests and computes the same octave the same way.
+  const LAKE_T = 0.28;                                 // the district threshold on a1 (~18% of the plane sits under it; the water ends up ~9%)
+  const LAKE_RAMP = 0.24;                              // …and the ramp under it, in a1 units. WIDE: this is the bank — see the note in pineBase
+  const LAKE_PULL = 0.85, LAKE_BED = WL - 14;          // the core's pull toward its bed. 0.85 rather than 0.75 because the ridges between the old pockets have to go under, or the district is still several lakes (0.75 left 2, 0.8 left 1)
+  const LAKE_FLOOR = WL + 8, LAKE_SOFT = 2;            // the dry floor, TWO voxels over the sand band's top (WL + 6): one for the band and one for the pan relief below (+-1.6), so no drained bed ever rounds into the beach dither at WL + 5 (at +7 about one pan column in twenty did); and the clamp's softness — STIFF, see pineBase
+  const LAKE_REL = 4;                                  // peak relief on the drained pans, in voxels (fbm's spread is about +-0.2, so the typical swing is +-1.6)
+  const SAND_SPAN = 6;                                 // the beach band fillColumn paints, in voxels over WL (solid to +4, dithered +5..+6) — MIRRORS world/terrain.js; change both
+  const SAND_W = 96;                                   // the beach's width in columns, everywhere: the band WL+1..WL+6 is laid over this many columns from the waterline, whatever the ground's own slope (see the note in pineBase for how it was set and what it trades)
+  const SAND_R = 90;                                   // columns over which the ground behind the beach rejoins the raw field
+  const SAND_STEP = 24;                                // the march's stride toward the water, in columns; the crossing is then bisected SAND_BIS times, which measures the same widths as an 8-column stride at a third of the samples
+  const SAND_BIS = 4;
+  const SAND_TRANS = 24;                               // half-width, in columns, of the rounded corner where the flat beach turns into the hill behind it
+  const SAND_CUT = 24;                                 // the most a beach may cut into a steep shore, in voxels: past this the beach is shortened instead, so the hill behind it never has to climb back more than this over SAND_R
+  const SAND_APRON = 0.03;                             // …and how far OUTSIDE the district it reaches, in a1 units (fades to nothing over this span past LAKE_T). Most shores are a drained bed only 8 voxels up walking down to the water, and halving a slope that short cannot double a beach; the beach has to be allowed out into the bed, which is the extra terrain it takes
+  const lakeZoneOf = (a1) => (a1 >= LAKE_T ? 0 : sstep(Math.min(1, (LAKE_T - a1) / LAKE_RAMP)));
+  const lakeZone = (x, z) => lakeZoneOf(vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9));
+  const pineRaw = (x, z) => {                          // the pine field up to and including the district blend, WITHOUT the pans' relief and the beach — the field the beach measures on (it is sampled at four neighbours and along a march to the water for that). pineBase below finishes the column. Both are shared scalar helpers: H, makeHRow and makeHCol all go through pineBase, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
+    const ax = x * 0.0018 + 61.3, az = z * 0.0018 + 77.9;   // the massifs, ~550 voxels across — fbm's three octaves written out, because the FIRST one is also the lake-district field (lakeZoneOf below) and it is paid for once. Term for term this is fbm(ax, az), so the sum is bit-identical to what it was
+    const a1 = vnoise(ax, az);
+    const a = a1 * 0.55 + vnoise(ax * 2.13 + 11.7, az * 2.13 + 5.3) * 0.27 + vnoise(ax * 4.41 + 41.2, az * 4.41 + 23.8) * 0.18;
     const sh = fbm(x * 0.0037 + 25.1, z * 0.0037 + 13.7);  // and the shoulders riding on them
     const m = sstep(sstep(a * 0.75 + sh * 0.25));
     const k = m * m;
-    return PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
+    let h = PINE_FLOOR + PINE_RELIEF * k - PINE_BOWL * (1 - m) * (1 - m)
          + 9 * (fbm(x * 0.030 + 3.7, z * 0.030 + 9.1) - 0.5) * k * k;
+    const bm = birchM(x, z);
+    if (bm > 0) { h = WL + (h - WL) * (1 - bm * (1 - BIRCH_ELEV)); }   // blended on the mask, so the two forests meet on a slope rather than a step — and the blend happens across the strait below, where it is under water and invisible
+    // ── LAKE DISTRICTS: WATER ONLY WHERE THE MASSIF FIELD IS LOW, AND ALL OF IT THERE (user 2026-09-02: "prevent
+    // small lakes from forming … apply it to the terrain … instead of tiny multiple shallow lakes, try to make one
+    // bigger body of water, instead of fragments") ── the field above dips under WL wherever m is small, and m is
+    // small in every pocket of a three-octave sum, so the water came out as pockets: measured on a 4480x8000 pine
+    // window, 15.0% of the ground was wet and it was split into 62 bodies, 33 of them under 500 cells at stride 8,
+    // and 17% of the wet columns were 1-3 voxels deep. This gate keys the water on `a1` alone — the massif noise's
+    // FIRST octave, one smooth 555-voxel lattice with one minimum per cell — so a lake is the low country between
+    // massifs by construction and can neither fragment on the finer octaves nor perch on a hillside (a district
+    // field independent of the terrain was tried: it put shelf lakes on massif flanks and still split on ridges).
+    //   L = 1  the district core: the ground is LERPED TOWARD A BED (LAKE_PULL, LAKE_BED) — the same weighted pull
+    //          every lake in the world is made of (see basinM and the strait) — hard enough that the ridges between
+    //          the old pockets go under too, so the district is ONE body with its bays where the pull runs out
+    //   L = 0  everywhere else: the field is SOFT-CLAMPED to LAKE_FLOOR, just over the top of the sand band, so
+    //          the old pockets are ground and no puddle can form (the freed area is terrain, as asked)
+    //   0<L<1  the ramp is the shore, and its two constants were set by measurement, not taste:
+    //          · the clamp is STIFF (LAKE_SOFT 2) on purpose. A pocket whose floor is already wet while its rim is
+    //            still dry is an isolated pond, and that band of L exists for every pocket that keeps relief on the
+    //            dry side. With the clamp flat below the floor the band closes for every pocket shallower than the
+    //            floor: softness 6 left 2-3 ponds per window, 2 leaves none.
+    //          · the ramp is WIDE (LAKE_RAMP 0.24) because it is the bank. Mean step from a wet cell to its dry
+    //            neighbour: 0.19 voxels/column before, 0.19 after; at 0.14 it was 0.28 and the user has refused
+    //            steeper banks twice today.
+    // Result on the same window: 14 districts, 14 bodies, none under 500 cells; wet 15.0% -> 8.8%; columns 1-3 deep
+    // 17% -> 11% of the water; sand per shore cell 6.8 -> 10.8 (the beaches got wider, not narrower). Applied AFTER
+    // the birch halving so both forests share one lake system at one depth and only the hills differ; the strait
+    // below still min()s through it. Every copy of the height field goes through this function, so gtest holds.
+    const L = lakeZoneOf(a1);
+    {
+      const hd = h - LAKE_FLOOR > 12 * LAKE_SOFT ? h : LAKE_FLOOR + LAKE_SOFT * Math.log(1 + Math.exp((h - LAKE_FLOOR) / LAKE_SOFT));   // dry: the soft clamp (identity high up, where exp would underflow to nothing anyway). The pans' relief is added in pineBase, AFTER the beach, so it neither bumps the beach nor puts noise into the slope and the march the beach measures with
+      if (L <= 0) h = hd;
+      else { const hw = Math.min(h, h - LAKE_PULL * (h - LAKE_BED));   // wet: the pull, lower-only like the strait's, so a pocket already under the bed keeps its depth
+        h = L >= 1 ? hw : hd + L * (hw - hd); } }
+    return h;
+  };
+  const pineBase = (x, z) => {
+    let h = pineRaw(x, z);
+    const a1 = vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9), L = lakeZoneOf(a1);   // the octave again (4 hashes) rather than an allocation per column to hand it back from pineRaw
+    // ── THE BEACH IS ONE WIDTH EVERYWHERE (user 2026-09-02: "double the sand bank surface area … keeping the surface
+    // area of the water", then "make the banks consistent in width. this bank for example is too narrow") ── the sand
+    // is a HEIGHT band (fillColumn, WL+1..WL+6), so on the ground it is as wide as the shore is gentle, and the shore's
+    // slope above the waterline runs from the district ramp's slow descent to a massif flank pulled into the lake.
+    // A fixed stretch of that slope (x1.7, the first answer) doubled the sand as asked but kept the spread: measured
+    // ACROSS the beach on two windows, 34-40 columns at the 5th percentile against 151-184 at the 90th. A stretch set
+    // per column from the local slope alone still left 49-55 against 100-122, because a single slope mis-reads the
+    // distance to the water wherever the profile curves.
+    // So each beach column MEASURES its distance to the water: it walks toward the lake in SAND_STEP strides until
+    // the pre-beach field drops to WL + 1 (see the direction note inside the block). A column D columns from the
+    // water is set to the band's height at D / SAND_W; behind the beach the raw field is carried with the offset
+    // that keeps the beach's top continuous, decaying over SAND_R columns, and the corner between the flat beach and
+    // the hill is rounded over 2 * SAND_TRANS columns. A shore so steep that the full beach would cut more than
+    // SAND_CUT voxels into it gets a shorter beach instead. The field measured is pineRaw — the blend without the
+    // pans' relief — because +-1.6 voxels of relief at a 50-column wavelength is as steep as a gentle shore.
+    // Everything at and below WL + 1 is the identity, so not one column changes side of the waterline: water area,
+    // body count and the wet-to-dry step are those of the districts, and the pond arithmetic in pineRaw is untouched.
+    // Measured across the beach (steepest ascent from the first dry column) on two windows, 5th/50th/90th
+    // percentile widths: 27/57/99 and 25/58/119 before any beach work, 39/92/165 and 34/91/174 with the fixed
+    // stretch, 75/106/127 and 74/104/129 with this. SAND_W is the knob between the two requests: consistent widths
+    // cannot reach the fixed stretch's total sand, because that doubling came from a long tail of very wide beaches
+    // — at 96 the sand is x1.5-1.8 the pre-beach amount (about 80% of the doubling); at 128 it would be the full
+    // doubling, with every beach 13 m wide.
+    { const w = a1 <= LAKE_T ? 1 : (a1 >= LAKE_T + SAND_APRON ? 0 : 1 - sstep((a1 - LAKE_T) / SAND_APRON));
+      if (w > 0 && h > WL + 1) {
+        // the direction TOWARD THE LAKE is down the district's own field, not downhill: the lake mask has one smooth
+        // gradient that is defined on flat ground too. Marching downhill instead (the first version) skipped the
+        // flat drained beds and left every bed's edge as a 2-4 voxel wall against the compressed beach beside it,
+        // and two neighbours' downhill lines could find different shores — measured on 400x400 blocks: seams on
+        // 0.01-0.16% of dry columns and 2-voxel steps on up to 3%; this way both are 0.00% (the fixed stretch's level)
+        const gx = (vnoise((x + 4) * 0.0018 + 61.3, z * 0.0018 + 77.9) - vnoise((x - 4) * 0.0018 + 61.3, z * 0.0018 + 77.9)) / 8,
+              gz = (vnoise(x * 0.0018 + 61.3, (z + 4) * 0.0018 + 77.9) - vnoise(x * 0.0018 + 61.3, (z - 4) * 0.0018 + 77.9)) / 8;
+        const G = Math.hypot(gx, gz);
+        if (G > 1e-7) {
+          const ux = -gx / G, uz = -gz / G, B = SAND_SPAN - 1, d = h - WL, maxD = SAND_W + SAND_R;
+          let D = -1, prevH = h, prevD = 0, n = 0; const smp = [h];   // heights along the march, SAND_STEP apart, for the rejoin below
+          while (n * SAND_STEP < maxD) { n++; const hv = pineRaw(x + ux * n * SAND_STEP, z + uz * n * SAND_STEP); smp.push(hv);
+            if (hv <= WL + 1) { let lo = prevD, hi = n * SAND_STEP, hlo = prevH, hhi = hv;   // crossed WL + 1 in this stride: bisect, then interpolate the crossing
+              for (let b = 0; b < SAND_BIS; b++) { const mid = (lo + hi) / 2, hm = pineRaw(x + ux * mid, z + uz * mid); if (hm <= WL + 1) { hi = mid; hhi = hm; } else { lo = mid; hlo = hm; } }
+              D = lo + (hi - lo) * (hlo - (WL + 1)) / Math.max(1e-6, hlo - hhi); break; }
+            prevH = hv; prevD = n * SAND_STEP; }
+          if (D >= 0) {                                // no water within the beach and its rejoin: not a beach column, untouched
+            const hAt = (Dq) => { const back = Math.max(0, (D - Dq) / SAND_STEP), i0 = Math.floor(back), f = back - i0; return smp[Math.min(i0, smp.length - 1)] * (1 - f) + smp[Math.min(i0 + 1, smp.length - 1)] * f - WL; };   // the raw height Dq columns from the water, off the march's samples
+            let Wq = SAND_W;                           // …shortened on a shore so steep that the full beach would cut more than SAND_CUT into it
+            const dAtW = D <= SAND_W ? 1 + (d - 1) * SAND_W / Math.max(1e-6, D) : hAt(SAND_W);
+            if (dAtW - (1 + B) > SAND_CUT) Wq = Math.max(24, SAND_W * (SAND_CUT + B) / Math.max(1e-6, dAtW - 1));
+            let ds;
+            if (D <= Wq - SAND_TRANS) ds = 1 + B * D / Wq;   // on the beach: the band, by distance
+            else { const dW = hAt(Wq);
+              const rej = d + (1 + B - dW) * (1 - sstep(Math.max(0, Math.min(1, (D - Wq) / SAND_R))));   // behind it: the raw field, carried so it passes through the beach's top, the offset decaying over SAND_R
+              if (D >= Wq + SAND_TRANS) ds = rej;
+              else { const band = 1 + B * D / Wq; ds = band + (rej - band) * sstep((D - (Wq - SAND_TRANS)) / (2 * SAND_TRANS)); } }   // the corner between the two, rounded
+            h += w * (ds - d); } } } }
+    // ── THE PANS' RELIEF ── a little coherent relief on the beds the districts drained, so they read as ground rather
+    // than a floor. After the beach and only ABOVE it (faded in from WL + 6), so the beach stays smooth; faded out
+    // well before the pond band (L 0.36..0.53) so it cannot reopen it.
+    if (L < 0.25 && h > WL + 6 && h < LAKE_FLOOR + 4)
+      h += LAKE_REL * (fbm(x * 0.02 + 7.7, z * 0.02 + 3.3) - 0.5) * 2 * (1 - sstep(L / 0.25)) * sstep(Math.min(1, (LAKE_FLOOR + 4 - h) / 8)) * sstep(Math.min(1, (h - WL - 6) / 3));
+    // ── THE STRAIT ── the band edge is where birchM's own argument crosses zero, so it is measured the same
+    // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
+    // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
+    // so neither shore gets a crease where the pull stops.
+    const sd0 = Math.abs(Math.abs(pwrap(x - (SPWX + BIRCHC + desWob(z) - desWob(SPWZ)))) - BIRCHH);
+    const sd = sd0 + (fbm(x * 0.0021 + 148.3, z * 0.0021 + 96.7) - 0.5) * BIRCH_GAPWOB;   // …the wobble, on a ~480-voxel wavelength: long enough to read as a bay rather than as roughness, and it moves the WHOLE profile together so the bed stays as smooth as the rest of the world's
+    const gm = sd <= 0 ? 1 : (sd < BIRCH_GAPW ? 0.5 * (1 + Math.cos(Math.PI * sd / BIRCH_GAPW)) : 0);   // sd <= 0 is the centre line, which the wobble can push past — without that arm those columns lose the trough and a bar of dry land appears down the middle of the strait
+    if (sd < BIRCH_BANKW) { const bk = BIRCH_BANKK * 0.5 * (1 + Math.cos(Math.PI * Math.max(sd, 0) / BIRCH_BANKW));
+      h = Math.min(h, h - bk * (h - (WL + BIRCH_BANKY))); }                                     // the APRON first — it flattens the approach toward beach height, and the channel below cuts through it
+    // ── min(), AND THAT IS THE WHOLE DIFFERENCE BETWEEN A BANK AND A STEP ── an unguarded lerp pulls ground
+    // toward BANKY from BOTH sides, so it RAISES everything already lower than the beach line into a plateau
+    // at exactly WL + BANKY, and the channel then cuts a wall into the edge of that plateau. Measured: with
+    // the pull unguarded, raising it 0.5 -> 0.75 moved the sand by nothing at all (median 33 -> 32), because
+    // every voxel of extra flattening was being handed straight back as a sharper lip. Lower-only, it does
+    // what it says: hills approaching the water are planed down toward beach height and low ground is left
+    // alone, so the shore keeps a continuous gradient all the way in.
+    if (gm > 0) { const bed = WL - BIRCH_GAPBED; h = Math.min(h, h - gm * (h - bed)); }   // …min() so the pull can only ever LOWER ground: where a natural basin has already dug below the strait's bed, the lerp would otherwise fill it back in
+    return h;
     // ── AND THE RIDGE DETAIL FADES ON k*k, NOT k ── this term rides at a ~33-voxel wavelength, the only thing
     // in the field fast enough to terrace a shoreline by itself. Faded on k it still carries a couple of
     // voxels where the land crosses WL, which steps the beach every few voxels no matter how gentle the
@@ -264,17 +540,73 @@
   // monotonic, so no column ever overtakes its neighbour and the beds cannot terrace, and it fixes both
   // ends: depth 0 stays 0 (the waterline is the waterline) and DEEP_SPAN stays DEEP_SPAN (a real basin is
   // already deep enough and is not stretched further).
-  const DEEP_SPAN = 44;
-  const deepen = (h) => { if (h >= WL) return h;
-    const t = Math.min(1, (WL - h) / DEEP_SPAN);
-    return Math.round(WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t))); };   // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
+  // ── 50% DEEPER (user 2026-09-02: "make the water 50% deeper") ── 44 -> 66 on the span, which is the depth
+  // the curve asymptotes to, so every body scales with it. NOTE what it does NOT change: the curve's slope at
+  // the waterline is its exponent, 3, independent of the span, so the first voxels off a beach are exactly as
+  // gentle as they were and the bed still steps one voxel at a time (see the round-once note above). It is
+  // the middle and the bottom of a lake that get deeper, which is what the request is about.
+  const DEEP_SPAN = 99;   // 66 -> 99, spending the room LIFT just bought. FREE FOR THE BANKS, and provably: deepen's slope at the waterline is its EXPONENT (3), independent of the span, so the first voxels off a beach are bit-identical however deep the far end goes. Only the middle and bottom of a lake move
+  const deepen = (hc) => { if (hc >= WL) return hc;
+    const t = Math.min(1, (WL - hc) / DEEP_SPAN);
+    return WL - DEEP_SPAN * (1 - (1 - t) * (1 - t) * (1 - t)); };              // CUBED, not squared: the curve's slope at t=0 is the exponent, so a squared bend leaves the SHALLOWS — which is most of the water — barely deeper than they were. Cubed lifts the shallow end where the complaint actually was, and still lands on DEEP_SPAN at the deep end rather than running away with it
+  // ── THE BED DROPS ONE VOXEL AT A TIME, AND THAT IS ENTIRELY A QUESTION OF WHEN IT IS ROUNDED (user
+  // 2026-09-02: "make the water drop in steps of one instead of two-3") ── deepen used to be handed an
+  // ALREADY-ROUNDED integer height and round its own answer again. Its slope at the waterline is the
+  // exponent, 3, so two columns whose raw bed differed by one voxel came out THREE apart: the map sent
+  // raw depth 1 -> 3, 2 -> 6, 3 -> 8, 4 -> 11. Depths 1, 2, 4, 5, 7, 9, 10 did not exist anywhere in the
+  // world, so a lake bed could only be a flat terrace with a 2- or 3-voxel riser at its edge. Measured
+  // over a 700x700 region before the change: 656 adjacent steps of 2, 442 of 3, 274 of 7 and not ONE
+  // step of 1 anywhere under the water.
+  // Rounding ONCE, after the remap, fixes it without touching the curve, the span or the depth: the
+  // deepened bed is now a continuous surface whose gradient is 3x the raw field's, and the raw field
+  // near a shore falls about a twelfth of a voxel per voxel (see PINE_BOWL), so the bed falls about a
+  // quarter of a voxel per voxel and rounds to a 1-voxel riser every ~4 voxels of tread. Same profile,
+  // same DEEP_SPAN, same depth at every point - only the sampling of it changed.
+  // ONE helper rather than the expression written out three times: H, makeHRow and makeHCol all call
+  // this, so the pre-round clamp and the remap cannot drift between the copies. Registered in BOTH
+  // worker fn tables (world/gen-pool.js, world/gen-worker.js) alongside deepen and pineBase.
+  // It returns a FLOAT, deliberately: the basin carve below it is a lerp toward bedrock with a multiplier
+  // of ~68, so rounding here and again after the carve reintroduces exactly the defect this fixes (measured
+  // on a basin at 74300,-152800: rounding twice put back 284 of the 2-voxel steps). ONE round, at the end
+  // of the pass, in the `Math.round(oakBank(...))` line all three copies already share.
+  const bedH = (x, z) => deepen(Math.min(HMAX, Math.max(4 + LIFT, pineBase(x, z))));
   // ── THE LAKE THRESHOLD, AND WHY IT IS A CONSTANT NOW ── this number is INLINED IN THREE PLACES: here, and
   // again in makeHRow and makeHCol (world/gen-noise.js), which carry their own copy of the height expression
   // and decompose the same noise into row/column form. All three must agree bit for bit or the bulk fill and
   // the placement queries disagree about where the ground is — __vb.gtest() is what measures it. Naming it
   // does not remove the duplication (the row/col forms cannot call this), but it does mean a change here is
   // visibly a change to a shared constant rather than to a magic number.
-  const BASIN_T = 0.065;                               // base: how much of the low-frequency basin field drops under the waterline
+  // ── AND THE BED, LIKEWISE NAMED ── the y the carve lerps toward. It was max(6, LIFT - 52) inlined in all
+  // three copies of H, i.e. a couple of voxels off the bottom of the world, which is why a full-strength
+  // basin bottoms out so far down. Naming it lets depth be tuned without touching area or rim slope.
+  // ── THE RIM'S OWN SLOPE, NAMED RATHER THAN INLINED ── how far the basin mask takes to go 0 -> 1, in units
+  // of the noise field. It is the constant that decides how steep a lake shore is (rim slope is roughly the
+  // bed's drop divided by this), and it never needed a name while basins were rare enough that most of the
+  // world's shoreline was the ambient field drifting across the waterline instead. Left at its original 0.06;
+  // the note over PINE_FLOOR records what widening it does and why it is not free.
+  const BASIN_RAMP = 0.06;   // ── AND IT MUST STAY UNDER BASIN_T, WHICH IS WHY WIDENING IT BACKFIRES ── the mask is sstep(min(1, (t - b) / BASIN_RAMP)), so m only reaches 1 where the field falls a FULL RAMP below the threshold. BASIN_T is 0.065; at a ramp of 0.09 the strongest pull any basin can manage is 0.065/0.09 = 0.72, and the lakes came out SHALLOWER for being given a gentler rim — measured, max depth 67 -> 32. The rim and the depth cannot be separated through this constant alone; raising T with it is the only way, and that moves the lake AREA hard because it is a CDF.
+  const BASIN_BED = 6;
+  // ── AND THE LAKE INTERIOR GETS A GAIN, WHICH THE BANKS DO NOT FEEL (user 2026-09-02: "restore the deeper
+  // water") ── measured before this: 47,325 wet cells, median depth 11 and p99, p999 and max ALL exactly 32.
+  // A ceiling, not a distribution. The cause is that a basin's depth is purely m * (h - BASIN_BED) and m is
+  // sstep(min(1, (t - b) / BASIN_RAMP)), which needs b a full BASIN_RAMP under BASIN_T to reach 1 — in practice
+  // it peaks near 0.28, so the deepest water in the world was 32 against 44-67 before LIFT went 50 -> 84.
+  // The three obvious levers are all wrong here, and each was measured:
+  //   · BASIN_T 0.065 -> 0.090 moved SIXTEEN cells of 47,345 and left every quantile identical.
+  //   · BASIN_LOW 66 -> 100 changed literally nothing: basinLow is already 1 wherever lakes form.
+  //   · BASIN_RAMP is the rim slope itself (m' scales as 1/RAMP), so narrowing it deepens by steepening the
+  //     banks — exactly what the user has twice refused.
+  // deepen() cannot be reused either: it lives inside bedH and, above the waterline, t goes negative and the
+  // cubic AMPLIFIES height rather than passing it through, so it is not idempotent and cannot simply be re-run
+  // on the carve result.
+  // A QUADRATIC gain can do it, and it is the only shape that can: m * (1 + G*m) is m to first order, so at the
+  // shoreline — where m -> 0 and the rim slope m' * (h - BASIN_BED) is set — it is the identity and the banks
+  // cannot move. The boost is second order, so it appears only where m is already large, i.e. the middle of a
+  // lake. Clamped at 1 because m is a lerp weight and 1 is the bed.
+  const BASIN_GAIN = 3;
+  const basinGain = (m) => (m > 0 ? Math.min(1, m * (1 + BASIN_GAIN * m)) : m);
+
+  const BASIN_T = 0.065;                               // the AREA knob: how much of the low-frequency basin field drops under the waterline. Separate from BASIN_BED (depth) and BASIN_RAMP (rim slope) — see the note over PINE_FLOOR for what happens when all three are pushed at once                               // base: how much of the low-frequency basin field drops under the waterline
   // ── AND THE ARCTIC GETS TWICE THE WATER (user 2026-08-30: "double the rate of water in the arctic") ──
   // added on top of the base rather than replacing it, and scaled by the biome mask so the extra lakes fade in
   // with the snow instead of appearing along the band's edge. TUNED BY MEASUREMENT, not by arithmetic: the
@@ -290,14 +622,22 @@
   // is a different lever from the threshold above, and the one that actually changes their size.
   // Like the threshold, this line is INLINED IN THREE PLACES (H, makeHRow, makeHCol) and is a shared helper
   // for that reason: the arithmetic exists once so the three copies cannot drift.
-  const BASIN_LOW = 66;                                // ceiling, over LIFT, under which a basin may carve at all
+  const BASIN_LOW = 66;                                // ceiling, over LIFT, under which a basin may carve at all. NOTE it is an ABSOLUTE height, so anything that moves PINE_FLOOR has to move this with it or basins are quietly refused on the low country that just rose above the gate
   const BASIN_ARCTLIFT = 34;                           // …and how much higher the arctic's may reach
   const basinLow = (h, x, z) => Math.max(0, Math.min(1, (BASIN_LOW + LIFT + BASIN_ARCTLIFT * arcticM(x, z) - h) / 20));
   const basinM = (x, z) => {                           // huge, rare low-frequency basins pull the land under the waterline
-    const b = vnoise(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
+    // ── fbm, NOT vnoise, AND THAT IS THE CIRCLE (user 2026-09-02: "it looks like you just generated a random
+    // circle here … dont use any other seperate water generation mechanics") ── there was no second mechanic:
+    // this IS the one lake generator, and the disc is its own shape. A SINGLE octave of value noise is a
+    // smooth bowl between lattice points, so thresholding it near the bottom of a minimum cuts a near-perfect
+    // circle — the rounder the closer the threshold sits to the floor of the bowl. Three octaves break that
+    // up: the outline now follows detail at 625, 293 and 142 voxels instead of one lattice cell, so a lake
+    // gets bays and points like every other shoreline in the world. Same field, same threshold machinery,
+    // same three copies — only the noise under it is richer.
+    const b = fbm(x * 0.0016 + 313.7, z * 0.0016 + 157.3);
     const t = basinT(x, z);
     if (b >= t) return 0;
-    return sstep(Math.min(1, (t - b) / 0.06));
+    return sstep(Math.min(1, (t - b) / BASIN_RAMP));
   };
   // ── THE DESERT ── the EASTERNMOST of the world's three bands (oak forest | pine forest | desert; see
   // oakM below for the other border). Anchored to SPWX/SPWZ rather than fixed coordinates because spawn is
@@ -945,9 +1285,23 @@
   const ARCTWMAX = DESW * 0.675;                       // the band's absolute reach, for the same cheap-out shape birch uses
   const ARCTFAR = ARCTC + ARCTH + 2 * ARCTWMAX + ARCTB * 0.5;    // no column east of this can be arctic at all
   const ARCTWFAR = ARCTC - ARCTH - 2 * ARCTWMAX - ARCTB * 0.5;   // …nor west of this
-  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = 1080;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
+  // ── THE TWO BANDS ARE THE SAME WIDTH NOW (user 2026-09-02: "the birch band looks alot thinner then the pine
+  // forest band. make the bands the same size") ── and the old split was not a choice, it was leftover
+  // arithmetic. BIOP is 15120 because the world once had SEVEN 2160-wide strips (pine, oak, cherry, birch,
+  // arctic, desert, pine); birch owned exactly one of them. When the other five were wiped their strips did
+  // not disappear — they all fell through to pine, so the period ran 12960 of pine against 2160 of birch, a
+  // 6:1 ratio. That is what reads as a thin ribbon of birch in a sea of conifer.
+  // BIRCHH = BIOP / 4 makes each band half the period: 7560 apiece, exactly equal. The PERIOD is untouched, so
+  // how often you cross a biome is unchanged — only the share of land each one takes.
+  // BIRCHOFF still means what it says. BIRCHC is BIRCHOFF + BIRCHH, so the band's INNER edge stays pinned at
+  // 3240 east of spawn however wide the band grows, and the spawn stays in pine by construction.
+  const BIRCHOFF = 3240, BIRCHB = 450, BIRCHH = BIOP / 4;   // inner edge east of spawn; blend width; half-width to the mask midpoint   // 1080 -> 3240 (2026-08-29): one strip further out, because the ARCTIC now occupies the strip the birch used to. Its centre BIRCHC follows automatically, and so do BIRCHFAR/BIRCHWFAR, so the oakRoll cheap-out moves with it
   const BIRCHC = BAND_MIRROR * (BIRCHOFF + BIRCHH);     // -2160: the band centre, mirrored like DESC/OAKC/CHOFF
-  const birchM = (x, z) => { return 0;   /* WIPED 2026-09-01 (user: "the only thing that should exist is the pine forest biome") — identically zero, so every branch this gated is dead. Kept as a stub, not deleted: terrain.js, both worker registries and debug-api.js all still name it. */                            // 1 = deep birch forest, 0 = the pine and the sand either side
+  // ── THE BIRCH FOREST IS BACK (user 2026-09-02: "I want you to pull in the birch forest now. use the exact
+  // same terrain generation as the pine forest") ── one band, and it is the ONLY other biome: oak, cherry,
+  // arctic and desert stay identically zero. The mask is the one this band always had (BIRCHOFF/BIRCHH/BIRCHB
+  // on desWob's meander), unchanged — what is new is what the HEIGHT FIELD does with it, in pineBase below.
+  const birchM = (x, z) => {                            // 1 = deep birch forest, 0 = pine forest either side of it
     const c = SPWX + BIRCHC + desWob(z) - desWob(SPWZ); // pinned at the spawn's own z, for the reason desertM pins its own
     const t = 0.5 + (BIRCHH - Math.abs(pwrap(x - c))) / BIRCHB;
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
@@ -1091,15 +1445,30 @@
     return t >= 1 ? 1 : t <= 0 ? 0 : sstep(t);
   };
   const H = (x, z) => {
-    let h = deepen(baseH(x, z));   // …BEFORE the basin and river carves, so those still measure from the real bed
+    let h = bedH(x, z);            // …BEFORE the basin and river carves, so those still measure from the real bed
     const bm = basinM(x, z);
-    const m = bm * basinLow(h, x, z);                   // basins only form in low country — and the arctic's ceiling is higher, see basinLow
-    if (m > 0) h = Math.round(h - m * (h - Math.max(6, LIFT - 52)) + (ihash(x * 13 + 7, z * 17 + 3) - 0.5) * 0.8);   // gently dithered — no terrace banding
+    const m = bm * basinLow(h, x, z) * (bm > 0 ? lakeZone(x, z) : 0);   // basins only form in low country — and the arctic's ceiling is higher, see basinLow. ── AND ONLY INSIDE A LAKE DISTRICT (2026-09-02) ── a basin outside one is a crater in dry ground: on the verification window one made a 25k-voxel lake 21 deep by itself, the isolated small lake the districts exist to remove. Weighted by the district mask rather than cut at its edge, so a basin on the ramp shallows out with the ramp; and lakeZone is only evaluated when bm > 0, which is rare
+    if (m > 0) h = h - basinGain(m) * (h - BASIN_BED);   // ── AND THE BASIN CARVE IS CONTINUOUS AND UNDITHERED, FOR THE SAME REASON ── it used to round here and add a +-0.4 ihash jitter to break "terrace banding". The banding was the double round, not the carve: with the bed continuous the rim already falls one voxel at a time, and a +-0.4 jitter on top of it is what turns a 1.0 drop into a 1.8 and rounds it to 2. Measured on the basin at 74300,-152800 — rounded+dithered 1032 steps of 2 or more, dither alone 423, double round alone 284, neither 0.   // gently dithered — no terrace banding
     const rs = riverS(x, z);
     const bn = fbm(x * 0.05 + 13.7, z * 0.05 + 4.2);   // bed/beach relief — lakebeds and sand flats are no longer billiard-flat
-    h = Math.round(oakBank(h, x, z));                  // ── SHALLOW OAK BANKS ── BEFORE the carve, so the lerp below starts from the shelf instead of from a hilltop. h is already an integer here, so Math.round is the identity outside the oak forest and the pine/desert heights stay bit-exact; see oakBank
+    h = Math.round(oakBank(h, x, z));                  // ── AND THIS IS THE ONE PLACE THE FIELD IS ROUNDED ── the bed and the basin carve above are both continuous now (see bedH), so this line is no longer a no-op on an integer: it is the single quantisation of the whole height field, and it is here because oakBank has to run BEFORE the river carve so the lerp starts from the shelf rather than from a hilltop. Every copy of H rounds in this line and nowhere else; see oakBank
     if (rs > 0.02) h = Math.min(h, Math.round(h * (1 - rs) + (WL - 2 - 38 * rs) * rs + (bn - 0.5) * 9 * Math.min(1, rs * 2.2) + (ihash(x * 19 + 5, z * 23 + 9) - 0.5) * 0.8));   // noisy bed + gently dithered banks
-    if (h <= WL && h >= WL - 5 && bm <= 0.25 && rs <= 0.04) h = WL + 1 + Math.max(0, Math.round((bn - 0.55) * 5));   // beach flats get 0-2 voxel dune relief
+    // ── AND THE BEACH-FLAT LIFT IS GONE, BECAUSE IT WAS THE OTHER HALF OF THE SAME COMPLAINT ── it shoved
+    // every column in [WL - 5, WL] up to WL + 1 with 0-2 voxels of dune relief, which is a CLIFF at the
+    // bottom edge of its own window: the shore read WL+1, WL+1, then WL-6, a seven-voxel drop straight into
+    // the water, and that was 274 of the measured steps. It cannot be smoothed away either - a monotone
+    // remap that lifts a band above WL has to fall faster than deepen already does to catch back up, so
+    // any continuous version of it puts the 2-voxel risers straight back. The choice is dry flats OR a
+    // 1-voxel shore, and the request is for the shore.
+    // WHAT IT COSTS, STATED PLAINLY: the flats it used to lift are water now. Measured over the same
+    // 700x700 region the wet fraction goes 2.9% -> 4.3%, so there is about half again as much still water
+    // in the world and the sand is the shore band (fillColumn's h <= WL + 6) rather than a lifted flat.
+    // Raising PINE_FLOOR instead keeps the old water area, but only by trading away the depth the bed was
+    // just given (+2 holds 2.9% wet at a 11-voxel maximum, against 15 here), so it is not taken.
+    // The values this used to make impossible - h in WL-5..WL - are ones terrain.js was ALREADY built for:
+    // its `lake` test reads `h <= WL - 1 || (h === WL && a neighbour is lower)` precisely so a 2-deep
+    // column is water and a 1-deep rim column is water only where it joins some, which is the isolated
+    // dither puddle this line used to prevent by brute force.   // beach flats get 0-2 voxel dune relief
     // ── THE DESERT FLAT DOES NOT FILL IN LAKES (user 2026-08-16, screenshot: a forest lake bordering the
     // desert was sliced off along a dead-straight diagonal) ── the WL+2 lift below exists so the desert never
     // sits below sea level, and it was unconditional: every column past dm 0.5 was shoved above the water,

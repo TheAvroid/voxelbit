@@ -434,7 +434,7 @@
     fish() { const o = []; const bodyClip = (B) => { const hx = Math.sin(B.th), hz = Math.cos(B.th), ay = Math.floor(B.y), hf = B.fhalf || 5; for (const a of [hf, hf * 0.5, 0, -hf * 0.5, -hf]) { const bx = Math.floor(B.x + hx * a), bz = Math.floor(B.z + hz * a); for (let yy = ay - 1; yy <= ay + 2; yy++) if (solid(bx, yy, bz)) return true; } return false; };   // per-species body length — the old fixed ±5 reported every short minnow as clipping
       for (let j = FISH_0; j < FISH_END; j++) { const B = wbf[j]; if (B && B.init) o.push({ j, sp: (FISHES[B.fsp || 0] || {}).name, sch: B.school, x: +B.x.toFixed(1), y: +B.y.toFixed(1), z: +B.z.toFixed(1), spd: +(B.spd || 0).toFixed(1), trap: +(B.trap || 0).toFixed(1), inSolid: bodyClip(B), d: Math.round(Math.hypot(B.x - P.x, B.z - P.z)), air: B.jumpV !== undefined, arm: B.jumpArm !== undefined, flee: ((B.fleeT || 0) * 1000 > performance.now()) || spooked(B), vyS: +(B.vyS || 0).toFixed(1) }); }
       return { species: FISHES.map((f) => f.name + '(' + f.n + 'f@' + f.item0 + ')'), live: o }; },   // fish test tap
-    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, riverAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW, SAND, DIRT, NEEDLE }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
+    vox(x, y, z) { return W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY]; }, rect, bird, wbf, H, lakeZone, riverAt, lilyGigAt, tryPickup, ids: { PEBBLE, STICK_S, GRASS, MOSS, BROCK, SNOW, SAND, DIRT, NEEDLE }, slots, LILY_SZ, WL, fishCfg: FISH_CFG,   // lilyGigAt: test tap — the GIANT pads no longer stamp, so a candidate site must come back with an empty footprint; fishCfg: LIVE fish tunables (speed/flee/jump/pitch)
     dbgEye() { return smoothEye; }, get WORM_ITEM0() { return WORM_ITEM0; }, get grabActive() { return !!grabAnim; },
     dof(o) { if (o) { if (o.on !== undefined) { dofStr = o.on ? Math.max(dofStr, 0.3) : 0; dofCocK = DOF_COC * dofStr; dofStrSync(); }   // there is no on/off state any more — the slider IS the switch, so {on:false} parks it at 0 and {on:true} restores at least the default 30%
                       if (o.focus !== undefined) dofLock = o.focus;
@@ -823,7 +823,7 @@
     swingProbe() { const aim = aimHitId(); const r = chopSwing();
       return { aimId: aim, aimWood: !!woodTab[aim], carved: !!r, path: CHOP_AIM.path,
                blocked: !r && !!aim, woodHit: !!CHOP_AIM.woodHit, foliaHit: !!CHOP_AIM.foliaHit }; },   // the tap drives exactly what a click does, sound included
-    physChopDecor(x, y, z, r) { return phChopDecor(x, y, z, r === undefined ? 5 : r); },   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
+    physChopDecor(x, y, z, r, pickOnly) { return phChopDecor(x, y, z, r === undefined ? 5 : r, undefined, pickOnly ? ((v) => !!pickOnlyTab[v]) : undefined); },   // pickOnly: take STONE only, which is the filter a real pick swing carries (sim/tools.js okMat) — without it this tap eats the moss cap as ordinary decor and cannot see the carry bug at all   // carve decor (mushrooms/ferns) at a point — test tap for the orphan/settle path
     lastShot() { return lastShotInfo(); },           // where the last arrow/spear arc ended — landed:false means it ran the whole 20 s march without hitting anything, buried:true means it launched from inside solid
     arrowChopAt(x, y, z) { return arrowChop(x | 0, y | 0, z | 0); },   // the ARROW's carve, at a chosen voxel. Driving it through a real shot is unmeasurable: the shaft picks its own impact, and a creature in the way cancels the chop outright.
     // Stake an arrow into a chosen creature exactly as a landed shot does, so the "it goes when the animal
@@ -2308,6 +2308,15 @@
     // two different worlds; these exist so a sweep can run inside ONE session.
     poolMs(v) { if (v !== undefined) POOL_MS = +v; return { POOL_MS, POOL_BUDGET }; },
     poolBudget(v) { return poolBudgetSet(v); },
+    // ── SAFE MODE ── the persisted world-size ladder the device-lost banner arms (see SAFE in core/gpu.js).
+    // 0 = full quality. Reads without an argument; writing needs a RELOAD, because every size it picks is
+    // decided once at boot and baked into buffers that cannot grow. Here so the state is visible and
+    // clearable from a console rather than only from the crash screen that set it.
+    safeMode(v) {
+      if (v !== undefined) { const n = Math.max(0, Math.min(3, v | 0));
+        try { if (n) localStorage.setItem('vb_safe', String(n)); else localStorage.removeItem('vb_safe'); } catch (e) {}
+        return { was: SAFE, now: n, reload: n !== SAFE }; }
+      return { level: SAFE, tier: window.__vbTier }; },
     jolt(v) { return joltOn(v); },                   // 1 = Jolt drives the rigid bodies, 0 = the legacy voxel solver. Booting the wasm is lazy, so the first call returns {booting:true} and the second turns it on
     joltStats() { return joltStats(); },
     petals(v) { return petalsSet(v); },   // the ambient falling leaves — removed on request, this puts them back for a look
@@ -2385,7 +2394,7 @@
       // test racing the sim.
       worldFlush(true);                                // drain the whole dirty queue, budget ignored, or pending edits read as false diffs
       const nB = BX * BY * BZ, spots = [];
-      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescRead, 0, bdesc.byteLength); device.queue.submit([e0.finish()]);
+      const e0 = device.createCommandEncoder(); e0.copyBufferToBuffer(bdescBuf, 0, bdescReadBuf(), 0, bdesc.byteLength); device.queue.submit([e0.finish()]);   // bdescReadBuf() allocates the 50 MB staging on FIRST use - see render/buffers.js
       const cpuDesc = bdesc.slice(), cpuOcc = bricks.slice();
       const inRect = (bx, bz) => { const wx = winOX + bx * 8, wz = winOZ + bz * 8;
         return wx >= rect.xlo && wx + 8 <= rect.xhi && wz >= rect.zlo && wz + 8 <= rect.zhi; };

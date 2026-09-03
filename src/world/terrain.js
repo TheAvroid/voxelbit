@@ -43,7 +43,14 @@
     // material or the seam simply becomes a speckled seam.
     const asn = arctSnow(wx, wz);                      // the SNOW mask, not the biome mask — it reaches out to the treeline and its edge is 2-D noise (world/window.js)
     const aSoil = asn > 0.5;
-    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
+    // ── AND THE BIRCH FOREST HAS NO SOIL EITHER (user 2026-09-02: "make sure there is not dirt in the terrain
+    // but grass instead") ── the SAME fix the arctic took, for the same reason and with the same shape: this
+    // layer is what a slope down to the water, a cliff or a dug hole EXPOSES, and it was brown under a green
+    // surface, so the moment the ground fell away you saw the seam. Its own light green all the way down
+    // instead. NOT dithered against the mask — an exposed face has to be ONE material or the seam just
+    // becomes a speckled seam, which is the note the arctic arm already makes.
+    const bSoil = bm > 0.5;
+    for (let y = Math.max(0, h - 16); y < Math.min(h - 1, yTop); y++) W[base + y * WX] = aSoil ? ASNOW[(ihash(wx, y * 131 + wz) * 4) | 0] : bSoil ? BIRCHMOSS[(ihash(wx, y * 131 + wz) * 4) | 0] : DIRT[(ihash(wx, y * 131 + wz) * 3) | 0];
     if (h - 1 >= 0 && h - 1 < yTop) {                  // the SURFACE voxel
       const sh = ihash(wx * 3 + 1, wz * 3 + 7);        // hoisted — was hashed up to twice
       const shore = h <= WL + 6;                       // the band sand may occupy AT ALL — solid to WL+4, then two levels of soft edge above it
@@ -153,7 +160,7 @@
     if (surfMoss && h + 4 < WY) {                      // GRASS STRANDS: moss patches ONLY, 1–4 voxels tall, moss-matched colors
       if (ihash(wx * 3 + 41, wz * 3 + 87) < 0.06) {
         const gh = 1 + ((ihash(wx * 5 + 3, wz * 7 + 9) * 4) | 0);
-        const gc = (surfBirch ? BIRCHMOSS : GRASS)[(ihash(wx + 13, wz * 13) * 4) | 0];   // the birch forest's strands are its own lighter green — the whole point of the request
+        const gc = (surfBirch ? BIRCHSTRAND : GRASS)[(ihash(wx + 13, wz * 13) * 4) | 0];   // ── STRANDS ARE A SCATTER RAMP, AND THE BIRCH HAS ITS OWN ── they used to take BIRCHMOSS in the birch band, and that ramp is the solid GROUND colour now (see material-tabs.js): sharing ids would have made every blade of grass a hitbox, where the pine forest's strands are walk-through. GRASS is >= DECOR_MIN and in floatTab, which is exactly the surface-scatter class a strand wants. The floor keeps its lighter colour; only the blades on top of it stay the standard green   // the birch forest's strands are its own lighter green — the whole point of the request
         for (let k = 0; k < gh; k++) { const ii = base + (h + k) * WX; if (W[ii]) break; W[ii] = gc; }
       }
     }
@@ -243,7 +250,7 @@
   }
   const BCELL = 34;                                    // one rock candidate per 3.4 m cell (2× the 48-cell density, 4× the original)
   function boulderAt(cx, cz) {                         // FOUR tiers, all real voxelized models now: rock.vox stone / small / mid / BIG rocks26 —
-    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.375) return null;   // the much larger rocks are much rarer   // -25% (user 2026-09-01: "reduce the rocks by 25%") 0.5 -> 0.375: ihash is uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is its own verification
+    if (ihash(cx * 29 + 7, cz * 31 + 3) > 0.28125) return null;   // the much larger rocks are much rarer   // -25% AGAIN (user 2026-09-02: "decrease the rocks by 25%") 0.375 -> 0.28125. ihash is uniform on 0..1 so the threshold IS the acceptance rate and a 25% cut is exactly a 0.75 multiply — it thins all four tiers together, which is what "the rocks" means, rather than reweighting them against each other   // -25% (user 2026-09-01: "reduce the rocks by 25%") 0.5 -> 0.375: ihash is uniform on 0..1, so the threshold IS the acceptance rate and the arithmetic is its own verification
     const bx = Math.round(cx * BCELL + 4 + ihash(cx * 3 + 40, cz * 7 + 90) * (BCELL - 8));
     const bz = Math.round(cz * BCELL + 4 + ihash(cx * 13 + 6, cz * 5 + 44) * (BCELL - 8));
     // ── AND NONE OF THE FOUR TIERS IN THE ARCTIC (user 2026-08-29: "remove the rocks and twigs") ── unlike the
@@ -513,7 +520,7 @@
     // CHERRY IS TESTED FIRST because the blossom band is a SUB-REGION of the oak mask — asking oakM first would
     // hand every blossom rock the oak's green.
     const cap = (TWIGPINK.length && chNear(b.bx) && cherryM(b.bx, b.bz) > 0.5) ? TWIGPINK
-              : (OAKMOSS.length && birchM(b.bx, b.bz) > 0.5) ? OAKMOSS   // ── AND THE BIRCH FOREST'S ROCK MOSS IS THE SAME LIGHT GREEN ── OAKMOSS is exactly the oak's brightest leaf colours on float-material ids, so the rule the oak forest follows (moss matches the leaves over it) lands on the identical ramp here, for zero new ids
+              : (BIRCHMOSS.length && birchM(b.bx, b.bz) > 0.5) ? BIRCHMOSS   // ── AND THE BIRCH FOREST'S ROCK MOSS IS THE SAME LIGHT GREEN ── BIRCHMOSS now, not OAKMOSS: that ramp was reclaimed to DEADC when its biome went, so a rock in the birch wood was wearing a dead colour. OAKMOSS is exactly the oak's brightest leaf colours on float-material ids, so the rule the oak forest follows (moss matches the leaves over it) lands on the identical ramp here, for zero new ids
               : (OAKMOSS.length && oakM(b.bx, b.bz) > 0.5) ? OAKMOSS : GRASS;
     const fw = (b.rot & 1) ? m.sy : m.sx, fd = (b.rot & 1) ? m.sx : m.sy;
     const bx = b.bx - (fw >> 1), bz = b.bz - (fd >> 1);
@@ -1167,7 +1174,7 @@
   const LILYCELL = 18;                                 // LILYPADS: small/medium/large .vox pads floating on lakes and rivers
   function lilyAt(cx, cz) {                             // STATIC lilies RE-ENABLED for testing (user 2026-07-18) — stamped into the world grid (full static-voxel shading) alongside the LIVE drifting pads, so their render can be compared
     if (!LILYV.length) return null;
-    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.0428) return null;   // -25% (user 2026-09-01: "decrease lillypads by 25%") 0.057 -> 0.0428   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
+    if (ihash(cx * 83 + 3, cz * 89 + 17) > 0.0321) return null;   // -25% AGAIN (user 2026-09-02: "reduce the lilly pads by 25%") 0.0428 -> 0.0321. The roll is a straight per-cell acceptance rate, so a 25% cut IS a 0.75 multiply — no spacing or radius term muddies it   // -25% (user 2026-09-01) 0.057 -> 0.0428   // halved twice 2026-07-16 (0.34 → 0.17 → 0.085), then CUT BY 1/3 (0.085 → 0.057, user 2026-07-18)
     const wx = Math.round(cx * LILYCELL + 3 + ihash(cx * 7 + 6, cz * 3 + 14) * (LILYCELL - 6));
     const wz = Math.round(cz * LILYCELL + 3 + ihash(cx * 5 + 12, cz * 11 + 7) * (LILYCELL - 6));
     // ── TESTED AT THE OBJECT, NOT AT ITS CELL (user 2026-08-29: "the life is still rendering in the

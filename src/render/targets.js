@@ -1,6 +1,7 @@
   // ── screen textures + bind groups (rebuilt on resize / scale change) ───────
   let renderScale = 0.7;                               // default resolution scale (user 2026-08-28: back to 70%, briefly 60%, was 80%, was 90%); the settings slider AND the [ ] keys both step 40..100% in 10s (persisted vb_scale). The 0.375 floor below is what an older build could persist and what __vb.res() still accepts — neither control offers it.
   try { const v = parseFloat(localStorage.getItem('vb_scale')); if (v >= 0.375 && v <= 1.0) renderScale = v; } catch (e) {}
+  if (SAFE >= 3) renderScale = Math.min(renderScale, 0.5);   // ── SAFE MODE, BOTTOM RUNG ── see core/gpu.js. A device that lost itself three times has already been given a smaller world; this is the other half of the ask, and it is a CEILING rather than an assignment so a player who had already chosen less keeps it
   let RW = 0, RH = 0, CW = 0, CH = 0;
   let bgTrace, bgTemporal, bgSpatial, bgComposite, bgTaa, bgBlit, bgVis, visBuf = null;
   let eyeFolV = 0;                                       // which TRACE variant this frame: 1 = the foliage-see-through pipeline (eye within 1 voxel of leaves), 0 = the fast normal-play pipeline

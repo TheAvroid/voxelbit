@@ -371,6 +371,7 @@
     // AO_REACH rides in physC.z. Written HERE, outside the body block above, because that block only runs when
     // there are rigid bodies — leaving the lane stale (and the AO reach wrong) in an empty scene.
     UF[UF_PHYSC + 2] = AO_REACH;
+    UF[UF_PHYSC + 3] = fogK;                           // …and the [Y] panel's FOG DENSITY slider rides physC.w, for the same reason AO_REACH rides .z: the lane was already in the struct and written a literal 0 every frame, so it costs no reorder and nothing downstream to re-verify. Written here rather than in the body block above so an empty scene still gets the right haze.
     device.queue.writeBuffer(uniBuf, 0, UF);
     if (CPROF) cpMark(6);
 

@@ -96,7 +96,19 @@
   // leak: a strand is one column resting on the soil, so a shovel bite under one left it hanging over its own
   // hole — the same bug, and it now rides the chunk for the same reason.
   const mossTab = new Uint8Array(256);
-  for (const i of [...GRASS, ...OAKMOSS, ...TWIGPINK, ...TWIGWHITE]) mossTab[i] = 1;   // TWIGWHITE rides with TWIGPINK: same scatter, same class, only the crown above it differs
+  // ── AND THE BIRCH FOREST'S CAP IS IN HERE TOO (user 2026-09-02: "apply the foliage fix when using the pick to
+  // mine stone with moss on top", then "the birch forest isnt working") ── world/terrain.js mossCap picks the cap
+  // ramp per biome, and BIRCHMOSS was the one ramp it can choose that this list never named. So the carry loop in
+  // sim/support.js walked up from the stone the pick took, asked mossTab about a birch cap, got 0, and left it in
+  // mid-air — the pine forest worked the whole time because its caps are GRASS, which IS named here.
+  // MEASURED at 45217,-22358 (deep birch): 61 of 61 caps on stone were BIRCHMOSS ids and none were GRASS, so this
+  // is the entire biome, not an edge of it. A pick-filtered bite under one left the cap standing on nothing.
+  // NOTE BIRCHMOSS IS BIRCHGRASS'S OWN IDS (assets/palette.js), which are also the birch forest's GROUND surface —
+  // the palette had no free ids when that cap was authored. The cost of naming them here is that a bite which takes
+  // stone directly beneath a turf voxel now carries that voxel off with the chunk as well. That needs the stone to
+  // sit immediately under the surface with no soil between, which is not how the terrain stacks (fillColumn lays 15
+  // voxels of soil over the rock core), and it is the same trade GRASS strands already make.
+  for (const i of [...GRASS, ...OAKMOSS, ...TWIGPINK, ...TWIGWHITE, ...BIRCHMOSS]) mossTab[i] = 1;   // TWIGWHITE rides with TWIGPINK: same scatter, same class, only the crown above it differs
   // Which ids may a generation-time orphan sweep DELETE. Derived, not hand-listed: everything except foliage
   // and wood. A canopy can read as detached in its own model and a trunk is the tree, so neither is ever
   // deleted blind; that leaves terrain — stone, strata, dirt, moss, sand, ore — which is what gorge carving

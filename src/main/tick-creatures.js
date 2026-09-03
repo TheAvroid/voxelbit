@@ -371,8 +371,25 @@
           } else if (wantK === 6) {                    // FISH: home is a water spot (lakes AND rivers), body UNDER the surface. Capacity SCALES with the pool's SIZE so a small pond isn't crammed (user)
             if (!waterSpots.length) break;             // the census can empty waterSpots THIS frame, after nFish was computed from last frame's — a `% 0` here made `L9.x` throw (this was a permanent game-freeze before the tick wrapper)
             let L9 = null;
+            // ── EVERY POOL GETS ITS SHARE OF THE POPULATION, BY AREA (user 2026-09-02: "theres also not a balance
+            // between fish being in closed spaces and large spaces … balances the ratio of fish based on the size
+            // of the body of water … scale it porpionally") ── the old rule was a fixed DENSITY slope, round(n/3),
+            // with a hard floor of 1 and a ceiling of 16, and both ends broke the proportion it was trying to
+            // keep: the floor handed a one-sample puddle the same fish a twelve-sample pond got, which is four
+            // times the density, and the ceiling starved anything bigger than 48 samples. Between them the small
+            // water was crowded and the large water was empty — exactly the imbalance reported.
+            // A SHARE, NOT A SLOPE: each pool takes nFish * (its own area / all the water's area), so the caps
+            // sum to the population by construction and the density is the same everywhere no matter how the
+            // world's water happens to be split up. wsTot is the whole census, so a pool's share moves when the
+            // world's water does — swim into a region of big lakes and the same 28 fish spread thinner, which is
+            // what proportional means.
+            // THE FLOOR IS CONDITIONAL NOW: a pool only rounds up to its first fish once it is worth one
+            // (FISH_MINPOOL samples), so a puddle is empty rather than over-stocked, and the ceiling is gone —
+            // nFish is the only cap that matters and it already bounds the band.
+            let wsTot = 0; for (let q = 0; q < waterSpots.length; q++) wsTot += waterSpots[q].n;
             for (let k = 0; k < waterSpots.length; k++) { const cand = waterSpots[(wk + tries + k) % waterSpots.length];   // walk the spots so a full pool yields to a hungrier one
-              const cap = Math.max(1, Math.min(16, Math.round(cand.n / 3)));   // UNIFORM density: ~1 fish per 3 census samples (~1200 vox² of water). The old 1-per-sample slope CRAMMED ponds (a 9-sample pond held 9 fish) while big-lake spots were clamped at 16 regardless of area — density inverted (user)
+              const share = nFish * (cand.n / Math.max(1, wsTot));   // this pool's proportional slice of the population
+              const cap = share >= 1 ? Math.round(share) : (cand.n >= FISH_MINPOOL ? 1 : 0);   // …rounded, and a pool under its own first whole fish gets one only if it is big enough to deserve one
               let near = 0; for (let f = FISH_0; f < FISH_END; f++) { const F = wbf[f]; if (F && F.init && (F.kind | 0) === 6 && F.hx !== undefined && (F.hx - cand.x) * (F.hx - cand.x) + (F.hz - cand.z) * (F.hz - cand.z) < 45 * 45) near++; }   // count by HOME, not wander position — spots are pairwise >90 apart so 45-vox home-discs are DISJOINT; the old 90-vox position count tallied one lake fish against ALL its spots and starved big lakes (user)
               if (near < cap) { L9 = cand; break; } }
             if (!L9) break;                            // every pool already holds its size-capped share → add no more fish
@@ -1124,9 +1141,26 @@
         if (B.aAncX === undefined || (B.x - B.aAncX) * (B.x - B.aAncX) + (B.z - B.aAncZ) * (B.z - B.aAncZ) > 2.5 * 2.5) { B.aAncX = B.x; B.aAncZ = B.z; B.aStk = 0; B.aStkN = 0; }   // ── STEEP-TERRAIN STUCK WATCHDOG (user) ── judge by NET DISPLACEMENT, not blockage: a marcher can pass every walkOK test yet oscillate in place at a slope base (leash pulls uphill → blocked → contour turn → pulled back…). Real walking resets the anchor constantly; only genuine pinning accumulates.
         else if ((B.aStk = (B.aStk || 0) + dt) > 3 && !(B.aRelax > 0)) {
           B.aStk = 0; B.aStkN = (B.aStkN || 0) + 1;
-          let best = -1, bgv = -1e9;                     // force the RELAXED escape (step limit ignored — same gate as boxed-in) toward the most climbable neighbour
+          // ── AND IF IT IS STANDING ON A ROCK, THE WAY OUT IS DOWN (user 2026-09-02: "life that spawn ontop of
+          // rocks get stuck on the rocks. allow the life to fall off of the rocks") ── this escape picked the
+          // most CLIMBABLE neighbour, which is the right answer for the case it was written for (wedged against
+          // a step it cannot make, where the way out is over). On a boulder it is exactly backwards: every
+          // neighbour is below, so `gA > bgv` selects the LEAST DEEP one — another voxel of the same rock — and
+          // the animal walks the crown indefinitely. It never respawns out of it either, because pacing the
+          // crown moves it more than the 2.5 voxels the anchor test above wants and that clears aStkN every
+          // time. MEASURED before this: of 21 walkers, 3 of the 8 that were ever perched stayed perched for
+          // most of a 20 s window, 1-5 aloft at any instant.
+          // PERCHED is asked of the ANIMAL, and it has to be asked of the real column: bfSurf and navBed are
+          // both hmap (main/tick-nav.js, sim/nav.js), and a stamped boulder sits ON TOP of hmap — the stamp was
+          // never written into it. The first version of this test compared those two and was therefore
+          // identically false on land, which the rock-drop probe caught: an animal parked on a crown 14 voxels
+          // proud of the terrain paced it for 14 s without ever coming down. Same lesson, same file, as the note
+          // at the top of this function. So ask how far the BODY is standing over the heightmap under it —
+          // a seated mammal rides 2-4 voxels up, so a full step-down past that is something it climbed onto.
+          const perchA = B.y - navBed(B.x, B.z) > NAV_MDN + 4;
+          let best = -1, bgv = perchA ? 1e9 : -1e9;      // force the RELAXED escape (step limit ignored — same gate as boxed-in): toward the most climbable neighbour, or DOWNHILL off a rock
           for (let h = 0; h < 4; h++) { const tx = B.x + DIRa[h][0] * 5, tz = B.z + DIRa[h][1] * 5, gA = mamArb ? navWalkStand(tx, tz) : bfSurf(tx, tz);
-            if (walkFree(tx, tz) && gA > bgv) { bgv = gA; best = h; } }
+            if (walkFree(tx, tz) && (perchA ? gA < bgv : gA > bgv)) { bgv = gA; best = h; } }
           if (best < 0 || B.aStkN >= 3) { if (B.sN) unstampWorm(B); B.init = false; continue; }   // three failed escapes (or nowhere to go) = truly wedged → respawn on fresh ground
           B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.4;
         }
@@ -1407,6 +1441,16 @@
             for (let k = 0; k < 8; k++) { const sa = Math.sin(k * 0.7854), ca = Math.cos(k * 0.7854);
               for (let d = 3.5; d <= 9; d += 2.75) { const qx = B.x + sa * d, qz = B.z + ca * d;
                 if (WL - bfBed(qx, qz) < 3 || solid(Math.floor(qx), ay, Math.floor(qz)) || solid(Math.floor(qx), ay + 1, Math.floor(qz))) { rx -= sa * (10 - d); rz -= ca * (10 - d); break; } } }
+            // ── AND FROM EACH OTHER ── same vector, same dt-scaled slide: a fish that has drifted onto another
+            // one is pushed off it exactly as it is pushed off a bank. O(n²) over the fish band and no further —
+            // 28 slots is 784 compares at the 14 Hz sense tick, which is nothing beside the fishReach whiskers
+            // this block already runs. See sepR/sepK in sim/life/fish.js for why it lives here and not in the fan.
+            for (let f = FISH_0; f < FISH_END; f++) { const F = wbf[f];
+              if (!F || !F.init || F === B || (F.kind | 0) !== 6) continue;
+              const dxf = B.x - F.x, dzf = B.z - F.z, d2f = dxf * dxf + dzf * dzf;
+              if (d2f >= FC.sepR * FC.sepR || d2f < 1e-4) continue;
+              const df = Math.sqrt(d2f), wf = (1 - df / FC.sepR) * FC.sepK;
+              rx += (dxf / df) * wf; rz += (dzf / df) * wf; }
             B.repX = rx; B.repZ = rz;
             const look = Math.max(FC.lookMin, B.spd * 0.62);   // ── REACTIVE WALL BACKSTOP ── last-ditch: terrain inside the immediate lookahead → hard override + slow. The probe should prevent this from ever tripping, so it is now purely a fail-safe.
             B.bkOn = !fishOK(B.th, look) || !fishOK(B.th, 5);

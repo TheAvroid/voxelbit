@@ -188,9 +188,14 @@
     // ── caustics, the underwater look, the splash/wake rings and the shoreline surf were all baked in with
     // no switch at all. lgt.x is full at 24 bits, so they sit in lgt.z bits 2-5 (LG2) — see WBIT2/LGT2_WATER
     // in world/window.js. The row machinery already handled `mask 2`; these are its first users.
-    const LGT = [['reflect', 18, 1], ['refract', 19, 1], ['foam', 20, 1], ['ice', 21, 1],
-                 ['pixel glisten', 22, 1], ['waves', 23, 1],
-                 ['caustics', 2, 2], ['underwater', 3, 2], ['ripples', 4, 2], ['shore surf', 5, 2]];
+    // ── THE WATER ROWS ARE OFF THE PANEL (user 2026-09-02: "remove the water settings of the y toggle to make
+    // room for it") ── all ten of them, plus the reflection slider and the water bake line. The water itself is
+    // untouched and forced on at its baked values (see WATER_BAKE / lgtMask in world/window.js); what is gone is
+    // only the ability to switch it from here, which is why lgt.x is no longer restored from storage — a saved
+    // mask with a term off would have had no way back. __vb.lgt(mask) and __vb.wrefl(k) still reach it all.
+    // WHAT REPLACED THEM: the FOG slider below — no toggle rows at all, so this list is empty and the row
+    // machinery simply builds nothing. Far AO briefly sat here and was removed: see the note in trace.js.
+    const LGT = [];
     const lgtGet = (b, m) => ((m === 2 ? lgtMask2 : lgtMask) & (1 << b)) !== 0;
     {
       const panel = $('lgtPanel');
@@ -210,50 +215,18 @@
           lgtPaint(); });
       } };
       addRows(LGT);
-      // ── REFLECTION STRENGTH (user 2026-08-05) ── how much of the Fresnel split goes to the mirror.
-      // 1.00 is physical Schlick (the look it has always had); 0 kills the mirror, 2 doubles it. Lives in
-      // u.lgt.y, so it costs nothing extra — the reflection ray is traced either way, this only weights it.
-      const sld = document.createElement('div'); sld.className = 'lgtRow lgtSld';
-      sld.innerHTML = '<span>reflection</span><input id="lgtRefl" type="range" min="0" max="2" step="0.05"><span class="lgtVal" id="lgtReflV"></span>';
-      panel.appendChild(sld);
-      const reflIn = $('lgtRefl'), reflVal = $('lgtReflV');
-      const reflPaint = () => { reflIn.value = String(wReflK); reflVal.textContent = wReflK.toFixed(2); };
-      reflIn.addEventListener('pointerdown', (e) => e.stopPropagation());
-      reflIn.addEventListener('input', (e) => { e.stopPropagation(); wReflK = +reflIn.value; resetHist = 1;
-        try { localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} reflPaint(); });
-      reflPaint();
-      // ── BAKE ── the whole water setup as ONE line, ready to paste over the WATER_BAKE declaration in the
-      // source (same idea as the arrow panel's bake row). What is written there is what a fresh player gets.
-      const addBake = (id, strFn) => {
-        const bake = document.createElement('div'); bake.className = 'lgtRow lgtBake';
-        bake.innerHTML = '<input type="text" id="' + id + '" readonly><button id="' + id + 'C">copy</button>';
-        panel.appendChild(bake);
-        const bakeIn = $(id), bakeBtn = $(id + 'C');
-        bakeIn.addEventListener('pointerdown', (e) => e.stopPropagation());
-        bakeIn.addEventListener('click', (e) => { e.stopPropagation(); bakeIn.select(); });
-        bakeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
-        bakeBtn.addEventListener('click', (e) => { e.stopPropagation();
-          const done = () => { bakeBtn.textContent = 'copied!'; setTimeout(() => { bakeBtn.textContent = 'copy'; }, 1200); };
-          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(bakeIn.value).then(done, () => { bakeIn.select(); document.execCommand('copy'); done(); });
-          else { bakeIn.select(); document.execCommand('copy'); done(); } });
-        return () => { bakeIn.value = strFn(); };
-      };
-      const bakePaint = addBake('lgtBake', () => 'const WATER_BAKE = { ' + [
-        'reflect: ' + (lgtGet(18, 1) ? 1 : 0), 'refract: ' + (lgtGet(19, 1) ? 1 : 0),
-        'foam: ' + (lgtGet(20, 1) ? 1 : 0), 'ice: ' + (lgtGet(21, 1) ? 1 : 0),
-        'pixelGlisten: ' + (lgtGet(22, 1) ? 1 : 0),
-        'waves: ' + (lgtGet(23, 1) ? 1 : 0), 'reflection: ' + (+wReflK).toFixed(2),
-        'caustics: ' + (lgtGet(2, 2) ? 1 : 0), 'underwater: ' + (lgtGet(3, 2) ? 1 : 0),
-        'ripples: ' + (lgtGet(4, 2) ? 1 : 0), 'shoreSurf: ' + (lgtGet(5, 2) ? 1 : 0),
-      ].join(', ') + ' };');
-      { const base = lgtPaint; lgtPaint = () => { base(); reflPaint(); bakePaint(); }; }   // one repaint covers buttons, slider AND the bake line, so __vb.wrefl()/__vb.lgt() from the console can never disagree with what is drawn
+      // ── AND THE PANEL IS EMPTY AGAIN (user 2026-09-02: "make this default then remove it from the l toggle")
+      // ── the fog slider and its bake row are gone; LOOK_BAKE.fog carries the chosen 0.50 as a plain constant.
+      // The machinery below is LEFT STANDING for the reason ui/hud.js gives for the night panel's: lgtPanel's
+      // markup, lgtPaint, addRows and the reset button are a working switchboard, and re-exposing a term means
+      // adding its row back, not rebuilding a panel. Y no longer opens it — see the KeyY handler in ui/hud.js.
       const hint = document.createElement('div'); hint.className = 'lgtHint';
       hint.textContent = 'Y — close';   // the panel says how to reach it; nothing else in the HUD would
       panel.appendChild(hint);
       $('lgtAll').addEventListener('pointerdown', (e) => e.stopPropagation());
       $('lgtAll').addEventListener('click', (e) => { e.stopPropagation();   // reset = back to whatever is BAKED in the source, not to all-on
-        lgtMask = wBakeMask(); lgtMask2 = wBakeMask2(); wReflK = wBakeRefl(); resetHist = 1;
-        try { localStorage.setItem('vb_lgt', String(lgtMask)); localStorage.setItem('vb_lgt2', String(lgtMask2)); localStorage.setItem('vb_wrefl', String(wReflK)); } catch (e2) {} lgtPaint(); });
+        fogK = lBakeFog(); resetHist = 1;   // nothing on the panel to reset any more, but the button still puts the fog back to the baked value for anyone who moved it from the console
+        try { localStorage.setItem('vb_fog', String(fogK)); } catch (e2) {} lgtPaint(); });
       lgtPaint();
     }
     {   // ── THE ADJUST BOX ── quarter turns and voxel nudges for WHATEVER IS IN HAND (user). Holding the

@@ -57,6 +57,16 @@
   for (const i of [...ROCK, ...ROCKX, ...ORECOAL, ...OREIRON]) { decorTab[i] = 1; pickOnlyTab[i] = 1; }   // …and COAL + IRON (user): ore belongs to the pick like the stone it sits in   // …the STONE STRATA under the soil (user) belong to the PICK, not the shovel: dig down with the shovel, then swap and keep going
   const woodTab = new Uint8Array(256);                 // ── WOOD ── the axe takes chunks out of anything made of wood voxels (user), including a stump the
   for (const i of woodIds) { woodTab[i] = 1; decorTab[i] = 1; axeOnlyTab[i] = 1; }   // felled tree left behind, which belongs to no tree shape any more
+  // ── THE BIRCH FOREST'S FLOOR IS GROUND, AND HAS TO BE TOLD SO (user 2026-09-02: "I'm clipping through the
+  // forest as I'm running over the terrain") ── solidTab is handed out by the BLANKET `i < DECOR_MIN` sweep,
+  // and BIRCHGRASS is minted at the TAIL of the palette (it has to be — addCol appends and decor .json stores
+  // resolved ids), so it lands far above DECOR_MIN and gets NO hitbox by default. That was survivable while
+  // the birch surface was a single non-solid voxel resting on solid DIRT — you stood one voxel low and never
+  // noticed. Making the whole 16-voxel soil band BIRCHGRASS for the "no dirt" request turned that into a
+  // 17-voxel hole, and the player fell through the forest floor.
+  // ASNOW's line, exactly: the arctic floor is the other ground material minted past DECOR_MIN and it has
+  // always needed this. ANY future ground colour minted down there needs it too.
+  for (const i of [...BIRCHGRASS]) { solidTab[i] = 1; decorTab[i] = 1; digOnlyTab[i] = 1; }
   for (const i of [...ASNOW]) { solidTab[i] = 1; decorTab[i] = 1; digOnlyTab[i] = 1; }   // ── PACKED SNOW ── the arctic floor, its glaciers and the small caps floating in the sea: SOLID (you walk on it), shovel-only   // ── PACKED SNOW ── the arctic floor: SOLID (you walk on it, unlike the fallen-snow decor it is coloured after) and the SHOVEL's, like every other kind of ground
   for (const i of [...DIRT, ...MOSS, ...NEEDLE, ...SAND, ...DSAND]) { decorTab[i] = 1; digOnlyTab[i] = 1; }   // …and the SOIL (user): dirt, the mossy grass on top of it, the brown pine litter that covers most of the forest floor, and beach sand. NOT the stone strata underneath — the shovel stops at rock (user).   // …and the GROUND ITSELF (user), dug only with the SHOVEL: DIRT (the buried layers), MOSS (green surface), NEEDLE (the brown pine litter — most of the forest floor, and what reads as 'dirt' underfoot) and SAND (beaches, lakebed). GRASS (the strands) is separate walk-through decor and stays any-tool.
   // ── SURFACE SCATTER ── grass strands, flowers, twigs and pinecones: all of it needs something underneath,
@@ -89,7 +99,7 @@
   // crown has one obvious place to register itself instead of a third condition to be forgotten from.
   const hangTab = new Uint8Array(256);
   const coneTab = new Uint8Array(256);                 // PINECONE ids — no hitbox for the PLAYER (see solid()); every other system still treats them normally
-  for (const i of [...GRASS, ...FLOWERIDS, ...OAKMOSS]) floatTab[i] = 1;   // OAKMOSS rides with GRASS: same surface-scatter class, oak-canopy colour (see assets/palette.js)   // FLOWERIDS replaces BLOOM (user 2026-08-18): the flowers are an authored MODEL now, so the ids come off its own voxels — see assets/bow.js
+  for (const i of [...GRASS, ...FLOWERIDS, ...OAKMOSS, ...BIRCHSTRAND]) floatTab[i] = 1;   // …and the BIRCH STRANDS ride with GRASS: same surface-scatter class, and deliberately NOT in the solidTab line above with BIRCHGRASS — a strand is walk-through, the floor under it is not   // OAKMOSS rides with GRASS: same surface-scatter class, oak-canopy colour (see assets/palette.js)   // FLOWERIDS replaces BLOOM (user 2026-08-18): the flowers are an authored MODEL now, so the ids come off its own voxels — see assets/bow.js
   for (const m of STICKV.concat(STICKB)) for (const q of m.vox) floatTab[q >>> 24] = 1;            // twigs (user) — and the AUTHORED pink pair, whose browns are already flagged (they are the same ids) but whose four leaf pinks are its own and would otherwise miss the whole ground-scatter class
   // ── PINECONES ARE WALK-THROUGH FOR THE PLAYER (user 2026-08-05: "should be able to clip through them") ──
   // floatTab already called them surface scatter, but solidTab is set by the BLANKET `i < DECOR_MIN` sweep

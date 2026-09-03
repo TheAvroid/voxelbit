@@ -440,7 +440,16 @@
         // SIZE IS STILL THE ONLY OTHER GATE, deliberately: PH.absorbSize is the user's own "too big to carry,"
         // break it down first" rule and this does not touch it.
         const vJ = b.vel[0] * b.vel[0] + b.vel[1] * b.vel[1] + b.vel[2] * b.vel[2];
-        if (!b.sleeping && !(tNow - b.born > 1500 && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
+        // ── A CHUNK IS COLLECTABLE THE MOMENT IT EXISTS (user 2026-09-02: "the player can only absorb the
+        // broken tree chunks after it has landed. let the player pick up chunks instantly, the moment it turns
+        // into a chunk. make absorbtion more sensitive") ── the age term was a flat 1500 ms, so a piece you had
+        // just cut off was refused for a second and a half no matter how close you stood; in practice it landed
+        // first, which is exactly what was reported. PH.absorbAgeMs is that wait, and it is 0 now.
+        // THE VELOCITY GATE IS UNCHANGED and still earns its place: the note above it explains that a chunk
+        // thrown PAST you would otherwise swerve into your chest mid-arc. It does not bite here, because a
+        // felled-tree piece carries fellLoot and a chopped one carries nearR, and either passes the test on its
+        // own — so tree chunks are instant while a bounced-off speck still has to be nearly still.
+        if (!b.sleeping && !(tNow - b.born >= PH.absorbAgeMs && (b.nearR || b.fellLoot || vJ < 4))) continue;   // …and a felled-tree piece counts as settled on age alone: a chunk still nudging its siblings was refused, which is most of what "not picking up every chunk" was   // …a second and a half is well past the bounce, and does not depend on a chunk ever going quiet
         const dxA = b.pos[0] - P.x, dyA = b.pos[1] - (smoothEye + PH.absorbY), dzA = b.pos[2] - P.z;
         const rA = b.nearR || PH.absorbR;               // an ARROW's chunk keeps its own, much shorter reach (user)
         if (dxA * dxA + dyA * dyA + dzA * dzA > rA * rA) continue;
