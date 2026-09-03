@@ -2340,6 +2340,12 @@
     // …and WHERE the live pages sit in HEIGHT, which the census cannot see. Sealing has structural holes —
     // slab-edge bricks decline the fence test (by 0 and nby-1 always decline), so if a whole horizontal
     // LAYER shows up fully populated here, that layer is paying real pages for terrain nobody can reach.
+    // ── IS THIS ID SAFE TO MERGE? ── palOwn holds the ids minted by an OWN-IDS model, and a set built from
+    // them IDENTIFIES that model: the pickup tables key on exactly that (see the pinecone/stick note at
+    // palOwn in assets/palette.js). Merging one of those into a neighbour is how an object starts picking up
+    // as a different object, so anything reclaiming palette space has to ask this first.
+    palOwned(ids) { const a = Array.isArray(ids) ? ids : [ids];
+      return a.map((i) => ({ id: i, owned: palOwn.has(i), col: palette[i] })); },
     poolByHist() {
       const NG = GBX * GBY * GBZ, per = GBX * GBZ;
       const live = new Int32Array(GBY), sealed = new Int32Array(GBY);

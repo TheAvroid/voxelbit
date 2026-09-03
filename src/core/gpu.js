@@ -134,9 +134,47 @@
   const GPOOL1S = Math.ceil((WXZ >> 3) * (WYpick >> 3) * (WXZ >> 3) * 0.44);
   const GPOOL1 = GPOOL1S * 272 + Math.ceil(GPOOL1S * 0.025) * 512;   // mirrors POOL_FRAC + PAGE_B, as GPOOL2 does
   const BIGBUF = Math.max(GMUL_PICK > 1 ? GPOOL2 : GPOOL1, 268435456);   // 256 MB floor: the default maxBufferSize, so this never asks for LESS than a device already gives
-  const device = await adapter.requestDevice({
-    requiredLimits: { maxStorageBufferBindingSize: BIGBUF, maxBufferSize: BIGBUF },
-    ...(PROF ? { requiredFeatures: ['timestamp-query'] } : {}) });
+  // ── AND THE FEATURE OIDN'S RUNTIME NEEDS ── onnxruntime-web only ADOPTS the device handed to it through
+  // ort.env.webgpu.device if that device can run its kernels. A device without shader-f16 is refused
+  // SILENTLY: ORT builds its own second device, keeps no complaint anywhere, and the denoiser then lives
+  // on a device that cannot see a single voxelbit texture. Cross-device reads are not an error you can
+  // catch either — they simply come back as zeros, so the path tracer blitted a pure black frame while
+  // every status flag said the denoiser was loaded, current, and had just run. Asking for the extension
+  // costs nothing: it only PERMITS f16 in WGSL, and no shader here uses it.
+  const feats = [];
+  if (PROF) { feats.push('timestamp-query'); }
+  if (adapter.features.has('shader-f16')) { feats.push('shader-f16'); }
+  // ── OIDN CREATES THE DEVICE, OR IT CANNOT SEE OUR PIXELS AT ALL ──────────────────────────────────────
+  // onnxruntime-web 1.29 does not accept a device. Its init reads `webgpuInit(f => { env.webgpu.device = f })`
+  // — it always builds its OWN and OVERWRITES that property, so assigning it beforehand is not injection,
+  // it is a value about to be discarded. `env.webgpu.adapter` is the only supported hand-off, and the
+  // emscripten side calls navigator.gpu.requestAdapter directly anyway, which is why the denoiser library
+  // patches that global rather than passing anything down.
+  // A second device is not a slow path, it is a WRONG one: WebGPU resources do not cross devices, and a
+  // cross-device read is not an error you can catch — it comes back as ZEROS. The denoiser dutifully
+  // denoised an all-black image and wrote the result into a texture this device cannot see, so the canvas
+  // went black while `oidnReady`, `oidnSig` and the engine's own run stats all reported perfect health.
+  // So the ONE device has to be the denoiser's. That costs the 28 MB runtime + ~2 s at boot, which is why
+  // it is gated: the path tracer is [Y]-gated and off by default, and a player who never turns it on must
+  // not pay for a denoiser they will never run.
+  const WANT_OIDN = /[?&]oidn(?![a-z])/.test(location.search)
+    || (() => { try { return localStorage.getItem('vb_oidn') === '1'; } catch (e) { return false; } })();
+  let device = null;
+  if (WANT_OIDN) {
+    try {
+      const ortMod = await import('./assets/oidn/ort.webgpu.bundle.min.mjs');
+      ortMod.env.wasm.wasmPaths = 'assets/oidn/';
+      ortMod.env.webgpu.powerPreference = IGPU_ADAPTER ? 'low-power' : 'high-performance';
+      const { Denoiser } = await import('./assets/oidn/denoiser.mjs');
+      window.__vbDN = await Denoiser.create({ precision: 'fp16', quality: 'fast', weightsUrl: 'assets/oidn/models' });
+      device = window.__vbDN.device;                                  // …and the whole game now lives on it
+    } catch (e) { console.warn('[vb] OIDN device adoption failed — booting the ordinary device:', e); }
+  }
+  if (!device) {
+    device = await adapter.requestDevice({
+      requiredLimits: { maxStorageBufferBindingSize: BIGBUF, maxBufferSize: BIGBUF },
+      ...(feats.length ? { requiredFeatures: feats } : {}) });
+  }
   if (WYpick < 384 || WXZ < 2048) console.warn('[vb] adapter caps buffers at', lim, '— window', WXZ, '×', WYpick);
   // GPU errors are also RECORDED, not just logged. A shader that fails to compile makes every command
   // buffer it is encoded into invalid, so the whole frame is silently dropped — the picture keeps moving

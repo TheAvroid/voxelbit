@@ -51,8 +51,9 @@
       cp.end();
       cgState.slice = (cgState.slice + cgBand) % CG_DIM[1]; cgState.fills += cgBand;   // fills counts SLICES, not dispatches, so the priming dispatch accounts for all 24 of them and the CG_SWEEPS bound still means what it says
     }
-    // ── WHICH RENDERER DRAWS THIS FRAME ── [Y] flips between the shipping pipeline (below) and the
-    // progressive path tracer in render/pathtrace.js. PT.on is false by default and the else-if leaves
+    // ── WHICH RENDERER DRAWS THIS FRAME ── [Y], and the settings panel's 'graphics low/high' row, flip
+    // between the shipping pipeline (below, = low) and the progressive path tracer in render/pathtrace.js
+    // (= high). PT.on is false by default and the else-if leaves
     // the shipping branch below byte-for-byte what it was, so an untoggled frame is the frame it always was.
     if (!veQuiet && PT.on) ptRender(enc);
     else if (!veQuiet) {                               // ── the render, and only the render ── everything above and below this brace is frame bookkeeping the export must not skip

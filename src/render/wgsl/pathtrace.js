@@ -22,7 +22,7 @@
   // spare, which is what the drop-slot creature intersector would cost if this ever grows to draw them.
   // Every binding here is READ by the shader: layout:'auto' prunes anything unused and then rejects the bind
   // group that still passes it, which shows up as a black canvas at absurd fps and one console line.
-  const PT_SRC = ({ DDAW, pickWGSL }) => /* wgsl */`
+  const PT_SRC = ({ DDAW }) => /* wgsl */`
     @group(0) @binding(1) var<storage, read> pool : array<u32>;      // the paged brick pool — same buffer, same format, same reader as TRACE
     @group(0) @binding(2) var<storage, read> bdesc : array<u32>;
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
@@ -64,11 +64,72 @@
       fClamp : f32,                                                  // clamp a single sample's radiance to this — the firefly guard (0 = off)
       fog : f32,                                                     // distance-fog strength as a FRACTION of the shipping renderer's (composite.js worldFog); 0 = none
       reflK : f32,                                                   // scales the water's Fresnel reflectance — 1 = physical, 0.5 = half the mirror
+      // ══ THE DEEP OPTIMISATION PASS, AND WHAT IT FOUND (2026-09-03) ══ the owner's bar was that a quality
+      // trade must buy MORE THAN TEN TIMES its visual cost. Measured against that bar, with the sampling
+      // noise floor subtracted in quadrature (this matters — see below), the whole frontier is:
+      //   neeB 1  (sun only on the primary hit)  -32.3% frame   loss 1.48% open / 4.98% canopy   21.8x / 6.5x
+      //   neeB 2  (sun on the first two bounces)  -2.7% frame   loss ~0%                          passes, but
+      //                                                                                          the gain is
+      //                                                                                          inside the
+      //                                                                                          measurement
+      //   shCap 400 (shadow ray 1200 -> 400)      -1.8% frame   loss 2.25%                        0.8x
+      //   shCap 200                               -9.3% frame   loss 9.39%                        1.0x
+      // NEE ON THE PRIMARY HIT ONLY IS THE ONE REAL LEVER — a third of the frame — and it is REJECTED, because
+      // it passes in the open and fails under canopy at 6.5x, and a forest interior is where this renderer
+      // spends its time. Sun-bounce is most of the indirect light exactly where the sky is occluded.
+      // THE MEASUREMENT NOTE THAT MATTERS MORE THAN THE RESULT: two INDEPENDENTLY converged frames of the
+      // SAME build differ by 3.0% in the open and 7.7% under canopy. That noise floor is larger than every
+      // difference in the table, so an uncorrected A/B here measures nothing at all — the first pass of this
+      // table said neeB 1 was 9.5x and rejected it for the wrong reason. Always converge the baseline twice.
+      // ── AND neeB 1 IS THE SHIPPED DEFAULT, BY THE OWNER'S OVERRIDE OF THEIR OWN BAR (2026-09-03, asked and
+      // answered: "take the NEE trade anyway") ── it buys 32% of the frame in the open and 20% under canopy
+      // for a 1.5% / 5.0% visual loss. The canopy figure is 4.0x, below the ten-times bar, and it is taken
+      // knowingly. __vbPT.set({neeB: 0}) restores the unbiased estimator for a reference image.
+      neeB : f32,                                                    // fire the sun shadow ray only on bounces below this (0 = every bounce)
+      shCap : f32,                                                   // how far a sun shadow ray looks for an occluder, in voxels (0 = the shipped 1200)
+      // ══ THE BOUNCE RAYS ARE THE FRAME, AND THEIR COST IS DIVERGENCE ══ (measured 2026-09-03, 2195x885,
+      // spp 1, __vb.profMin().trace, cap: 0 so it samples every frame). The table above spent itself on
+      // the shadow rays because that is what the profiler said in the days before neeB 1 shipped. It is not
+      // where the frame is any more, and the split now reads:
+      //   primary ray + its NEE + sky/clouds (bounces 1)   3.4 ms
+      //   the diffuse BOUNCE rays                         ~10   ms  = 72% of the pass
+      //   every NEE shadow ray (dbg 1)                     1.5 ms  = 11%
+      //   the cloud deck (dbg 8)                          ~0.0 ms
+      // and by bounce count, 1/2/4/8 = 3.18 / 13.0 / 13.9 / 13.6 ms — the FIRST diffuse bounce is 9.8 ms of
+      // it and bounces 3-8 together are 0.9, because Russian roulette has already killed those paths. So
+      // bounces is not a lever and neither is the deck.
+      // ── AND IT IS NOT TRAVERSAL WORK, IT IS WARP DIVERGENCE ── the probe that proves it seeds the path
+      // from the lane BLOCK instead of the pixel, so 2^coh lanes draw identical bounce directions and
+      // identical roulette outcomes: SAME ray count, SAME reach distribution, only coherence changes.
+      //   per pixel (coh 0)  14.4 / 15.3 ms      4x4 (coh 2)   5.94 ms  -60%
+      //   2x2      (coh 1)    8.76 ms  -41%      8x8 (coh 3)   4.82 ms  -67%
+      // The control is bounces: 1, where the same probe moves nothing (3.38 vs 3.13): primary rays are
+      // already coherent, so every bit of that gap is the secondary rays. Two thirds of this renderer is
+      // lanes in a warp walking different bricks, not the walking itself — which is why every "make the
+      // step cheaper" idea has washed out here. The steps are not the cost; the ARRANGEMENT of the rays is.
+      // ── WHAT THE TRADE ACTUALLY COSTS ── not bias and not sharpness. The estimator stays unbiased (a
+      // shared direction is still a fair cosine draw) and each pixel still gets its own path, so the mean
+      // and the convergence RATE per pixel are unchanged. What changes is that the residual noise is
+      // CORRELATED over the quad, so it reads as 2x2 blocks rather than as grain. Two things erode that:
+      // pt.seq is in the seed, so the quad draws a fresh direction every frame, and the temporal
+      // accumulator then averages those independent draws exactly as it always did.
+      // Deliberately NOT jittering the block ORIGIN per frame, which would break the fixed 2x2 lattice: an
+      // offset grid lets a quad straddle a workgroup boundary, where its four pixels are in different
+      // dispatches and share nothing, and that gives the coherence back. Worth measuring, not worth
+      // assuming.
+      // coh: 0 restores the per-pixel estimator for a reference image, exactly as neeB: 0 does.
+      coh : f32,                                                     // share one bounce direction across a 2^coh lane block (0 = per pixel, 1 = 2x2)
     }
     @group(0) @binding(11) var<uniform> pt : PTU;
-    @group(0) @binding(4) var ptOut : texture_storage_2d<rgba8unorm, write>;
+    // ── THE G-BUFFER OIDN WANTS ── colour is LINEAR HDR (the denoiser's hdr:true path applies OIDN's own PU
+    // transfer and autoexposure, so it must be given real radiance, not a tonemapped image), and the two aux
+    // planes are the primary hit's albedo and normal. The docs are explicit that aux must be NOISE-FREE — a
+    // rasterised G-buffer, not the noisy beauty pass — which is exactly what a primary hit is.
+    // FOUR storage textures is the WebGPU default cap for one stage, and this pass now uses all four.
+    @group(0) @binding(4) var ptOut : texture_storage_2d<rgba16float, write>;
+    @group(0) @binding(18) var ptAlb : texture_storage_2d<rgba16float, write>;
+    @group(0) @binding(19) var ptNrm : texture_storage_2d<rgba16float, write>;
     ${DDAW}
-    ${pickWGSL}
     ${CG_CONSTS}
     const CLOUD_LO : f32 = 760.0;
     const CLOUD_HI : f32 = 1080.0;
@@ -144,140 +205,11 @@
       let aSky = min(1.0, aG * CG_SKY_OCC);
       return mix(sky, cG, aSky);
     }
-    // ══ THE HELD TOOL, AS A TRACED SURFACE ══ the shipping renderer draws the viewmodel in COMPOSITE with
-    // heldLight() and two JS-marched visibility scalars, deliberately: a camera-pinned surface moves in WORLD
-    // space every frame, and trace-injecting it made SVGF throw its history away and shimmer (see the long
-    // note at the health row in composite.js). That reasoning is about a DENOISER's history, and it applies
-    // here too — which is why the reprojection below gives these pixels an IDENTITY reprojection rather than
-    // a world-space one. A camera-locked surface reprojects to its own pixel, exactly, so it accumulates
-    // instead of smearing.
-    // WHY TRACE IT AT ALL, when composite's model exists: heldLight is tuned against the SHIPPING renderer's
-    // lighting, and this renderer's forest interiors measure about four times darker than that (its AO ray
-    // cannot see the canopy overhead). A tool carrying the other renderer's light into this one reads as lit
-    // by a different sun, which is the thing being fixed. Traced, it gets the world's real sun visibility and
-    // the world's real bounce, and matches the ground it stands over by construction.
-    struct HeldHit { t : f32, n : vec3<f32>, alb : vec3<f32>, ao : f32, hit : bool, }
-    fn heldTrace(px : vec2<f32>) -> HeldHit {
-      var H : HeldHit;
-      H.t = 1e30; H.hit = false; H.ao = 1.0; H.n = vec3<f32>(0.0); H.alb = vec3<f32>(0.0);
-      if (ITEMN <= 0) { return H; }
-      let ndc2 = (px / u.res) * 2.0 - 1.0;
-      let dc = normalize(vec3<f32>(ndc2.x * u.tanH * u.aspect, -ndc2.y * u.tanH, 1.0));
-      for (var hand = 0; hand < 3; hand = hand + 1) {
-        var pA = u.pickA; var pX = u.pickX; var pY = u.pickY; var pZ = u.pickZ;
-        if (hand == 1) { pA = u.pick2A; pX = u.pick2X; pY = u.pick2Y; pZ = u.pick2Z; }
-        if (hand == 2) { pA = u.pick3A; pX = u.pick3X; pY = u.pick3Y; pZ = u.pick3Z; }
-        if (pX.w < 0.5) { continue; }
-        let it = clamp(i32(pX.w + 0.5) - 1, 0, ITEMN - 1);
-        let PW = ITEMD[it].x; let PD = ITEMD[it].y; let PH = ITEMD[it].z; let IOFF = ITEMD[it].w;
-        if (PW <= 0) { continue; }
-        let C = pA.xyz; let vs = pA.w;
-        let hw = f32(PW) * 0.5; let hd = f32(PD) * 0.5; let hh = f32(PH) * 0.5;
-        let rad = vs * (sqrt(hw * hw + hd * hd + hh * hh) + 1.0);
-        let tc = dot(C, dc);
-        if (tc <= 0.0 || length(dc * tc - C) >= rad) { continue; }
-        let roL = vec3<f32>(-dot(C, pX.xyz), -dot(C, pY.xyz), -dot(C, pZ.xyz)) / vs + vec3<f32>(hw, hd, hh);
-        var rdL = vec3<f32>(dot(dc, pX.xyz), dot(dc, pY.xyz), dot(dc, pZ.xyz));
-        if (abs(rdL.x) < 1e-6) { rdL.x = 1e-6; }
-        if (abs(rdL.y) < 1e-6) { rdL.y = 1e-6; }
-        if (abs(rdL.z) < 1e-6) { rdL.z = 1e-6; }
-        let invL = 1.0 / rdL;
-        let ta2 = -roL * invL;
-        let tb2 = (vec3<f32>(f32(PW), f32(PD), f32(PH)) - roL) * invL;
-        let tn2 = min(ta2, tb2); let tf2 = max(ta2, tb2);
-        let te = max(max(tn2.x, tn2.y), max(tn2.z, 0.0));
-        let tl = min(min(tf2.x, tf2.y), tf2.z);
-        if (te >= tl) { continue; }
-        var vax = 0;
-        if (tn2.y == te) { vax = 1; }
-        if (tn2.z == te) { vax = 2; }
-        var vc = clamp(vec3<i32>(floor(roL + rdL * (te + 1e-4))), vec3<i32>(0), vec3<i32>(PW - 1, PD - 1, PH - 1));
-        let istep = vec3<i32>(sign(rdL));
-        var vNext = (vec3<f32>(vc + max(istep, vec3<i32>(0))) - roL) * invL;
-        var tCur = te;
-        for (var i = 0; i < PICKSTEPS; i++) {
-          let cell = ITEMMAP[IOFF + vc.x + vc.y * PW + vc.z * PW * PD];
-          if (cell.w > 0.5) {
-            if (tCur * vs < H.t) {
-              H.t = tCur * vs; H.hit = true; H.alb = cell.rgb;
-              var nl = vec3<f32>(0.0);
-              if (vax == 0) { nl.x = -f32(istep.x); } else if (vax == 1) { nl.y = -f32(istep.y); } else { nl.z = -f32(istep.z); }
-              let nc = pX.xyz * nl.x + pY.xyz * nl.y + pZ.xyz * nl.z;
-              H.n = normalize(u.right * nc.x + u.up * nc.y + u.fwd * nc.z);
-              // the axe's cavity AO, kept from composite: it is geometry the world's own bounce cannot see,
-              // because the tool is not in the voxel grid and so casts no shadow on itself.
-              var aoF = 1.0;
-              if (i32(pX.w + 0.5) == 1) {
-                var nlo = vec3<i32>(0);
-                if (vax == 0) { nlo.x = -istep.x; } else if (vax == 1) { nlo.y = -istep.y; } else { nlo.z = -istep.z; }
-                let oc = vc + nlo;
-                var t1 = vec3<i32>(0); var t2 = vec3<i32>(0);
-                if (vax == 0) { t1.y = 1; t2.z = 1; } else if (vax == 1) { t1.x = 1; t2.z = 1; } else { t1.x = 1; t2.y = 1; }
-                let dims = vec3<i32>(PW, PD, PH);
-                var occ = 0;
-                for (var sI = 0; sI < 4; sI = sI + 1) {
-                  var q = oc + t1;
-                  if (sI == 1) { q = oc - t1; } else if (sI == 2) { q = oc + t2; } else if (sI == 3) { q = oc - t2; }
-                  if (all(q >= vec3<i32>(0)) && all(q < dims) && ITEMMAP[IOFF + q.x + q.y * PW + q.z * PW * PD].w > 0.5) { occ = occ + 1; }
-                }
-                aoF = 1.0 - 0.14 * f32(occ);
-              }
-              H.ao = aoF;
-            }
-            break;
-          }
-          if (vNext.x <= vNext.y && vNext.x <= vNext.z) { tCur = vNext.x; vNext.x += abs(invL.x); vc.x += istep.x; vax = 0; }
-          else if (vNext.y <= vNext.z) { tCur = vNext.y; vNext.y += abs(invL.y); vc.y += istep.y; vax = 1; }
-          else { tCur = vNext.z; vNext.z += abs(invL.z); vc.z += istep.z; vax = 2; }
-          if (any(vc < vec3<i32>(0)) || any(vc >= vec3<i32>(PW, PD, PH))) { break; }
-        }
-      }
-      return H;
-    }
-    // The tool's own short path: the sun by next-event estimation with a REAL shadow ray into the world, then
-    // two diffuse bounces off the world for the ambient. Opaque and diffuse throughout — a stone tool needs
-    // none of the water or foliage-transmission arms the world path carries, and leaving them out is what
-    // keeps this to a couple of dozen lines instead of a second copy of ptPath.
-    fn ptHeldShade(p0 : vec3<f32>, n0h : vec3<f32>, alb0 : vec3<f32>, ao : f32, seed : ptr<function, u32>) -> vec3<f32> {
-      let sunC = sunTint();
-      let sunUp = u.sunDir.y > -0.04;
-      let jitK = mix(0.028, 0.009, nightK());
-      let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;
-      var L = vec3<f32>(0.0);
-      var thr = alb0 * ao;
-      var p = p0;
-      var n = n0h;
-      for (var b = 0; b < 3; b = b + 1) {
-        if (sunUp) {
-          let st = ptOnb(u.sunDir); let sb = cross(u.sunDir, st);
-          let sdir = normalize(u.sunDir + st * ((rand(seed) * 2.0 - 1.0) * jitK) + sb * ((rand(seed) * 2.0 - 1.0) * jitK));
-          let ndl = dot(n, sdir);
-          if (ndl > 0.0) {
-            let so = p + n * 0.06;
-            var sCap = 1200.0;
-            if (sdir.y > 1e-4) { sCap = min(1200.0, (ceilY - so.y) / sdir.y); }
-            var vis = true;
-            if (sCap > 0.0) {
-              vis = trace(so, sdir, sCap, false).t < 0.0;
-              if (vis) { vis = bodyTraceX(so, sdir, sCap, true).t < 0.0; }
-            }
-            if (vis) { L = L + thr * sunC * ndl; }
-          }
-        }
-        let bd = ptCosHemi(n, rand(seed), rand(seed));
-        var lim = 4000.0;
-        if (pt.secR > 0.0) { lim = pt.secR; }
-        let hb = traceAll(p + n * 0.06, bd, lim, false);
-        if (hb.t < 0.0) { L = L + thr * skyBase(bd); break; }        // escaped: the sky is the ambient, exactly as the world path treats it
-        p = p + n * 0.06 + bd * hb.t;
-        n = hb.n;
-        thr = thr * pal[hb.vox].rgb;
-        let q = clamp(max(thr.r, max(thr.g, thr.b)), 0.05, 0.95);    // the same roulette the world path uses, so the two agree about how long a dark path is worth carrying
-        if (rand(seed) > q) { break; }
-        thr = thr / q;
-      }
-      return L;
-    }
+    // ── THE HELD TOOL WAS TRACED HERE AND REMOVED (user 2026-09-03: "revert the axe change. just remove
+    // the tools from the hand") ── it worked: the viewmodel grid march from composite.js, intersected on the
+    // primary ray and shaded by a short diffuse path with a real shadow ray into the world, matching the
+    // terrain's own light (measured in a forest interior at 43.1 against the terrain's 38.7). Removed on
+    // request, so this renderer draws no viewmodel at all — which is also what it did before.
     const PT_MAXB : i32 = 8;                                         // the loop bound the compiler unrolls against; pt.bounces is the runtime one and is always <= this
     // ── AN ORTHONORMAL BASIS AROUND n ── its own copy rather than TRACE's onbT, because these are separate
     // WGSL modules and neither can see the other. Same construction, same numbers.
@@ -311,7 +243,8 @@
     // noise for +2.2% of frame time (48.04 -> 49.10 ms), because the extra pairs have to be built for every
     // sample whether the path survives to use them or not. The sub-pixel jitter does essentially all of the
     // work; these dimensions are already well covered by the temporal average.
-    fn ptPath(rd0 : vec3<f32>, seed : ptr<function, u32>, t0 : ptr<function, f32>, px : vec2<f32>) -> vec3<f32> {
+    fn ptPath(rd0 : vec3<f32>, seed : ptr<function, u32>, t0 : ptr<function, f32>, px : vec2<f32>,
+              n0 : ptr<function, vec3<f32>>, a0 : ptr<function, vec3<f32>>) -> vec3<f32> {
       let uw = (u32(u.fx) & 2u) != 0u;                               // camera underwater: water voxels are see-through to the primary ray, exactly as in TRACE
       let sunC = sunTint();                                          // the illuminant, sun or moon — SHARED with the shipping renderer so the two images are lit by the same light
       let sunUp = u.sunDir.y > -0.04;
@@ -346,7 +279,7 @@
         // bias is at the edge of measurable, and secR = 0 turns the cap off entirely for a strict reference.
         let lim = select(min(4000.0, tcap), min(select(4000.0, pt.secR, pt.secR > 0.0), tcap), b > 0 && !spec);
         let h = traceAll(ro, rd, lim, inW);
-        if (b == 0) { *t0 = h.t; }                                   // the PRIMARY hit distance, which is the only depth the reprojection needs
+        if (b == 0) { *t0 = h.t; *n0 = h.n; *a0 = pal[h.vox].rgb; }   // the G-BUFFER: distance for reprojection, normal and albedo for OIDN's guided model. Both aux planes are noise-free by construction — they are the primary hit, not an estimate.                                   // the PRIMARY hit distance, which is the only depth the reprojection needs
         if (wJust) { thr *= exp(-WATER_SIG * select(60.0, h.t, h.t >= 0.0)); wJust = false; }   // the water column this segment crossed
         if (h.t < 0.0) {
           // ── THE MISS IS THE LIGHT ── skyColor() for the primary ray (sun disc, moon, stars, meteors — what
@@ -406,7 +339,7 @@
         // the shadow rays where they can still change a pixel and skips the ones that arithmetically cannot.
         // This is a bias, and a measured one rather than an argued one: see the sweep in the commit note.
         let thrMax = max(thr.r, max(thr.g, thr.b));
-        if (sunUp && (u32(pt.dbg) & 1u) == 0u && thrMax > pt.neeMin) {
+        if (sunUp && (u32(pt.dbg) & 1u) == 0u && thrMax > pt.neeMin && (pt.neeB <= 0.0 || f32(b) < pt.neeB)) {
           let st = ptOnb(u.sunDir); let sb = cross(u.sunDir, st);
           let sdir = normalize(u.sunDir + st * ((rand(seed) * 2.0 - 1.0) * jitK) + sb * ((rand(seed) * 2.0 - 1.0) * jitK));
           let ndl = dot(n, sdir);
@@ -417,7 +350,9 @@
             // The clearance a ray needs off a face is proportional to 1/cos of its angle to that face. A fixed
             // epsilon speckles every flat surface under a low sun — see the long note at the same line in TRACE.
             let so = p + ns * clamp(0.03 / max(abs(dot(n, u.sunDir)), 1e-3), 0.03, 0.8);
-            let sCap = select(1200.0, min(1200.0, (ceilY - so.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
+            var shMax = 1200.0;
+            if (pt.shCap > 0.0) { shMax = pt.shCap; }
+            let sCap = select(shMax, min(shMax, (ceilY - so.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
             var vis = true;
             if (sCap > 0.0) {
               vis = trace(so, sdir, sCap, inW).t < 0.0;
@@ -473,10 +408,21 @@
       var sum = vec3<f32>(0.0);
       var n = 0.0;
       var t0 = -1.0;
-      var heldPix = false;                                           // this pixel is the camera-locked tool, which reprojects to ITSELF rather than through the world
+      var n0 = vec3<f32>(0.0);
+      var a0 = vec3<f32>(0.0);
       var rd0 = rayDir(vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5));
       if (!done) {
-        var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(pt.seq) * 26699u)) | 1u;
+        // ── SEEDED FROM THE LANE BLOCK, NOT THE PIXEL ── see the coh note in PTU. This one line is the
+        // whole optimisation: every random draw a path makes (the sun cone, the water Fresnel coin, the
+        // roulette, the leaf lobe, the cosine hemisphere) comes off this seed, so sharing it across a quad
+        // makes those four lanes take the SAME branches and walk the SAME bricks. The sub-pixel jitter is
+        // deliberately NOT on it — cp below is hashed from gid directly, so the antialiasing stays per
+        // pixel however wide this block gets. (dbg bit 1, the white-noise jitter probe, does read the seed
+        // and so does share across the quad; it is a measurement path and not a shipped one.)
+        var sgx = gid.x; var sgy = gid.y;
+        let cohS = u32(clamp(pt.coh, 0.0, 3.0) + 0.5);
+        if (cohS != 0u) { sgx = gid.x >> cohS; sgy = gid.y >> cohS; }
+        var seed = ((sgx * 1973u) ^ (sgy * 9277u) ^ (u32(pt.seq) * 26699u)) | 1u;
         let sN = i32(pt.spp + 0.5);
         for (var s = 0; s < 4; s = s + 1) {
           if (s >= sN) { break; }
@@ -493,14 +439,9 @@
           let px = vec2<f32>(f32(gid.x) + j.x, f32(gid.y) + j.y);
           let d = rayDir(px);
           var ts = -1.0;
-          var c = ptPath(d, &seed, &ts, px);
-          // ── THE TOOL WINS WHEN IT IS NEARER ── it is centimetres from the eye, so in practice it always is
-          // where it covers a pixel. ts < 0 means the world ray escaped to sky, which the tool also beats.
-          let hh2 = heldTrace(px);
-          if (hh2.hit && (ts < 0.0 || hh2.t < ts)) {
-            c = ptHeldShade(u.camPos + d * hh2.t, hh2.n, hh2.alb, hh2.ao, &seed);
-            if (s == 0) { heldPix = true; }
-          }
+          var pn = vec3<f32>(0.0); var pa = vec3<f32>(0.0);
+          var c = ptPath(d, &seed, &ts, px, &pn, &pa);
+          if (s == 0) { n0 = pn; a0 = pa; }
           // ── THE FIREFLY GUARD, AND IT IS OFF BY DEFAULT BECAUSE IT MEASURED AS NOTHING ── clamping looked
           // like a 31% noise win on a single capture, and a fuller protocol (two scenes, three reps each,
           // every configuration captured inside each rep) put it at zero once temporal reprojection is on:
@@ -534,13 +475,6 @@
       // A SKY pixel is exempt and always valid — its reprojection is exact, being a pure direction.
       var prev = vec4<f32>(0.0);
       if (pt.reset < 0.5) { prev = accPrev; }
-      else if (pt.reproj > 0.5 && heldPix) {
-        // A camera-locked surface is in the SAME pixel it was last frame, whatever the camera did. That is
-        // the exact reprojection, and it is why tracing the viewmodel does not reintroduce the shimmer the
-        // shipping renderer avoids by drawing it in composite: there is no world-space motion to chase.
-        let hs = textureLoad(ptHistIn, vec2<i32>(gid.xy), 0);
-        if (hs.a < -1.5) { let K = max(pt.hist, 1.0); prev = vec4<f32>(hs.rgb * K, K); }
-      }
       else if (pt.reproj > 0.5) {
         let hp = u.camPos + rd0 * max(t0, 0.0);
         let uv = prevUVd(select(rd0, hp - u.pPos, t0 > 0.0));
@@ -564,13 +498,15 @@
       ptAcc[idx] = acc;
       var col = acc.rgb / max(acc.a, 1.0);
       let colStore = col;
-      var histD = t0;
-      if (heldPix) { histD = -2.0; }                                 // the sentinel the identity branch above tests for
-      textureStore(ptHistOut, vec2<i32>(gid.xy), vec4<f32>(colStore, histD));
-      col = ptFog(col, rd0, select(t0, -1.0, heldPix));            // …and never the tool: it is centimetres away, so its fog term is zero anyway, but t0 there is the WORLD depth behind it                                     // …after the store, so the accumulator never sees the haze   // LINEAR mean + this frame's depth, for the next frame to reproject against
-      col = aces(col * 0.95);                                        // the composite's own tonemap and gamma, so a brightness difference between the two renderers is a LIGHTING difference and not an encode one
-      col = pow(col, vec3<f32>(1.0 / 2.2));
+      textureStore(ptHistOut, vec2<i32>(gid.xy), vec4<f32>(colStore, t0));
+      col = ptFog(col, rd0, t0);                                     // …after the store, so the accumulator never sees the haze
+      // LINEAR out. The tonemap moved to the blit, because everything that may sit between them — the OIDN
+      // pass — has to see real radiance. A sky pixel writes a zero normal and its own colour as albedo, which
+      // is what OIDN expects for a background.
       textureStore(ptOut, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
+      var albO = a0; if (t0 < 0.0) { albO = vec3<f32>(1.0); }
+      textureStore(ptAlb, vec2<i32>(gid.xy), vec4<f32>(albO, 1.0));
+      textureStore(ptNrm, vec2<i32>(gid.xy), vec4<f32>(n0, 1.0));
     }`;
 
   // ── PTBLIT_SRC ── the presentation pass: upscale the (renderScale-sized) path-traced target onto the
@@ -595,5 +531,7 @@
       return vec4<f32>(P[vi], 0.0, 1.0);
     }
     @fragment fn fs(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {
-      return vec4<f32>(textureSampleLevel(ptSrc, ptSamp, fc.xy / u.canvasRes, 0.0).rgb, 1.0);
+      var c = textureSampleLevel(ptSrc, ptSamp, fc.xy / u.canvasRes, 0.0).rgb;
+      c = aces(c * 0.95);                                            // the composite's own tonemap and gamma — here rather than in the trace pass, so the denoiser sees linear light
+      return vec4<f32>(pow(c, vec3<f32>(1.0 / 2.2)), 1.0);
     }`;
