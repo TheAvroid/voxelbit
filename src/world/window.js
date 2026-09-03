@@ -388,11 +388,19 @@
   const LAKE_T = 0.28;                                 // the district threshold on a1 (~18% of the plane sits under it; the water ends up ~9%)
   const LAKE_RAMP = 0.24;                              // …and the ramp under it, in a1 units. WIDE: this is the bank — see the note in pineBase
   const LAKE_PULL = 0.85, LAKE_BED = WL - 14;          // the core's pull toward its bed. 0.85 rather than 0.75 because the ridges between the old pockets have to go under, or the district is still several lakes (0.75 left 2, 0.8 left 1)
-  const LAKE_FLOOR = WL + 7, LAKE_SOFT = 2;            // the dry floor, a voxel over the sand band's top (WL + 6) so no drained bed reads as beach; and the clamp's softness — STIFF, see pineBase
+  const LAKE_FLOOR = WL + 8, LAKE_SOFT = 2;            // the dry floor, TWO voxels over the sand band's top (WL + 6): one for the band and one for the pan relief below (+-1.6), so no drained bed ever rounds into the beach dither at WL + 5 (at +7 about one pan column in twenty did); and the clamp's softness — STIFF, see pineBase
   const LAKE_REL = 4;                                  // peak relief on the drained pans, in voxels (fbm's spread is about +-0.2, so the typical swing is +-1.6)
+  const SAND_SPAN = 6;                                 // the beach band fillColumn paints, in voxels over WL (solid to +4, dithered +5..+6) — MIRRORS world/terrain.js; change both
+  const SAND_W = 96;                                   // the beach's width in columns, everywhere: the band WL+1..WL+6 is laid over this many columns from the waterline, whatever the ground's own slope (see the note in pineBase for how it was set and what it trades)
+  const SAND_R = 90;                                   // columns over which the ground behind the beach rejoins the raw field
+  const SAND_STEP = 24;                                // the march's stride toward the water, in columns; the crossing is then bisected SAND_BIS times, which measures the same widths as an 8-column stride at a third of the samples
+  const SAND_BIS = 4;
+  const SAND_TRANS = 24;                               // half-width, in columns, of the rounded corner where the flat beach turns into the hill behind it
+  const SAND_CUT = 24;                                 // the most a beach may cut into a steep shore, in voxels: past this the beach is shortened instead, so the hill behind it never has to climb back more than this over SAND_R
+  const SAND_APRON = 0.03;                             // …and how far OUTSIDE the district it reaches, in a1 units (fades to nothing over this span past LAKE_T). Most shores are a drained bed only 8 voxels up walking down to the water, and halving a slope that short cannot double a beach; the beach has to be allowed out into the bed, which is the extra terrain it takes
   const lakeZoneOf = (a1) => (a1 >= LAKE_T ? 0 : sstep(Math.min(1, (LAKE_T - a1) / LAKE_RAMP)));
   const lakeZone = (x, z) => lakeZoneOf(vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9));
-  const pineBase = (x, z) => {                         // ONE shared scalar helper: H, makeHRow and makeHCol all call THIS, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
+  const pineRaw = (x, z) => {                          // the pine field up to and including the district blend, WITHOUT the pans' relief and the beach — the field the beach measures on (it is sampled at four neighbours and along a march to the water for that). pineBase below finishes the column. Both are shared scalar helpers: H, makeHRow and makeHCol all go through pineBase, so the three copies of the height field cannot drift — the idiom oakRoll and oakBank already established
     const ax = x * 0.0018 + 61.3, az = z * 0.0018 + 77.9;   // the massifs, ~550 voxels across — fbm's three octaves written out, because the FIRST one is also the lake-district field (lakeZoneOf below) and it is paid for once. Term for term this is fbm(ax, az), so the sum is bit-identical to what it was
     const a1 = vnoise(ax, az);
     const a = a1 * 0.55 + vnoise(ax * 2.13 + 11.7, az * 2.13 + 5.3) * 0.27 + vnoise(ax * 4.41 + 41.2, az * 4.41 + 23.8) * 0.18;
@@ -415,7 +423,7 @@
     //   L = 1  the district core: the ground is LERPED TOWARD A BED (LAKE_PULL, LAKE_BED) — the same weighted pull
     //          every lake in the world is made of (see basinM and the strait) — hard enough that the ridges between
     //          the old pockets go under too, so the district is ONE body with its bays where the pull runs out
-    //   L = 0  everywhere else: the field is SOFT-CLAMPED to LAKE_FLOOR, a voxel over the top of the sand band, so
+    //   L = 0  everywhere else: the field is SOFT-CLAMPED to LAKE_FLOOR, just over the top of the sand band, so
     //          the old pockets are ground and no puddle can form (the freed area is terrain, as asked)
     //   0<L<1  the ramp is the shore, and its two constants were set by measurement, not taste:
     //          · the clamp is STIFF (LAKE_SOFT 2) on purpose. A pocket whose floor is already wet while its rim is
@@ -429,13 +437,75 @@
     // 17% -> 11% of the water; sand per shore cell 6.8 -> 10.8 (the beaches got wider, not narrower). Applied AFTER
     // the birch halving so both forests share one lake system at one depth and only the hills differ; the strait
     // below still min()s through it. Every copy of the height field goes through this function, so gtest holds.
-    { const L = lakeZoneOf(a1);
-      let hd = h - LAKE_FLOOR > 12 * LAKE_SOFT ? h : LAKE_FLOOR + LAKE_SOFT * Math.log(1 + Math.exp((h - LAKE_FLOOR) / LAKE_SOFT));   // dry: the soft clamp (identity high up, where exp would underflow to nothing anyway)
-      if (L < 0.25 && h < LAKE_FLOOR + 4)              // …with a little coherent relief on the pans it makes, so a drained bed reads as ground, not a floor. Faded out well BEFORE the pond band (L 0.36..0.53) so it cannot reopen it
-        hd += LAKE_REL * (fbm(x * 0.02 + 7.7, z * 0.02 + 3.3) - 0.5) * 2 * (1 - sstep(L / 0.25)) * sstep(Math.min(1, (LAKE_FLOOR + 4 - h) / 8));
+    const L = lakeZoneOf(a1);
+    {
+      const hd = h - LAKE_FLOOR > 12 * LAKE_SOFT ? h : LAKE_FLOOR + LAKE_SOFT * Math.log(1 + Math.exp((h - LAKE_FLOOR) / LAKE_SOFT));   // dry: the soft clamp (identity high up, where exp would underflow to nothing anyway). The pans' relief is added in pineBase, AFTER the beach, so it neither bumps the beach nor puts noise into the slope and the march the beach measures with
       if (L <= 0) h = hd;
       else { const hw = Math.min(h, h - LAKE_PULL * (h - LAKE_BED));   // wet: the pull, lower-only like the strait's, so a pocket already under the bed keeps its depth
         h = L >= 1 ? hw : hd + L * (hw - hd); } }
+    return h;
+  };
+  const pineBase = (x, z) => {
+    let h = pineRaw(x, z);
+    const a1 = vnoise(x * 0.0018 + 61.3, z * 0.0018 + 77.9), L = lakeZoneOf(a1);   // the octave again (4 hashes) rather than an allocation per column to hand it back from pineRaw
+    // ── THE BEACH IS ONE WIDTH EVERYWHERE (user 2026-09-02: "double the sand bank surface area … keeping the surface
+    // area of the water", then "make the banks consistent in width. this bank for example is too narrow") ── the sand
+    // is a HEIGHT band (fillColumn, WL+1..WL+6), so on the ground it is as wide as the shore is gentle, and the shore's
+    // slope above the waterline runs from the district ramp's slow descent to a massif flank pulled into the lake.
+    // A fixed stretch of that slope (x1.7, the first answer) doubled the sand as asked but kept the spread: measured
+    // ACROSS the beach on two windows, 34-40 columns at the 5th percentile against 151-184 at the 90th. A stretch set
+    // per column from the local slope alone still left 49-55 against 100-122, because a single slope mis-reads the
+    // distance to the water wherever the profile curves.
+    // So each beach column MEASURES its distance to the water: it walks toward the lake in SAND_STEP strides until
+    // the pre-beach field drops to WL + 1 (see the direction note inside the block). A column D columns from the
+    // water is set to the band's height at D / SAND_W; behind the beach the raw field is carried with the offset
+    // that keeps the beach's top continuous, decaying over SAND_R columns, and the corner between the flat beach and
+    // the hill is rounded over 2 * SAND_TRANS columns. A shore so steep that the full beach would cut more than
+    // SAND_CUT voxels into it gets a shorter beach instead. The field measured is pineRaw — the blend without the
+    // pans' relief — because +-1.6 voxels of relief at a 50-column wavelength is as steep as a gentle shore.
+    // Everything at and below WL + 1 is the identity, so not one column changes side of the waterline: water area,
+    // body count and the wet-to-dry step are those of the districts, and the pond arithmetic in pineRaw is untouched.
+    // Measured across the beach (steepest ascent from the first dry column) on two windows, 5th/50th/90th
+    // percentile widths: 27/57/99 and 25/58/119 before any beach work, 39/92/165 and 34/91/174 with the fixed
+    // stretch, 75/106/127 and 74/104/129 with this. SAND_W is the knob between the two requests: consistent widths
+    // cannot reach the fixed stretch's total sand, because that doubling came from a long tail of very wide beaches
+    // — at 96 the sand is x1.5-1.8 the pre-beach amount (about 80% of the doubling); at 128 it would be the full
+    // doubling, with every beach 13 m wide.
+    { const w = a1 <= LAKE_T ? 1 : (a1 >= LAKE_T + SAND_APRON ? 0 : 1 - sstep((a1 - LAKE_T) / SAND_APRON));
+      if (w > 0 && h > WL + 1) {
+        // the direction TOWARD THE LAKE is down the district's own field, not downhill: the lake mask has one smooth
+        // gradient that is defined on flat ground too. Marching downhill instead (the first version) skipped the
+        // flat drained beds and left every bed's edge as a 2-4 voxel wall against the compressed beach beside it,
+        // and two neighbours' downhill lines could find different shores — measured on 400x400 blocks: seams on
+        // 0.01-0.16% of dry columns and 2-voxel steps on up to 3%; this way both are 0.00% (the fixed stretch's level)
+        const gx = (vnoise((x + 4) * 0.0018 + 61.3, z * 0.0018 + 77.9) - vnoise((x - 4) * 0.0018 + 61.3, z * 0.0018 + 77.9)) / 8,
+              gz = (vnoise(x * 0.0018 + 61.3, (z + 4) * 0.0018 + 77.9) - vnoise(x * 0.0018 + 61.3, (z - 4) * 0.0018 + 77.9)) / 8;
+        const G = Math.hypot(gx, gz);
+        if (G > 1e-7) {
+          const ux = -gx / G, uz = -gz / G, B = SAND_SPAN - 1, d = h - WL, maxD = SAND_W + SAND_R;
+          let D = -1, prevH = h, prevD = 0, n = 0; const smp = [h];   // heights along the march, SAND_STEP apart, for the rejoin below
+          while (n * SAND_STEP < maxD) { n++; const hv = pineRaw(x + ux * n * SAND_STEP, z + uz * n * SAND_STEP); smp.push(hv);
+            if (hv <= WL + 1) { let lo = prevD, hi = n * SAND_STEP, hlo = prevH, hhi = hv;   // crossed WL + 1 in this stride: bisect, then interpolate the crossing
+              for (let b = 0; b < SAND_BIS; b++) { const mid = (lo + hi) / 2, hm = pineRaw(x + ux * mid, z + uz * mid); if (hm <= WL + 1) { hi = mid; hhi = hm; } else { lo = mid; hlo = hm; } }
+              D = lo + (hi - lo) * (hlo - (WL + 1)) / Math.max(1e-6, hlo - hhi); break; }
+            prevH = hv; prevD = n * SAND_STEP; }
+          if (D >= 0) {                                // no water within the beach and its rejoin: not a beach column, untouched
+            const hAt = (Dq) => { const back = Math.max(0, (D - Dq) / SAND_STEP), i0 = Math.floor(back), f = back - i0; return smp[Math.min(i0, smp.length - 1)] * (1 - f) + smp[Math.min(i0 + 1, smp.length - 1)] * f - WL; };   // the raw height Dq columns from the water, off the march's samples
+            let Wq = SAND_W;                           // …shortened on a shore so steep that the full beach would cut more than SAND_CUT into it
+            const dAtW = D <= SAND_W ? 1 + (d - 1) * SAND_W / Math.max(1e-6, D) : hAt(SAND_W);
+            if (dAtW - (1 + B) > SAND_CUT) Wq = Math.max(24, SAND_W * (SAND_CUT + B) / Math.max(1e-6, dAtW - 1));
+            let ds;
+            if (D <= Wq - SAND_TRANS) ds = 1 + B * D / Wq;   // on the beach: the band, by distance
+            else { const dW = hAt(Wq);
+              const rej = d + (1 + B - dW) * (1 - sstep(Math.max(0, Math.min(1, (D - Wq) / SAND_R))));   // behind it: the raw field, carried so it passes through the beach's top, the offset decaying over SAND_R
+              if (D >= Wq + SAND_TRANS) ds = rej;
+              else { const band = 1 + B * D / Wq; ds = band + (rej - band) * sstep((D - (Wq - SAND_TRANS)) / (2 * SAND_TRANS)); } }   // the corner between the two, rounded
+            h += w * (ds - d); } } } }
+    // ── THE PANS' RELIEF ── a little coherent relief on the beds the districts drained, so they read as ground rather
+    // than a floor. After the beach and only ABOVE it (faded in from WL + 6), so the beach stays smooth; faded out
+    // well before the pond band (L 0.36..0.53) so it cannot reopen it.
+    if (L < 0.25 && h > WL + 6 && h < LAKE_FLOOR + 4)
+      h += LAKE_REL * (fbm(x * 0.02 + 7.7, z * 0.02 + 3.3) - 0.5) * 2 * (1 - sstep(L / 0.25)) * sstep(Math.min(1, (LAKE_FLOOR + 4 - h) / 8)) * sstep(Math.min(1, (h - WL - 6) / 3));
     // ── THE STRAIT ── the band edge is where birchM's own argument crosses zero, so it is measured the same
     // way the mask measures it and the two can never drift apart. A cosine bump rather than a smoothstep
     // pair: it is flat-topped in the middle (open water, not a V) and its tails reach zero with zero slope,
