@@ -184,6 +184,16 @@
       const b9 = phBodyIdAt(x, y, z);                  // a felled trunk is one off-grid rigid body and is NOT in W, but it is very much something to bounce off
       if (b9) return b9;
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+      // ── AND A MOSS CAP ON STONE IS NOT AN OBSTRUCTION TO A PICK ── the third and last ray that had to learn
+      // this (the aim pre-pass and the swing's own march are the other two). It matters because THIS one feeds
+      // the BLOCKED sound and toolCanBreak, and the note under this function is explicit that a sound which
+      // disagrees with the swing is worse than no sound. Without it a pick swinging clean through a birch cap
+      // into the rock still reported the cap here — a digOnly id the pick cannot take — so the audio's answer
+      // was "blocked" while the swing was carving stone. Measured before this: aimId 66 (the cap) in the birch
+      // against 147 (the stone) in the pine, for the identical swing. Same test as the other two: mossTab with
+      // stone DIRECTLY under it is a cap and not turf. NOT gated on the pick — see the note at the march.
+      if (id && mossTab[id] && y > 1
+          && pickOnlyTab[W[gwrap(x, WX) + (y - 1) * WX + gwrap(z, WZ) * WX * WY]]) return 0;
       if (id !== 0 && !foliaTab[id] && !floatTab[id] && !(isWater(id) && !solidTab[id])) return id;
       return 0;                                        // water, grass strands, twigs and needles are not obstructions — walk on to what is underneath
     }) || 0;
@@ -347,6 +357,21 @@
       // grazes one now stops on it. That is a fair trade — an axe swing at the forest floor does nothing today
       // (soil is digOnlyTab) — but it is the 2026-08-07 "pass-through is not an aim" rule shrinking by exactly
       // the wood ids, and if twigs ever start stealing swings this line is why.
+      // ── A MOSS CAP ON STONE IS COVER, NOT A TARGET (user 2026-09-03: "you're not letting me hit through the moss
+      // when hitting the rock. let me hit through the moss to hit the rock") ── the line below already walks the ray
+      // through a cap, but only for a floatTab one, and the BIRCH forest's cap is not floatTab: mossCap lays it in
+      // BIRCHMOSS, which is BIRCHGRASS's own ids, and assets/material-tabs.js marks those solid + decor + digOnly
+      // because they are also the birch GROUND (the palette had no free ids when that cap was authored, so the two
+      // share). To the ray it was therefore ordinary solid ground: it STOPPED on the cap, aimId became a digOnly id,
+      // the pickStone guard below went false because a cap is not pickOnlyTab, and the swing was then filtered to
+      // material a pick may not take — so a mossy birch boulder could not be mined at all. The pine forest was fine
+      // throughout because ITS caps are GRASS, which is floatTab. Same root cause as the floating-cap bug fixed in
+      // 0562996, and the second half of it.
+      // ASKED PRECISELY, so it cannot swallow the ground it shares ids with: see through this voxel only when what
+      // is DIRECTLY UNDER it is stone, which is what makes it a cap rather than turf, and only for the PICK, which
+      // has no business taking either. Every other tool still aims at a cap exactly as it did, so the shovel can
+      // still dig one.
+      if (!inB && mossTab[lv] && pickOnlyTab[W[gwrap(lx, WX) + (ly - 1) * WX + gwrap(lz, WZ) * WX * WY]]) return 0;
       if (!inB && !woodTab[lv] && !foliaTab[lv] && (floatTab[lv] || (isWater(lv) && !solidTab[lv]))) return 0;   // …and FOLIAGE is never pass-through either: a BUSH's leaves carry floatTab where a tree's do not (measured: id 58 float true, ids 92/197 false), so any path that reaches this test with a leaf is one ordering change away from walking through the very thing the crosshair is on and taking the wood behind it (user 2026-08-22)   // ── PASS-THROUGH IS NOT AN AIM (user 2026-08-07) ── grass strands, blooms, twigs, cones and open water: the march's obstruction test and aimHitId both walk straight THROUGH these, but this pass stopped on them and set aimT to a STRAND's distance — which makes every `t >= aimT` gate below vacuous, since the ray passes that distance almost immediately. Ice keeps solidTab, so a frozen lake is still a thing you can aim at.
       if (!inB && snowTab[lv]) {                       // ── SNOW IS COVER, NOT A TARGET (user 2026-08-07: "the tool shouldn't register the snow, but the material under the snow") ── the same rule as LEAF vs TRUNK: remember the blanket, then keep walking for what it is sitting on. landSnowAt caps a stack at 3 layers, so the budget below always reaches the ground.
         if (!firstSnow) { firstSnow = true; snowT = t; if (!firstLeaf) { aimId = lv; aimBody = inB; aimT = t; } }   // …and the snow itself is only the FALLBACK aim, for a drift with nothing reachable under it
@@ -474,6 +499,30 @@
           (phChopBody(x + vx * C_DEEP, y + vy * C_DEEP, z + vz * C_DEEP, C_RAD, C_MIN, C_BITE, okBody) ||
            phChopBody(x, y, z, C_RAD, C_MIN, C_BITE, okBody))) { CHOP_AIM.path = 'body'; CHOP_AIM.hitId = bAt; CHOP_AIM.rockHit = pick && !!pickOnlyTab[bAt]; CHOP_AIM.woodHit = axe && !!woodTab[bAt]; CHOP_AIM.foliaHit = !!leafSndTab[bAt]; return 1; }   // …a knocked-loose clump of leaves or fronds is still foliage   // …a felled LOG is wood under an axe, so bucking one sounds like chopping one   // …and a boulder CHUNK lying on the ground is still rock under a pick, so it gets the rock take too   // deeper bite first, same as the standing trunk   // a FELLED trunk lying in the way is choppable too — tested before treeShapeAt so the tool hits what is actually nearest
       const id = W[gwrap(x, WX) + y * WX + gwrap(z, WZ) * WX * WY];
+      // ── AND THE SWING WALKS THROUGH A MOSS CAP TOO, NOT JUST THE AIM (user 2026-09-03: "hitting the rocks
+      // through moss is still bugged … the pick doesnt hit through the moss. also sometimes when hitting a pine
+      // forest moss, it doesnt pass through and only picks up the moss") ── the previous pass fixed the AIM ray
+      // and stopped there, which was half the job: this march is a SECOND, independent ray, and the cap was still
+      // the first thing it met. Both of the user's symptoms are that one fact, in the two bands:
+      //   · PINE. Its cap is GRASS — decorTab and restricted to no tool at all — so the decor branch below
+      //     matched on the FIRST voxel and the pick chopped the moss. "only picks up the moss".
+      //   · BIRCH. Its cap is BIRCHMOSS, which is BIRCHGRASS's ids and therefore digOnly, so the same branch
+      //     refused it (a pick is not a shovel) and the march fell through to the obstruction test and STOPPED.
+      //     Nothing happened at all.
+      // Skipping it here fixes both, and it is the same question the aim ray now asks, asked once more where the
+      // swing actually spends itself: a mossTab voxel with STONE directly under it is a cap and not turf.
+      // `return 0` is "keep walking" — the sphere is then centred on the stone.
+      // ── AND THE CAP BELONGS TO THE ROCK, WHICHEVER TOOL IS SWUNG (user 2026-09-03: "can you have it when the
+      // player hits the moss on the rocks, it pulls the stone with it") ── all three of these tests were gated on
+      // the PICK at first, which fixed the pick and left the other half standing: with anything else in hand the
+      // cap was still an ordinary decor voxel, so a bare hand or an axe stripped the moss off a boulder and left
+      // the rock bare — the same "only picks up the moss", in a different tool. Ungated, a cap on stone is not a
+      // target for anybody: every ray walks through it to the rock and the ROCK's own rule then answers. A pick
+      // takes the stone and the cap rides the chunk out with it, which is the ask; a shovel or an axe is refused
+      // exactly as it is on bare stone rather than quietly harvesting the moss. What is given up is digging a cap
+      // off a rock and leaving the rock standing, which is the behaviour being removed on purpose.
+      if (id && mossTab[id] && y > 1
+          && pickOnlyTab[W[gwrap(x, WX) + (y - 1) * WX + gwrap(z, WZ) * WX * WY]]) return 0;
       // ROCK needs the pick, WOOD needs a cutting edge, everything else soft yields to whatever is in hand.
       // …and the carve is confined to that same material, so the sphere cannot spill into the next one.
       // ── …AND A BEEHIVE IS ITS OWN MATERIAL FOR THIS PURPOSE (2026-08-19) ── it is neither dig- nor pick-only,

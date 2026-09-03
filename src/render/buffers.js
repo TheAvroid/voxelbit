@@ -1255,7 +1255,25 @@
   // wider keep holds ~44% more tiles and each one costs pages and scan work every frame, which in the arctic
   // is ~4400 pages a tile. The flight measurements could not see any of this because they measure the ring,
   // not the frame. EVERY ring change needs BOTH.
-  // Left switchable rather than deleted: the mechanism and the numbers are right, only the price is wrong.
+  // ── AND THE MECHANISM IS NOT RIGHT EITHER: IT CORRUPTS THE RING (audit 2026-09-03) ── the paragraph above
+  // concluded "only the price is wrong". That is not what the ring's own self-audit says. __vb.ring().own walks
+  // every tile this module believes it owns and compares the pool slots against what they should hold; with the
+  // fetch off it is spotless, and turning it on breaks it. Warm the ring to 1920, fly a straight line 480 voxels,
+  // let it settle, then audit — three passes in ONE session, prefetch off / on / off:
+  //     off   672 tiles, 1,088,136 slots checked, stale 0       badTiles 0    zero 0
+  //     1.5   612 tiles, 1,030,308 checked,       stale 28,838  badTiles 33   zero 20,973   filled 1920 -> 1548
+  //     off   619 tiles, 1,058,284 checked,       stale 11,638  badTiles 21   zero 20,943
+  // The failures are slots the ring counts as resident that hold nothing — `{ want: 459851, got: 0 }`, and one
+  // `got: -1` — i.e. the shader reads an empty or invalid page where a brick should be, which is a WRONG PIXEL,
+  // not a slow one. Note the third row: the damage SURVIVES switching the fetch back off, so this is not a
+  // transient of the prefetch path but state it leaves behind, and `filled` collapsing 1920 -> 1548 while it is
+  // on is the ring losing tiles it thought it had rather than the world being further away.
+  // So the trade is not "smoother but dearer" and must not be re-enabled on that basis. Whatever races here is
+  // presumably churn-sensitive rather than prefetch-specific — prefetch just holds ~44% more tiles and evicts
+  // that much harder — so it is worth suspecting under any other pressure that raises eviction rates too, even
+  // though the ring audits clean at the shipped setting at rest AND at fly-sprint on a pool at 64%.
+  // Left switchable rather than deleted: the pop it targets is real and measured, but the fix is not usable as
+  // it stands, and the price was never the only thing wrong with it.
   // __vb.ringPrefetch(1.5) turns it on for anyone who wants to look at the trade.
   let RING_PREFETCH = 0;                               // TILES fetched beyond the view radius; 0 = ship default
   const ringPrefetchSet = (v) => { if (v !== undefined) RING_PREFETCH = Math.max(0, Math.min(6, +v || 0)); return { RING_PREFETCH }; };

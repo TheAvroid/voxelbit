@@ -30,8 +30,8 @@
       const xB = wx * 0.0016 + 313.7;
       const b0 = bsr1(xB) * 0.55 + bsr2(xB * 2.13 + 11.7) * 0.27 + bsr3(xB * 4.41 + 41.2) * 0.18;
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
-      const m = bm * basinLow(h, wx, wz) * (bm > 0 ? lakeZone(wx, wz) : 0);   // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies. The district gate is the same expression as H()'s, see the note there; bm > 0 first so the octave is only paid for where a basin exists
-      if (m > 0) h = h - basinGain(m) * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
+      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
+      if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
       const rs = riverS(wx, wz);   // (the beach-flat lift that used to sit below the river carve is deleted in all three copies — see the note in H(), world/window.js)
       const xnB = wx * 0.05 + 13.7;
       const bn = e1(xnB) * 0.55 + e2(xnB * 2.13 + 11.7) * 0.27 + e3(xnB * 4.41 + 41.2) * 0.18;
@@ -82,8 +82,8 @@
       const zB = wz * 0.0016 + 157.3;
       const b0 = bsc1(zB) * 0.55 + bsc2(zB * 2.13 + 5.3) * 0.27 + bsc3(zB * 4.41 + 23.8) * 0.18;
       const bt = basinT(wx, wz); const bm = b0 >= bt ? 0 : sstep(Math.min(1, (bt - b0) / BASIN_RAMP));   // basinT: the arctic's doubled water lives in that shared constant — see world/window.js. This is copy 2/3 (and 3/3) of the threshold; H() has the other.
-      const m = bm * basinLow(h, wx, wz) * (bm > 0 ? lakeZone(wx, wz) : 0);   // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies. The district gate is the same expression as H()'s, see the note there; bm > 0 first so the octave is only paid for where a basin exists
-      if (m > 0) h = h - basinGain(m) * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
+      const m = bm * basinLow(h, wx, wz);              // shared helper — the arctic's higher basin ceiling lives there, and this is 2 of 3 copies
+      if (m > 0) h = h - m * (h - BASIN_BED);   // continuous and undithered, exactly as in H() — see the note there
       const rs = riverS(wx, wz);   // (the beach-flat lift that used to sit below the river carve is deleted in all three copies — see the note in H(), world/window.js)
       const znB2 = wz * 0.05 + 4.2;
       const bn = e1(znB2) * 0.55 + e2(znB2 * 2.13 + 5.3) * 0.27 + e3(znB2 * 4.41 + 23.8) * 0.18;
