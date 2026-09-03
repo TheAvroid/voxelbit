@@ -44,8 +44,7 @@
       // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
       // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
       // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-      // the desert on LAND only — the same gate as H(), see the note there
-      const dm0 = DESERT_TERRAIN * desertM(wx, wz), dm = dm0 > 0 ? dm0 * (1 - oceanM(wx, wz)) : 0; if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
+      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── the SAME expression as H() in window.js, calling the SAME scalar desertM/fbm. These three copies of the height function have to agree bit-for-bit or the bulk fill and the placement queries disagree about where the ground is; sharing the function is what makes that true by construction rather than by careful copying.
       return h;
     };
   }
@@ -97,8 +96,7 @@
       // which at lake scale is a straight edge, and the shore dither on the far side left a dark fringe along
       // the cut. bm/rs are the same two predicates the beach-flat line already uses to mean "this column
       // belongs to a water body". A biome decides what the shore is MADE OF, never where the water ENDS.
-      // the desert on LAND only — the same gate as H(), see the note there
-      const dm0 = DESERT_TERRAIN * desertM(wx, wz), dm = dm0 > 0 ? dm0 * (1 - oceanM(wx, wz)) : 0; if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
+      const dm = desertM(wx, wz); if (dm > 0) { h = Math.round(h * (1 - dm) + (DESY + duneH(wx, wz) + (fbm(wx * 0.012 + 5.1, wz * 0.012 + 9.3) - 0.5) * DESREL) * dm); if (dm > 0.5 && bm <= 0.25 && rs <= 0.04) h = Math.max(h, WL + 2); }   // ── DESERT FLAT ── identical to H() and makeHRow. See the note in makeHRow.
       return h;
     };
   }

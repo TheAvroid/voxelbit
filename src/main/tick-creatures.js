@@ -1141,9 +1141,26 @@
         if (B.aAncX === undefined || (B.x - B.aAncX) * (B.x - B.aAncX) + (B.z - B.aAncZ) * (B.z - B.aAncZ) > 2.5 * 2.5) { B.aAncX = B.x; B.aAncZ = B.z; B.aStk = 0; B.aStkN = 0; }   // ── STEEP-TERRAIN STUCK WATCHDOG (user) ── judge by NET DISPLACEMENT, not blockage: a marcher can pass every walkOK test yet oscillate in place at a slope base (leash pulls uphill → blocked → contour turn → pulled back…). Real walking resets the anchor constantly; only genuine pinning accumulates.
         else if ((B.aStk = (B.aStk || 0) + dt) > 3 && !(B.aRelax > 0)) {
           B.aStk = 0; B.aStkN = (B.aStkN || 0) + 1;
-          let best = -1, bgv = -1e9;                     // force the RELAXED escape (step limit ignored — same gate as boxed-in) toward the most climbable neighbour
+          // ── AND IF IT IS STANDING ON A ROCK, THE WAY OUT IS DOWN (user 2026-09-02: "life that spawn ontop of
+          // rocks get stuck on the rocks. allow the life to fall off of the rocks") ── this escape picked the
+          // most CLIMBABLE neighbour, which is the right answer for the case it was written for (wedged against
+          // a step it cannot make, where the way out is over). On a boulder it is exactly backwards: every
+          // neighbour is below, so `gA > bgv` selects the LEAST DEEP one — another voxel of the same rock — and
+          // the animal walks the crown indefinitely. It never respawns out of it either, because pacing the
+          // crown moves it more than the 2.5 voxels the anchor test above wants and that clears aStkN every
+          // time. MEASURED before this: of 21 walkers, 3 of the 8 that were ever perched stayed perched for
+          // most of a 20 s window, 1-5 aloft at any instant.
+          // PERCHED is asked of the ANIMAL, and it has to be asked of the real column: bfSurf and navBed are
+          // both hmap (main/tick-nav.js, sim/nav.js), and a stamped boulder sits ON TOP of hmap — the stamp was
+          // never written into it. The first version of this test compared those two and was therefore
+          // identically false on land, which the rock-drop probe caught: an animal parked on a crown 14 voxels
+          // proud of the terrain paced it for 14 s without ever coming down. Same lesson, same file, as the note
+          // at the top of this function. So ask how far the BODY is standing over the heightmap under it —
+          // a seated mammal rides 2-4 voxels up, so a full step-down past that is something it climbed onto.
+          const perchA = B.y - navBed(B.x, B.z) > NAV_MDN + 4;
+          let best = -1, bgv = perchA ? 1e9 : -1e9;      // force the RELAXED escape (step limit ignored — same gate as boxed-in): toward the most climbable neighbour, or DOWNHILL off a rock
           for (let h = 0; h < 4; h++) { const tx = B.x + DIRa[h][0] * 5, tz = B.z + DIRa[h][1] * 5, gA = mamArb ? navWalkStand(tx, tz) : bfSurf(tx, tz);
-            if (walkFree(tx, tz) && gA > bgv) { bgv = gA; best = h; } }
+            if (walkFree(tx, tz) && (perchA ? gA < bgv : gA > bgv)) { bgv = gA; best = h; } }
           if (best < 0 || B.aStkN >= 3) { if (B.sN) unstampWorm(B); B.init = false; continue; }   // three failed escapes (or nowhere to go) = truly wedged → respawn on fresh ground
           B.ah = best; B.aTurnT = tb3 + 0.28; B.aRelax = 1.4;
         }

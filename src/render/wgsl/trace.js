@@ -54,7 +54,14 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // and rain marches here decide what FALLS while the CPU decides what SETTLES, so a disagreement is visible
     // as flakes falling on ground that refuses them.
     fn pwrapG(d : f32) -> f32 { return d - floor(d / f32(${BIOP}) + 0.5) * f32(${BIOP}); }
-    fn desertMask(x : f32, z : f32) -> f32 { return pieceAt(x, z).z; }   // the desert is a PUZZLE PIECE now (2026-09-02): the same partition the CPU's desertM reads, so what falls and what settles agree   // the desert is WIPED on the CPU (world/window.js desertM is 0 since 2026-09-01); a band here would keep snow off ground that settles it
+    fn desertMask(x : f32, z : f32) -> f32 {
+      let c = f32(${SPWX + DESC - desWob(SPWZ)}) + (dVnoise(z * ${WOB_DES1} + 27.9, 83.1) - 0.5) * ${DESW}.0
+                                 + (dVnoise(z * ${WOB_DES2} + 11.2, 51.7) - 0.5) * ${DESW * 0.35};   // the frequencies are INTERPOLATED from world/window.js (WOB_DES1/DES2/OAK/CH), never typed: a hand-copied one drifted to ~1.9x and put the falling snow on a different border from the blanket (see the note there)
+      let t = 0.5 + (f32(${DESH}) - abs(pwrapG(x - c))) / ${DESB}.0;   // a BAND on a wrapped distance now, exactly as the JS desertM is
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
     // ── THE BIRCH FOREST TAKES SNOW (user 2026-08-24) ── it used to have a birchMask here refusing flakes over
     // the band, the falling half of a two-gate rule whose settling half is in main/tick-snow.js. Both are gone.
     // The pairing itself is the thing worth keeping in mind: that file decides what SETTLES and this decides
@@ -78,34 +85,14 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     }
     // the band's CENTRE LINE at this z — its own function because the oakNear gate below has to measure the
     // camera's distance to the band, and a second copy of this expression is a second thing to keep in step.
-    // ── THE PUZZLE PIECES, ON THE GPU (2026-09-02) ── the oak forest is no longer a band: world/window.js biomeAt is a
-    // jittered-grid Voronoi partition of a warped plane, and this is that function ported (same hashes, same
-    // constants interpolated from the JS, f32 against f64 — half a voxel at a 500-column border is invisible).
-    // pieceAt returns the oak share and whether oak is NEAR (plus the desert's and the blossom's shares): near is what the rain gate below asks, and it is
-    // answered by the same lookup rather than a second one — the nearest cell is oak, or the second-nearest is
-    // and its border lies within RAIN_GATE.
-    fn pieceAt(x : f32, z : f32) -> vec4<f32> {
-      let wx = x + (dVnoise(x * ${PIECE_WS} + 77.7, z * ${PIECE_WS} + 31.1) - 0.5) * 2.0 * ${PIECE_WARP}.0;
-      let wz = z + (dVnoise(x * ${PIECE_WS} + 191.3, z * ${PIECE_WS} + 57.9) - 0.5) * 2.0 * ${PIECE_WARP}.0;
-      let cx = i32(floor(wx / ${PIECE}.0)); let cz = i32(floor(wz / ${PIECE}.0));
-      var d1 = 1e18; var d2 = 1e18; var id1 = 0; var id2 = 0;
-      for (var j = -1; j <= 1; j++) { for (var i = -1; i <= 1; i++) {
-        let gx = cx + i; let gz = cz + j;
-        let px = (f32(gx) + 0.5 + (dHash(gx * 3 + 1, gz * 5 + 2) - 0.5) * 2.0 * ${PIECE_JIT}) * ${PIECE}.0;
-        let pz = (f32(gz) + 0.5 + (dHash(gx * 7 + 3, gz * 11 + 5) - 0.5) * 2.0 * ${PIECE_JIT}) * ${PIECE}.0;
-        let d = (wx - px) * (wx - px) + (wz - pz) * (wz - pz);
-        let r = dHash(gx * 13 + 7, gz * 17 + 9); var id = 5; if (r < ${PIECE_PINE}) { id = 0; } else if (r < ${PIECE_BIRCH}) { id = 1; } else if (r < ${PIECE_OAK}) { id = 2; } else if (r < ${PIECE_CHERRY}) { id = 3; } else if (r < ${PIECE_DESERT}) { id = 4; }
-        if (d < d1) { d2 = d1; id2 = id1; d1 = d; id1 = id; } else if (d < d2) { d2 = d; id2 = id; } } }
-      let gap = sqrt(d2) - sqrt(d1);
-      let m1 = dSstep(min(1.0, 0.5 + gap / (2.0 * ${PIECE_BORDER}.0)));
-      let m2 = 1.0 - m1;
-      var o = 0.0; if (id1 == 2 || id1 == 3) { o = o + m1; } if (id2 == 2 || id2 == 3) { o = o + m2; }   // oak, and the blossom counts as oak (world/window.js cherryM)
-      var c = 0.0; if (id1 == 3) { c = c + m1; } if (id2 == 3) { c = c + m2; }
-      var ds = 0.0; if (id1 == 4) { ds = ds + m1; } if (id2 == 4) { ds = ds + m2; }
-      var near = 0.0; if (id1 == 2 || id1 == 3 || ((id2 == 2 || id2 == 3) && gap < 2.0 * ${PIECE_BORDER}.0 + 2.0 * RAIN_GATE)) { near = 1.0; }
-      return vec4<f32>(o, near, ds, c);                // x = oak (blossom included), y = oak near, z = desert, w = blossom
+    fn oakCentreG(z : f32) -> f32 { return f32(${SPWX + OAKC - oakWob(SPWZ)}) + oakWobG(z); }   // the wobble is pinned at the spawn's own z, exactly as the JS does, or how far spawn sits from the border is a per-session lottery
+    fn oakMask(x : f32, z : f32) -> f32 {              // 1 = deep oak forest, 0 = pine forest — the mirror of desertMask
+      let c = oakCentreG(z);
+      let t = 0.5 + (f32(${OAKH}) - abs(pwrapG(x - c))) / ${OAKB}.0;   // a BAND, like the JS oakM: a half-plane has no west edge for the cycle to close against
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
     }
-    fn oakMask(x : f32, z : f32) -> f32 { return pieceAt(x, z).x; }   // 1 = deep oak forest, 0 = elsewhere
     // ── AND THE BLOSSOM BAND IS CUT BACK OUT OF IT, ON THE GPU TOO (user 2026-08-18: "in the cherry biome
     // make it snow like the pine forest") ── read the oakWeather note in world/window.js first; this is that
     // scalar ported the same way, and for the same reason oakMask itself is ported: a falling flake is a
@@ -116,7 +103,13 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     fn chWobG(z : f32) -> f32 {                        // = the JS chWob(z): 0.6 of the OAK meander (which already carries 0.36 of the desert's) plus one independent octave, so all three borders stay broadly parallel
       return oakWobG(z) * 0.6 + (dVnoise(z * ${WOB_CH} + 211.3, 97.7) - 0.5) * ${CHW}.0;
     }
-    fn cherryMask(x : f32, z : f32) -> f32 { return pieceAt(x, z).w; }   // the blossom is a PUZZLE PIECE now (2026-09-02), the CPU's cherryM   // the blossom is WIPED on the CPU (world/window.js cherryM is 0 since 2026-09-01), so its GPU twin is 0 as well
+    fn cherryMask(x : f32, z : f32) -> f32 {           // 1 = inside the blossom band, 0 = the oak forest either side of it. A DISTANCE from the centre line, not a side of it — that is what makes it a band rather than a half-plane
+      let b = f32(${SPWX - CHOFF - oakWob(SPWZ)}) + oakWobG(z);   // oakWobG, NOT chWobG — the JS cherryM rides the OAK meander now (see CHHALF in world/window.js), and a stale copy here is the exact failure the desWob note at the top of this file is about: flakes culled on one border while the blanket settles on another. Still pinned at the spawn's own z exactly as the JS is
+      let t = (${CHHALF + CHB}.0 - abs(pwrapG(x - b))) / ${CHB}.0;   // wrapped, or the blossom exists in the first period only and every later one falls back to plain oak weather
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
     // ── THE WEATHER BORDER'S CONTRAST CURVE ── world/window.js wSharp, ported bit for bit. The blanket is
     // decided on the CPU and the falling flakes here, so if only one side sharpened its border the other would
     // disagree across the whole ramp — snow settling under a clear sky, or flakes falling on ground that
@@ -126,7 +119,13 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       if (m >= 0.70) { return 1.0; }
       return (m - 0.06) / 0.64;
     }
-    fn cherryMaskW(x : f32, z : f32) -> f32 { return pieceAt(x, z).w; }   // the blossom is a PUZZLE PIECE now (2026-09-02), the CPU's cherryM   // the blossom is WIPED on the CPU (world/window.js cherryM is 0 since 2026-09-01), so its GPU twin is 0 as well
+    fn cherryMaskW(x : f32, z : f32) -> f32 {          // the blossom band as the WEATHER sees it — cherryMask's twin on the wider CHBW ramp (world/window.js cherryW). Same centre and same CHHALF, so WHERE it snows is identical and only the fade length differs
+      let b = f32(${SPWX - CHOFF - oakWob(SPWZ)}) + oakWobG(z);
+      let t = (${CHWHALF + CHBW}.0 - abs(pwrapG(x - b))) / ${CHBW}.0;   // CHWHALF, matching the JS cherryW: the weather band kept its own half-width when the tree band was reshaped
+      if (t >= 1.0) { return 1.0; }
+      if (t <= 0.0) { return 0.0; }
+      return dSstep(t);
+    }
     fn oakWeather(x : f32, z : f32) -> f32 { return oakMask(x, z) * (1.0 - cherryMaskW(x, z)); }   // what every WEATHER site below asks. oakMask itself stays the faithful port of oakM, because the worldgen questions still want that one
     ${FLAKEBLK}
     fn onbT(n : vec3<f32>) -> vec3<f32> {
@@ -229,7 +228,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // It uses oakM's own reach (OAKH + OAKB/2 — outside that the mask is exactly 0) rather than oakWeather's,
         // because oakWeather <= oakM everywhere and a bound that is too WIDE only costs a little work, while one
         // that is too narrow is the bug above.
-        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'pieceAt(ro.x + winOf.x, ro.z + winOf.z).y > 0.5' : 'false'};
+        let oakNear = ${(!OAK_SNOW || RAIN_ON) ? 'abs(pwrapG(ro.x + winOf.x - oakCentreG(ro.z + winOf.z))) < f32(' + (OAKH + OAKB * 0.5) + ') + RAIN_GATE' : 'false'};
         {                                                            // near field: DDA over the 3-voxel flake lattice — a flake stays WHOLE from sky to ground.
           // A tile-binned producer pass was tried here (enumerate+bin flakes once, pixels read their tile): the TRACE
           // side dropped to +0.35 ms, but on this driver ANY producer dispatch with atomics OR workgroup barriers costs

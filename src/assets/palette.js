@@ -89,7 +89,7 @@
   // FRUITC the same plus hangTab - so pointing them at MOSS and DIRT turned the forest floor and the
   // soil under it into walk-through foliage. Every retired ramp shares this ONE id instead, which costs
   // a single palette entry and cannot collide with anything that still renders.
-  const DEADC = addCol(255, 0, 255);   // ── UNRETIRED 2026-09-02 (user: "also add the cherry forest, desert, and arctic from earlier commits") ── the 2026-08-31 reclaim gave this ramp's ids away when its biome was wiped, so with the biome back every voxel of it rendered DEADC magenta. The table is at 244/256, and the twelve retired ramps want 42 ids between them, so only the ones a SHARED id would break get their own back; the rest alias onto a live ramp. See each line.
+  const DEADC = addCol(255, 0, 255);
   // ── DESERT SHRUBS ── the shrubs' OWN palette: a 4-step GREEN ramp and 6 FLOWER shades.
   // THE SIX .vox FILES ARE HAND-AUTHORED (user 2026-08-16: "I made modifications and renamed the files").
   // They are no longer a bake, so tools/voxelize_desert_shrubs.py's old "PALN pinned to len(SHRUBC)" contract
@@ -111,8 +111,8 @@
   // Same colour, own ids — the arrangement BROCK already uses to repeat ROCK's exact greys.
   // The first two green ids are the RECLAIMED dead LOGC pair; the other eight are the first real palette spend
   // the shrubs have ever made. __vb.shrubIds() prints all ten and what every material table says about each.
-  const SHRUBC = [MOSS[0], MOSS[2], MOSS[1], MOSS[3]];   // ALIAS -> MOSS. The desert shrub's leaves were four greens of their own (83,107,36 dark->light); moss is the same family and already decorTab + digOnlyTab, so the alias adds no material either
-  const SHRUBF = (() => { const a = addCol(227, 61, 89), b = addCol(238, 110, 135); return [a, b, a, b, b, a]; })();   // MINTED (2 ids). The desert shrub's flower ramp was five pinks and a cream; the two ends of the pink run are kept. It cannot alias to BLOSLEAF, which assets/palette.js declares 200 lines BELOW this one
+  const SHRUBC = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // dark→light. ORDER is documentation only now — bow.js resolves by nearest colour, not by rank, so a re-authored file cannot silently shift every shade one step along the ramp
+  const SHRUBF = [DEADC, DEADC, DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the flower ramp, EXACT: five pinks dark→light and the cream highlight at the centre of the bloom
   // ── AND RESERVED, WHICH IS WHAT KEEPS THE CACTI OFF THEM ── quoting a colour the cacti also use is only
   // safe in ONE direction. These ids are minted here, long before assets/bow.js parses cactus_*.vox in SHARE
   // mode, so palShare's exact-match lookup would hand the cactus id 21 for its darkest green — and then
@@ -131,12 +131,12 @@
   // brown on screen is not a constant that exists anywhere to quote. Three steps, not four: the table had
   // four ids free, and a ramp that empties it is one that makes the NEXT colour anywhere in the game
   // silently nearest-match.
-  const SHRUBB = [DIRT[0], DIRT[2], DIRT[1]];   // ALIAS -> DIRT. The shrub's bark was three browns (141,110,74 dark->light) and the soil ramp is the same family; nothing keys on these ids
+  const SHRUBB = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // dark -> light
   for (const i of SHRUBC) palOwn.add(i);
   for (const i of SHRUBF) palOwn.add(i);
   for (const i of SHRUBB) palOwn.add(i);
   const SAND   = [addCol(203, 183, 145), addCol(191, 171, 133), addCol(213, 193, 155)];                  // lake beaches + lakebed
-  const DSAND = [SAND[0], SAND[2], SAND[1], SAND[0]];   // ALIAS -> SAND. The desert sand was four warmer, more saturated ids of its own; the lake sand is within a few per cent of them and sandTab already means "this ground slows you", which is what desert sand should do anyway. material-tabs names DSAND and SAND on the SAME soil line, so the alias changes no flag
+  const DSAND = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // ── DESERT SAND ── warmer and more saturated than the lake SAND above, and on DEDICATED ids for a reason that is not aesthetic: sandTab slows the player (beach sand pits), and sharing ids would make an entire biome wade. These are deliberately NOT in sandTab.
   // ── COLORADO SANDSTONE: FOUR IDS FOR A THING THAT IS NOT IN THE GAME (reclaimed 2026-08-17, the BEEHIVE) ──
   // this ramp has exactly one consumer in the whole build: the ROCK26D block in assets/bow.js, which recolours
   // the 26 boulders into sandstone twins for the desert. Nothing stamps ROCK26D. The user reverted the desert
@@ -313,7 +313,7 @@
   // THE LIGHT END STILL STOPS SHORT OF WHITE. The new top is (248,168,195), against the (246,182,205) that was
   // removed earlier today for reading as blown out — 14 more saturation on the weakest channel, which is the
   // difference between "light pink" and "white with a tint". Do not push this further without checking that.
-  const BLOSLEAF = (() => { const a = addCol(208, 110, 143), b = addCol(222, 128, 161); return [a, b, a, b]; })();   // MINTED (2 ids read twice) - the blossom canopy, which is the whole cherry forest to look at. The original four pinks spanned 208..226 red; the two ends of that are kept and the middle pair dropped
+  const BLOSLEAF = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   // ── AND THE WHITE VARIANT (user 2026-08-18: "make half the cherry trees have white petals instead of pink") ──
   // Same structure as BLOSLEAF and read the same way: a leaf green's RANK picks a band of this ramp and the
   // voxel's own position picks within it (assets/bow.js blosRemap), so the length here is independent of how
@@ -334,7 +334,7 @@
   // PAL_TOL is now 12, so the old value sat exactly on that tolerance. These are palOwn and minted through
   // addCol, so no sharing could actually have taken them — but a white canopy that matches its own snow cap to
   // within a rounding error loses the cap, and it snows in this biome. 15/255 is enough to keep them apart.
-  const BLOSWHITE = (() => { const w = addCol(200, 176, 184); return [w, w, w]; })();   // MINTED (1 id) - the WHITE blossom variety, the middle of its original three
+  const BLOSWHITE = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   for (const i of BLOSLEAF) palOwn.add(i);
   for (const i of BLOSWHITE) palOwn.add(i);
   // ── AND THE PALE VARIETY'S FALLEN PETALS (user 2026-08-19: "can you make the petals (single voxels) under the
@@ -348,7 +348,7 @@
   // FOUR SHADES, not the full six: the two darkest BLOSWHITE steps are the crown's shadow side and read as
   // grey on open ground, where a fallen petal is lit from above.
   // Paid for by the six ids the delta-1 share in assets/models.js reclaimed — the table was at 256/256.
-  const TWIGWHITE = [BLOSWHITE[0], BLOSWHITE[0], BLOSWHITE[0], BLOSWHITE[0]];   // ALIAS -> BLOSWHITE. Fallen white petals are the same colour as the canopy they fell from, which is what the scatter wanted its own four near-whites for
+  const TWIGWHITE = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   for (const i of TWIGWHITE) palOwn.add(i);   // reserved: the scatter keys on these, and a tolerance reuse would sprinkle somebody else's model through the blossom
   // ── AND THE FRUIT (user 2026-08-18: "scatter this shade: 840c0c on the cherry trees ... single voxels that
   // will act like cherries on the tree") ── the authored colour exactly, (132,12,12).
@@ -385,7 +385,7 @@
   // colour changes. Duplicate colours on separate ids, deliberately, exactly as BROCK repeats ROCK's greys.
   // THREE, NOT FOUR. The darkest oak leaf (82,115,47) is already within 7/255 of a GRASS shade, so it would buy
   // nothing; the three that matter are the ones a canopy actually reads as. The table has 5 free.
-  const OAKMOSS = [GRASS[0], GRASS[2], GRASS[1]];   // ALIAS -> GRASS. mossCap is the only reader (world/terrain.js: `OAKMOSS.length && oakM > 0.5 ? OAKMOSS : GRASS`), so this collapses that ternary to the branch it already falls back to. The oak FLOOR is MOSS and always was - see fillColumn
+  const OAKMOSS = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.
   // ── THE BIRCH FOREST FLOOR (user: "make the terrain a light green ... as well as the moss on top of the
   // rocks") ── a four-step GROUND ramp in the oak canopy's greens, and it costs ZERO ids because every one of
   // them already exists. It CLIMBS OFF the ramp beside it, the same trick the light oak variety uses: the
@@ -433,7 +433,7 @@
   // tell these ids they are CANOPY — walk-through, DRAPE support, snow-catching, see-through when the eye is
   // inside them, and a bird perch — and a later tolerance share would hand all of that to whatever model next
   // asked for a bright green.
-  const OAKLITE = [];   // EMPTY. These were the two lighter steps the pale oak variety added ABOVE the art's own leaf ramp; assets/bow.js builds OAKLITER as `lo.slice(2).concat(OAKLITE)`, so an empty table leaves the pale variety the two lightest greens the art already has. A shade less contrast between the two oak varieties, and no id spent
+  const OAKLITE = [DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // the two steps the LIGHT oak variety adds ABOVE the existing leaf ramp — dark -> light
   for (const i of OAKLITE) palOwn.add(i);
   const BLOSCHERRY = addCol(132, 12, 12);
   palOwn.add(BLOSCHERRY);   // reserved: the scatter is keyed on this id, so a tolerance reuse handing it to a model would sprinkle that model through every crown   // reserved HERE and not up with SHRUBF's: this const is declared 100 lines below that one, and reading it there is the const-before-declaration black screen (a bare `for` in a module body is not hoisted past a TDZ)
@@ -469,11 +469,7 @@
   // FOUR steps, not two, and spanning ~12% in luminance rather than 6% — the pine floor's NEEDLE ramp is the
   // model (4 entries, ~13%). This is what breaks the contour rings on bare arctic ground: see the long note
   // in world/window.js for the three height-based attempts that did not.
-  // NOTE THE IIFEs ON THE MINTED RAMPS BELOW: addCol APPENDS on every call and dedups only against the explicit
-  // PAL_MERGE list, so writing the same literal twice mints TWO ids. Repeating a shade across a dither table
-  // therefore has to reuse the variable. Written the obvious way first, these five ramps asked for 22 ids
-  // against the 12 free and the palette overflowed into substitutes.
-  const ASNOW = (() => { const a = addCol(243, 248, 255), b = addCol(230, 236, 247); return [a, b, a, b]; })();   // MINTED (2 ids, the four-entry dither reads them twice). It CANNOT alias to SNOW: material-tabs makes ASNOW solid, decor and shovel-diggable - it is the arctic's GROUND - while SNOW is the 1-voxel fallen blanket, and one id cannot be both. Two shades rather than the original four: the ramp spans 20/255 and the dither is invisible at that width
+  const ASNOW = [DEADC, DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.   // packed snow — SOLID ground, shovel
   // ── AND THE ARCTIC OWNS ITS FOUR WHITES (user 2026-08-30: "the spear … goes through the terrain") ──
   // it turned out half the arctic floor was not solid at all, and the spear was only the thing that found
   // it: ids 101 and 104 read solid:false while 102 and 103 read solid:true. The ramp is minted here, and
@@ -577,7 +573,7 @@
   // These sit above DECOR_MIN, so the blanket `i < DECOR_MIN` solidity sweep below cannot reach them and a
   // berry never gets a hitbox; material-tabs.js then says what they positively ARE. __vbOak.ids() (world/gen-pool.js)
   // prints all three with every material table's verdict, and __vb.palAudit() over/snaps must both still read 0.
-  const FRUITC = [addCol(209, 75, 70), addCol(86, 110, 192), addCol(244, 152, 61)];   // MINTED (3 ids, the originals exactly). These CANNOT be shared: a pickup keys on palette id, so a fruit wearing another object's id is picked up as that object (see the pickup audit) - and the three are cherry/apple flesh, blueberry and orange, which must stay distinguishable from each other too
+  const FRUITC = [DEADC, DEADC, DEADC];   // retired - see DEADC   // RECLAIMED 2026-08-31: its biome is gone (the world is one pine forest now), so this ramp mints NOTHING and points at live ids instead. Same LENGTH, so every RAMP[(sh * n) | 0] index still lands. Deleting the name would break terrain.js/bow.js; aliasing gives the ids back and keeps them valid.                      // 0 = cherry + apple flesh, 1 = blueberry, 2 = orange flesh (0 and 2 are tools/voxelize_fruit.py's own means — keep them in step with fruit.json's `pal`)
   // ── THE BEEHIVE, IN TWO SHADES OF ONE HONEY YELLOW (user 2026-08-17: "implement the beehive.vox on some of
   // the oak trees") ── beehive.vox paints 54 voxels in an EIGHT-step ramp that never leaves one hue: red is 255
   // on every step and the whole ramp moves 12/255 in green and 52 in blue. Two ids is not a sacrifice of that,
@@ -590,7 +586,12 @@
   // OWN IDS, not BLOOM's yellow or OREGOLD's: a hive is SOLID and axe-choppable (see material-tabs.js), and
   // hanging either of those flags on a flower head or on gold ore is exactly the leak DSAND and BROCK exist to
   // avoid. Above DECOR_MIN like everything else here, so material-tabs.js grants the solidity explicitly.
-  const HIVEC = (() => { const y = addCol(255, 231, 97); return [y, y]; })();   // MINTED (1 id) - the beehive, choppable and axe-only, so it needs an id nothing else answers for. Its two yellows were 7/255 apart and are now one
+  const HIVEC = [addCol(255, 231, 97), addCol(255, 238, 127)];   // 0 = the two banding courses (the model's own darkest, exact), 1 = the panel gradient's weighted mean.
+  // ── UNRETIRED 2026-09-02 (user: "the beehive is magenta, fix it with the correct colors") ── the 2026-08-31 reclaim gave
+  // these two ids away when the OAK forest was wiped, on the reasoning that the hive went with it. It did not: the BIRCH
+  // forest has hives of its own (BKHIVE, world/terrain.js) and the birch band is still here, so every hive in the game has
+  // been rendering DEADC magenta ever since. Both original colours are restored exactly rather than collapsed to one —
+  // they are 7/255 apart but they are the model's own banding, and the table has the room.
   // ── AND ALL FIVE ARE RESERVED, WHICH IS THE HALF THAT IS EASY TO FORGET ── these are minted HERE, in
   // palette.js, and assets/creatures.js and assets/held-items.js parse in SHARE mode several fragments LATER at
   // PAL_TOL 8. Without palOwn, the first creature whose red lands within 8/255 of the apple's (209,75,70) — a
