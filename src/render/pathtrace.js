@@ -28,7 +28,7 @@
   // takes the 'false' variant unconditionally: the see-through hack exists to stop a clipped-into canopy
   // filling the screen in a renderer whose primary ray is the whole image, and a path tracer that made leaves
   // near the eye vanish would then light the scene through a hole that is not there.
-  const ptMod = device.createShaderModule({ code: (PRE_SRC() + PT_SRC({ DDAW })).replaceAll('§FOL§', 'false') });
+  const ptMod = device.createShaderModule({ code: (PRE_SRC() + PT_SRC({ DDAW, pickWGSL })).replaceAll('§FOL§', 'false') });
   const pPath = device.createComputePipeline({ layout: 'auto', compute: { module: ptMod, entryPoint: 'main' } });
   const ptBlitMod = device.createShaderModule({ code: PRE_SRC() + PTBLIT_SRC() });
   const pPtBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: ptBlitMod, entryPoint: 'vs' },
@@ -59,7 +59,8 @@
       { binding: 11, resource: { buffer: ptUni } }, { binding: 14, resource: moonTex.createView() },
       { binding: 15, resource: linSamp }, { binding: 23, resource: { buffer: bodyBuf } },
       { binding: 16, resource: PT.hA.createView() }, { binding: 17, resource: PT.hB.createView() },
-      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp }] });
+      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp },
+      { binding: 13, resource: { buffer: itemMapBuf } }] });
     PT.bgB = device.createBindGroup({ layout: pPath.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: poolBuf } },
       { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
@@ -68,7 +69,8 @@
       { binding: 11, resource: { buffer: ptUni } }, { binding: 14, resource: moonTex.createView() },
       { binding: 15, resource: linSamp }, { binding: 23, resource: { buffer: bodyBuf } },
       { binding: 16, resource: PT.hB.createView() }, { binding: 17, resource: PT.hA.createView() },
-      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp }] });
+      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp },
+      { binding: 13, resource: { buffer: itemMapBuf } }] });
     PT.bgBlit = device.createBindGroup({ layout: pPtBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: PT.tex.createView() },
       { binding: 2, resource: linSamp }] });
