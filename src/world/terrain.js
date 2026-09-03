@@ -1,5 +1,5 @@
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports pineFrame, PINE_STAND, PINE_STANDK, PINE_SAP, PINE_LEAN, PINE_FLARE_H, PINE_FLARE_K, PINE_SNAG, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -19,7 +19,18 @@
     if (!lake && h <= WL) h = WL + 1 + (arcticM(wx, wz) > ARCT_BARE
       ? Math.max(0, Math.round((fbm(wx * 0.09 + 3.1, wz * 0.09 + 8.7) - 0.42) * 5)) : 0);   // dry land NEVER sits below the water plane — beach tops meet the surface FLUSH
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
-    const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
+    // ── AND THE FLOOR FOLLOWS THE CANOPY ── the moss threshold used to be a constant, so the pine floor was
+    // the same brown-with-green-patches everywhere regardless of what was standing on it. It is the STAND
+    // noise now, the same field and the same frequency treeAt thins the trees on (PINE_STAND): under a
+    // closed stand the floor is needle litter, and a glade — where the sun actually reaches — grows moss and
+    // therefore the grass strands that key off surfMoss. Coupling the two is most of why a real wood reads as
+    // structured rather than as trees scattered on a lawn, and it costs one noise sample already being taken.
+    // Centred so the AVERAGE coverage is unchanged: the swing is ±0.16 about the 0.52 this shipped with.
+    const stand = vnoise(wx * PINE_STAND + 311.7, wz * PINE_STAND + 92.3);
+    // SIGN CHECKED THE HARD WAY: a HIGH `stand` is where treeAt accepts MORE trees, so the closed canopy is
+    // the high end and the glade is the low one. Written as (0.5 - stand) first, which grew the moss under
+    // the thickest canopy and left the clearings bare — the exact inverse of the thing being modelled.
+    const mossy = !lake && mossV > 0.52 + 0.32 * (stand - 0.5);   // 0.56 → 0.52 ≈ +30% moss coverage
     const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
     const om = oakM(wx, wz);                           // …and the other way: 1 = oak forest (west of the pines), 0 = pine forest. The two masks can never both be non-zero — see the gap arithmetic at OAKOFF
     const bm = birchM(wx, wz);                         // …and the BIRCH band, which sits between the pine and the sand and wears the OAK's terrain (world/window.js)
@@ -1518,7 +1529,18 @@
   // tick-nav.js, tick-creatures.js and debug-api.js — walks `Math.floor((w ± R) / TCELL)` with R in WORLD
   // voxels. A candidate lives inside its own cell, so a cell wholly outside [w - R, w + R] cannot hold one
   // within R: those scans are exact at any cell size. None of them needed touching; they simply walk more cells.
-  const TCELL = 45, TMARGIN = 34;                      // one pine candidate per 4.5 m cell
+  // ══ WHAT MAKES A PINE WOOD READ AS REAL, AND NONE OF IT IS A BETTER TREE MODEL ══ the reference pack
+  // this was measured against ships 155 assets and only 29 of them are trees: the other 126 are saplings,
+  // dead and broken trunks, ground scatter and ground bases. Realism in a forest is AGE STRUCTURE, canopy
+  // gaps and floor variation, so all five terms below are placement, not art — the same nine pine models.
+  // Every one is a pure function of the cell hash, so two regions that overlap a tree agree on it exactly.
+  const PINE_STAND = 0.0042;                           // stand/glade noise: ~240-voxel wavelength, so a clearing is a clearing and not a hole
+  const PINE_STANDK = 0.62;                            // how hard the stand noise swings the acceptance rate — 0 = the old uniform field
+  const PINE_SAP = 0.34;                               // share of pines that are NOT full grown. A young pine IS the 1-3 m understory layer, which is why no shrub density was touched: the user has cut shrubs twice and this reaches the same height for free
+  const PINE_LEAN = 0.045;                             // max drift in voxels per voxel of height — tan(2.6°). Trunks are dead vertical without it, which is the single loudest tell in a voxel forest
+  const PINE_FLARE_H = 7, PINE_FLARE_K = 0.55;         // root flare: the bottom 7 rows sample a CONTRACTED radius, so the base spreads. Without it a trunk looks pushed into the ground rather than grown out of it
+  const PINE_SNAG = 0.055;                             // share that are broken snags — trunk only, crown gone (model palette ids <= 5 are wood, see assets/palette.js)
+  const TCELL = 45, TMARGIN = 68;                      // one pine candidate per 4.5 m cell   // 34 -> 68: a crown half-width reaches 50, scR widens it to 56 and a lean adds ~10 more, so a leaning tree in the next cell has to be considered or it is clipped at the region seam. Only ever ADDS candidate cells — every tree is clipped per-voxel below anyway
   // ── TMARGIN IS THE OVERHANG ALLOWANCE, AND THE NINE PINES ARE WIDER ── it bounds how far a stamp may
   // reach outside the cell that owns it, so a region sweep knows how far to look for trees that overlap it.
   // pine5.vox was 35 across (17 from centre) and 24 covered it; the widest of the nine is 67 (34 from
@@ -1675,9 +1697,16 @@
     if (t.hv) stampModel(HIVEV, t.rot, t.hv.bx, t.hv.by, t.hv.bz, x0, x1, z0, z1, 1);   // the BEEHIVE, at the world anchor birchAt already resolved — mode 1, like the tree it hangs in
   }
   function treeAt(cx, cz) {
-    if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72) return null;
     const wx = Math.round(cx * TCELL + 6 + ihash(cx * 3 + 1, cz * 5 + 2) * (TCELL - 12));
     const wz = Math.round(cz * TCELL + 6 + ihash(cx * 9 + 4, cz * 3 + 8) * (TCELL - 12));
+    // ── STANDS AND GLADES, NOT A UNIFORM FIELD ── this was a flat 0.72 acceptance, which is a Poisson
+    // scatter: even everywhere, and a canopy with no holes in it. The floor under a sealed canopy is
+    // uniformly dim, and the one thing this renderer does better than any asset pack — real traced sun
+    // through a gap — never gets to happen. Swinging the rate on coherent noise opens genuine clearings.
+    // Positioned AFTER wx/wz because the noise has to be sampled in WORLD space: on cell indices it would
+    // be a different field at every biome scale and would not survive TCELL changing.
+    const stand = vnoise(wx * PINE_STAND + 311.7, wz * PINE_STAND + 92.3);
+    if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72 * (1 - PINE_STANDK + 2 * PINE_STANDK * stand)) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pines are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (oakM(wx, wz) > 0.5) return null;     // ── NOR IN THE OAK FOREST (user 2026-08-17) ── the same test at the other border. Without it the new biome is a pine wood with oaks in it rather than a biome, and the two canopies interpenetrate right across the 450-voxel blend band. > 0.5 rather than > 0 deliberately: the pines thin out through the rim instead of stopping on the iso-line, which is what makes the two forests read as meeting rather than as abutting.
     // ── NOR IN THE BIRCH FOREST ── the THIRD border, and the same > 0.5 halfway test the desert and oak
@@ -1709,27 +1738,139 @@
     const along = dxs * fwdX + dzs * fwdZ;
     if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < SPVIEW_W) return null;
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
-    if (nearCave(wx, wz)) return null;
     // ── NINE PINES, NOT ONE (user 2026-09-01: "you can transfer the assets you need … like the 9 pine trees") ──
     // `ti` indexes MROT9 (assets/palette.js), which carries one rotation set per model. It gets its OWN hash
     // rather than reusing rot's: keyed off the same value, every tree of a given species would also share a
     // pose, and a stand would read as one asset repeated rather than nine.
+    // ── AGE STRUCTURE ── every pine used to be full grown, so a stand read as a field of identical poles.
+    // A third of them are now young, on a curve rather than a switch: `a` cubed spends most of its range
+    // near 1 and thins out toward the saplings, which is the shape a real even-aged stand actually has.
+    // HEIGHT AND RADIUS SCALE SEPARATELY, which is where "varied trunk diameter" comes from: a pole-stage
+    // pine is tall and thin, an open-grown one is shorter and fatter, and one factor could express neither.
+    const a = ihash(cx * 53 + 7, cz * 59 + 19);
+    const young = a < PINE_SAP;
+    const g = young ? 0.30 + 0.62 * (a / PINE_SAP) : 1;   // 0.30 .. 0.92 for the young, exactly 1 for the rest so a mature tree is bit-identical to what it was
+    const t = ihash(cx * 61 + 31, cz * 67 + 13);
+    // NEVER ABOVE 1. MSZ is the tallest model, and the stamp clamps the target height to it, so a scale over
+    // 1 does not grow the tree — it CUTS THE TOP OFF FLAT, which is the exact "tree tips are clipped" bug the
+    // canopy reserve exists to prevent. Measured at 1.12 on the first pass. Variation goes downward only.
+    const scH = g * (0.82 + 0.18 * t);                 // 0.82 .. 1.00 of the model's own height
+    const scR = g * (1.12 - 0.24 * t);                 // …and the INVERSE on radius, so tall pines are slim and short ones are stout
+    const ln = ihash(cx * 71 + 3, cz * 73 + 41) * 6.2832, lm = ihash(cx * 79 + 23, cz * 83 + 5) * PINE_LEAN;
+    const snag = ihash(cx * 89 + 11, cz * 97 + 37) < PINE_SNAG;
     return { tx: wx, tz: wz, ti: (ihash(cx * 31 + 17, cz * 37 + 29) * (MROT9.length - 0.01)) | 0,
-             rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
+             rot: (ihash(cx + 101, cz + 55) * 3.99) | 0,
+             sink: Math.max(1, Math.round((5 + ((ihash(cx * 13, cz * 17) * 4) | 0)) * scH)),   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground. SCALED with the tree, or the same 8 that seats a 228-voxel pine swallows a 68-voxel sapling whole
+             scH, scR, lx: Math.cos(ln) * lm, lz: Math.sin(ln) * lm,
+             // a snag keeps 22-55% of its height and loses every foliage voxel — a broken trunk, which is
+             // what the reference pack spends 11 of its 29 tree slots on (4 sick/dead, 7 broken/rotten)
+             snagH: snag ? Math.max(6, Math.round(MSZ * scH * (0.22 + 0.33 * ihash(cx * 101 + 7, cz * 103 + 29)))) : 0 };
   }
-  function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
+  function stampTree(tr, x0, x1, z0, z1, dst) {        // exact rotated-array copy, clipped to a world region
+    // ── `dst` BAKES INSTEAD OF STAMPING, AND THAT IS THE WHOLE POINT ── the chop needs the tree's voxels in
+    // a local frame, and it used to rebuild them from the MODEL. That was correct only while the stamp was a
+    // straight copy. Scale and lean broke it: measured, the chop's frame sat up to 61 voxels from the stamp's
+    // and its oversized box claimed columns belonging to a neighbour, so a swing carved cells at the wrong
+    // coordinates and voxels vanished out of the trunk. Rather than keep a second copy of this loop in step
+    // by hand, the SAME loop writes either the world or a local array — there is nothing left to drift.
     const R = MROT9[tr.ti | 0][tr.rot];   // …the tree's OWN model. `| 0` so a shape built before ti existed still resolves to model 0 rather than undefined
     const gy = groundMin(tr.tx, tr.tz, 2) - tr.sink;              // random sink (1–7) varies how deep each pine sits
-    const bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
-    const xa = Math.max(0, x0 - bx), xb = Math.min(R.sx - 1, x1 - 1 - bx);
-    const za = Math.max(0, z0 - bz), zb = Math.min(R.sz - 1, z1 - 1 - bz);
-    if (xa > xb || za > zb) return;
-    for (let my = 0; my < MSZ; my++) {
-      const y = gy + my; if (y < 1) continue; if (y >= WY) break;
-      const yrow = y * WX, moff = my * R.sx * R.sz;
-      for (let mz = za; mz <= zb; mz++) for (let mx = xa; mx <= xb; mx++) {
-        const v = R.A[mx + mz * R.sx + moff]; if (!v) continue;
-        W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
+    // ── A RESAMPLE, NOT A COPY ── the stamp used to walk the model array and write it voxel for voxel, which
+    // is why every pine in the world was the same size. It walks the TARGET box now and samples the model
+    // back through the tree's own scale, so height and radius are per-tree. Nearest-neighbour on purpose:
+    // anything smoother would blend palette IDS, and a voxel id is a material, not a number to average.
+    const scH = tr.scH === undefined ? 1 : tr.scH, scR = tr.scR === undefined ? 1 : tr.scR;   // a shape built before these existed still stamps full size
+    const tsx = Math.max(1, Math.round(R.sx * scR)), tsz = Math.max(1, Math.round(R.sz * scR));
+    const tsy = Math.min(MSZ, Math.max(1, Math.round(R.sy * scH)));
+    const bx = tr.tx - (tsx >> 1), bz = tr.tz - (tsz >> 1);
+    const cxT = (tsx - 1) * 0.5, czT = (tsz - 1) * 0.5, cxS = (R.sx - 1) * 0.5, czS = (R.sz - 1) * 0.5;
+    // Per-axis sample tables, so the inner loop stays one array read and one compare — the same cost it was.
+    // Rebuilt only on the few FLARE rows, where the sample radius contracts and the trunk therefore spreads.
+    // ── A BOX FILTER, BECAUSE POINT SAMPLING SHREDS THE TREE ── the first cut took ONE source voxel per
+    // target voxel, which is a hole punched through every model it shrinks: at scale s it visits one source
+    // row in every 1/s, so any branch, twig or needle living in a skipped row is simply deleted. Measured
+    // with __vb.floatAudit: 61 detached clusters and 2,443 floating voxels in one region, the largest a
+    // 1,204-voxel crown hanging in the air with its supporting branch row sampled away. That is both of the
+    // reported symptoms at once — "smaller trees contain floating voxels" and "missing the top half".
+    // Each target voxel now covers a RANGE of source voxels and takes the commonest id in it, so a target
+    // voxel is empty only when every source voxel under it is empty. A connected model therefore stays
+    // connected however far it is scaled, which point sampling can never promise.
+    // COMMONEST, not first-found: the models carry five bark and five needle shades and picking the first
+    // hit would flatten that to one, wiping the internal shading the whole crown reads by.
+    let sxL = stampTree.sxL, sxH = stampTree.sxH, szL = stampTree.szL, szH = stampTree.szH;
+    if (!sxL || sxL.length < tsx) { sxL = stampTree.sxL = new Int32Array(Math.max(320, tsx)); sxH = stampTree.sxH = new Int32Array(Math.max(320, tsx)); }
+    if (!szL || szL.length < tsz) { szL = stampTree.szL = new Int32Array(Math.max(320, tsz)); szH = stampTree.szH = new Int32Array(Math.max(320, tsz)); }
+    let tabRf = -1;
+    const span = (i, cT, cS, k, n, LO, HI) => {         // the source interval target index i covers, clamped
+      let lo = Math.floor((i - cT - 0.5) * k + cS + 0.5), hi = Math.ceil((i - cT + 0.5) * k + cS + 0.5) - 1;
+      if (hi < lo) hi = lo;                             // magnification (the flare does this): one source voxel, which is plain nearest and correct
+      if (lo < 0) lo = 0; if (hi > n - 1) hi = n - 1;
+      LO[i] = hi < lo ? -1 : lo; HI[i] = hi; };
+    const buildTab = (rf) => { const k = 1 / (scR * rf);
+      for (let i = 0; i < tsx; i++) span(i, cxT, cxS, k, R.sx, sxL, sxH);
+      for (let i = 0; i < tsz; i++) span(i, czT, czS, k, R.sz, szL, szH);
+      tabRf = rf; };
+    // id tally with a GENERATION stamp rather than a clear — 10 ids, and wiping the table per target voxel
+    // would cost more than the box scan it serves.
+    let tal = stampTree.tal, tgen = stampTree.tgen;
+    if (!tal) { tal = stampTree.tal = new Int32Array(16); tgen = stampTree.tgen = new Int32Array(16); }
+    let gen = (stampTree.gen = (stampTree.gen || 0) + 1);
+    const lx = tr.lx || 0, lz = tr.lz || 0, snagH = tr.snagH || 0;
+    for (let ty = 0; ty < tsy; ty++) {
+      if (snagH && ty > snagH) break;                  // a broken trunk simply stops
+      const y = gy + ty; if (y >= WY) break; if (y < 1) continue;
+      // the lean: a constant drift per voxel of height, so the trunk is a straight stem off vertical rather
+      // than a curve. Rounded to the voxel, which is what makes it read as a lean and not as a stair.
+      const ox = Math.round(lx * ty), oz = Math.round(lz * ty);
+      // ── AND THE ROW BELOW'S OFFSET TOO, WHERE THE LEAN STEPS ── the drift is rounded to the voxel, so once
+      // every ~22 rows the whole tree jogs sideways by one. Where the stem is thick the jog still overlaps,
+      // but high up a 1-2 voxel stem is SEVERED by it, and the chop's root flood is 6-connected so everything
+      // above the break counts as detached: measured, one tree came back 84% orphaned (34,802 of 41,183) and
+      // a single swing would have deleted all of it. Emitting the step row at BOTH offsets welds the jog shut
+      // for two voxels, which costs one extra row per step and nothing anywhere else.
+      const oxP = ty ? Math.round(lx * (ty - 1)) : ox, ozP = ty ? Math.round(lz * (ty - 1)) : oz;
+      const nPass = (oxP !== ox || ozP !== oz) ? 2 : 1;
+      // ── THE FLARE IS MEASURED FROM THE GROUND LINE, NOT FROM THE MODEL'S FOOT ── written as `ty <
+      // PINE_FLARE_H` first, and every widened row was BURIED: the tree is planted at groundMin - sink with
+      // sink 5-8, and the flare is 7 tall, so it lived entirely underground and nothing showed above the
+      // soil. Measuring trunk width by height is what caught it. Rows below the ground line keep the widest
+      // radius so the buried base stays continuous where the terrain is uneven.
+      const fy = Math.max(0, ty - tr.sink);
+      const rf = fy < PINE_FLARE_H ? 1 + PINE_FLARE_K * (1 - fy / PINE_FLARE_H) : 1;
+      if (rf !== tabRf) buildTab(rf);
+      const yrow = y * WX;
+      let syA = Math.floor(ty / scH), syB = Math.ceil((ty + 1) / scH) - 1;   // …and the SAME span on the vertical, which is the axis the skipped rows were lost on
+      if (syB < syA) syB = syA;
+      if (syA < 0) syA = 0; if (syB > R.sy - 1) syB = R.sy - 1;
+      if (syA > R.sy - 1) continue;
+      const plane = R.sx * R.sz;
+      for (let pass = 0; pass < nPass; pass++) {
+      const oX = pass ? oxP : ox, oZ = pass ? ozP : oz;
+      const xa = Math.max(0, x0 - bx - oX), xb = Math.min(tsx - 1, x1 - 1 - bx - oX);
+      const za = Math.max(0, z0 - bz - oZ), zb = Math.min(tsz - 1, z1 - 1 - bz - oZ);
+      if (xa > xb || za > zb) continue;
+      for (let tz2 = za; tz2 <= zb; tz2++) {
+        const zA = szL[tz2]; if (zA < 0) continue;
+        const zB = szH[tz2], wrow = yrow + gwrap(bz + tz2 + oZ, WZ) * WX * WY;
+        for (let tx2 = xa; tx2 <= xb; tx2++) {
+          const xA = sxL[tx2]; if (xA < 0) continue;
+          const xB = sxH[tx2];
+          let best = 0, bestN = 0; gen++;
+          for (let sy = syA; sy <= syB; sy++) { const yo = sy * plane;
+            for (let sz = zA; sz <= zB; sz++) { const zo = yo + sz * R.sx;
+              for (let sx = xA; sx <= xB; sx++) {
+                const v = R.A[zo + sx]; if (!v) continue;
+                const c = tgen[v] === gen ? ++tal[v] : (tgen[v] = gen, tal[v] = 1);
+                if (c > bestN) { bestN = c; best = v; }
+              } } }
+          if (!bestN) continue;
+          if (snagH && best > 5) continue;             // model palette ids <= 5 are WOOD (assets/palette.js): a snag keeps the trunk and loses the crown
+          if (dst) {                                   // bake: RAW model ids, so the caller's `rm` remap still means what it says
+            const mx = bx + tx2 + oX - dst.bx, mz = bz + tz2 + oZ - dst.bz, my = y - dst.gy;
+            if (mx >= 0 && mx < dst.sx && mz >= 0 && mz < dst.sz && my >= 0 && my < dst.sy) dst.A[mx + mz * dst.sx + my * dst.sx * dst.sz] = best;
+          } else W[gwrap(bx + tx2 + oX, WX) + wrow] = remap[best];
+        }
+      }
       }
     }
     const ANCH = PINE_ANCH9[tr.ti | 0], AMX = MROT9[tr.ti | 0][0].sx, AMY = MROT9[tr.ti | 0][0].sz;
@@ -1738,8 +1879,12 @@
     // nine different crowns. This used PINE_ANCH, the legacy alias for PINE_ANCH9[0], and rotated by the global
     // MSX/MSY, which are model 0's dimensions. Every tree therefore hung its cones on pine #1's anchor cells,
     // which on the other eight models are empty sky.
-    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
-      const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
+    if (CONEV && ANCH.length && !snagH && !dst) {          // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+      // …and SCALED with the tree. An anchor is a cell in the unscaled model, so a sapling hung its cones in
+      // the open air above itself until they were carried through the same transform the voxels take. A young
+      // tree bears fewer of them too, which is true of real ones and also stops a 68-voxel sapling wearing
+      // twelve cones the size of its own crown.
+      const n = Math.max(2, Math.round((6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0)) * scH));   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
         const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
@@ -1750,9 +1895,44 @@
         else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
         else { rx = ay; rz = AMX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
-        stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
+        const cy = Math.min(tsy - 1, Math.round(az * scH));   // the anchor's height, through the tree's own scale
+        const trx = Math.round((rx - cxS) * scR + cxT) + Math.round(lx * cy);   // …and its radius, plus the lean AT that height
+        const trz = Math.round((rz - czS) * scR + czT) + Math.round(lz * cy);
+        stampModel(CONEV, (ax + az + k) & 3, bx + trx, gy + cy - CONEV.sz, bz + trz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }
     }
+  }
+  // ══ THE TREE AS IT WAS ACTUALLY STAMPED ══ a local, world-anchored copy for sim/physics.js treeShapeAt.
+  // The box carries the LEAN, so the model-to-world map stays a pure translation (world = bx + mx) — which is
+  // what every consumer in sim/chop.js and sim/chop-tree.js assumes and indexes by.
+  // Cached one deep: a swing calls this once and the next swing is nearly always the same tree.
+  const pineFrameC = { key: '', F: null };
+  function pineFrame(tr) {
+    const key = tr.tx + ',' + tr.tz;
+    if (pineFrameC.key === key) return pineFrameC.F;
+    const R = MROT9[tr.ti | 0][tr.rot];
+    const scH = tr.scH === undefined ? 1 : tr.scH, scR = tr.scR === undefined ? 1 : tr.scR;
+    const tsx = Math.max(1, Math.round(R.sx * scR)), tsz = Math.max(1, Math.round(R.sz * scR));
+    const tsy = Math.min(MSZ, Math.max(1, Math.round(R.sy * scH)));
+    const e = Math.max(0, tsy - 1), dxE = Math.round((tr.lx || 0) * e), dzE = Math.round((tr.lz || 0) * e);
+    const oxA = Math.min(0, dxE), oxB = Math.max(0, dxE), ozA = Math.min(0, dzE), ozB = Math.max(0, dzE);
+    const sx = tsx + (oxB - oxA), sz = tsz + (ozB - ozA);
+    // ── ONE REUSED BUFFER, NOT AN ALLOCATION PER CALL ── a mature pine's box is ~70x70x230 = 1.1 MB, and
+    // the cache is one deep, so a caller that walks many trees allocated a megabyte per tree: a probe over
+    // 625 of them churned ~700 MB and took the page out. The buffer only ever GROWS, and it is cleared over
+    // the range actually used. The returned A therefore ALIASES it — a second pineFrame call invalidates the
+    // previous frame, which is the same contract rockRowSpan and the ring's staging already work under, and
+    // every consumer uses a shape within the single swing that asked for it.
+    const need = sx * sz * tsy;
+    let buf = pineFrame.buf;
+    if (!buf || buf.length < need) buf = pineFrame.buf = new Uint8Array(Math.max(need, 1 << 20));
+    buf.fill(0, 0, need);
+    const F = { A: buf, sx, sz, sy: tsy,
+                bx: tr.tx - (tsx >> 1) + oxA, bz: tr.tz - (tsz >> 1) + ozA,
+                gy: groundMin(tr.tx, tr.tz, 2) - tr.sink };
+    stampTree(tr, F.bx, F.bx + sx, F.bz, F.bz + sz, F);
+    pineFrameC.key = key; pineFrameC.F = F;
+    return F;
   }
   const treesInRegion = (x0, x1, z0, z1) => {
     const out = [];

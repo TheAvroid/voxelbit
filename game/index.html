@@ -3405,6 +3405,14 @@
     remap[ci] = addCol(r, g, b);
     (ci <= 5 ? woodIds : foliageIds).push(remap[ci]);
   }
+  // ── THE COPPER UPPER TRUNK WAS BUILT AND REVERTED THE SAME DAY (user 2026-09-03: "the trunk of the pine
+  // trees are orange. fix") ── a Scots pine really does turn orange up the stem, and it still looks wrong
+  // here. Two reasons, and neither is the colour: the stem is only visible THROUGH the crown at that height,
+  // so the copper arrives as rust-coloured speckle mixed into green needles and reads as autumn blight; and
+  // a voxel trunk at that distance is 2-3 voxels wide, which is not enough surface for a gradient to read as
+  // bark rather than as noise. Limiting it to the stem radius (it painted whole canopies orange before that)
+  // fixed the scale of the problem without fixing the problem. Do not re-add it without solving the
+  // see-through-canopy case first. It also cost 3 palette ids the table does not have to spare.
   // ── FOUR ROTATIONS PER TREE ── the same precomputed 90° turns the single pine had, now one set per
   // model. MROT stays bound to the first tree so everything that still reaches for it is unchanged.
   const MROT9 = [];
@@ -7852,7 +7860,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   }
   const __m_world_terrain = (() => {
   // @module - worldgen: heights, rivers, gorges and every stamped decoration - the source the gen worker is built from
-  // @exports BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
+  // @exports pineFrame, PINE_STAND, PINE_STANDK, PINE_SAP, PINE_LEAN, PINE_FLARE_H, PINE_FLARE_K, PINE_SNAG, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion
   // ── deterministic world-coordinate generation ──────────────────────────────
   function fillColumn(wx, wz, fresh, h0, hxm, hxp, hzm, hzp, mossV) {   // terrain + lakes + twigs + grass; heights + moss fbm arrive precomputed from the row sweep
     const gx = gwrap(wx, WX), gz = gwrap(wz, WZ);
@@ -7872,7 +7880,18 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     if (!lake && h <= WL) h = WL + 1 + (arcticM(wx, wz) > ARCT_BARE
       ? Math.max(0, Math.round((fbm(wx * 0.09 + 3.1, wz * 0.09 + 8.7) - 0.42) * 5)) : 0);   // dry land NEVER sits below the water plane — beach tops meet the surface FLUSH
     hmap[gx + gz * WX] = h;                            // hmap = the GROUND (lakebeds included — you walk on them, underwater)
-    const mossy = !lake && mossV > 0.52;               // 0.56 → 0.52 ≈ +30% moss coverage
+    // ── AND THE FLOOR FOLLOWS THE CANOPY ── the moss threshold used to be a constant, so the pine floor was
+    // the same brown-with-green-patches everywhere regardless of what was standing on it. It is the STAND
+    // noise now, the same field and the same frequency treeAt thins the trees on (PINE_STAND): under a
+    // closed stand the floor is needle litter, and a glade — where the sun actually reaches — grows moss and
+    // therefore the grass strands that key off surfMoss. Coupling the two is most of why a real wood reads as
+    // structured rather than as trees scattered on a lawn, and it costs one noise sample already being taken.
+    // Centred so the AVERAGE coverage is unchanged: the swing is ±0.16 about the 0.52 this shipped with.
+    const stand = vnoise(wx * PINE_STAND + 311.7, wz * PINE_STAND + 92.3);
+    // SIGN CHECKED THE HARD WAY: a HIGH `stand` is where treeAt accepts MORE trees, so the closed canopy is
+    // the high end and the glade is the low one. Written as (0.5 - stand) first, which grew the moss under
+    // the thickest canopy and left the clearings bare — the exact inverse of the thing being modelled.
+    const mossy = !lake && mossV > 0.52 + 0.32 * (stand - 0.5);   // 0.56 → 0.52 ≈ +30% moss coverage
     const dm = desertM(wx, wz);                        // biome weight for this column: 0 = pine forest, 1 = open desert
     const om = oakM(wx, wz);                           // …and the other way: 1 = oak forest (west of the pines), 0 = pine forest. The two masks can never both be non-zero — see the gap arithmetic at OAKOFF
     const bm = birchM(wx, wz);                         // …and the BIRCH band, which sits between the pine and the sand and wears the OAK's terrain (world/window.js)
@@ -9371,7 +9390,18 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // tick-nav.js, tick-creatures.js and debug-api.js — walks `Math.floor((w ± R) / TCELL)` with R in WORLD
   // voxels. A candidate lives inside its own cell, so a cell wholly outside [w - R, w + R] cannot hold one
   // within R: those scans are exact at any cell size. None of them needed touching; they simply walk more cells.
-  const TCELL = 45, TMARGIN = 34;                      // one pine candidate per 4.5 m cell
+  // ══ WHAT MAKES A PINE WOOD READ AS REAL, AND NONE OF IT IS A BETTER TREE MODEL ══ the reference pack
+  // this was measured against ships 155 assets and only 29 of them are trees: the other 126 are saplings,
+  // dead and broken trunks, ground scatter and ground bases. Realism in a forest is AGE STRUCTURE, canopy
+  // gaps and floor variation, so all five terms below are placement, not art — the same nine pine models.
+  // Every one is a pure function of the cell hash, so two regions that overlap a tree agree on it exactly.
+  const PINE_STAND = 0.0042;                           // stand/glade noise: ~240-voxel wavelength, so a clearing is a clearing and not a hole
+  const PINE_STANDK = 0.62;                            // how hard the stand noise swings the acceptance rate — 0 = the old uniform field
+  const PINE_SAP = 0.34;                               // share of pines that are NOT full grown. A young pine IS the 1-3 m understory layer, which is why no shrub density was touched: the user has cut shrubs twice and this reaches the same height for free
+  const PINE_LEAN = 0.045;                             // max drift in voxels per voxel of height — tan(2.6°). Trunks are dead vertical without it, which is the single loudest tell in a voxel forest
+  const PINE_FLARE_H = 7, PINE_FLARE_K = 0.55;         // root flare: the bottom 7 rows sample a CONTRACTED radius, so the base spreads. Without it a trunk looks pushed into the ground rather than grown out of it
+  const PINE_SNAG = 0.055;                             // share that are broken snags — trunk only, crown gone (model palette ids <= 5 are wood, see assets/palette.js)
+  const TCELL = 45, TMARGIN = 68;                      // one pine candidate per 4.5 m cell   // 34 -> 68: a crown half-width reaches 50, scR widens it to 56 and a lean adds ~10 more, so a leaning tree in the next cell has to be considered or it is clipped at the region seam. Only ever ADDS candidate cells — every tree is clipped per-voxel below anyway
   // ── TMARGIN IS THE OVERHANG ALLOWANCE, AND THE NINE PINES ARE WIDER ── it bounds how far a stamp may
   // reach outside the cell that owns it, so a region sweep knows how far to look for trees that overlap it.
   // pine5.vox was 35 across (17 from centre) and 24 covered it; the widest of the nine is 67 (34 from
@@ -9528,9 +9558,16 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     if (t.hv) stampModel(HIVEV, t.rot, t.hv.bx, t.hv.by, t.hv.bz, x0, x1, z0, z1, 1);   // the BEEHIVE, at the world anchor birchAt already resolved — mode 1, like the tree it hangs in
   }
   function treeAt(cx, cz) {
-    if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72) return null;
     const wx = Math.round(cx * TCELL + 6 + ihash(cx * 3 + 1, cz * 5 + 2) * (TCELL - 12));
     const wz = Math.round(cz * TCELL + 6 + ihash(cx * 9 + 4, cz * 3 + 8) * (TCELL - 12));
+    // ── STANDS AND GLADES, NOT A UNIFORM FIELD ── this was a flat 0.72 acceptance, which is a Poisson
+    // scatter: even everywhere, and a canopy with no holes in it. The floor under a sealed canopy is
+    // uniformly dim, and the one thing this renderer does better than any asset pack — real traced sun
+    // through a gap — never gets to happen. Swinging the rate on coherent noise opens genuine clearings.
+    // Positioned AFTER wx/wz because the noise has to be sampled in WORLD space: on cell indices it would
+    // be a different field at every biome scale and would not survive TCELL changing.
+    const stand = vnoise(wx * PINE_STAND + 311.7, wz * PINE_STAND + 92.3);
+    if (ihash(cx * 7 + 13, cz * 11 + 5) > 0.72 * (1 - PINE_STANDK + 2 * PINE_STANDK * stand)) return null;
     if (desertM(wx, wz) > 0.5) return null;   // ── NOT IN THE DESERT ── pines are pine-forest litter. Gated on the same mask the height and the surface colour use, at the halfway point, so the forest floor thins out across the rim rather than stopping dead at a line.
     if (oakM(wx, wz) > 0.5) return null;     // ── NOR IN THE OAK FOREST (user 2026-08-17) ── the same test at the other border. Without it the new biome is a pine wood with oaks in it rather than a biome, and the two canopies interpenetrate right across the 450-voxel blend band. > 0.5 rather than > 0 deliberately: the pines thin out through the rim instead of stopping on the iso-line, which is what makes the two forests read as meeting rather than as abutting.
     // ── NOR IN THE BIRCH FOREST ── the THIRD border, and the same > 0.5 halfway test the desert and oak
@@ -9562,27 +9599,139 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const along = dxs * fwdX + dzs * fwdZ;
     if (along > 0 && along < SPVIEW_D && Math.abs(dxs * fwdZ - dzs * fwdX) < SPVIEW_W) return null;
     if (H(wx, wz) <= WL + 4) return null;    // no pines in water or on beaches
-    if (nearCave(wx, wz)) return null;
     // ── NINE PINES, NOT ONE (user 2026-09-01: "you can transfer the assets you need … like the 9 pine trees") ──
     // `ti` indexes MROT9 (assets/palette.js), which carries one rotation set per model. It gets its OWN hash
     // rather than reusing rot's: keyed off the same value, every tree of a given species would also share a
     // pose, and a stand would read as one asset repeated rather than nine.
+    // ── AGE STRUCTURE ── every pine used to be full grown, so a stand read as a field of identical poles.
+    // A third of them are now young, on a curve rather than a switch: `a` cubed spends most of its range
+    // near 1 and thins out toward the saplings, which is the shape a real even-aged stand actually has.
+    // HEIGHT AND RADIUS SCALE SEPARATELY, which is where "varied trunk diameter" comes from: a pole-stage
+    // pine is tall and thin, an open-grown one is shorter and fatter, and one factor could express neither.
+    const a = ihash(cx * 53 + 7, cz * 59 + 19);
+    const young = a < PINE_SAP;
+    const g = young ? 0.30 + 0.62 * (a / PINE_SAP) : 1;   // 0.30 .. 0.92 for the young, exactly 1 for the rest so a mature tree is bit-identical to what it was
+    const t = ihash(cx * 61 + 31, cz * 67 + 13);
+    // NEVER ABOVE 1. MSZ is the tallest model, and the stamp clamps the target height to it, so a scale over
+    // 1 does not grow the tree — it CUTS THE TOP OFF FLAT, which is the exact "tree tips are clipped" bug the
+    // canopy reserve exists to prevent. Measured at 1.12 on the first pass. Variation goes downward only.
+    const scH = g * (0.82 + 0.18 * t);                 // 0.82 .. 1.00 of the model's own height
+    const scR = g * (1.12 - 0.24 * t);                 // …and the INVERSE on radius, so tall pines are slim and short ones are stout
+    const ln = ihash(cx * 71 + 3, cz * 73 + 41) * 6.2832, lm = ihash(cx * 79 + 23, cz * 83 + 5) * PINE_LEAN;
+    const snag = ihash(cx * 89 + 11, cz * 97 + 37) < PINE_SNAG;
     return { tx: wx, tz: wz, ti: (ihash(cx * 31 + 17, cz * 37 + 29) * (MROT9.length - 0.01)) | 0,
-             rot: (ihash(cx + 101, cz + 55) * 3.99) | 0, sink: 5 + ((ihash(cx * 13, cz * 17) * 4) | 0) };   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground
+             rot: (ihash(cx + 101, cz + 55) * 3.99) | 0,
+             sink: Math.max(1, Math.round((5 + ((ihash(cx * 13, cz * 17) * 4) | 0)) * scH)),   // sink 5-8 (was 1-7) — every trunk base voxel is buried, no floating trees on bumpy ground. SCALED with the tree, or the same 8 that seats a 228-voxel pine swallows a 68-voxel sapling whole
+             scH, scR, lx: Math.cos(ln) * lm, lz: Math.sin(ln) * lm,
+             // a snag keeps 22-55% of its height and loses every foliage voxel — a broken trunk, which is
+             // what the reference pack spends 11 of its 29 tree slots on (4 sick/dead, 7 broken/rotten)
+             snagH: snag ? Math.max(6, Math.round(MSZ * scH * (0.22 + 0.33 * ihash(cx * 101 + 7, cz * 103 + 29)))) : 0 };
   }
-  function stampTree(tr, x0, x1, z0, z1) {             // exact rotated-array copy, clipped to a world region
+  function stampTree(tr, x0, x1, z0, z1, dst) {        // exact rotated-array copy, clipped to a world region
+    // ── `dst` BAKES INSTEAD OF STAMPING, AND THAT IS THE WHOLE POINT ── the chop needs the tree's voxels in
+    // a local frame, and it used to rebuild them from the MODEL. That was correct only while the stamp was a
+    // straight copy. Scale and lean broke it: measured, the chop's frame sat up to 61 voxels from the stamp's
+    // and its oversized box claimed columns belonging to a neighbour, so a swing carved cells at the wrong
+    // coordinates and voxels vanished out of the trunk. Rather than keep a second copy of this loop in step
+    // by hand, the SAME loop writes either the world or a local array — there is nothing left to drift.
     const R = MROT9[tr.ti | 0][tr.rot];   // …the tree's OWN model. `| 0` so a shape built before ti existed still resolves to model 0 rather than undefined
     const gy = groundMin(tr.tx, tr.tz, 2) - tr.sink;              // random sink (1–7) varies how deep each pine sits
-    const bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);
-    const xa = Math.max(0, x0 - bx), xb = Math.min(R.sx - 1, x1 - 1 - bx);
-    const za = Math.max(0, z0 - bz), zb = Math.min(R.sz - 1, z1 - 1 - bz);
-    if (xa > xb || za > zb) return;
-    for (let my = 0; my < MSZ; my++) {
-      const y = gy + my; if (y < 1) continue; if (y >= WY) break;
-      const yrow = y * WX, moff = my * R.sx * R.sz;
-      for (let mz = za; mz <= zb; mz++) for (let mx = xa; mx <= xb; mx++) {
-        const v = R.A[mx + mz * R.sx + moff]; if (!v) continue;
-        W[gwrap(bx + mx, WX) + yrow + gwrap(bz + mz, WZ) * WX * WY] = remap[v];
+    // ── A RESAMPLE, NOT A COPY ── the stamp used to walk the model array and write it voxel for voxel, which
+    // is why every pine in the world was the same size. It walks the TARGET box now and samples the model
+    // back through the tree's own scale, so height and radius are per-tree. Nearest-neighbour on purpose:
+    // anything smoother would blend palette IDS, and a voxel id is a material, not a number to average.
+    const scH = tr.scH === undefined ? 1 : tr.scH, scR = tr.scR === undefined ? 1 : tr.scR;   // a shape built before these existed still stamps full size
+    const tsx = Math.max(1, Math.round(R.sx * scR)), tsz = Math.max(1, Math.round(R.sz * scR));
+    const tsy = Math.min(MSZ, Math.max(1, Math.round(R.sy * scH)));
+    const bx = tr.tx - (tsx >> 1), bz = tr.tz - (tsz >> 1);
+    const cxT = (tsx - 1) * 0.5, czT = (tsz - 1) * 0.5, cxS = (R.sx - 1) * 0.5, czS = (R.sz - 1) * 0.5;
+    // Per-axis sample tables, so the inner loop stays one array read and one compare — the same cost it was.
+    // Rebuilt only on the few FLARE rows, where the sample radius contracts and the trunk therefore spreads.
+    // ── A BOX FILTER, BECAUSE POINT SAMPLING SHREDS THE TREE ── the first cut took ONE source voxel per
+    // target voxel, which is a hole punched through every model it shrinks: at scale s it visits one source
+    // row in every 1/s, so any branch, twig or needle living in a skipped row is simply deleted. Measured
+    // with __vb.floatAudit: 61 detached clusters and 2,443 floating voxels in one region, the largest a
+    // 1,204-voxel crown hanging in the air with its supporting branch row sampled away. That is both of the
+    // reported symptoms at once — "smaller trees contain floating voxels" and "missing the top half".
+    // Each target voxel now covers a RANGE of source voxels and takes the commonest id in it, so a target
+    // voxel is empty only when every source voxel under it is empty. A connected model therefore stays
+    // connected however far it is scaled, which point sampling can never promise.
+    // COMMONEST, not first-found: the models carry five bark and five needle shades and picking the first
+    // hit would flatten that to one, wiping the internal shading the whole crown reads by.
+    let sxL = stampTree.sxL, sxH = stampTree.sxH, szL = stampTree.szL, szH = stampTree.szH;
+    if (!sxL || sxL.length < tsx) { sxL = stampTree.sxL = new Int32Array(Math.max(320, tsx)); sxH = stampTree.sxH = new Int32Array(Math.max(320, tsx)); }
+    if (!szL || szL.length < tsz) { szL = stampTree.szL = new Int32Array(Math.max(320, tsz)); szH = stampTree.szH = new Int32Array(Math.max(320, tsz)); }
+    let tabRf = -1;
+    const span = (i, cT, cS, k, n, LO, HI) => {         // the source interval target index i covers, clamped
+      let lo = Math.floor((i - cT - 0.5) * k + cS + 0.5), hi = Math.ceil((i - cT + 0.5) * k + cS + 0.5) - 1;
+      if (hi < lo) hi = lo;                             // magnification (the flare does this): one source voxel, which is plain nearest and correct
+      if (lo < 0) lo = 0; if (hi > n - 1) hi = n - 1;
+      LO[i] = hi < lo ? -1 : lo; HI[i] = hi; };
+    const buildTab = (rf) => { const k = 1 / (scR * rf);
+      for (let i = 0; i < tsx; i++) span(i, cxT, cxS, k, R.sx, sxL, sxH);
+      for (let i = 0; i < tsz; i++) span(i, czT, czS, k, R.sz, szL, szH);
+      tabRf = rf; };
+    // id tally with a GENERATION stamp rather than a clear — 10 ids, and wiping the table per target voxel
+    // would cost more than the box scan it serves.
+    let tal = stampTree.tal, tgen = stampTree.tgen;
+    if (!tal) { tal = stampTree.tal = new Int32Array(16); tgen = stampTree.tgen = new Int32Array(16); }
+    let gen = (stampTree.gen = (stampTree.gen || 0) + 1);
+    const lx = tr.lx || 0, lz = tr.lz || 0, snagH = tr.snagH || 0;
+    for (let ty = 0; ty < tsy; ty++) {
+      if (snagH && ty > snagH) break;                  // a broken trunk simply stops
+      const y = gy + ty; if (y >= WY) break; if (y < 1) continue;
+      // the lean: a constant drift per voxel of height, so the trunk is a straight stem off vertical rather
+      // than a curve. Rounded to the voxel, which is what makes it read as a lean and not as a stair.
+      const ox = Math.round(lx * ty), oz = Math.round(lz * ty);
+      // ── AND THE ROW BELOW'S OFFSET TOO, WHERE THE LEAN STEPS ── the drift is rounded to the voxel, so once
+      // every ~22 rows the whole tree jogs sideways by one. Where the stem is thick the jog still overlaps,
+      // but high up a 1-2 voxel stem is SEVERED by it, and the chop's root flood is 6-connected so everything
+      // above the break counts as detached: measured, one tree came back 84% orphaned (34,802 of 41,183) and
+      // a single swing would have deleted all of it. Emitting the step row at BOTH offsets welds the jog shut
+      // for two voxels, which costs one extra row per step and nothing anywhere else.
+      const oxP = ty ? Math.round(lx * (ty - 1)) : ox, ozP = ty ? Math.round(lz * (ty - 1)) : oz;
+      const nPass = (oxP !== ox || ozP !== oz) ? 2 : 1;
+      // ── THE FLARE IS MEASURED FROM THE GROUND LINE, NOT FROM THE MODEL'S FOOT ── written as `ty <
+      // PINE_FLARE_H` first, and every widened row was BURIED: the tree is planted at groundMin - sink with
+      // sink 5-8, and the flare is 7 tall, so it lived entirely underground and nothing showed above the
+      // soil. Measuring trunk width by height is what caught it. Rows below the ground line keep the widest
+      // radius so the buried base stays continuous where the terrain is uneven.
+      const fy = Math.max(0, ty - tr.sink);
+      const rf = fy < PINE_FLARE_H ? 1 + PINE_FLARE_K * (1 - fy / PINE_FLARE_H) : 1;
+      if (rf !== tabRf) buildTab(rf);
+      const yrow = y * WX;
+      let syA = Math.floor(ty / scH), syB = Math.ceil((ty + 1) / scH) - 1;   // …and the SAME span on the vertical, which is the axis the skipped rows were lost on
+      if (syB < syA) syB = syA;
+      if (syA < 0) syA = 0; if (syB > R.sy - 1) syB = R.sy - 1;
+      if (syA > R.sy - 1) continue;
+      const plane = R.sx * R.sz;
+      for (let pass = 0; pass < nPass; pass++) {
+      const oX = pass ? oxP : ox, oZ = pass ? ozP : oz;
+      const xa = Math.max(0, x0 - bx - oX), xb = Math.min(tsx - 1, x1 - 1 - bx - oX);
+      const za = Math.max(0, z0 - bz - oZ), zb = Math.min(tsz - 1, z1 - 1 - bz - oZ);
+      if (xa > xb || za > zb) continue;
+      for (let tz2 = za; tz2 <= zb; tz2++) {
+        const zA = szL[tz2]; if (zA < 0) continue;
+        const zB = szH[tz2], wrow = yrow + gwrap(bz + tz2 + oZ, WZ) * WX * WY;
+        for (let tx2 = xa; tx2 <= xb; tx2++) {
+          const xA = sxL[tx2]; if (xA < 0) continue;
+          const xB = sxH[tx2];
+          let best = 0, bestN = 0; gen++;
+          for (let sy = syA; sy <= syB; sy++) { const yo = sy * plane;
+            for (let sz = zA; sz <= zB; sz++) { const zo = yo + sz * R.sx;
+              for (let sx = xA; sx <= xB; sx++) {
+                const v = R.A[zo + sx]; if (!v) continue;
+                const c = tgen[v] === gen ? ++tal[v] : (tgen[v] = gen, tal[v] = 1);
+                if (c > bestN) { bestN = c; best = v; }
+              } } }
+          if (!bestN) continue;
+          if (snagH && best > 5) continue;             // model palette ids <= 5 are WOOD (assets/palette.js): a snag keeps the trunk and loses the crown
+          if (dst) {                                   // bake: RAW model ids, so the caller's `rm` remap still means what it says
+            const mx = bx + tx2 + oX - dst.bx, mz = bz + tz2 + oZ - dst.bz, my = y - dst.gy;
+            if (mx >= 0 && mx < dst.sx && mz >= 0 && mz < dst.sz && my >= 0 && my < dst.sy) dst.A[mx + mz * dst.sx + my * dst.sx * dst.sz] = best;
+          } else W[gwrap(bx + tx2 + oX, WX) + wrow] = remap[best];
+        }
+      }
       }
     }
     const ANCH = PINE_ANCH9[tr.ti | 0], AMX = MROT9[tr.ti | 0][0].sx, AMY = MROT9[tr.ti | 0][0].sz;
@@ -9591,8 +9740,12 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // nine different crowns. This used PINE_ANCH, the legacy alias for PINE_ANCH9[0], and rotated by the global
     // MSX/MSY, which are model 0's dimensions. Every tree therefore hung its cones on pine #1's anchor cells,
     // which on the other eight models are empty sky.
-    if (CONEV && ANCH.length) {                   // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
-      const n = 6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0);   // rotated with the tree so every region stamps them identically
+    if (CONEV && ANCH.length && !snagH && !dst) {          // PINECONES — 6-12 per pine (2× the old 3-6), hung UNDER canopy anchors (foliage with open air below),
+      // …and SCALED with the tree. An anchor is a cell in the unscaled model, so a sapling hung its cones in
+      // the open air above itself until they were carried through the same transform the voxels take. A young
+      // tree bears fewer of them too, which is true of real ones and also stops a 68-voxel sapling wearing
+      // twelve cones the size of its own crown.
+      const n = Math.max(2, Math.round((6 + ((ihash(tr.tx * 7 + 5, tr.tz * 9 + 2) * 7) | 0)) * scH));   // rotated with the tree so every region stamps them identically
       const used = new Set();                          // one cone per column — never stacked on top of each other
       for (let k = 0; k < n; k++) {                    // PINE_ANCH is angle-sorted: pick k-th from the k-th angular sector — cones ring the crown evenly
         const a = ANCH[(((k + 0.15 + ihash(tr.tx * 13 + k * 29, tr.tz * 17 + k * 31) * 0.7) / n) * ANCH.length) | 0];
@@ -9603,9 +9756,44 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         else if (tr.rot === 2) { rx = AMX - 1 - ax; rz = AMY - 1 - ay; }
         else { rx = ay; rz = AMX - 1 - ax; }
         const ck = rx | (rz << 8); if (used.has(ck)) continue; used.add(ck);
-        stampModel(CONEV, (ax + az + k) & 3, bx + rx, gy + az - CONEV.sz, bz + rz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
+        const cy = Math.min(tsy - 1, Math.round(az * scH));   // the anchor's height, through the tree's own scale
+        const trx = Math.round((rx - cxS) * scR + cxT) + Math.round(lx * cy);   // …and its radius, plus the lean AT that height
+        const trz = Math.round((rz - czS) * scR + czT) + Math.round(lz * cy);
+        stampModel(CONEV, (ax + az + k) & 3, bx + trx, gy + cy - CONEV.sz, bz + trz, x0, x1, z0, z1, 0);   // empty cells only — never eats foliage
       }
     }
+  }
+  // ══ THE TREE AS IT WAS ACTUALLY STAMPED ══ a local, world-anchored copy for sim/physics.js treeShapeAt.
+  // The box carries the LEAN, so the model-to-world map stays a pure translation (world = bx + mx) — which is
+  // what every consumer in sim/chop.js and sim/chop-tree.js assumes and indexes by.
+  // Cached one deep: a swing calls this once and the next swing is nearly always the same tree.
+  const pineFrameC = { key: '', F: null };
+  function pineFrame(tr) {
+    const key = tr.tx + ',' + tr.tz;
+    if (pineFrameC.key === key) return pineFrameC.F;
+    const R = MROT9[tr.ti | 0][tr.rot];
+    const scH = tr.scH === undefined ? 1 : tr.scH, scR = tr.scR === undefined ? 1 : tr.scR;
+    const tsx = Math.max(1, Math.round(R.sx * scR)), tsz = Math.max(1, Math.round(R.sz * scR));
+    const tsy = Math.min(MSZ, Math.max(1, Math.round(R.sy * scH)));
+    const e = Math.max(0, tsy - 1), dxE = Math.round((tr.lx || 0) * e), dzE = Math.round((tr.lz || 0) * e);
+    const oxA = Math.min(0, dxE), oxB = Math.max(0, dxE), ozA = Math.min(0, dzE), ozB = Math.max(0, dzE);
+    const sx = tsx + (oxB - oxA), sz = tsz + (ozB - ozA);
+    // ── ONE REUSED BUFFER, NOT AN ALLOCATION PER CALL ── a mature pine's box is ~70x70x230 = 1.1 MB, and
+    // the cache is one deep, so a caller that walks many trees allocated a megabyte per tree: a probe over
+    // 625 of them churned ~700 MB and took the page out. The buffer only ever GROWS, and it is cleared over
+    // the range actually used. The returned A therefore ALIASES it — a second pineFrame call invalidates the
+    // previous frame, which is the same contract rockRowSpan and the ring's staging already work under, and
+    // every consumer uses a shape within the single swing that asked for it.
+    const need = sx * sz * tsy;
+    let buf = pineFrame.buf;
+    if (!buf || buf.length < need) buf = pineFrame.buf = new Uint8Array(Math.max(need, 1 << 20));
+    buf.fill(0, 0, need);
+    const F = { A: buf, sx, sz, sy: tsy,
+                bx: tr.tx - (tsx >> 1) + oxA, bz: tr.tz - (tsz >> 1) + ozA,
+                gy: groundMin(tr.tx, tr.tz, 2) - tr.sink };
+    stampTree(tr, F.bx, F.bx + sx, F.bz, F.bz + sz, F);
+    pineFrameC.key = key; pineFrameC.F = F;
+    return F;
   }
   const treesInRegion = (x0, x1, z0, z1) => {
     const out = [];
@@ -9770,9 +9958,9 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       if (occ) bricks2[c >> 5] |= 1 << (c & 31); else bricks2[c >> 5] &= ~(1 << (c & 31));
     }
   }
-    return { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
+    return { pineFrame, PINE_STAND, PINE_STANDK, PINE_SAP, PINE_LEAN, PINE_FLARE_H, PINE_FLARE_K, PINE_SNAG, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion };
   })();
-  const { BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
+  const { pineFrame, PINE_STAND, PINE_STANDK, PINE_SAP, PINE_LEAN, PINE_FLARE_H, PINE_FLARE_K, PINE_SNAG, BKCELL, BKMARGIN, BK_BOLE, BK_LEAN, BK_SPAWN, BKHIVE, birchAt, birchTrunkW, stampBirch, BCELL, CACCELL, CAVE_CELL, CAVE_FLOOR_MAX, CAVE_MARGIN, CAVE_WMAX, DRCELL, F2CELL, FLWCELL, FLWPATCH, LGCELL, LGIGCELL, LILYCELL, MUCELL, flowerAt, mossCap, stampFlower, OCELL, OKCELL, OKFRUIT, OKHIVE, OKMARGIN, OKVIEW_W, PCCELL, SCELL, SHCELL, SHRUB_ON, SPVIEW_D, SPVIEW_W, TCELL, TMARGIN, boulderAt, cactusAt, caveAt, caveHitsBox, drockAt, fern2At, fillColumn, genRegion, genRegionGen, hiveAt, lilyAt, lilyGigAt, logAt, mushAt, nearCave, oakAt, oreAt, pconeAt, rebuildBricks, rebuildBricks2, rockRowSpan, shrubAt, stampBoulder, stampCactus, stampCave, stampCellsGen, stampDrock, stampFern2, stampLily, stampLilyGig, stampLog, stampModel, stampMush, stampOak, stampOre, stampPcone, stampShrub, stampStick, stampTree, stickAt, sweepOrphans, treeAt, treesInRegion } = __m_world_terrain;
   async function buildWorld(withStages) {             // boot builds EVERYTHING the saved view distance can reach — no in-game waiting, like the classic full builds
     const bh = Math.min(HALF, Math.ceil((RD_FIXED + 96) / 8) * 8);
     const cx = winOX + HALF, cz = winOZ + HALF;
@@ -9947,7 +10135,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const jobById = new Map(), poolQueue = [], regionJobs = new Map();
   const rgnKey = (x0, x1, z0, z1) => x0 + ',' + x1 + ',' + z0 + ',' + z1;
   if (!location.search.includes('nopool')) try {
-    const consts = { OAKF1, OAKF2, OAK_BOWL, DEEP_SPAN, BASIN_RAMP, BASIN_BED, BIRCH_GAPWOB, BIRCH_ELEV, BIRCH_GAPBED, BIRCH_BANKW, BIRCH_BANKY, BIRCH_BANKK, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
+    const consts = { PINE_STAND, PINE_STANDK, PINE_SAP, PINE_LEAN, PINE_FLARE_H, PINE_FLARE_K, PINE_SNAG, OAKF1, OAKF2, OAK_BOWL, DEEP_SPAN, BASIN_RAMP, BASIN_BED, BIRCH_GAPWOB, BIRCH_ELEV, BIRCH_GAPBED, BIRCH_BANKW, BIRCH_BANKY, BIRCH_BANKK, BIRCH_GAPW, PINE_FLOOR, PINE_CREST, PINE_RELIEF, PINE_BOWL, CANOPY, BIRCHNB, WOB_DES1, WOB_DES2, WOB_OAK, WOB_CH, SHRUB_ON, PETAL_ON, SPYAW, SPVIEW_D, SPVIEW_W, WY, LIFT, WL, HMAX, RIVCELL, RIVINF, RIVNEAR_CAP, ROCKSTEP, DECOR_MIN, TCELL, CACCELL, DRCELL, SHCELL, TMARGIN, CAVE_CELL, CAVE_MARGIN, CAVE_WMAX, CAVE_FLOOR_MAX, OCELL, BCELL, F2CELL, MUCELL, FLWCELL, FLWPATCH, BLOSCHERRY, PCCELL, SCELL, LGCELL, LILYCELL, LGIGCELL, MSX, MSY, MSZ, SPWX, SPWZ, SPOX, BIOP, DESOFF, DESB, DESW, DESC, DESH, DESY, DESREL, DESDUNE, OAKOFF, OAKB, OAKW, OAKY, OAKHILL, OAKFAR, OAKNEAR, OAKWOFF, OAKC, OAKH, OAKWFAR, OAKWNEAR, OAKBANKR, OAKBANKY, OAKBRISE, OAKBEACH, OAKBEACHY, BKCELL, BK_BOLE, BK_LEAN, BK_SPAWN, BKMARGIN, BKHIVE, BIRCHOFF, BIRCHB, BIRCHH, BIRCHC, BIRCHWMAX, BIRCHFAR, BIRCHWFAR, BASIN_T, BASIN_ARCT, BASIN_LOW, BASIN_ARCTLIFT, ARCT_SNOWR, ARCT_SNOWN, ARCT_FLOE, ARCT_FLOE_RIV, ARCT_FLOEH, ARCT_FLOESPAN, ARCT_FLOEF, ARCTOFF, ARCTB, ARCTH, ARCTC, ARCTWMAX, ARCTFAR, ARCTWFAR, ARCTIC_SNOW, ARCT_BARE, OKCELL, OKMARGIN, OKVIEW_W, OKFRUIT, OKHIVE, CHOFF, CHHALF, CHB, CHW, CHREACH, WATER_T, WATER_B, LAVA_T, LAVA_B, LAVA_R, LAVA_Y, STICK_S, STICK_M };
     const OPAQTAB = []; for (let i = 0; i < 256; i++) OPAQTAB.push(i && i !== WATER_T && i !== WATER_B && !foliaTab[i] ? 1 : 0);   // must stay bit-identical to opaqueTab in render/buffers.js — the pool trusts this verdict and never re-derives it
     const tables = { OPAQTAB, ASNOW, NEEDLE, MOSS, BIRCHMOSS, BIRCHSTRAND, BIRCHENC, BIRCHIDS, BIRCHBARK, DIRT, DSAND, ROCK, ROCKX, BROCK, SHRUBC, SHRUBF, BLOSLEAF, BLOSWHITE, OAKMOSS, TWIGPINK, TWIGWHITE, SAND, ORECOAL, OREIRON, OREGOLD, ORECRYS, GRASS, PEBBLE, FLOWERV, FLOWERV_CH, FERN2V, MUSHV, LILYPAD_GIGV, CONEV, CONEVL, LILYV, STICKV, STICKB, STICKBIRCH, LOGV, ROCKV, ROCKVU, ROCK26, R26DMAP, REDROCK, CACTI, SHRUBV, DROCK, DROCKS, DROCKM, DROCKB, R26S, R26M, R26B, PINE_ANCH, PINE_ANCH9, OAKV, OAK_ANCH, OAK_BANCH, FRUITV, HIVEV, BLOSRANK, OAKLITER };   // BLOSRANK replaces BLOSMAP/BLOSMAPW: one rank table, the ramp is an argument (assets/bow.js)   // BLOSMAPW rides beside BLOSMAP, where the pink map was already registered   // OAKLITER: the LIGHT green oak variety's 4-step ramp — four numbers, and the same argument BLOSLEAF/BLOSWHITE are (the derived MODELS are rebuilt below, never shipped)
     const fns = { deepen, bedH, ihash, sstep, pwrap, vnoise, vnoise3, fbm, pineBase, baseH, basinM, riverAt, rivEval, gatherRivers, riversNear, riverS, bankEval, bankDist, desWob, desertM, birchM, arcticM, basinT, basinLow, arctSnow, arctH, oakWob, oakM, chWob, cherryM, chNear, oakH, oakRoll, oakBank, duneH, H, groundMin, rockSeatY, rowNoise, makeHRow, makeMossRow, colNoise, makeHCol, makeMossCol, fillColumn, rockRowSpan, stampModel, boulderAt, stampBoulder, cactusAt, stampCactus, drockAt, stampDrock, shrubAt, stampShrub, caveAt, caveHitsBox, stampCave, nearCave, oreAt, stampOre, fern2At, stampFern2, mushAt, flowerAt, stampFlower, blosRemap, mossCap, stampMush, pconeAt, stampPcone, stickAt, stampStick, logAt, stampLog, oakAt, stampOak, stampBirch, birchAt, birchPick, birchBanch, birchTrunkW, birchTrunkC, birchDec, hiveAt, lilyAt, stampLily, lilyGigAt, stampLilyGig, treeAt, stampTree, treesInRegion, stampCellsGen, genRegionGen, genRegion, sweepOrphans };
@@ -11297,6 +11485,27 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     const t0z = Math.floor((pz - RF) / RING_TILE), t1z = Math.floor((pz + RF) / RING_TILE);
     const k0x = Math.floor((px - K) / RING_TILE), k1x = Math.floor((px + K) / RING_TILE);
     const k0z = Math.floor((pz - K) / RING_TILE), k1z = Math.floor((pz + K) / RING_TILE);
+    // ══ THE RING IS A DISC, BECAUSE THE VIEW IS A CYLINDER ══ trace.js caps every primary ray at
+    // `u.rdist.x / length(rd.xz)` — a CIRCULAR horizontal radius, not a square edge — and composite.js fogs on
+    // the same horizontal distance. The wanted set was a SQUARE of half-width R, so its corners sat R*sqrt(2)
+    // = 2715 voxels out at the shipped 1920: terrain that is generated, paged, evicted and re-fetched and that
+    // no ray can ever reach. That is ~19% of every tile the ring holds, spent on nothing.
+    // WORSE, IT WAS ALSO THE GAP METRIC. ringGap used Chebyshev (`max(|dx|,|dz|) - 64`), which for a corner
+    // tile UNDERSTATES its real distance by up to 41% — and the corners are exactly what a starved ring drops,
+    // because the dispatch picks nearest-first by true distance. So the tiles the ring gave up on first were
+    // the ones clamping the view, and they were invisible ones: with the fill roughly a disc of radius rho, the
+    // nearest missing tile in Chebyshev terms sits at 45 degrees and reports rho/sqrt(2) = 0.71*rho. The view
+    // plane was being pulled in by ~30% of its own reach by geometry that could not be seen at any distance.
+    // `dn` below is the exact horizontal distance from the player to the NEAREST POINT of a tile square, which
+    // is precisely the ray length at which that tile first becomes reachable. One function now answers all
+    // three questions — fetch it? keep it? does it clamp the view? — so they cannot disagree.
+    // `window.__ringSquare = 1` restores the old Chebyshev square for an A/B IN ONE SESSION — the world
+    // reseeds on every reload, so a cross-reload comparison of two ring shapes is two different worlds.
+    const tileDist = window.__ringSquare
+      ? (tx, tz) => Math.max(Math.abs(tx * RING_TILE + (RING_TILE >> 1) - px), Math.abs(tz * RING_TILE + (RING_TILE >> 1) - pz)) - (RING_TILE >> 1)
+      : (tx, tz) => { const ex = Math.max(0, Math.abs(tx * RING_TILE + (RING_TILE >> 1) - px) - (RING_TILE >> 1)),
+                            ez = Math.max(0, Math.abs(tz * RING_TILE + (RING_TILE >> 1) - pz) - (RING_TILE >> 1));
+        return Math.sqrt(ex * ex + ez * ez); };
     // ══ TWO OWNERS OF ONE DESCRIPTOR IS THE ONE THING THAT CANNOT HAPPEN ══ and the first cut let it, which
     // is what produced the pink-and-cyan garbage across the arctic: `near` used HALF - RING_TILE, so a tile
     // whose centre sat between 896 and 1024 voxels from the player was NOT dropped even though the CPU window
@@ -11329,7 +11538,11 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     let evicted = 0;
     for (const [k, T] of ringTiles) {
       const x0t = T.tx * RING_TILE, z0t = T.tz * RING_TILE;
-      const out = T.tx < k0x || T.tx > k1x || T.tz < k0z || T.tz > k1z;   // the KEEP box, not the fetch box — see ringKeep
+      // …the keep BOX still bounds the tile indices, because k0x/k1x span 33 tiles = 4224 voxels and the GPU
+      // grid wraps at 4096: two tiles 32 apart share one descriptor block, so nothing may be held outside it.
+      // The disc is the tighter of the two and does the real work — it retires the corners the fetch no longer
+      // asks for, one tile of hysteresis beyond the fetch radius so a tile on the boundary cannot thrash.
+      const out = T.tx < k0x || T.tx > k1x || T.tz < k0z || T.tz > k1z || tileDist(T.tx, T.tz) > K;
       const ovl = x0t < winOX + WX && x0t + RING_TILE > winOX && z0t < winOZ + WZ && z0t + RING_TILE > winOZ;
       if (!out && !ovl) continue;
       if (out && !ovl && ++evicted > EVICT_MAX) continue;   // …over budget this frame: it stays, harmlessly, until the next. A HANDOVER (ovl) is not deferred — the CPU window is about to own those descriptors and two owners is the one thing that cannot happen
@@ -11423,6 +11636,8 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
       // rule below stands as written; adoptLive is left in place so the premise keeps being checked.
       if (x0t < winOX + WX && x0t + RING_TILE > winOX && z0t < winOZ + WZ && z0t + RING_TILE > winOZ) {
         if (ringHanded.size < RING_HANDCAP) ringHanded.add(k); continue; }
+      const dn = tileDist(tx, tz);                     // horizontal distance to this tile's nearest point — see tileDist
+      if (dn >= RF) continue;                          // …a corner of the index box, outside the disc the view can reach: not wanted, and it does not clamp anything
       let T = ringTiles.get(k);
       if (!T && ringHanded.has(k)) {                   // …it has just left the near window, on a frame where the pool was drained: already paged, so it is filled
         ringHanded.delete(k); ringAdopt++;
@@ -11431,8 +11646,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         ringTiles.set(k, T);
       }
       if (T && T.done) continue;                       // filled
-      const cheb = Math.max(Math.abs(cx - px), Math.abs(cz - pz)) - (RING_TILE >> 1);
-      if (cheb < ringGap) ringGap = cheb;
+      if (dn < ringGap) ringGap = dn;                  // …the ray length at which this hole becomes reachable, which is exactly what the view may not exceed
       if (T) continue;                                 // already on its way
       const d = (cx - px) * (cx - px) + (cz - pz) * (cz - pz);
       if (d < bestD) { bestD = d; best = [tx, tz, k]; }
@@ -11442,6 +11656,12 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
     // made the TAIL WORSE — p99 57 -> 87, max 90 -> 121 — because a starved prefetch row is not ready when
     // the box crosses onto it, so the gap opens anyway AND the slots were spent. Unreserved is strictly
     // better on smoothness (p99 46-49). Reverted.
+    // ── AND RING_JOBS IS NOT THE LEVER EITHER ── the gen pool is the ring's real limit while flying (16 of 16
+    // workers busy, ~18 jobs queued behind them), so buying the ring a bigger share of one FIFO queue looks
+    // like the obvious move. A/B'd on ONE fixed route, teleporting back to the same anchor between legs so the
+    // terrain is identical: RING_JOBS 12 vs 24 came out 1842/1890 against 1842/1891 average view radius, 2
+    // against 1 jumps over 40 voxels — noise. `pend` only averages 8 of the 12 already allowed, so the cap was
+    // never binding; the wait is worker LATENCY, not a queue slot. Left at 12.
     while (jobs < RING_JOBS && best) {                  // keep the pool fed: one scan, several dispatches
       const M = RING_M * 8;
       const j2 = poolRingJob(best[0] * RING_TILE - M, best[0] * RING_TILE + RING_TILE + M,
@@ -11454,6 +11674,7 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
         const cx = tx * RING_TILE + (RING_TILE >> 1), cz = tz * RING_TILE + (RING_TILE >> 1);
         const x2 = tx * RING_TILE, z2 = tz * RING_TILE;
         if (x2 < winOX + WX && x2 + RING_TILE > winOX && z2 < winOZ + WZ && z2 + RING_TILE > winOZ) continue;
+        if (tileDist(tx, tz) >= RF) continue;          // …the same disc the first pass used, or the re-scan dispatches the corners it just declined
         if (ringTiles.has(ringKey(tx, tz))) continue;
         const d = (cx - px) * (cx - px) + (cz - pz) * (cz - pz);
         if (d < bestD) { bestD = d; best = [tx, tz, ringKey(tx, tz)]; }
@@ -11527,7 +11748,14 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   const ringStats = () => { let pend = 0, jdone = 0, ready = 0; const some = [];
     for (const [, T] of ringTiles) { if (T.job) { pend++; if (T.job.done) jdone++; } if (T.done) ready++;
       if (some.length < 4) some.push([T.tx, T.tz, !!T.job, T.job ? !!T.job.done : null, T.done]); }
-    return Object.assign({ pend, jdone, ready, some }, ringStats0()); };
+    // ── `own` IS LAZY, BECAUSE IT IS 4 ms AND EVERY OTHER FIELD IS FREE ── ringOwnAudit walks a quarter of a
+    // million slots, so a probe that samples the ring EVERY FRAME (which is the only way to see a streaming
+    // fault) was paying 4.12 ms a frame to read counters that cost nothing. Defined as a getter on the
+    // returned object so `r.own` still reads exactly as before — JSON.stringify still pays for it, a
+    // per-frame sampler picking named fields does not.
+    const o = Object.assign({ pend, jdone, ready, some }, ringStats0());
+    Object.defineProperty(o, 'own', { get: ringOwnAudit, enumerable: true, configurable: true });
+    return o; };
   // ══ DOES THE RING STILL OWN WHAT IT THINKS IT OWNS? ══ every fault that shows as scattered geometry in the
   // far field is two owners of one descriptor, and the ring is the only party that keeps a record of what it
   // wrote: (gb, slot) pairs per tile. Walking them against bdesc is therefore the one check that can see the
@@ -11601,13 +11829,27 @@ const edVoxSeqs = (pv) => {                          // the NAMED animations ins
   // presumably churn-sensitive rather than prefetch-specific — prefetch just holds ~44% more tiles and evicts
   // that much harder — so it is worth suspecting under any other pressure that raises eviction rates too, even
   // though the ring audits clean at the shipped setting at rest AND at fly-sprint on a pool at 64%.
+  // ── AND HERE IS THE MECHANISM, WHICH THE AUDIT ABOVE COULD NOT NAME (2026-09-03) ── the corruption is not
+  // a race. It is ARITHMETIC, and it is forced: gb wraps every GBX bricks, i.e. tiles 32 apart in index share
+  // one descriptor block exactly. The fetch box spans floor((p+RF)/128) - floor((p-RF)/128) + 1 tiles, which
+  // is 31 at the shipped RF of 1920 (3968 voxels, inside the 4096 wrap) and 34 at RF = 2112 — so with the
+  // prefetch on, the box contains pairs of tiles 32 and 33 apart, BOTH of which it asks for, and each one
+  // frees the other's slot on its next pass. That is `{ want: 459851, got: 0 }`, and it explains why the
+  // damage survived switching the fetch back off: the descriptors were already crossed.
+  // It also says what a usable prefetch would have to look like. RF <= 1984 keeps the box at 31 tiles, so the
+  // most that can ever be fetched beyond the view radius is HALF A TILE — and ringKeep clamps to GHALF for the
+  // same reason, which is why widening it never bought the hysteresis the comment above asked for. Anything
+  // more has to come out of R, i.e. out of view distance, and that is a different trade from the one that was
+  // measured. The DISC (see tileDist in ringUpdate_) took most of this pop out by other means: it removed the
+  // Chebyshev staircase that made a tile-line crossing a step rather than a slope, and the same flight that
+  // scores 25 jumps over 40 voxels with the square scores 2 with the disc, prefetch still off.
   // Left switchable rather than deleted: the pop it targets is real and measured, but the fix is not usable as
   // it stands, and the price was never the only thing wrong with it.
   // __vb.ringPrefetch(1.5) turns it on for anyone who wants to look at the trade.
   let RING_PREFETCH = 0;                               // TILES fetched beyond the view radius; 0 = ship default
   const ringPrefetchSet = (v) => { if (v !== undefined) RING_PREFETCH = Math.max(0, Math.min(6, +v || 0)); return { RING_PREFETCH }; };
   const poolAdaptSet = (v) => { if (v !== undefined) PF_ADAPT = v ? 1 : 0; return { PF_ADAPT, movePerFrame: +pfMoveEma.toFixed(2), scale: +pfScale.toFixed(2), effCap: Math.round(POOL_BUDGET * pfScale) }; };
-  const ringStats0 = () => ({ err: ringErr, evictLRU: ringEvictLRU, squash: ringSquash, abandoned: ringAbandon, adoptClear: ringAdoptClear, own: ringOwnAudit(), adoptLive: adoptLive.slice(), drainMs: +poolDrainMax.toFixed(2), drainN: poolDrainN, nearPaged: poolPaged, dirty: poolDirty.size, wrunN, wrunB, wrunWords, decMs: ringDecMs, runs: ringRuns, maxN: ringMaxN, mul: GMUL, tiles: ringTiles.size, handOver: ringHandOver, adopted: ringAdopt, handed: ringHanded.size, paged: ringPaged, evicted: ringEvicted,
+  const ringStats0 = () => ({ err: ringErr, evictLRU: ringEvictLRU, squash: ringSquash, abandoned: ringAbandon, adoptClear: ringAdoptClear, adoptLive: adoptLive.slice(), drainMs: +poolDrainMax.toFixed(2), drainN: poolDrainN, nearPaged: poolPaged, dirty: poolDirty.size, wrunN, wrunB, wrunWords, decMs: ringDecMs, runs: ringRuns, maxN: ringMaxN, mul: GMUL, tiles: ringTiles.size, handOver: ringHandOver, adopted: ringAdopt, handed: ringHanded.size, paged: ringPaged, evicted: ringEvicted,
     overflow: ringOverflow, filled: Math.round(ringFilled()), gap: Math.round(ringGap), reach: ringReach(), ms: +ringMs.toFixed(0),   // `gap` is the RAW distance to the nearest unfilled tile; `filled` is that with the HALF - RING_TILE floor applied. They differ exactly when the floor is lying, which is what the view clamp has to care about.
     poolUsed, free: poolFreeN, poolSlots: POOL_SLOTS });   // poolUsed is a HIGH-WATER MARK — slots ever handed out, never decremented by poolRelease — so it climbs to POOL_SLOTS in any long run and says NOTHING about how full the pool is. LIVE occupancy is poolUsed - free, which is what the squash below tests and what anyone outside must use. A day was spent reading the high-water mark as residency.
   poolTouchHook = poolTouch;                           // terrain.js and gen-pool.js run BEFORE this fragment, so they reach the pool through this hook rather than naming it
@@ -15954,6 +16196,453 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     }
   `;
 
+  // ── PT_SRC ── THE SECOND RENDERER, on [Y] ─────────────────────────────────────────────────────────────
+  // A brute-force Monte Carlo PATH TRACER over the same world the shipping renderer draws. It exists to be
+  // compared against, not to replace anything: the shipping pipeline is a one-bounce estimator with a hand
+  // built ambient/bounce model and an SVGF denoiser on top, and the honest way to know what that model costs
+  // in accuracy is to stand a converging reference next to it and flip between the two.
+  //
+  // Technique ported from gnikoloff/webgpu-raytracer (MIT) — https://github.com/gnikoloff/webgpu-raytracer
+  //   * multi-bounce path tracing written as a LOOP with an explicit throughput, because WGSL has no recursion
+  //   * cosine-weighted hemisphere sampling at every diffuse bounce (the cosine cancels against the Lambert
+  //     BRDF's own cosine, so the whole bounce is `throughput *= albedo`)
+  //   * progressive ACCUMULATION into a storage buffer across frames, zeroed whenever the camera moves
+  //   * a final tonemap/blit pass that divides the accumulator by its own sample count
+  // What is NOT ported, and could not be: that renderer intersects TRIANGLE MESHES through a BVH. There are no
+  // triangles here and no BVH to build — the brick pool IS the acceleration structure, and `trace()` /
+  // `bodyTrace()` in render/wgsl/dda.js are the intersector. This shader takes DDAW as an argument for exactly
+  // that reason: it is the SAME traversal the shipping tracer walks, so a difference between the two images is
+  // a difference in the LIGHTING model and never in what the ray hit.
+  //
+  // ── BINDING BUDGET ── TRACE sits at exactly 8 storage buffers, the WebGPU default cap (see the bdesc note in
+  // render/wgsl/trace.js), and a 9th fails pipeline creation silently. This pass spends SEVEN: pool, bdesc,
+  // pal, bricks2, wbricks, bodyVox — the six DDAW needs — plus the accumulator. There is exactly one slot
+  // spare, which is what the drop-slot creature intersector would cost if this ever grows to draw them.
+  // Every binding here is READ by the shader: layout:'auto' prunes anything unused and then rejects the bind
+  // group that still passes it, which shows up as a black canvas at absurd fps and one console line.
+  const PT_SRC = ({ DDAW }) => /* wgsl */`
+    @group(0) @binding(1) var<storage, read> pool : array<u32>;      // the paged brick pool — same buffer, same format, same reader as TRACE
+    @group(0) @binding(2) var<storage, read> bdesc : array<u32>;
+    @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
+    @group(0) @binding(6) var<storage, read> bricks2 : array<u32>;
+    @group(0) @binding(7) var<storage, read> wbricks : array<u32>;
+    @group(0) @binding(23) var<storage, read> bodyVox : array<u32>;  // rigid bodies, so a felled tree paths exactly like a standing one
+    // ── THE ACCUMULATOR ── rgb = the running sum of radiance, a = how many samples went into it. A BUFFER and
+    // not an rgba32float texture because a read-write storage texture needs a device feature this game does not
+    // request, and the pass has to read back what it wrote last frame.
+    @group(0) @binding(10) var<storage, read_write> ptAcc : array<vec4<f32>>;
+    // ── TEMPORAL HISTORY ── the previous frame's MEAN radiance and the primary hit distance that produced it.
+    // Two TEXTURES ping-ponged rather than storage buffers: TRACE's 8-storage-buffer cap is the binding budget
+    // this pass lives inside (see the note above), and storage TEXTURES are a separate, emptier limit.
+    // rgba16float, not rgba32float: 32-bit float is not filterable in core WebGPU, and layout:'auto' infers a
+    // filterable sample type for a texture_2d<f32>, so a 32F history fails bind-group validation. At 4000
+    // voxels f16 still resolves ~2 voxels, far inside the 5% distance tolerance the reuse test wants.
+    // ══ VOLUMETRIC CLOUDS, PORTED (user 2026-09-03) ══ the SAME cached density volume the shipping renderer
+    // marches (render/wgsl/cloudgen.js fills it, composite.js marches it), bound here so the two renderers
+    // cannot drift into two different skies. CG_CONSTS is that shared tuning block, so every number the
+    // deck's shape depends on still has exactly one definition in the repo.
+    // CLOUD_LO/CLOUD_HI and cgIGN/cgSample/cgPhase/cgLight are COPIES: they live inside composite.js and a
+    // WGSL module cannot see another module's functions. They have to be kept in step with that file by hand.
+    @group(0) @binding(24) var cgTex : texture_3d<f32>;
+    @group(0) @binding(25) var cgSamp : sampler;
+    @group(0) @binding(16) var ptHistIn  : texture_2d<f32>;
+    @group(0) @binding(17) var ptHistOut : texture_storage_2d<rgba16float, write>;
+    struct PTU {
+      spp : f32,                                                     // paths per pixel per frame
+      bounces : f32,                                                 // path length, including the primary ray
+      reset : f32,                                                   // 1 = the camera moved, throw the accumulator away
+      seq : f32,                                                     // a per-frame counter that decorrelates the sample sequence
+      cap : f32,                                                     // stop accumulating past this many samples (0 = never)
+      secR : f32,                                                    // how far a BOUNCE ray looks for geometry, in voxels (0 = the full render distance)
+      reproj : f32,                                                  // 1 = reuse the previous frame through prevUVd instead of throwing the estimate away when the camera moves
+      hist : f32,                                                    // how many samples the reused history is worth: the response of the exponential average is 1/(hist+1)
+      folT : f32,                                                    // what fraction of a LEAF's albedo leaves through the far side (0 = opaque leaves, the strict reading of the geometry)
+      dbg : f32,                                                     // bit 0 = skip next-event estimation (a measurement probe); bit 1 = white-noise jitter; bit 3 = no clouds
+      neeMin : f32,                                                  // skip the sun shadow ray once the path's throughput falls below this — see the note at the NEE block
+      fClamp : f32,                                                  // clamp a single sample's radiance to this — the firefly guard (0 = off)
+      fog : f32,                                                     // distance-fog strength as a FRACTION of the shipping renderer's (composite.js worldFog); 0 = none
+      reflK : f32,                                                   // scales the water's Fresnel reflectance — 1 = physical, 0.5 = half the mirror
+    }
+    @group(0) @binding(11) var<uniform> pt : PTU;
+    @group(0) @binding(4) var ptOut : texture_storage_2d<rgba8unorm, write>;
+    ${DDAW}
+    ${CG_CONSTS}
+    const CLOUD_LO : f32 = 760.0;
+    const CLOUD_HI : f32 = 1080.0;
+    fn cgIGN(p : vec2<f32>, f : u32) -> f32 {
+      let q = p + 5.588238 * f32(f % 64u);
+      return fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
+    }
+    fn cgSample(p : vec3<f32>) -> f32 {
+      let yn = (p.y - CLOUD_LO) / (CLOUD_HI - CLOUD_LO);
+      let uvw = vec3<f32>(fract((p.x + u.cloudT.x * 9.0) / CG_TILE), clamp(yn, 0.0, 1.0), fract((p.z + u.cloudT.x * 3.5) / CG_TILE));
+      return textureSampleLevel(cgTex, cgSamp, uvw, 0.0).r * CG_STORE;
+    }
+    fn cgPhase(cosT : f32, g : f32) -> f32 {
+      let g2 = g * g;
+      return (1.0 - g2) / (12.5663706 * pow(max(1.0 + g2 - 2.0 * g * cosT, 1e-4), 1.5));
+    }
+    fn cgLight(p : vec3<f32>) -> f32 {
+      var sh = 0.0;
+      for (var i = 1; i <= CG_LIGHT_STEPS; i++) {
+        sh += cgSample(p + u.sunDir * (f32(i) * CG_LIGHT_STEP)) * CG_LIGHT_STEP_U;
+      }
+      return exp(-sh * CG_SHADOW);
+    }
+    // The deck over the sky for one primary ray. The structure is composite.js's march; what is dropped is
+    // the rain coupling, the slice probe and the bloom hand-off, none of which this renderer has. The IGN
+    // dither stays and is left INSIDE the accumulation on purpose: averaged over frames it resolves, where a
+    // post-average composite would print it as a fixed pattern that never converges.
+    fn ptClouds(sky : vec3<f32>, rd : vec3<f32>, px : vec2<f32>) -> vec3<f32> {
+      if (rd.y <= 0.02 || (u32(pt.dbg) & 8u) != 0u) { return sky; }   // dbg bit 3 skips the deck, for an in-session cost A/B
+      let camY = u.camPos.y;
+      let tA = (CLOUD_LO - camY) / rd.y;
+      let tB = (CLOUD_HI - camY) / rd.y;
+      let ta = max(min(tA, tB), 0.0);
+      let tb = min(max(tA, tB), 12000.0);
+      if (tb <= ta) { return sky; }
+      let roW = vec3<f32>(u.camPos.x + u.winO.x, camY, u.camPos.z + u.winO.y);
+      let stepW = (tb - ta) / f32(CG_RAY_STEPS);
+      let stepU = stepW / CG_U2W;
+      let phase = mix(1.0, cgPhase(dot(rd, u.sunDir), CG_G), CG_PHASE_MIX);
+      let sunC = sunTint() * mix(dayScale(), CG_NKEY, nightK());
+      let ambC = mix(HORIZON, ZENITH, 0.4) * 0.55 * dayScale() + CG_NAMB * nightK();
+      var tg = ta + stepW * cgIGN(px, u32(u.frame));
+      var Tg = 1.0;
+      var accG = vec3<f32>(0.0);
+      for (var ci = 0; ci < CG_RAY_STEPS; ci++) {
+        let d = cgSample(roW + rd * tg);
+        if (d > CG_MIN_D) {
+          let stTr = exp(-d * stepU);
+          let wt = Tg * (1.0 - stTr);
+          if (wt > CG_MIN_W) {
+            accG = accG + wt * (sunC * (cgLight(roW + rd * tg) * phase * (1.0 - exp(-d))) * CG_SUN + ambC);
+          } else {
+            accG = accG + wt * ambC;
+          }
+          Tg = Tg * stTr;
+          if (Tg < CG_T_CUT) { break; }
+        }
+        tg = tg + stepW;
+      }
+      let aG = 1.0 - Tg;
+      if (aG <= 1e-3) { return sky; }
+      // Distance moves the deck's COLOUR toward the horizon haze and leaves its ALPHA alone, and the sky is
+      // occluded FASTER than the deck is dense — both exactly as composite.js argues them. The second is what
+      // stops the sun disc showing through an opaque cloud.
+      let cloudG = accG / max(aG, 1e-3);
+      let hazeG = skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z)));
+      let cG = mix(cloudG, hazeG, 1.0 - exp(-ta * 0.00035));
+      // ── A MIX, NOT AN ADD ── written first as sky * (1 - aSky) + cG * aG, which is where the dark rim
+      // around every cloud came from: CG_SKY_OCC is 1.85, so aSky is nearly DOUBLE aG, and those two terms
+      // sum to (1 - 1.85 * aG) + aG = 1 - 0.85 * aG. That is less than one everywhere the deck is partly
+      // transparent, i.e. exactly along every cloud edge, and the missing energy reads as a dark outline.
+      // composite.js composites the two with a single mix by aSky and loses nothing; this is that line.
+      let aSky = min(1.0, aG * CG_SKY_OCC);
+      return mix(sky, cG, aSky);
+    }
+    const PT_MAXB : i32 = 8;                                         // the loop bound the compiler unrolls against; pt.bounces is the runtime one and is always <= this
+    // ── AN ORTHONORMAL BASIS AROUND n ── its own copy rather than TRACE's onbT, because these are separate
+    // WGSL modules and neither can see the other. Same construction, same numbers.
+    fn ptOnb(n : vec3<f32>) -> vec3<f32> {
+      let a = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), abs(n.x) > 0.9);
+      return normalize(cross(a, n));
+    }
+    // COSINE-WEIGHTED hemisphere sampling (Malley's method: a uniform disc lifted onto the hemisphere). The
+    // pdf is cos/pi and the Lambert BRDF is albedo/pi, so the estimator collapses to throughput *= albedo —
+    // no cosine term appears anywhere in the loop below, and that is why it is not missing.
+    // ── LOW-DISCREPANCY SAMPLING ── the estimator's cost is fixed; what is not fixed is how evenly its
+    // samples land. White noise clumps and leaves gaps, so a given sample count buys less than it could.
+    // R2 is the 2D generalisation of the golden ratio: successive terms are as far from each other as a
+    // 2D sequence can be. Indexed by the FRAME (pt.seq) so the stratification happens along the axis the
+    // accumulator actually averages over, and Cranley-Patterson rotated by a per-pixel offset so neighbouring
+    // pixels do not all walk the same sequence and turn the noise into a visible lattice.
+    fn r2seq(i : f32, cp : vec2<f32>) -> vec2<f32> {
+      return fract(vec2<f32>(i * 0.7548776662, i * 0.5698402910) + cp);
+    }
+    fn ptCosHemi(n : vec3<f32>, r1 : f32, r2 : f32) -> vec3<f32> {
+      let a = 6.2831853 * r1; let r = sqrt(r2);
+      let t = ptOnb(n); let b = cross(n, t);
+      return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
+    }
+    // ── ONE PATH ── returns the radiance carried back along the primary ray. Everything about it is ordinary
+    // path tracing; the only voxel-specific parts are the intersector and the surface-offset epsilons, which
+    // are in VOXEL units (one voxel = 10 cm) rather than the fractions of a scene-radius a mesh tracer uses.
+    // ── STRATIFYING THE SUN CONE AND THE FIRST BOUNCE WAS TRIED AND REVERTED ── the obvious next dimensions
+    // after the sub-pixel jitter, and measured in a three-way A/B in one session they are not worth having:
+    // white 2.019, sub-pixel R2 1.285 (-36%), sub-pixel + sun + first bounce 1.278 (-37%). Half a percent of
+    // noise for +2.2% of frame time (48.04 -> 49.10 ms), because the extra pairs have to be built for every
+    // sample whether the path survives to use them or not. The sub-pixel jitter does essentially all of the
+    // work; these dimensions are already well covered by the temporal average.
+    fn ptPath(rd0 : vec3<f32>, seed : ptr<function, u32>, t0 : ptr<function, f32>, px : vec2<f32>) -> vec3<f32> {
+      let uw = (u32(u.fx) & 2u) != 0u;                               // camera underwater: water voxels are see-through to the primary ray, exactly as in TRACE
+      let sunC = sunTint();                                          // the illuminant, sun or moon — SHARED with the shipping renderer so the two images are lit by the same light
+      let sunUp = u.sunDir.y > -0.04;
+      let jitK = mix(0.028, 0.009, nightK());                        // the sun's angular radius as TRACE draws it — a real penumbra, sampled once per bounce instead of denoised
+      let ceilY = f32((u32(u.fx) >> 8u) & 31u) * 32.0;               // world ceiling: a shadow ray already above it and climbing is clear without a walk
+      var ro = u.camPos;
+      var rd = rd0;
+      var thr = vec3<f32>(1.0);
+      var L = vec3<f32>(0.0);
+      var inW = uw;                                                  // the path is INSIDE water: every later trace skips water voxels (see the water branch)
+      var wJust = false;                                             // …and the segment that just entered it pays Beer-Lambert over its own length
+      var spec = false;                                              // the ray currently being traced came off a SPECULAR event (water), so it is exempt from the bounce-distance cap below
+      // A DYNAMIC bound on purpose. A literal one invites the compiler to unroll the loop and inline the
+      // intersector eight times over, and the register pressure that produces costs more than the branch it
+      // saves. PT_MAXB is the ceiling, not the count.
+      let nb = min(i32(pt.bounces + 0.5), PT_MAXB);
+      for (var b = 0; b < nb; b = b + 1) {
+        let tcap = u.rdist.x / max(length(vec2<f32>(rd.x, rd.z)), 0.05);   // the same CIRCULAR render distance the shipping tracer uses, so the two end the world at the same radius
+        // ── THE ONE APPROXIMATION IN THE TRANSPORT ── the PRIMARY ray goes the full render distance. A
+        // DIFFUSE BOUNCE ray is stopped at pt.secR and, if it gets that far without hitting anything, is
+        // shaded as if it had escaped to the sky. Primary rays are perfectly coherent — neighbouring pixels
+        // walk neighbouring bricks and the pool stays in cache — while a cosine-sampled bounce ray is
+        // maximally incoherent, and that is what the cap is buying back. How much it buys depends entirely
+        // on how much geometry is in front of the camera: MEASURED at 2195x885, 4 bounces, secR 512 against
+        // uncapped, 35.4 ms vs 42.9 ms over open water, and in a dense oak canopy an earlier build measured
+        // 36.8 ms vs 281 ms. It is a floor under the worst case, not a saving on the average one.
+        // ── AND IT IS FOR DIFFUSE BOUNCES ONLY ── a water reflection is a MIRROR: what it shows is the far
+        // shore, and shortening it does not add a little noise, it deletes the reflection and replaces it
+        // with sky. With specular rays capped too, the error against an uncapped reference was rms 17.9/255
+        // over the whole frame; exempting them takes it to rms 3.08 with a mean of +1.06/255, against a
+        // sampling noise floor of about 1.8 at the 512 samples both sides were measured at. So the remaining
+        // bias is at the edge of measurable, and secR = 0 turns the cap off entirely for a strict reference.
+        let lim = select(min(4000.0, tcap), min(select(4000.0, pt.secR, pt.secR > 0.0), tcap), b > 0 && !spec);
+        let h = traceAll(ro, rd, lim, inW);
+        if (b == 0) { *t0 = h.t; }                                   // the PRIMARY hit distance, which is the only depth the reprojection needs
+        if (wJust) { thr *= exp(-WATER_SIG * select(60.0, h.t, h.t >= 0.0)); wJust = false; }   // the water column this segment crossed
+        if (h.t < 0.0) {
+          // ── THE MISS IS THE LIGHT ── skyColor() for the primary ray (sun disc, moon, stars, meteors — what
+          // you actually see when you look up) and skyBase() for every bounce after it. That split is not a
+          // shortcut: skyBase has no sun disc in it, and the direct sun is already estimated exactly by the
+          // shadow ray below, so using the full sky on a bounce would count the sun TWICE.
+          // An if, NOT select(): WGSL's select evaluates BOTH arms, and skyColor is the whole night sky —
+          // stars, the milky way, the moon photo, eight meteor slots. Paying for it on every bounce that
+          // escaped cost more than the bounce did.
+          // The deck is composited on the PRIMARY miss only. A bounce ray that escapes is gathering ambient
+          // sky, and marching a cloud volume for it would multiply the most expensive term in this renderer
+          // by the bounce count for a contribution the eye cannot separate from the sky behind it.
+          if (b == 0) { L += thr * ptClouds(skyColor(rd), rd, px); } else { L += thr * skyBase(rd); }
+          break;
+        }
+        let p = ro + rd * h.t;
+        let n = h.n;
+        // ── WATER: A SMOOTH DIELECTRIC ── Schlick-weighted choice between a mirror reflection and straight-
+        // through transmission. Not a refraction: the bend is small at the angles a lake is seen from and the
+        // straight path keeps the branch to five lines. Once transmitted the path is flagged inW, so water is
+        // invisible to it from then on and it reaches the bed in ONE more bounce instead of ricocheting inside
+        // the volume until the budget runs out.
+        if (h.vox == WTv || h.vox == WBv) {
+          let ci = clamp(abs(dot(rd, n)), 0.0, 1.0);
+          // ── THE MIRROR IS SCALED (user 2026-09-03: "lower the reflections by 50%") ── Schlick's reflectance
+          // decides how often the path reflects rather than transmits, so scaling it here scales the mirror
+          // directly: at reflK 0.5 half the rays that would have bounced off the surface go into the water
+          // instead, and the lake shows half as much of the far shore and twice as much of its own bed.
+          // Deliberately NOT energy-compensated. The physical answer is F, and this is a LOOK control.
+          let F = (0.02 + 0.98 * pow(1.0 - ci, 5.0)) * pt.reflK;
+          if (rand(seed) < F) { rd = reflect(rd, n); ro = p + n * 0.02; }
+          else { inW = true; wJust = true; ro = p - n * 0.02; }
+          spec = true;
+          continue;
+        }
+        let alb = pal[h.vox].rgb;
+        // ── A LEAF IS TWO-SIDED ── every renderer that draws a forest has to answer this, and the answer is
+        // never "opaque". A real leaf reflects about a tenth of the visible light and TRANSMITS about as much
+        // again, which is why a canopy interior is green and legible rather than black. These voxels are
+        // opaque 10 cm cubes, so a strict path trace of the geometry puts a forest floor at near zero — and
+        // that is a fact about the model, not about the light. pt.folT splits a leaf's albedo into a
+        // reflected lobe (1 - folT) and a transmitted one (folT); the two together are exactly alb, so the
+        // leaf conserves energy, and folT = 0 reduces every line below to the plain opaque surface it was.
+        // The shipping renderer solves the same problem differently — a short AO ray that cannot see the
+        // canopy overhead, plus the FOL_STR forward-lobe glow in TRACE — which is why its forest interiors
+        // are so much brighter than this one's even at folT > 0.
+        let fol = isFol(h.vox);
+        let kT = select(0.0, pt.folT, fol);
+        // ── NEXT EVENT ESTIMATION ── the sun is a tiny bright disc and a cosine-sampled bounce would find it
+        // about once in 100,000 tries, so it is sampled EXPLICITLY every bounce. The cone jitter, the
+        // grazing-angle offset and the ceiling escape are all lifted from the sun ray in render/wgsl/trace.js;
+        // the difference is that this one is averaged over hundreds of frames instead of denoised.
+        // ── AND IT IS SKIPPED ONCE THE PATH CANNOT PAY FOR IT ── measured, the four shadow rays are 15.5 ms
+        // of a 35.6 ms frame: 43%, the single biggest line in this renderer. Their COST is flat — each walks
+        // up to 1200 voxels — while their CONTRIBUTION is scaled by the path's throughput, which after three
+        // diffuse bounces off ~0.15-albedo foliage is a few parts in a thousand. Gating on throughput spends
+        // the shadow rays where they can still change a pixel and skips the ones that arithmetically cannot.
+        // This is a bias, and a measured one rather than an argued one: see the sweep in the commit note.
+        let thrMax = max(thr.r, max(thr.g, thr.b));
+        if (sunUp && (u32(pt.dbg) & 1u) == 0u && thrMax > pt.neeMin) {
+          let st = ptOnb(u.sunDir); let sb = cross(u.sunDir, st);
+          let sdir = normalize(u.sunDir + st * ((rand(seed) * 2.0 - 1.0) * jitK) + sb * ((rand(seed) * 2.0 - 1.0) * jitK));
+          let ndl = dot(n, sdir);
+          let front = ndl > 0.0;
+          let kS = select(kT, 1.0 - kT, front);                      // which lobe the sun is on: the reflected one, or the transmitted one behind the leaf
+          if (kS > 0.0 && abs(ndl) > 0.0) {
+            let ns = select(-n, n, front);                           // …and the face the shadow ray has to leave from, or a back-lit leaf shadows itself and transmission reads as nothing
+            // The clearance a ray needs off a face is proportional to 1/cos of its angle to that face. A fixed
+            // epsilon speckles every flat surface under a low sun — see the long note at the same line in TRACE.
+            let so = p + ns * clamp(0.03 / max(abs(dot(n, u.sunDir)), 1e-3), 0.03, 0.8);
+            let sCap = select(1200.0, min(1200.0, (ceilY - so.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
+            var vis = true;
+            if (sCap > 0.0) {
+              vis = trace(so, sdir, sCap, inW).t < 0.0;
+              if (vis) { vis = bodyTraceX(so, sdir, sCap, true).t < 0.0; }   // occlusion only, so ANY hit ends the walk
+            }
+            if (vis) { L += thr * alb * sunC * abs(ndl) * kS; }
+          }
+        }
+        L += thr * alb * ambFloor();                                 // the same night/cave floor the composite adds, and for the same reason: with it gone a cave is pure black rather than dark
+        thr *= alb;                                                  // ← the whole diffuse BRDF, see ptCosHemi
+        // RUSSIAN ROULETTE from the second bounce on: kill low-throughput paths with probability 1-q and
+        // scale the survivors by 1/q, which is unbiased — the estimator's expectation is untouched and only
+        // its variance moves. Dark albedos are the common case in a forest, so a nominally 4-bounce path
+        // usually stops sooner than four.
+        if (b >= 1) {
+          let q = clamp(max(thr.r, max(thr.g, thr.b)), 0.05, 0.95);
+          if (rand(seed) > q) { break; }
+          thr = thr / q;
+        }
+        // Pick a lobe with the same probability as its share of the albedo, so the estimator's weight is
+        // (alb * kT) / kT = alb either way and nothing has to be re-weighted here.
+        let bn = select(n, -n, kT > 0.0 && rand(seed) < kT);
+        rd = ptCosHemi(bn, rand(seed), rand(seed));
+        ro = p + bn * 0.02;
+        spec = false;
+      }
+      return L;
+    }
+    // ── DISTANCE FOG ── composite.js worldFog, ported. That helper lives in COMPOSITE rather than PRE (a
+    // WGSL module cannot see another's functions), so this is a copy and the constants have to be kept in
+    // step by hand: the exponential is exp(-d * 0.0006) and the far-plane ramp is a fraction of rdist, both
+    // exactly as they are there. pt.fog scales the density, so 0.25 is a quarter of the shipping haze.
+    // Applied to the AVERAGED radiance rather than per sample: fog is a deterministic function of the primary
+    // hit distance, so averaging first and fogging once is identical and costs one evaluation instead of one
+    // per sample. It is applied AFTER the history store, so what accumulates stays the clean estimate.
+    fn ptFog(col : vec3<f32>, rd : vec3<f32>, dist : f32) -> vec3<f32> {
+      if (pt.fog <= 0.0 || dist <= 0.0) { return col; }
+      var a = 1.0 - exp(-dist * 0.0006 * pt.fog);
+      a = max(a, smoothstep(u.rdist.x * 0.62, u.rdist.x - 6.0, dist * length(vec2<f32>(rd.x, rd.z))) * pt.fog);
+      return mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), clamp(a, 0.0, 1.0));
+    }
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let RWu = u32(u.res.x);
+      if (gid.x >= RWu || gid.y >= u32(u.res.y)) { return; }
+      let idx = gid.y * RWu + gid.x;
+      // ── THE CAP ── once the estimate has stopped visibly moving there is nothing left to buy, so the pass
+      // still runs (it has to write ptOut) but takes no new samples. A stationary camera therefore converges
+      // and then costs nearly nothing, which is what makes flipping to this renderer to LOOK at something
+      // practical rather than a fan event.
+      let accPrev = ptAcc[idx];
+      let done = pt.cap > 0.5 && pt.reset < 0.5 && accPrev.a >= pt.cap;
+      var sum = vec3<f32>(0.0);
+      var n = 0.0;
+      var t0 = -1.0;
+      var rd0 = rayDir(vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5));
+      if (!done) {
+        var seed = ((gid.x * 1973u) ^ (gid.y * 9277u) ^ (u32(pt.seq) * 26699u)) | 1u;
+        let sN = i32(pt.spp + 0.5);
+        for (var s = 0; s < 4; s = s + 1) {
+          if (s >= sN) { break; }
+          // A NEW RANDOM SUB-PIXEL POSITION PER SAMPLE — this is the antialiasing. The shipping renderer gets
+          // its edges from the TAA resolve's jitter history; here the pixel filter falls out of the estimator.
+          // The per-pixel rotation. Hashed from the pixel, so it is fixed for this pixel across frames and the
+          // sequence it rotates stays low-discrepancy in the frame index.
+          let cp = vec2<f32>(f32((gid.x * 1664525u + gid.y * 1013904223u) & 0xffffu) / 65536.0,
+                             f32((gid.y * 1664525u + gid.x * 22695477u) & 0xffffu) / 65536.0);
+          // dbg bit 1 restores the old WHITE-NOISE jitter, so the two can be compared in ONE session — the
+          // world reseeds on reload, and a cross-reload comparison is two different forests.
+          var j = r2seq(pt.seq + f32(s), cp);
+          if ((u32(pt.dbg) & 2u) != 0u) { j = vec2<f32>(rand(&seed), rand(&seed)); }   // dbg bit 1 restores white noise for an in-session A/B
+          let px = vec2<f32>(f32(gid.x) + j.x, f32(gid.y) + j.y);
+          let d = rayDir(px);
+          var ts = -1.0;
+          var c = ptPath(d, &seed, &ts, px);
+          // ── THE FIREFLY GUARD, AND IT IS OFF BY DEFAULT BECAUSE IT MEASURED AS NOTHING ── clamping looked
+          // like a 31% noise win on a single capture, and a fuller protocol (two scenes, three reps each,
+          // every configuration captured inside each rep) put it at zero once temporal reprojection is on:
+          // scene 1 reproj -47/-47/-50% against clamp -45/-46/-50%, scene 2 -54/-57% against -56/-58%.
+          // The reason is that the reprojection is ALREADY a strong temporal average, and the outliers this
+          // targets are exactly what such an average removes first — the two are redundant. Kept switchable
+          // because it is the right tool if the history is ever shortened or reprojection is turned off.
+          // ── the guard itself ── a path that finds the sun through a one-voxel gap after three bounces
+          // returns a radiance hundreds of times the pixel's mean. It is a legitimate sample and its
+          // expectation is correct, but it lands as a single white speck that the temporal average then
+          // smears over many frames, and a handful of them dominate what the eye calls noise. Clamping the
+          // per-SAMPLE radiance loses the energy in that tail — it is a bias, and a visible one on genuinely
+          // bright specular glints — so the threshold is a knob and the measurement is in the commit note.
+          if (pt.fClamp > 0.0) {
+            let m = max(c.r, max(c.g, c.b));
+            if (m > pt.fClamp) { c = c * (pt.fClamp / m); }
+          }
+          sum += c;
+          if (s == 0) { t0 = ts; rd0 = d; }                          // the first sample owns the depth this pixel reprojects by
+          n += 1.0;
+        }
+      }
+      // ══ TEMPORAL REPROJECTION ══ the estimate used to be thrown away the instant the camera moved, which is
+      // why looking around dropped you to a 1-sample image. The world did not change — only where it is on the
+      // screen — so the previous frame's radiance is still valid for the same SURFACE, just at a different
+      // pixel. prevUVd (render/wgsl/pre.js) already projects a direction through the previous camera for the
+      // shipping SVGF; feeding it (hitPoint - u.pPos) turns it into a full reprojection that handles walking
+      // as well as looking, and it needs no new uniform because the previous camera is already published.
+      // VALIDATED ON DISTANCE, or a disocclusion drags the wrong surface's colour across the screen: the
+      // history is reused only where what it recorded is the same distance away as what this pixel just hit.
+      // A SKY pixel is exempt and always valid — its reprojection is exact, being a pure direction.
+      var prev = vec4<f32>(0.0);
+      if (pt.reset < 0.5) { prev = accPrev; }
+      else if (pt.reproj > 0.5) {
+        let hp = u.camPos + rd0 * max(t0, 0.0);
+        let uv = prevUVd(select(rd0, hp - u.pPos, t0 > 0.0));
+        if (uv.x >= 0.0 && uv.x < 1.0 && uv.y >= 0.0 && uv.y < 1.0) {
+          let hs = textureLoad(ptHistIn, vec2<i32>(uv * u.res), 0);
+          let want = select(-1.0, length(hp - u.pPos), t0 > 0.0);
+          // An if, not a select(). A select whose first two arguments both contain comparisons makes the WGSL
+          // parser read the less-than and greater-than as a TEMPLATE LIST, and the whole module fails to
+          // compile: a black canvas at absurd fps, reported only in __vbGpuErr and never in __vb.errLog().
+          var ok = false;
+          if (t0 > 0.0) { ok = hs.a > 0.0 && abs(hs.a - want) <= 0.05 * want + 1.0; }
+          else { ok = hs.a < 0.0; }
+          if (pt.reproj > 1.5) { ok = true; }          // DIAGNOSTIC (reproj = 2): accept unconditionally, to separate a plumbing fault from a validation one
+          // K is the history LENGTH, not a real sample count: reusing it as a fixed weight makes this an
+          // exponential average with a 1/(K+1) response, which is what keeps a moving image both quiet and
+          // able to follow a change instead of smearing it indefinitely.
+          if (ok) { let K = max(pt.hist, 1.0); prev = vec4<f32>(hs.rgb * K, K); }
+        }
+      }
+      let acc = prev + vec4<f32>(sum, n);
+      ptAcc[idx] = acc;
+      var col = acc.rgb / max(acc.a, 1.0);
+      let colStore = col;
+      textureStore(ptHistOut, vec2<i32>(gid.xy), vec4<f32>(colStore, t0));
+      col = ptFog(col, rd0, t0);                                     // …after the store, so the accumulator never sees the haze   // LINEAR mean + this frame's depth, for the next frame to reproject against
+      col = aces(col * 0.95);                                        // the composite's own tonemap and gamma, so a brightness difference between the two renderers is a LIGHTING difference and not an encode one
+      col = pow(col, vec3<f32>(1.0 / 2.2));
+      textureStore(ptOut, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
+    }`;
+
+  // ── PTBLIT_SRC ── the presentation pass: upscale the (renderScale-sized) path-traced target onto the
+  // canvas. Deliberately NOT the shipping BLIT: that one draws the held viewmodel, the hurt flash, the lens
+  // flare and the vignette, none of which this renderer produces, and reusing it would have put a lit axe in
+  // front of an unlit world.
+  // ── A SPATIAL DENOISER WAS BUILT HERE AND REMOVED (user 2026-09-03: "revert your recent denoising
+  // changes, it blurred the image") ── an edge-aware a-trous filter, three passes at a doubling stride with
+  // SVGF's depth/normal/luminance weights. It measured well on the metric it was tuned against — moving-image
+  // high-frequency energy down 64-70% for no measurable frame cost — and the owner's eye rejected it, which
+  // outranks the metric. A spatial filter buys quiet by spending sharpness, and at 1 spp there is not enough
+  // signal for the guides to protect the detail that spending takes.
+  // WHAT THAT LEAVES: temporal reprojection, which is the denoiser that does NOT trade sharpness, because it
+  // borrows real samples of the same surface from the previous frame rather than averaging neighbours.
+  // If this is ever revisited, the honest lesson is that the noise metric and the eye disagreed, and the
+  // metric was the thing that was wrong.
+  const PTBLIT_SRC = () => /* wgsl */`
+    @group(0) @binding(1) var ptSrc : texture_2d<f32>;
+    @group(0) @binding(2) var ptSamp : sampler;
+    @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
+      var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
+      return vec4<f32>(P[vi], 0.0, 1.0);
+    }
+    @fragment fn fs(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {
+      return vec4<f32>(textureSampleLevel(ptSrc, ptSamp, fc.xy / u.canvasRes, 0.0).rgb, 1.0);
+    }`;
   const __m_render_wgsl_vis = (() => {
   // @module — the tile visibility-cull WGSL, and the one place every shader factory is built into a pipeline
   // @exports CG_BAND, CG_DIM, CG_STRIDE, CG_SWEEPS, DDAW, FLAKEBLK, bgCloudGen, cgBuf, cgData, cgSamp, cgState, cgView, linSamp, pCloudGen, pBlit, pComposite, pSpatial, pTaa, pTemporal, pTraceV, pVis, worldFlush
@@ -16165,6 +16854,169 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   let resizeT = 0;                                     // DEBOUNCE: a drag-resize fires dozens of events; each one rebuilt every target and reset temporal history
   addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => makeTargets(), 120); });
 
+  // ── THE PATH TRACER'S DRIVER ── pipelines, the accumulator, the [Y] toggle ──────────────────────────────
+  // The shader is in render/wgsl/pathtrace.js; the attribution to gnikoloff/webgpu-raytracer (MIT) is there
+  // too. This half owns everything that is not WGSL: the two pipelines, the screen-sized accumulator, when to
+  // throw that accumulator away, and the one key that switches which renderer draws the frame.
+  //
+  // It sits DIRECTLY BELOW render/targets.js because that is where its dependencies land — RW/RH (the trace
+  // resolution it must match), `resetHist`, and the pipelines' bind-group layouts all need the shader factories
+  // from render/wgsl/vis.js and the buffers from render/buffers.js. It is above everything in sim/ and ui/,
+  // which is fine: the only names it borrows from down there (ED, CMD, profQS) are read inside callbacks that
+  // cannot run until the whole program has been evaluated.
+  //
+  // ── WHAT THIS DOES NOT DRAW, STATED UP FRONT ── creatures, dropped items and the held viewmodel are
+  // trace-INJECTED through the drop-slot machinery (pickWGSL + itemMapBuf), and that costs a storage buffer
+  // this pass does not have room for; falling snow and rain are a lattice march inside TRACE; clouds are a
+  // volume march inside COMPOSITE. None of them appear in the path-traced image. Terrain, water, foliage and
+  // rigid bodies do.
+  // folT DEFAULTS TO 0 — OPAQUE LEAVES — BECAUSE THAT IS WHAT MEASURED BETTER. A two-sided leaf is the
+  // standard answer to a dark canopy and it was built, tuned and then defaulted off: at folT 0.35 in a
+  // dense oak interior the mean screen level went 13.5 -> 13.2 of 255, i.e. very slightly DOWN, because a
+  // 4-bounce budget with Russian roulette cannot push light through six voxels of canopy however much each
+  // leaf transmits, while the energy it takes out of the reflected lobe darkens the sunlit tops immediately.
+  // The knob stays (__vbPT.set({folT})) because the question is worth being able to answer again.
+  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, n: 0, seq: 0, w: 0, h: 0,
+               acc: null, tex: null, hA: null, hB: null, bg: null, bgB: null, bgBlit: null, sig: null, par: 0 };
+  const ptUni = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });   // 8 floats became 9 when `reproj` joined the struct; 48 keeps it 16-byte aligned with room for the next one
+  const ptData = new Float32Array(16);   // [spp, bounces, reset, seq, cap, secR, folT, reproj, ...spare]
+  // §FOL§ is DDAW's foliage-see-through specialization constant (see render/wgsl/dda.js). The path tracer
+  // takes the 'false' variant unconditionally: the see-through hack exists to stop a clipped-into canopy
+  // filling the screen in a renderer whose primary ray is the whole image, and a path tracer that made leaves
+  // near the eye vanish would then light the scene through a hole that is not there.
+  const ptMod = device.createShaderModule({ code: (PRE_SRC() + PT_SRC({ DDAW })).replaceAll('§FOL§', 'false') });
+  const pPath = device.createComputePipeline({ layout: 'auto', compute: { module: ptMod, entryPoint: 'main' } });
+  const ptBlitMod = device.createShaderModule({ code: PRE_SRC() + PTBLIT_SRC() });
+  const pPtBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: ptBlitMod, entryPoint: 'vs' },
+    fragment: { module: ptBlitMod, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
+  // ── THE ACCUMULATOR IS SCREEN-SIZED, so it is rebuilt whenever the trace target is ── a resize, a
+  // render-scale step, or the recorder's capNative flip. Lazy rather than hooked into makeTargets: this
+  // renderer is off by default and a player who never presses [Y] must not pay 12 MB for it, nor pay a
+  // rebuild on every drag-resize.
+  function ptSync() {
+    if (PT.acc && PT.w === RW && PT.h === RH) return;
+    const oldA = PT.acc, oldT = PT.tex;
+    PT.w = RW; PT.h = RH; PT.n = 0; PT.sig = null;
+    PT.acc = device.createBuffer({ size: RW * RH * 16, usage: GPUBufferUsage.STORAGE });   // vec4 per pixel: rgb sum + sample count
+    PT.tex = device.createTexture({ size: [RW, RH], format: 'rgba8unorm',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    // ── THE TEMPORAL HISTORY, PING-PONGED ── one frame reads A and writes B, the next the other way round.
+    // A single buffer cannot do this: pixels reproject to ARBITRARY neighbours, so reading and writing one
+    // surface in the same dispatch is a read-write race across workgroups with no ordering to lean on.
+    const mkH = () => device.createTexture({ size: [RW, RH], format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    const oldHA = PT.hA, oldHB = PT.hB;
+    PT.hA = mkH(); PT.hB = mkH();
+    PT.bg = device.createBindGroup({ layout: pPath.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: poolBuf } },
+      { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
+      { binding: 4, resource: PT.tex.createView() }, { binding: 6, resource: { buffer: gb2Buf } },
+      { binding: 7, resource: { buffer: gwbBuf } }, { binding: 10, resource: { buffer: PT.acc } },
+      { binding: 11, resource: { buffer: ptUni } }, { binding: 14, resource: moonTex.createView() },
+      { binding: 15, resource: linSamp }, { binding: 23, resource: { buffer: bodyBuf } },
+      { binding: 16, resource: PT.hA.createView() }, { binding: 17, resource: PT.hB.createView() },
+      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp }] });
+    PT.bgB = device.createBindGroup({ layout: pPath.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: poolBuf } },
+      { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
+      { binding: 4, resource: PT.tex.createView() }, { binding: 6, resource: { buffer: gb2Buf } },
+      { binding: 7, resource: { buffer: gwbBuf } }, { binding: 10, resource: { buffer: PT.acc } },
+      { binding: 11, resource: { buffer: ptUni } }, { binding: 14, resource: moonTex.createView() },
+      { binding: 15, resource: linSamp }, { binding: 23, resource: { buffer: bodyBuf } },
+      { binding: 16, resource: PT.hB.createView() }, { binding: 17, resource: PT.hA.createView() },
+      { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp }] });
+    PT.bgBlit = device.createBindGroup({ layout: pPtBlit.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: PT.tex.createView() },
+      { binding: 2, resource: linSamp }] });
+    if (oldA || oldT) device.queue.onSubmittedWorkDone().then(() => {          // released only once no submitted frame still references them
+      try { if (oldA) oldA.destroy(); } catch (e) {}
+      try { if (oldT) oldT.destroy(); } catch (e) {}
+      try { if (oldHA) oldHA.destroy(); } catch (e) {}
+      try { if (oldHB) oldHB.destroy(); } catch (e) {}
+    }).catch(() => {});
+  }
+  // ── WHEN TO THROW THE ESTIMATE AWAY ── a progressive path tracer is only valid while the thing it is
+  // averaging holds still, so the accumulator is zeroed the moment the camera or the world under it moves.
+  // The signature is read out of UF, the staging copy of the uniform buffer, rather than from `cam`/`fwd`:
+  // UF is BY DEFINITION what the GPU will see this frame, so the test can never drift out of step with the
+  // rays it is guarding. Deliberately NOT in it: u.frame and u.time (floats 11 and 15, which change every
+  // frame by construction) and u.sunDir — the day cycle turns the sun ~0.3 degrees a second, so resetting on
+  // it would mean the image never converged at all. The cost of leaving it out is that shadows lag the sun by
+  // however long you have been standing still, which is visible only in a timelapse.
+  function ptSig() {
+    let s = '';
+    for (let i = 0; i <= 10; i++) s += UF[i] + ',';               // camPos + tanH, right + aspect, up
+    for (let i = 12; i <= 14; i++) s += UF[i] + ',';              // fwd (15 is u.time)
+    s += UF[31] + ',';                                            // u.fx — underwater, moon mode, the ceiling band
+    for (let i = 44; i <= 47; i++) s += UF[i] + ',';              // winO + off: a window recentre moves every coordinate in the shader
+    s += UF[UF_PHYSC + 1] + ',' + RW + 'x' + RH;                  // physC.y = reactive strength: nonzero while a rigid body is MOVING, and a moving body would otherwise smear across the accumulation
+    return s;
+  }
+  // ── THE FRAME ── one compute dispatch that adds pt.spp paths per pixel to the accumulator and writes the
+  // running mean into PT.tex, then one triangle that puts PT.tex on the canvas. That is the whole renderer:
+  // no g-buffer, no temporal reprojection, no spatial filter, no TAA. The noise you see IS the estimator's
+  // variance, and it goes down as 1/sqrt(samples) rather than being filtered away.
+  function ptRender(enc) {
+    ptSync();
+    const sig = ptSig();
+    if (resetHist || sig !== PT.sig) { PT.sig = sig; PT.n = 0; }
+    PT.seq = (PT.seq + 1) & 0xffff;
+    // ── THE ORDER HERE IS THE STRUCT'S ORDER, AND NOTHING CHECKS THAT FOR YOU ── PTU in the shader reads
+    // spp, bounces, reset, seq, cap, secR, reproj, hist, folT. Inserting reproj/hist BEFORE folT in the
+    // struct while still writing folT at index 6 handed the shader reproj = folT = 0 (so reprojection never
+    // ran at all) and folT = hist = 24 (so every leaf became absurdly transmissive). It looked like a subtle
+    // "reprojection barely helps" result for four measurements. Keep these two lists in the same order.
+    ptData[0] = PT.spp; ptData[1] = PT.bounces; ptData[2] = PT.n === 0 ? 1 : 0; ptData[3] = PT.seq; ptData[4] = PT.cap; ptData[5] = PT.secR;
+    // resetHist means the SHIPPING histories were invalidated (a toggle, a teleport, a resize) — there is no
+    // previous frame to reproject from, so that one throws the estimate away as it always did. An ordinary
+    // camera move does not: it reprojects.
+    ptData[6] = (PT.reproj && !resetHist) ? PT.reproj : 0;
+    ptData[7] = PT.hist;
+    ptData[8] = PT.folT;
+    ptData[9] = PT.dbg;
+    ptData[10] = PT.neeMin;
+    ptData[11] = PT.fClamp;
+    ptData[12] = PT.fog;
+    ptData[13] = PT.reflK;
+    device.queue.writeBuffer(ptUni, 0, ptData.buffer, 0, 64);
+    // Timestamps reuse the shipping query set when __vb.prof(true) has armed it, so the path tracer's own
+    // cost lands in profEma[0] — printed under the name 'trace', which is exactly the pass it replaces.
+    const cp = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } } : {});
+    PT.par ^= 1;
+    cp.setPipeline(pPath); cp.setBindGroup(0, PT.par ? PT.bgB : PT.bg);
+    cp.dispatchWorkgroups(Math.ceil(RW / 8), Math.ceil(RH / 8)); cp.end();
+    if (profQS) {
+      enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
+      if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
+    }
+    const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(),
+      loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
+    rp.setPipeline(pPtBlit); rp.setBindGroup(0, PT.bgBlit); rp.draw(3); rp.end();
+    if (PT.cap <= 0 || PT.n < PT.cap) PT.n += PT.spp;
+  }
+  // ── THE TOGGLE ── [Y]. Free in play: the water panel that used to own it is retired (see the KeyY handler
+  // in ui/hud.js, which returns on its first line), and the ASSET EDITOR still owns the key for its tree-size
+  // panel (ui/input.js), so ED.on is the one guard that is not optional — two handlers on one key is the bug
+  // that ate the L key in 2026-08-20. Switching back sets resetHist, because while the path tracer was up the
+  // shipping renderer's temporal and TAA histories went stale and reprojecting onto them would ghost.
+  function ptToggle(on) {
+    const v = on === undefined ? !PT.on : !!on;
+    if (v === PT.on) return PT.on;
+    PT.on = v; PT.n = 0; PT.sig = null; resetHist = 1;
+    console.log('[vb] renderer:', v ? 'PATH TRACED (progressive) — hold still to converge' : 'shipping');
+    return PT.on;
+  }
+  addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyY' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    try { if (CMD.open || ED.on) return; } catch (err) { return; }   // the command line owns the keyboard; the asset editor owns [Y]. try/catch because a key pressed before boot finishes would otherwise throw out of the listener
+    const ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+    ptToggle();
+  });
+  // A hook of its own rather than an entry in __vb: main/debug-api.js assigns window.__vb as one object
+  // literal, so anything written there earlier would be overwritten.
+  window.__vbPT = { on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, cap: PT.cap, w: PT.w, h: PT.h }),
+                    set: (o) => { Object.assign(PT, o || {}); PT.n = 0; PT.sig = null; return PT.on; } };
   // ── DEMAND-DRIVEN STREAMING ── the world holds a fully-generated RECTANGLE (`rect`, world coords, 8-aligned)
   // sized to the view distance. Moving grows it band-by-band toward where the player is heading — bands are only
   // as long as the view needs, so generation keeps pace with SPRINT speed instead of paying for the full window.
@@ -18880,13 +19732,28 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   };
   const treeShapeAt = (wx, wz) => {                  // which pine covers this world column, and its exact local frame
     const c0x = Math.floor(wx / TCELL), c0z = Math.floor(wz / TCELL);
-    const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 1;   // a crown can overhang several cells
+    const r = Math.ceil(Math.max(MSX, MSY) / TCELL) + 2;   // a crown can overhang several cells — +2 not +1 since scR can widen a crown past the model and a lean shifts it further
+    // ── THE NEAREST TREE, NOT THE FIRST ONE THE SCAN REACHES ── crowns overlap, so several boxes cover the
+    // same column and this used to return whichever the loop hit first. Measured: asking at a trunk returned
+    // a NEIGHBOUR — root 6 against that tree's own sink of 3 — so a swing carved a tree the player was not
+    // pointing at, which is the reported "voxels disappear out of the trunk". Scanning for the nearest trunk
+    // axis costs one compare per candidate and no bake, and trees are TCELL apart so the nearest is the one
+    // under the crosshair in every case that is not a genuine tie.
+    let bestTr = null, bestD = Infinity;
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       const tr = treeAt(c0x + dx, c0z + dz); if (!tr) continue;
-      const R = MROT9[tr.ti | 0][tr.rot], bx = tr.tx - (R.sx >> 1), bz = tr.tz - (R.sz >> 1);   // per-model rotation set — a chop must read the SAME array the stamp wrote
-      if (wx < bx || wx >= bx + R.sx || wz < bz || wz >= bz + R.sz) continue;
-      return { tr, R, bx, bz, gy: groundMin(tr.tx, tr.tz, 2) - tr.sink, rm: remap, g: null, cells: null,
-               root: tr.sink, oak: 0, hMax: MSZ };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
+      const ex = wx - tr.tx, ez = wz - tr.tz, d2 = ex * ex + ez * ez;
+      if (d2 >= bestD) continue;
+      bestTr = tr; bestD = d2;
+    }
+    if (bestTr) {
+      // ── THE BAKED FRAME, NOT THE RAW MODEL ── a pine is scaled and leaned when it is stamped, so the
+      // model's own dimensions describe a tree that is not there. pineFrame (world/terrain.js) replays the
+      // STAMP into a local array, so R.sx/R.sz/R.A and bx/bz/hMax all describe what is actually standing.
+      const R = pineFrame(bestTr), bx = R.bx, bz = R.bz;
+      if (wx >= bx && wx < bx + R.sx && wz >= bz && wz < bz + R.sz)
+        return { tr: bestTr, R, bx, bz, gy: R.gy, rm: remap, g: null, cells: null,
+                 root: bestTr.sink, oak: 0, hMax: R.sy };   // …the same key set in the same order as the oak's, so both kinds of shape share one hidden class at every site that reads them
     }
     // ── AND OTHERWISE, AN OAK ── extending this rather than adding a second entry point is deliberate: every
     // caller of treeShapeAt (chopSwing, the arrow's carve in sim/projectiles.js, __vb.physChopFull) is asking
@@ -41726,7 +42593,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       cp.end();
       cgState.slice = (cgState.slice + cgBand) % CG_DIM[1]; cgState.fills += cgBand;   // fills counts SLICES, not dispatches, so the priming dispatch accounts for all 24 of them and the CG_SWEEPS bound still means what it says
     }
-    if (!veQuiet) {                                    // ── the render, and only the render ── everything above and below this brace is frame bookkeeping the export must not skip
+    // ── WHICH RENDERER DRAWS THIS FRAME ── [Y] flips between the shipping pipeline (below) and the
+    // progressive path tracer in render/pathtrace.js. PT.on is false by default and the else-if leaves
+    // the shipping branch below byte-for-byte what it was, so an untoggled frame is the frame it always was.
+    if (!veQuiet && PT.on) ptRender(enc);
+    else if (!veQuiet) {                               // ── the render, and only the render ── everything above and below this brace is frame bookkeeping the export must not skip
       const gw = Math.ceil(RW / 8), gh = Math.ceil(RH / 8);
       let qi = 0;
       const run = (pipe, bg) => {

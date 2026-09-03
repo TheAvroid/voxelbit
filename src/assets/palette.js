@@ -266,6 +266,14 @@
     remap[ci] = addCol(r, g, b);
     (ci <= 5 ? woodIds : foliageIds).push(remap[ci]);
   }
+  // ── THE COPPER UPPER TRUNK WAS BUILT AND REVERTED THE SAME DAY (user 2026-09-03: "the trunk of the pine
+  // trees are orange. fix") ── a Scots pine really does turn orange up the stem, and it still looks wrong
+  // here. Two reasons, and neither is the colour: the stem is only visible THROUGH the crown at that height,
+  // so the copper arrives as rust-coloured speckle mixed into green needles and reads as autumn blight; and
+  // a voxel trunk at that distance is 2-3 voxels wide, which is not enough surface for a gradient to read as
+  // bark rather than as noise. Limiting it to the stem radius (it painted whole canopies orange before that)
+  // fixed the scale of the problem without fixing the problem. Do not re-add it without solving the
+  // see-through-canopy case first. It also cost 3 palette ids the table does not have to spare.
   // ── FOUR ROTATIONS PER TREE ── the same precomputed 90° turns the single pine had, now one set per
   // model. MROT stays bound to the first tree so everything that still reaches for it is unchanged.
   const MROT9 = [];

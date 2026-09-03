@@ -1065,6 +1065,27 @@
     const t0z = Math.floor((pz - RF) / RING_TILE), t1z = Math.floor((pz + RF) / RING_TILE);
     const k0x = Math.floor((px - K) / RING_TILE), k1x = Math.floor((px + K) / RING_TILE);
     const k0z = Math.floor((pz - K) / RING_TILE), k1z = Math.floor((pz + K) / RING_TILE);
+    // ══ THE RING IS A DISC, BECAUSE THE VIEW IS A CYLINDER ══ trace.js caps every primary ray at
+    // `u.rdist.x / length(rd.xz)` — a CIRCULAR horizontal radius, not a square edge — and composite.js fogs on
+    // the same horizontal distance. The wanted set was a SQUARE of half-width R, so its corners sat R*sqrt(2)
+    // = 2715 voxels out at the shipped 1920: terrain that is generated, paged, evicted and re-fetched and that
+    // no ray can ever reach. That is ~19% of every tile the ring holds, spent on nothing.
+    // WORSE, IT WAS ALSO THE GAP METRIC. ringGap used Chebyshev (`max(|dx|,|dz|) - 64`), which for a corner
+    // tile UNDERSTATES its real distance by up to 41% — and the corners are exactly what a starved ring drops,
+    // because the dispatch picks nearest-first by true distance. So the tiles the ring gave up on first were
+    // the ones clamping the view, and they were invisible ones: with the fill roughly a disc of radius rho, the
+    // nearest missing tile in Chebyshev terms sits at 45 degrees and reports rho/sqrt(2) = 0.71*rho. The view
+    // plane was being pulled in by ~30% of its own reach by geometry that could not be seen at any distance.
+    // `dn` below is the exact horizontal distance from the player to the NEAREST POINT of a tile square, which
+    // is precisely the ray length at which that tile first becomes reachable. One function now answers all
+    // three questions — fetch it? keep it? does it clamp the view? — so they cannot disagree.
+    // `window.__ringSquare = 1` restores the old Chebyshev square for an A/B IN ONE SESSION — the world
+    // reseeds on every reload, so a cross-reload comparison of two ring shapes is two different worlds.
+    const tileDist = window.__ringSquare
+      ? (tx, tz) => Math.max(Math.abs(tx * RING_TILE + (RING_TILE >> 1) - px), Math.abs(tz * RING_TILE + (RING_TILE >> 1) - pz)) - (RING_TILE >> 1)
+      : (tx, tz) => { const ex = Math.max(0, Math.abs(tx * RING_TILE + (RING_TILE >> 1) - px) - (RING_TILE >> 1)),
+                            ez = Math.max(0, Math.abs(tz * RING_TILE + (RING_TILE >> 1) - pz) - (RING_TILE >> 1));
+        return Math.sqrt(ex * ex + ez * ez); };
     // ══ TWO OWNERS OF ONE DESCRIPTOR IS THE ONE THING THAT CANNOT HAPPEN ══ and the first cut let it, which
     // is what produced the pink-and-cyan garbage across the arctic: `near` used HALF - RING_TILE, so a tile
     // whose centre sat between 896 and 1024 voxels from the player was NOT dropped even though the CPU window
@@ -1097,7 +1118,11 @@
     let evicted = 0;
     for (const [k, T] of ringTiles) {
       const x0t = T.tx * RING_TILE, z0t = T.tz * RING_TILE;
-      const out = T.tx < k0x || T.tx > k1x || T.tz < k0z || T.tz > k1z;   // the KEEP box, not the fetch box — see ringKeep
+      // …the keep BOX still bounds the tile indices, because k0x/k1x span 33 tiles = 4224 voxels and the GPU
+      // grid wraps at 4096: two tiles 32 apart share one descriptor block, so nothing may be held outside it.
+      // The disc is the tighter of the two and does the real work — it retires the corners the fetch no longer
+      // asks for, one tile of hysteresis beyond the fetch radius so a tile on the boundary cannot thrash.
+      const out = T.tx < k0x || T.tx > k1x || T.tz < k0z || T.tz > k1z || tileDist(T.tx, T.tz) > K;
       const ovl = x0t < winOX + WX && x0t + RING_TILE > winOX && z0t < winOZ + WZ && z0t + RING_TILE > winOZ;
       if (!out && !ovl) continue;
       if (out && !ovl && ++evicted > EVICT_MAX) continue;   // …over budget this frame: it stays, harmlessly, until the next. A HANDOVER (ovl) is not deferred — the CPU window is about to own those descriptors and two owners is the one thing that cannot happen
@@ -1191,6 +1216,8 @@
       // rule below stands as written; adoptLive is left in place so the premise keeps being checked.
       if (x0t < winOX + WX && x0t + RING_TILE > winOX && z0t < winOZ + WZ && z0t + RING_TILE > winOZ) {
         if (ringHanded.size < RING_HANDCAP) ringHanded.add(k); continue; }
+      const dn = tileDist(tx, tz);                     // horizontal distance to this tile's nearest point — see tileDist
+      if (dn >= RF) continue;                          // …a corner of the index box, outside the disc the view can reach: not wanted, and it does not clamp anything
       let T = ringTiles.get(k);
       if (!T && ringHanded.has(k)) {                   // …it has just left the near window, on a frame where the pool was drained: already paged, so it is filled
         ringHanded.delete(k); ringAdopt++;
@@ -1199,8 +1226,7 @@
         ringTiles.set(k, T);
       }
       if (T && T.done) continue;                       // filled
-      const cheb = Math.max(Math.abs(cx - px), Math.abs(cz - pz)) - (RING_TILE >> 1);
-      if (cheb < ringGap) ringGap = cheb;
+      if (dn < ringGap) ringGap = dn;                  // …the ray length at which this hole becomes reachable, which is exactly what the view may not exceed
       if (T) continue;                                 // already on its way
       const d = (cx - px) * (cx - px) + (cz - pz) * (cz - pz);
       if (d < bestD) { bestD = d; best = [tx, tz, k]; }
@@ -1210,6 +1236,12 @@
     // made the TAIL WORSE — p99 57 -> 87, max 90 -> 121 — because a starved prefetch row is not ready when
     // the box crosses onto it, so the gap opens anyway AND the slots were spent. Unreserved is strictly
     // better on smoothness (p99 46-49). Reverted.
+    // ── AND RING_JOBS IS NOT THE LEVER EITHER ── the gen pool is the ring's real limit while flying (16 of 16
+    // workers busy, ~18 jobs queued behind them), so buying the ring a bigger share of one FIFO queue looks
+    // like the obvious move. A/B'd on ONE fixed route, teleporting back to the same anchor between legs so the
+    // terrain is identical: RING_JOBS 12 vs 24 came out 1842/1890 against 1842/1891 average view radius, 2
+    // against 1 jumps over 40 voxels — noise. `pend` only averages 8 of the 12 already allowed, so the cap was
+    // never binding; the wait is worker LATENCY, not a queue slot. Left at 12.
     while (jobs < RING_JOBS && best) {                  // keep the pool fed: one scan, several dispatches
       const M = RING_M * 8;
       const j2 = poolRingJob(best[0] * RING_TILE - M, best[0] * RING_TILE + RING_TILE + M,
@@ -1222,6 +1254,7 @@
         const cx = tx * RING_TILE + (RING_TILE >> 1), cz = tz * RING_TILE + (RING_TILE >> 1);
         const x2 = tx * RING_TILE, z2 = tz * RING_TILE;
         if (x2 < winOX + WX && x2 + RING_TILE > winOX && z2 < winOZ + WZ && z2 + RING_TILE > winOZ) continue;
+        if (tileDist(tx, tz) >= RF) continue;          // …the same disc the first pass used, or the re-scan dispatches the corners it just declined
         if (ringTiles.has(ringKey(tx, tz))) continue;
         const d = (cx - px) * (cx - px) + (cz - pz) * (cz - pz);
         if (d < bestD) { bestD = d; best = [tx, tz, ringKey(tx, tz)]; }
@@ -1295,7 +1328,14 @@
   const ringStats = () => { let pend = 0, jdone = 0, ready = 0; const some = [];
     for (const [, T] of ringTiles) { if (T.job) { pend++; if (T.job.done) jdone++; } if (T.done) ready++;
       if (some.length < 4) some.push([T.tx, T.tz, !!T.job, T.job ? !!T.job.done : null, T.done]); }
-    return Object.assign({ pend, jdone, ready, some }, ringStats0()); };
+    // ── `own` IS LAZY, BECAUSE IT IS 4 ms AND EVERY OTHER FIELD IS FREE ── ringOwnAudit walks a quarter of a
+    // million slots, so a probe that samples the ring EVERY FRAME (which is the only way to see a streaming
+    // fault) was paying 4.12 ms a frame to read counters that cost nothing. Defined as a getter on the
+    // returned object so `r.own` still reads exactly as before — JSON.stringify still pays for it, a
+    // per-frame sampler picking named fields does not.
+    const o = Object.assign({ pend, jdone, ready, some }, ringStats0());
+    Object.defineProperty(o, 'own', { get: ringOwnAudit, enumerable: true, configurable: true });
+    return o; };
   // ══ DOES THE RING STILL OWN WHAT IT THINKS IT OWNS? ══ every fault that shows as scattered geometry in the
   // far field is two owners of one descriptor, and the ring is the only party that keeps a record of what it
   // wrote: (gb, slot) pairs per tile. Walking them against bdesc is therefore the one check that can see the
@@ -1369,13 +1409,27 @@
   // presumably churn-sensitive rather than prefetch-specific — prefetch just holds ~44% more tiles and evicts
   // that much harder — so it is worth suspecting under any other pressure that raises eviction rates too, even
   // though the ring audits clean at the shipped setting at rest AND at fly-sprint on a pool at 64%.
+  // ── AND HERE IS THE MECHANISM, WHICH THE AUDIT ABOVE COULD NOT NAME (2026-09-03) ── the corruption is not
+  // a race. It is ARITHMETIC, and it is forced: gb wraps every GBX bricks, i.e. tiles 32 apart in index share
+  // one descriptor block exactly. The fetch box spans floor((p+RF)/128) - floor((p-RF)/128) + 1 tiles, which
+  // is 31 at the shipped RF of 1920 (3968 voxels, inside the 4096 wrap) and 34 at RF = 2112 — so with the
+  // prefetch on, the box contains pairs of tiles 32 and 33 apart, BOTH of which it asks for, and each one
+  // frees the other's slot on its next pass. That is `{ want: 459851, got: 0 }`, and it explains why the
+  // damage survived switching the fetch back off: the descriptors were already crossed.
+  // It also says what a usable prefetch would have to look like. RF <= 1984 keeps the box at 31 tiles, so the
+  // most that can ever be fetched beyond the view radius is HALF A TILE — and ringKeep clamps to GHALF for the
+  // same reason, which is why widening it never bought the hysteresis the comment above asked for. Anything
+  // more has to come out of R, i.e. out of view distance, and that is a different trade from the one that was
+  // measured. The DISC (see tileDist in ringUpdate_) took most of this pop out by other means: it removed the
+  // Chebyshev staircase that made a tile-line crossing a step rather than a slope, and the same flight that
+  // scores 25 jumps over 40 voxels with the square scores 2 with the disc, prefetch still off.
   // Left switchable rather than deleted: the pop it targets is real and measured, but the fix is not usable as
   // it stands, and the price was never the only thing wrong with it.
   // __vb.ringPrefetch(1.5) turns it on for anyone who wants to look at the trade.
   let RING_PREFETCH = 0;                               // TILES fetched beyond the view radius; 0 = ship default
   const ringPrefetchSet = (v) => { if (v !== undefined) RING_PREFETCH = Math.max(0, Math.min(6, +v || 0)); return { RING_PREFETCH }; };
   const poolAdaptSet = (v) => { if (v !== undefined) PF_ADAPT = v ? 1 : 0; return { PF_ADAPT, movePerFrame: +pfMoveEma.toFixed(2), scale: +pfScale.toFixed(2), effCap: Math.round(POOL_BUDGET * pfScale) }; };
-  const ringStats0 = () => ({ err: ringErr, evictLRU: ringEvictLRU, squash: ringSquash, abandoned: ringAbandon, adoptClear: ringAdoptClear, own: ringOwnAudit(), adoptLive: adoptLive.slice(), drainMs: +poolDrainMax.toFixed(2), drainN: poolDrainN, nearPaged: poolPaged, dirty: poolDirty.size, wrunN, wrunB, wrunWords, decMs: ringDecMs, runs: ringRuns, maxN: ringMaxN, mul: GMUL, tiles: ringTiles.size, handOver: ringHandOver, adopted: ringAdopt, handed: ringHanded.size, paged: ringPaged, evicted: ringEvicted,
+  const ringStats0 = () => ({ err: ringErr, evictLRU: ringEvictLRU, squash: ringSquash, abandoned: ringAbandon, adoptClear: ringAdoptClear, adoptLive: adoptLive.slice(), drainMs: +poolDrainMax.toFixed(2), drainN: poolDrainN, nearPaged: poolPaged, dirty: poolDirty.size, wrunN, wrunB, wrunWords, decMs: ringDecMs, runs: ringRuns, maxN: ringMaxN, mul: GMUL, tiles: ringTiles.size, handOver: ringHandOver, adopted: ringAdopt, handed: ringHanded.size, paged: ringPaged, evicted: ringEvicted,
     overflow: ringOverflow, filled: Math.round(ringFilled()), gap: Math.round(ringGap), reach: ringReach(), ms: +ringMs.toFixed(0),   // `gap` is the RAW distance to the nearest unfilled tile; `filled` is that with the HALF - RING_TILE floor applied. They differ exactly when the floor is lying, which is what the view clamp has to care about.
     poolUsed, free: poolFreeN, poolSlots: POOL_SLOTS });   // poolUsed is a HIGH-WATER MARK — slots ever handed out, never decremented by poolRelease — so it climbs to POOL_SLOTS in any long run and says NOTHING about how full the pool is. LIVE occupancy is poolUsed - free, which is what the squash below tests and what anyone outside must use. A day was spent reading the high-water mark as residency.
   poolTouchHook = poolTouch;                           // terrain.js and gen-pool.js run BEFORE this fragment, so they reach the pool through this hook rather than naming it
