@@ -16356,6 +16356,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // assuming.
       // coh: 0 restores the per-pixel estimator for a reference image, exactly as neeB: 0 does.
       coh : f32,                                                     // share one bounce direction across a 2^coh lane block (0 = per pixel, 1 = 2x2)
+      bnoise : f32,                                                  // 1 = spatiotemporal blue noise on the primary hit's bounce and sun cone; 0 restores the white draws for an in-session A/B
     }
     @group(0) @binding(11) var<uniform> pt : PTU;
     // ── THE G-BUFFER OIDN WANTS ── colour is LINEAR HDR (the denoiser's hdr:true path applies OIDN's own PU
@@ -16471,6 +16472,32 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       let t = ptOnb(n); let b = cross(n, t);
       return t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(1.0 - r2, 0.0));
     }
+    // ── SPATIOTEMPORAL BLUE NOISE FOR THE FIRST BOUNCE ──────────────────────────────────────────────────
+    // Interleaved gradient noise on the golden-ratio walk, the same construction and the same constants as
+    // the cloud dither's cgIGN in render/wgsl/composite.js — deliberately, because that one is already the
+    // answer to this exact complaint in another pass. IGN is near-optimal over a 2x2..8x8 neighbourhood, so
+    // neighbours draw WELL-SPREAD directions instead of independent ones, and the walk decorrelates it over
+    // frames so it cannot print a fixed pattern into a held-still image.
+    // ── AND IT REDUCES NO VARIANCE AT ALL, WHICH IS THE POINT ── a blue-noise sequence draws from the same
+    // distribution as the white one it replaces, so a single pixel's estimate is exactly as noisy either
+    // way. What changes is WHERE the error lands: spread evenly at high spatial frequency instead of
+    // clumping. The eye and the temporal average both handle that far better. It is also the one lever here
+    // that CANNOT blur, because it changes which directions get sampled and never how pixels are combined —
+    // which is what disqualified the a-trous filter and the bilinear history before it.
+    fn ptIGN(p : vec2<f32>, f : u32) -> f32 {
+      let q = p + 5.588238 * f32(f % 64u);
+      return fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
+    }
+    // ── THE BLUE NOISE IS THE OFFSET, NOT THE SAMPLE ── R2 supplies the uniformity along the frame axis the
+    // accumulator averages over, and the per-quad offset only ROTATES that sequence, which preserves its
+    // uniformity exactly (Cranley-Patterson) while pushing neighbouring quads apart in the unit square.
+    // Taking IGN as the sample PAIR was tried first and is wrong: both coordinates come off one lattice, so
+    // the pairs lie near a line, the hemisphere is not covered evenly, and the converged image drifts — it
+    // measured a consistent -1.5% mean shift while making the error CLUMP more than the white it replaced.
+    fn ptSTBN(p : vec2<f32>, f : f32) -> vec2<f32> {
+      let off = vec2<f32>(ptIGN(p, 0u), ptIGN(p + vec2<f32>(37.29, 11.73), 32u));
+      return r2seq(f, off);
+    }
     // ── ONE PATH ── returns the radiance carried back along the primary ray. Everything about it is ordinary
     // path tracing; the only voxel-specific parts are the intersector and the surface-offset epsilons, which
     // are in VOXEL units (one voxel = 10 cm) rather than the fractions of a scene-radius a mesh tracer uses.
@@ -16494,6 +16521,12 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       var inW = uw;                                                  // the path is INSIDE water: every later trace skips water voxels (see the water branch)
       var wJust = false;                                             // …and the segment that just entered it pays Beer-Lambert over its own length
       var spec = false;                                              // the ray currently being traced came off a SPECULAR event (water), so it is exempt from the bounce-distance cap below
+      // ── THE BLUE NOISE IS ADDRESSED BY QUAD, NOT BY PIXEL ── coh already hands one bounce direction to a
+      // whole 2x2 quad, and that sharing is worth 41% of this pass (see the coh note in PTU). Distributing
+      // per pixel would quietly undo it. The quad is the finest grain that exists here, so it is the grain
+      // the pattern is spread over: same rays, same cost, better-spread directions between neighbours.
+      let cohP = u32(clamp(pt.coh, 0.0, 3.0) + 0.5);
+      let quad = vec2<f32>(f32(u32(max(px.x, 0.0)) >> cohP), f32(u32(max(px.y, 0.0)) >> cohP));
       // A DYNAMIC bound on purpose. A literal one invites the compiler to unroll the loop and inline the
       // intersector eight times over, and the register pressure that produces costs more than the branch it
       // saves. PT_MAXB is the ceiling, not the count.
@@ -16578,7 +16611,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         let thrMax = max(thr.r, max(thr.g, thr.b));
         if (sunUp && (u32(pt.dbg) & 1u) == 0u && thrMax > pt.neeMin && (pt.neeB <= 0.0 || f32(b) < pt.neeB)) {
           let st = ptOnb(u.sunDir); let sb = cross(u.sunDir, st);
-          let sdir = normalize(u.sunDir + st * ((rand(seed) * 2.0 - 1.0) * jitK) + sb * ((rand(seed) * 2.0 - 1.0) * jitK));
+          var su1 = rand(seed); var su2 = rand(seed);
+          // …and the sun's penumbra too, on the primary hit: dappled canopy light is the other half of what
+          // reads as static. Offset lattice and frame so it cannot correlate with the bounce above.
+          if (b == 0 && pt.bnoise > 0.5) { let ss = ptSTBN(quad + vec2<f32>(91.0, 53.0), pt.seq + 16.0); su1 = ss.x; su2 = ss.y; }
+          let sdir = normalize(u.sunDir + st * ((su1 * 2.0 - 1.0) * jitK) + sb * ((su2 * 2.0 - 1.0) * jitK));
           let ndl = dot(n, sdir);
           let front = ndl > 0.0;
           let kS = select(kT, 1.0 - kT, front);                      // which lobe the sun is on: the reflected one, or the transmitted one behind the leaf
@@ -16612,7 +16649,13 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // Pick a lobe with the same probability as its share of the albedo, so the estimator's weight is
         // (alb * kT) / kT = alb either way and nothing has to be re-weighted here.
         let bn = select(n, -n, kT > 0.0 && rand(seed) < kT);
-        rd = ptCosHemi(bn, rand(seed), rand(seed));
+        // The white draws still happen, so the seed stream is bit-identical either way and an A/B changes
+        // the FIRST BOUNCE's direction and nothing else. Deeper bounces keep white noise: their error is
+        // already spread over the hemisphere by everything above them, and correlating them across a
+        // neighbourhood buys structure rather than quiet.
+        var bu1 = rand(seed); var bu2 = rand(seed);
+        if (b == 0 && pt.bnoise > 0.5) { let bs = ptSTBN(quad, pt.seq); bu1 = bs.x; bu2 = bs.y; }
+        rd = ptCosHemi(bn, bu1, bu2);
         ro = p + bn * 0.02;
         spec = false;
       }
@@ -16725,6 +16768,14 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           if (t0 > 0.0) { ok = hs.a > 0.0 && abs(hs.a - want) <= 0.05 * want + 1.0; }
           else { ok = hs.a < 0.0; }
           if (pt.reproj > 1.5) { ok = true; }          // DIAGNOSTIC (reproj = 2): accept unconditionally, to separate a plumbing fault from a validation one
+          // ── AND IT IS ONE NEAREST TEXEL, NOT A BILINEAR FETCH (user 2026-09-03: "the blur is terrible now")
+          // ── four validated bilinear taps were built here and REVERTED. Averaging the four neighbouring
+          // history texels is a SPATIAL FILTER, and because the history feeds back into itself every frame
+          // the softening COMPOUNDS: a little blur per frame becomes a lot of blur in a second. It measured
+          // as a 37% error reduction against a converged reference, which is exactly the trap — that metric
+          // cannot tell denoising from blurring, and rewards a blur every time. It is the same measurement
+          // that recommended the a-trous filter the owner rejected in September, for the same reason.
+          // A nearest tap keeps the image SHARP and leaves the motion noise; that trade is the owner's.
           // K is the history LENGTH, not a real sample count: reusing it as a fixed weight makes this an
           // exponential average with a 1/(K+1) response, which is what keeps a moving image both quiet and
           // able to follow a change instead of smearing it indefinitely.
@@ -16742,6 +16793,11 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // is what OIDN expects for a background.
       textureStore(ptOut, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
       var albO = a0; if (t0 < 0.0) { albO = vec3<f32>(1.0); }
+      // DIAGNOSTIC (dbg = 7): the accumulator's WEIGHT, not a colour — mean effective samples per pixel,
+      // scaled by 1/64 so a probe of this plane reads back as a fraction. It is the one number that says
+      // whether a moving image is noisy because the history is being REJECTED or because the estimate
+      // behind it is simply that loud, and the two want opposite fixes.
+      if (pt.dbg > 6.5) { albO = vec3<f32>(acc.a / 64.0); }
       textureStore(ptAlb, vec2<i32>(gid.xy), vec4<f32>(albO, 1.0));
       textureStore(ptNrm, vec2<i32>(gid.xy), vec4<f32>(n0, 1.0));
     }`;
@@ -17005,7 +17061,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // 4-bounce budget with Russian roulette cannot push light through six voxels of canopy however much each
   // leaf transmits, while the energy it takes out of the reflected lobe darkens the sunlit tops immediately.
   // The knob stays (__vbPT.set({folT})) because the question is worth being able to answer again.
-  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, neeB: 1, shCap: 0, coh: 1, oidn: 1, n: 0, seq: 0, w: 0, h: 0,
+  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, neeB: 1, shCap: 0, coh: 1, bnoise: 1, oidn: 1, n: 0, seq: 0, w: 0, h: 0,
                acc: null, tex: null, alb: null, nrm: null, dnTex: null, dnSig: null, dnBusy: false, hA: null, hB: null, bg: null, bgB: null, bgBlit: null, sig: null, par: 0 };
   const ptUni = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });   // 8 floats became 9 when `reproj` joined the struct; 48 keeps it 16-byte aligned with room for the next one
   const ptData = new Float32Array(20);   // [spp, bounces, reset, seq, cap, secR, folT, reproj, ...spare]
@@ -17162,6 +17218,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // ── THE BOUNCE-COHERENCE BLOCK ── 1 = a 2x2 quad shares one bounce direction, which is 41% of this
     // pass (see the long note at `coh` in the PTU struct). 0 restores the per-pixel estimator.
     ptData[16] = PT.coh;
+    ptData[17] = PT.bnoise;
     device.queue.writeBuffer(ptUni, 0, ptData.buffer, 0, 80);
     // Timestamps reuse the shipping query set when __vb.prof(true) has armed it, so the path tracer's own
     // cost lands in profEma[0] — printed under the name 'trace', which is exactly the pass it replaces.
@@ -17233,7 +17290,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     for (let i = 0; i < u.length; i++) { if (i % 4 === 3) { continue; } const v = h2f(u[i]); if (v > mx) { mx = v; } sum += v; if (u[i]) { nz++; } }
     return { which, max: +mx.toFixed(4), mean: +(sum / (u.length * 0.75)).toFixed(5), nonzero: nz };
   }
-  window.__vbPT = { probe: (w) => ptProbe(w), dev: () => device, texs: () => ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex }), inst: () => PT.dn || null, dbg: () => ({ dnRet: PT.dnRet || null, dnStats: PT.dnStats || null }), on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, neeB: PT.neeB, shCap: PT.shCap, coh: PT.coh, oidn: PT.oidn, oidnReady: !!PT.dn, oidnSig: PT.dnSig === PT.sig, cap: PT.cap, w: PT.w, h: PT.h }),
+  window.__vbPT = { probe: (w) => ptProbe(w), dev: () => device, texs: () => ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex }), inst: () => PT.dn || null, dbg: () => ({ dnRet: PT.dnRet || null, dnStats: PT.dnStats || null }), on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, neeB: PT.neeB, shCap: PT.shCap, coh: PT.coh, bnoise: PT.bnoise, oidn: PT.oidn, oidnReady: !!PT.dn, oidnSig: PT.dnSig === PT.sig, cap: PT.cap, w: PT.w, h: PT.h }),
                     set: (o) => { Object.assign(PT, o || {}); PT.n = 0; PT.sig = null; PT.dnSig = null; return PT.on; },
                     denoise: () => { PT.dnSig = null; dnMaybe(); return { busy: PT.dnBusy, samples: PT.n }; } };
   // ── DEMAND-DRIVEN STREAMING ── the world holds a fully-generated RECTANGLE (`rect`, world coords, 8-aligned)

@@ -20,7 +20,7 @@
   // 4-bounce budget with Russian roulette cannot push light through six voxels of canopy however much each
   // leaf transmits, while the energy it takes out of the reflected lobe darkens the sunlit tops immediately.
   // The knob stays (__vbPT.set({folT})) because the question is worth being able to answer again.
-  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, neeB: 1, shCap: 0, coh: 1, oidn: 1, n: 0, seq: 0, w: 0, h: 0,
+  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, neeB: 1, shCap: 0, coh: 1, bnoise: 1, oidn: 1, n: 0, seq: 0, w: 0, h: 0,
                acc: null, tex: null, alb: null, nrm: null, dnTex: null, dnSig: null, dnBusy: false, hA: null, hB: null, bg: null, bgB: null, bgBlit: null, sig: null, par: 0 };
   const ptUni = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });   // 8 floats became 9 when `reproj` joined the struct; 48 keeps it 16-byte aligned with room for the next one
   const ptData = new Float32Array(20);   // [spp, bounces, reset, seq, cap, secR, folT, reproj, ...spare]
@@ -177,6 +177,7 @@
     // ── THE BOUNCE-COHERENCE BLOCK ── 1 = a 2x2 quad shares one bounce direction, which is 41% of this
     // pass (see the long note at `coh` in the PTU struct). 0 restores the per-pixel estimator.
     ptData[16] = PT.coh;
+    ptData[17] = PT.bnoise;
     device.queue.writeBuffer(ptUni, 0, ptData.buffer, 0, 80);
     // Timestamps reuse the shipping query set when __vb.prof(true) has armed it, so the path tracer's own
     // cost lands in profEma[0] — printed under the name 'trace', which is exactly the pass it replaces.
@@ -248,6 +249,6 @@
     for (let i = 0; i < u.length; i++) { if (i % 4 === 3) { continue; } const v = h2f(u[i]); if (v > mx) { mx = v; } sum += v; if (u[i]) { nz++; } }
     return { which, max: +mx.toFixed(4), mean: +(sum / (u.length * 0.75)).toFixed(5), nonzero: nz };
   }
-  window.__vbPT = { probe: (w) => ptProbe(w), dev: () => device, texs: () => ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex }), inst: () => PT.dn || null, dbg: () => ({ dnRet: PT.dnRet || null, dnStats: PT.dnStats || null }), on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, neeB: PT.neeB, shCap: PT.shCap, coh: PT.coh, oidn: PT.oidn, oidnReady: !!PT.dn, oidnSig: PT.dnSig === PT.sig, cap: PT.cap, w: PT.w, h: PT.h }),
+  window.__vbPT = { probe: (w) => ptProbe(w), dev: () => device, texs: () => ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex }), inst: () => PT.dn || null, dbg: () => ({ dnRet: PT.dnRet || null, dnStats: PT.dnStats || null }), on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, neeB: PT.neeB, shCap: PT.shCap, coh: PT.coh, bnoise: PT.bnoise, oidn: PT.oidn, oidnReady: !!PT.dn, oidnSig: PT.dnSig === PT.sig, cap: PT.cap, w: PT.w, h: PT.h }),
                     set: (o) => { Object.assign(PT, o || {}); PT.n = 0; PT.sig = null; PT.dnSig = null; return PT.on; },
                     denoise: () => { PT.dnSig = null; dnMaybe(); return { busy: PT.dnBusy, samples: PT.n }; } };
