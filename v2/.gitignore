@@ -1,0 +1,8 @@
+build/
+*.exe
+*.o
+*.a
+*.optixir
+*.ptx
+*.pfm
+v2_shot_*.png
