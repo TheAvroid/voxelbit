@@ -35,7 +35,7 @@ if not exist "%EXE%" (
   echo v2: %EXE% not found.
   echo.
   echo     Build it first:  double-click %V2_HOME%\rebuild.bat
-  echo     or from an MSYS2 shell:   cd %V2_HOME%  ^&^&  bash build.sh
+  echo     ^(needs Visual Studio with "Desktop development with C++"^)
   echo.
   pause
   exit /b 1

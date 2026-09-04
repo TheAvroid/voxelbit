@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# ===========================================================================
+# SUPERSEDED BY build.bat. Kept because it still works and is a useful
+# cross-check, but it is no longer the build.
+#
+# The host moved to MSVC. Every NVIDIA denoising library -- NRD, RTXTS,
+# DLSS-RR -- is MSVC C++ with an MSVC ABI, and MinGW's linker cannot consume
+# those, so this path permanently rules them out. It also produces an exe that
+# is NOT standalone: it pulls glfw3.dll and libwinpthread-1.dll out of msys64
+# and only runs on a machine that has MSYS2 installed and on PATH.
+#
+# The two builds were compared pixel for pixel at 400x225, 64 spp: 224 pixels
+# of 90,000 differ, isolated and scattered across the whole frame, 9 of them by
+# more than 16/255 -- fast-math rounding at silhouette edges, not a difference
+# in the render. Each binary is bit-identical to itself run to run.
+# ===========================================================================
 # ---------------------------------------------------------------------------
 # Build v2. Three compiler invocations, two compilers, no cmake.
 #

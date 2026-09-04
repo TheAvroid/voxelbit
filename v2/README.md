@@ -222,31 +222,54 @@ which is why it is not here rather than half-done.
 
 ## Building
 
-Needs MSYS2 with the MinGW-w64 toolchain, the CUDA toolkit, the OptiX SDK, and —
-awkwardly — an MSVC install that nothing links against.
+Needs **Visual Studio** with "Desktop development with C++", the **CUDA
+toolkit** and the **OptiX SDK**. GLFW is vendored under `external/glfw`, so
+there is nothing else to install, no cmake, and no package manager.
 
-```sh
-bash build.sh
-OPTIX_PATH=/some/where CUDA_PATH=/some/where bash build.sh
+```bat
+build.bat           :: build
+build.bat clean     :: throw everything away, vendored GLFW included
 ```
 
 `rebuild.bat` does the same from Explorer, which is what applies a bake.
+`OPTIX_PATH` and `CUDA_PATH` override where those are looked for.
 
-### Why two compilers
+### One compiler, not two
 
-`nvcc` on Windows can only drive **MSVC** as its host compiler, so `cl.exe` has
-to exist for the device half to build — even though not one line of v2's host
-code is compiled with it. `build.sh` finds it automatically; `CCBIN` overrides.
+`nvcc` compiles the device half, and on Windows it can only drive **MSVC** as
+its host compiler. The host half is MSVC as well, so `cl.exe` is now simply
+*the* compiler rather than a dependency that nothing links against.
 
-The host half is **MinGW g++**, the toolchain the MSYS2 GLFW is built for. It links the CUDA **driver** API (`cuda.lib`), not
-the runtime: the driver API is plain C with no MSVC ABI in its interface, so
-MinGW's `ld` consumes NVIDIA's import library directly. That is why this engine
-calls `cuMemAlloc` and `cuLaunchKernel` rather than `cudaMalloc` and `<<<>>>` —
-`cudart` is an MSVC library and would not link.
+It was MinGW g++ until September 2026. That built a working engine for months,
+but it ruled out every denoiser NVIDIA makes — NRD, RTXTS and DLSS-RR all ship
+as MSVC C++ with an MSVC ABI, and MinGW's linker cannot consume those. It also
+produced an exe that was **not standalone**: it pulled `glfw3.dll` and
+`libwinpthread-1.dll` out of msys64 and only ran on a machine with MSYS2
+installed and on `PATH`. The MSVC build imports nothing but system DLLs, and
+`/MT` means it carries the CRT rather than needing a redistributable.
 
-OptiX itself needs **no library at all** at link time: `optix_stubs.h` loads
-`nvoptix.dll` out of the driver store at runtime, which is why `-lcfgmgr32` is in
-the link line — that search goes through the Windows configuration manager.
+The engine's own code needed **no changes** to move — it compiled clean under
+`cl` on the first attempt. The only thing MinGW was really supplying was
+msys64's `libglfw3.a`, a MinGW-ABI library `cl` cannot link. Hence
+`external/glfw`: GLFW 3.4's Win32 subset, 21 `.c` files compiled here directly.
+GLFW supports exactly this, which is why vendoring it needs no build system.
+
+The two builds were compared pixel for pixel at 400×225, 64 spp. 224 pixels of
+90,000 differ, isolated and scattered across the whole frame — only 4% have a
+differing neighbour — and 9 of them by more than 16/255. That is fast-math
+rounding at silhouette edges rather than a difference in the render; a moved
+instance would have been a contiguous blob. Each binary is bit-identical to
+itself run to run.
+
+v2 links the CUDA **driver** API (`cuda.lib`), not the runtime, which is why it
+calls `cuMemAlloc` and `cuLaunchKernel` rather than `cudaMalloc` and `<<<>>>`.
+`cuda.lib` is a static loader shim rather than an import library, so
+`nvcuda.dll` does not appear in the exe's imports — it is opened on demand.
+
+OptiX needs **no library at all** at link time: `optix_stubs.h` loads
+`nvoptix.dll` out of the driver store at runtime. `cfgmgr32` and `advapi32` are
+in the link line for that search — it walks the configuration manager for the
+display device, then reads the driver's path out of the registry.
 
 Two artefacts land beside the exe and are loaded from disk at startup:
 `v2.optixir` (the OptiX programs) and `tonemap.ptx` (the display kernel). A
@@ -344,9 +367,11 @@ about which copy you have:
 * `cudaGraphicsGLRegisterImage` is the wrong end of it: that is CUDA↔OpenGL, and
   NRD does not support OpenGL. Sharing would have to be CUDA↔D3D12 external
   memory plus shared fences.
-* **The host compiler.** NRD builds as an MSVC C++ library with a `nrd::` API,
-  and MinGW cannot link MSVC C++ symbols. Using it means moving the entire host
-  build to MSVC, which also means replacing the MinGW GLFW.
+* ~~**The host compiler.**~~ **Cleared, September 2026.** NRD builds as an MSVC
+  C++ library with a `nrd::` API, and MinGW could not link MSVC C++ symbols.
+  The host build has since moved to MSVC and GLFW is vendored, so this one is
+  gone. It was the only blocker that could be removed without touching the
+  renderer, which is why it went first — the two below remain.
 * **The integrator would change shape.** NRD wants demodulated diffuse and
   specular as separate signals, each with hit distance, in its own packing, plus
   normal+roughness in `NRD_NORMAL_ENCODING` and viewZ. v2 emits one combined
