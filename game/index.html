@@ -16244,12 +16244,12 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // Technique ported from gnikoloff/webgpu-raytracer (MIT) — https://github.com/gnikoloff/webgpu-raytracer
   //   * multi-bounce path tracing written as a LOOP with an explicit throughput, because WGSL has no recursion
   //   * cosine-weighted hemisphere sampling at every diffuse bounce (the cosine cancels against the Lambert
-  //     BRDF's own cosine, so the whole bounce is `throughput *= albedo`)
+  //     BRDF's own cosine, so the whole bounce is throughput *= albedo)
   //   * progressive ACCUMULATION into a storage buffer across frames, zeroed whenever the camera moves
   //   * a final tonemap/blit pass that divides the accumulator by its own sample count
   // What is NOT ported, and could not be: that renderer intersects TRIANGLE MESHES through a BVH. There are no
-  // triangles here and no BVH to build — the brick pool IS the acceleration structure, and `trace()` /
-  // `bodyTrace()` in render/wgsl/dda.js are the intersector. This shader takes DDAW as an argument for exactly
+  // triangles here and no BVH to build — the brick pool IS the acceleration structure, and trace() /
+  // bodyTrace() in render/wgsl/dda.js are the intersector. This shader takes DDAW as an argument for exactly
   // that reason: it is the SAME traversal the shipping tracer walks, so a difference between the two images is
   // a difference in the LIGHTING model and never in what the ray hit.
   //
@@ -16259,7 +16259,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // spare, which is what the drop-slot creature intersector would cost if this ever grows to draw them.
   // Every binding here is READ by the shader: layout:'auto' prunes anything unused and then rejects the bind
   // group that still passes it, which shows up as a black canvas at absurd fps and one console line.
-  const PT_SRC = ({ DDAW }) => /* wgsl */`
+  const PT_SRC = ({ DDAW, pickWGSL }) => /* wgsl */`
+    ${pickWGSL}
     @group(0) @binding(1) var<storage, read> pool : array<u32>;      // the paged brick pool — same buffer, same format, same reader as TRACE
     @group(0) @binding(2) var<storage, read> bdesc : array<u32>;
     @group(0) @binding(3) var<storage, read> pal : array<vec4<f32>>;
@@ -16357,6 +16358,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       // coh: 0 restores the per-pixel estimator for a reference image, exactly as neeB: 0 does.
       coh : f32,                                                     // share one bounce direction across a 2^coh lane block (0 = per pixel, 1 = 2x2)
       bnoise : f32,                                                  // 1 = spatiotemporal blue noise on the primary hit's bounce and sun cone; 0 restores the white draws for an in-session A/B
+      leafT : f32,                                                   // per-leaf-layer sun transmittance: 0 = an opaque canopy (the old behaviour), 1 = foliage casts no shadow at all
+      life : f32,                                                    // 1 = intersect the trace-injected creatures on the primary ray; 0 restores the old creature-blind image for an A/B
     }
     @group(0) @binding(11) var<uniform> pt : PTU;
     // ── THE G-BUFFER OIDN WANTS ── colour is LINEAR HDR (the denoiser's hdr:true path applies OIDN's own PU
@@ -16548,8 +16551,16 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // sampling noise floor of about 1.8 at the 512 samples both sides were measured at. So the remaining
         // bias is at the edge of measurable, and secR = 0 turns the cap off entirely for a strict reference.
         let lim = select(min(4000.0, tcap), min(select(4000.0, pt.secR, pt.secR > 0.0), tcap), b > 0 && !spec);
-        let h = traceAll(ro, rd, lim, inW);
-        if (b == 0) { *t0 = h.t; *n0 = h.n; *a0 = pal[h.vox].rgb; }   // the G-BUFFER: distance for reprojection, normal and albedo for OIDN's guided model. Both aux planes are noise-free by construction — they are the primary hit, not an estimate.                                   // the PRIMARY hit distance, which is the only depth the reprojection needs
+        var h = traceAll(ro, rd, lim, inW);
+        // ── AND THE INJECTED CREATURES, WHICH ARE NOT IN THE GRID AT ALL ── resolved separately and winning
+        // only by being strictly NEARER, exactly as the shipping tracer settles them against terrain.
+        var lifeHit = false;
+        var lifeCol = vec3<f32>(0.0);
+        if (b == 0) {
+          let lh = ptLife(rd, select(4000.0, h.t, h.t >= 0.0));
+          if (lh.hit) { h.t = lh.t; h.n = lh.n; lifeHit = true; lifeCol = lh.col; }
+        }
+        if (b == 0) { *t0 = h.t; *n0 = h.n; *a0 = select(pal[h.vox].rgb, lifeCol, lifeHit); }   // the G-BUFFER: distance for reprojection, normal and albedo for OIDN's guided model. Both aux planes are noise-free by construction — they are the primary hit, not an estimate.                                   // the PRIMARY hit distance, which is the only depth the reprojection needs
         if (wJust) { thr *= exp(-WATER_SIG * select(60.0, h.t, h.t >= 0.0)); wJust = false; }   // the water column this segment crossed
         if (h.t < 0.0) {
           // ── THE MISS IS THE LIGHT ── skyColor() for the primary ray (sun disc, moon, stars, meteors — what
@@ -16572,7 +16583,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // straight path keeps the branch to five lines. Once transmitted the path is flagged inW, so water is
         // invisible to it from then on and it reaches the bed in ONE more bounce instead of ricocheting inside
         // the volume until the budget runs out.
-        if (h.vox == WTv || h.vox == WBv) {
+        if ((h.vox == WTv || h.vox == WBv) && !lifeHit) {
           let ci = clamp(abs(dot(rd, n)), 0.0, 1.0);
           // ── THE MIRROR IS SCALED (user 2026-09-03: "lower the reflections by 50%") ── Schlick's reflectance
           // decides how often the path reflects rather than transmits, so scaling it here scales the mirror
@@ -16585,7 +16596,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           spec = true;
           continue;
         }
-        let alb = pal[h.vox].rgb;
+        var alb = pal[h.vox].rgb;
+        if (lifeHit) { alb = lifeCol; }   // a creature carries its OWN voxel colour; h.vox still names whatever terrain was behind it
         // ── A LEAF IS TWO-SIDED ── every renderer that draws a forest has to answer this, and the answer is
         // never "opaque". A real leaf reflects about a tenth of the visible light and TRANSMITS about as much
         // again, which is why a canopy interior is green and legible rather than black. These voxels are
@@ -16596,7 +16608,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
         // The shipping renderer solves the same problem differently — a short AO ray that cannot see the
         // canopy overhead, plus the FOL_STR forward-lobe glow in TRACE — which is why its forest interiors
         // are so much brighter than this one's even at folT > 0.
-        let fol = isFol(h.vox);
+        let fol = isFol(h.vox) && !lifeHit;   // …and is never foliage, however the terrain behind it reads
         let kT = select(0.0, pt.folT, fol);
         // ── NEXT EVENT ESTIMATION ── the sun is a tiny bright disc and a cosine-sampled bounce would find it
         // about once in 100,000 tries, so it is sampled EXPLICITLY every bounce. The cone jitter, the
@@ -16627,12 +16639,35 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
             var shMax = 1200.0;
             if (pt.shCap > 0.0) { shMax = pt.shCap; }
             let sCap = select(shMax, min(shMax, (ceilY - so.y) / max(sdir.y, 1e-4)), sdir.y > 1e-4);
-            var vis = true;
+            // ── A LEAF IS TRANSLUCENT TO THE SUN (user 2026-09-03: "let more light shine through the trees") ──
+            // Not folT, which is the other answer and the one that measured as nothing. folT splits a leaf's
+            // ALBEDO into a reflected and a transmitted lobe: it is energy-conserving, so it takes light out
+            // of the sunlit crown to hand to the interior and the interior does not get brighter (13.5 -> 13.2
+            // of 255 at folT 0.35). This is a VISIBILITY change instead. The shadow ray used to treat one leaf
+            // voxel as an opaque wall; now it walks THROUGH foliage, multiplying its transmittance by leafT per
+            // layer, and only solid matter — trunk, stone, ground, a rigid body — stops it dead. Light that was
+            // never in the image arrives, rather than being moved from somewhere else.
+            // Bounded to LEAF_MAX layers: transmittance falls off geometrically, so the fifth layer of a dense
+            // canopy contributes leafT^5 and is not worth a trace.
+            var vis = 1.0;
             if (sCap > 0.0) {
-              vis = trace(so, sdir, sCap, inW).t < 0.0;
-              if (vis) { vis = bodyTraceX(so, sdir, sCap, true).t < 0.0; }   // occlusion only, so ANY hit ends the walk
+              var so2 = so;
+              var rem = sCap;
+              for (var lk = 0; lk < 4; lk = lk + 1) {
+                let hs2 = trace(so2, sdir, rem, inW);
+                if (hs2.t < 0.0) { break; }                           // nothing left in the way
+                if (pt.leafT <= 0.0 || !isFol(hs2.vox)) { vis = 0.0; break; }   // solid: an opaque blocker ends it
+                vis = vis * pt.leafT;
+                let adv = hs2.t + 0.05;                               // step just past the leaf it went through
+                so2 = so2 + sdir * adv;
+                rem = rem - adv;
+                if (rem <= 0.0) { break; }
+              }
+              // Rigid bodies stay OPAQUE — a felled trunk is not a leaf, and this is occlusion only, so any
+              // hit ends the walk.
+              if (vis > 0.0 && bodyTraceX(so, sdir, sCap, true).t >= 0.0) { vis = 0.0; }
             }
-            if (vis) { L += thr * alb * sunC * abs(ndl) * kS; }
+            if (vis > 0.0) { L += thr * alb * sunC * abs(ndl) * kS * vis; }
           }
         }
         L += thr * alb * ambFloor();                                 // the same night/cave floor the composite adds, and for the same reason: with it gone a cave is pure black rather than dark
@@ -16668,11 +16703,110 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // Applied to the AVERAGED radiance rather than per sample: fog is a deterministic function of the primary
     // hit distance, so averaging first and fogging once is identical and costs one evaluation instead of one
     // per sample. It is applied AFTER the history store, so what accumulates stays the clean estimate.
-    fn ptFog(col : vec3<f32>, rd : vec3<f32>, dist : f32) -> vec3<f32> {
-      if (pt.fog <= 0.0 || dist <= 0.0) { return col; }
+    // ── THE FOG IS A FACTOR NOW, NOT A COLOUR ── it blends toward the sky, and that blend does NOT commute
+    // with the albedo multiply that has moved to the blit: fogging illumination and then multiplying by a
+    // dark albedo would darken the haze itself. So this pass computes only HOW MUCH fog the pixel takes, and
+    // the blit applies it after remodulation, against the same sky and the same curve as before.
+    // ── A NON-FINITE SAMPLE IS PERMANENT DAMAGE, SO IT NEVER REACHES THE ACCUMULATOR ────────────────────
+    // ptAcc is a running SUM. One NaN or Inf entering it poisons that pixel for the rest of the session:
+    // every later frame adds to it, the history stores it, reprojection carries it to new pixels and the
+    // a-trous spreads it over a neighbourhood. The failure that produces is a patch of white that appears
+    // for no reason and does not go away, which is worth ruling out by construction rather than by search.
+    // Comparisons against NaN are false, so a NaN fails both bounds and lands on zero; Inf fails the upper.
+    fn ptFinite(v : vec3<f32>) -> vec3<f32> {
+      var o = select(vec3<f32>(0.0), v, v < vec3<f32>(1e30));
+      o = select(vec3<f32>(0.0), o, o > vec3<f32>(-1e30));
+      return o;
+    }
+    // ══ DYNAMIC LIFE, WHICH THIS RENDERER NEVER DREW ═══════════════════════════════════════════════════
+    // Creatures, dropped items and the flock are TRACE-INJECTED: they are not in the voxel grid at all, they
+    // are model volumes intersected per ray against ITEMMAP. That is exactly the reported bug — life "popped
+    // in at a distance and vanished up close". A PERCHED bird is a grid STAMP and renders like any terrain,
+    // so it is visible far away; the moment it activates it becomes one of these injected models and this
+    // pass could not see it. Ported from the same loop in render/wgsl/trace.js so the two renderers cannot
+    // disagree about what is there.
+    // ── PRIMARY RAY ONLY, DELIBERATELY ── the slot data is CAMERA-RELATIVE (dropV returns an offset from the
+    // eye in the camera basis), which is exact for a ray leaving the eye and would need world-space
+    // transforms this pass does not have for a bounce ray. So a creature is visible and lit, but does not
+    // appear in a water reflection and does not bounce light onto the ground beneath it.
+    // ── AND WITHOUT THE TILE CULL ── the shipping loop bit-scans a per-8x8-tile visibility mask out of
+    // visb, and that is a NINTH storage buffer this pass cannot have (see the binding budget at the top).
+    // The per-slot bounding-sphere reject below is what stands in for it.
+    struct LifeHit { t : f32, n : vec3<f32>, col : vec3<f32>, hit : bool };
+    fn ptLife(rdW : vec3<f32>, maxT : f32) -> LifeHit {
+      var o : LifeHit;
+      o.hit = false; o.t = maxT; o.n = vec3<f32>(0.0, 1.0, 0.0); o.col = vec3<f32>(0.0);
+      // ITEMMAP is READ before any early-out. layout:'auto' prunes a binding the shader never reaches, and a
+      // pruned binding that JS still passes invalidates the bind group — black canvas, absurd fps, and only
+      // __vbGpuErr says so. With ITEMN 0 (a failed .vox fetch) every use below is unreachable, so this line
+      // is what keeps the binding live.
+      let warm = ITEMMAP[0];
+      if (ITEMN < 1 || warm.w < -1.0 || pt.life < 0.5) { return o; }   // the knob is tested AFTER the warm read, so turning life off cannot prune the binding
+      let dc3 = vec3<f32>(dot(rdW, u.right), dot(rdW, u.up), dot(rdW, u.fwd));
+      let dropN = clamp(i32(u.pick2Y.w + 0.5), 9, DROP_N);
+      let lifeBase = i32(u.lifeCfg.w + 0.5);
+      var bestT = maxT;
+      for (var di = 4; di < dropN; di = di + 1) {
+        if (di >= 5 && di < lifeBase) { di = lifeBase - 1; continue; }   // step OVER the spark/particle band, which is analytic-only
+        if ((u32(lifeMotV(di).w + 0.5) & 1u) != 0u) { continue; }        // analytic-only (firefly / empty)
+        let dXv = dropV(di * 4 + 1);
+        let dit = i32(dXv.w + 0.5);
+        if (dit < 1) { continue; }
+        let dA = dropV(di * 4); let dYv = dropV(di * 4 + 2); let dZv = dropV(di * 4 + 3);
+        let it3 = clamp(dit - 1, 0, ITEMN - 1);
+        let eW = ITEMD[it3].x; let eD = ITEMD[it3].y; let eH = ITEMD[it3].z; let eOff = ITEMD[it3].w;
+        if (eW < 1) { continue; }
+        let vsD = dA.w;
+        let ew2 = f32(eW) * 0.5; let ed2 = f32(eD) * 0.5; let eh2 = f32(eH) * 0.5;
+        let radD = vsD * (sqrt(ew2 * ew2 + ed2 * ed2 + eh2 * eh2) + 1.0);
+        let tcD = dot(dA.xyz, dc3);
+        if (tcD <= 0.0 || tcD - radD > bestT || length(dc3 * tcD - dA.xyz) > radD) { continue; }
+        let roD = vec3<f32>(-dot(dA.xyz, dXv.xyz), -dot(dA.xyz, dYv.xyz), -dot(dA.xyz, dZv.xyz)) / vsD + vec3<f32>(ew2, ed2, eh2);
+        var rdD = vec3<f32>(dot(dc3, dXv.xyz), dot(dc3, dYv.xyz), dot(dc3, dZv.xyz));
+        if (abs(rdD.x) < 1e-6) { rdD.x = 1e-6; }
+        if (abs(rdD.y) < 1e-6) { rdD.y = 1e-6; }
+        if (abs(rdD.z) < 1e-6) { rdD.z = 1e-6; }
+        let invD = 1.0 / rdD;
+        let taD = -roD * invD;
+        let tbD = (vec3<f32>(f32(eW), f32(eD), f32(eH)) - roD) * invD;
+        let tnD = min(taD, tbD); let tfD = max(taD, tbD);
+        let teD = max(max(tnD.x, tnD.y), max(tnD.z, 0.0));
+        let tlD = min(min(tfD.x, tfD.y), tfD.z);
+        if (teD >= tlD) { continue; }
+        var vaxD = 0;
+        if (tnD.y == teD) { vaxD = 1; }
+        if (tnD.z == teD) { vaxD = 2; }
+        var vcD = clamp(vec3<i32>(floor(roD + rdD * (teD + 1e-4))), vec3<i32>(0), vec3<i32>(eW - 1, eD - 1, eH - 1));
+        let istD = vec3<i32>(sign(rdD));
+        var vNxD = (vec3<f32>(vcD + max(istD, vec3<i32>(0))) - roD) * invD;
+        var tHit = teD;
+        var iMapD = eOff + vcD.x + vcD.y * eW + vcD.z * eW * eD;
+        for (var i = 0; i < PICKSTEPS; i = i + 1) {
+          let cell = ITEMMAP[u32(iMapD)];
+          if (cell.w > 0.99) {                                          // OPAQUE only — ITEMMAP.w is per-voxel alpha and a fly's wing is deliberately invisible to the primary ray
+            if (tHit * vsD < bestT) {
+              bestT = tHit * vsD;
+              o.hit = true; o.t = bestT; o.col = cell.rgb;
+              var nl = vec3<f32>(0.0);
+              if (vaxD == 0) { nl.x = -f32(istD.x); } else if (vaxD == 1) { nl.y = -f32(istD.y); } else { nl.z = -f32(istD.z); }
+              let nc = dXv.xyz * nl.x + dYv.xyz * nl.y + dZv.xyz * nl.z;
+              o.n = normalize(u.right * nc.x + u.up * nc.y + u.fwd * nc.z);   // the TRUE rotated world normal, so the sun ray sees the surface the eye does
+            }
+            break;
+          }
+          if (vNxD.x <= vNxD.y && vNxD.x <= vNxD.z) { tHit = vNxD.x; vNxD.x += abs(invD.x); vcD.x += istD.x; iMapD += istD.x; vaxD = 0; }
+          else if (vNxD.y <= vNxD.z) { tHit = vNxD.y; vNxD.y += abs(invD.y); vcD.y += istD.y; iMapD += istD.y * eW; vaxD = 1; }
+          else { tHit = vNxD.z; vNxD.z += abs(invD.z); vcD.z += istD.z; iMapD += istD.z * eW * eD; vaxD = 2; }
+          if (any(vcD < vec3<i32>(0)) || any(vcD >= vec3<i32>(eW, eD, eH))) { break; }
+        }
+      }
+      return o;
+    }
+    fn ptFogA(rd : vec3<f32>, dist : f32) -> f32 {
+      if (pt.fog <= 0.0 || dist <= 0.0) { return 0.0; }
       var a = 1.0 - exp(-dist * 0.0006 * pt.fog);
       a = max(a, smoothstep(u.rdist.x * 0.62, u.rdist.x - 6.0, dist * length(vec2<f32>(rd.x, rd.z))) * pt.fog);
-      return mix(col, skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z))), clamp(a, 0.0, 1.0));
+      return clamp(a, 0.0, 1.0);
     }
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -16782,24 +16916,141 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
           if (ok) { let K = max(pt.hist, 1.0); prev = vec4<f32>(hs.rgb * K, K); }
         }
       }
-      let acc = prev + vec4<f32>(sum, n);
+      // ══ DEMODULATION ═══════════════════════════════════════════════════════════════════════════════════
+      // From here the pipeline carries ILLUMINATION, not colour: the path's radiance with the primary
+      // surface's own albedo divided out. This is the single change that makes the renderer denoisable, and
+      // it is why every denoiser tried before it blurred. Colour = illumination x albedo, and in a VOXEL
+      // world albedo is piecewise CONSTANT — flat across a face, discontinuous at the edge. Filtering colour
+      // therefore smears texture, which the owner rejected twice: the a-trous in September and the bilinear
+      // history the same afternoon. Illumination is smooth across those very edges, so a filter may average
+      // it freely, and the albedo is multiplied back at the blit, full resolution, unfiltered and exact.
+      var albO = a0; if (t0 < 0.0) { albO = vec3<f32>(1.0); }        // a sky pixel has no surface: albedo 1, and the sky itself is the illumination
+      let ill = ptFinite(sum / max(albO, vec3<f32>(0.02)));           // the floor stops a near-black voxel turning the divide into an explosion; ptFinite stops anything that got through it becoming permanent
+      let acc = prev + vec4<f32>(ill, n);
       ptAcc[idx] = acc;
-      var col = acc.rgb / max(acc.a, 1.0);
-      let colStore = col;
-      textureStore(ptHistOut, vec2<i32>(gid.xy), vec4<f32>(colStore, t0));
-      col = ptFog(col, rd0, t0);                                     // …after the store, so the accumulator never sees the haze
-      // LINEAR out. The tonemap moved to the blit, because everything that may sit between them — the OIDN
-      // pass — has to see real radiance. A sky pixel writes a zero normal and its own colour as albedo, which
-      // is what OIDN expects for a background.
+      let col = acc.rgb / max(acc.a, 1.0);
+      textureStore(ptHistOut, vec2<i32>(gid.xy), vec4<f32>(col, t0));
+      // LINEAR ILLUMINATION out — un-fogged, un-tonemapped, un-modulated. This is the denoiser's input, and
+      // the only thing any filter downstream is ever allowed to touch.
       textureStore(ptOut, vec2<i32>(gid.xy), vec4<f32>(col, 1.0));
-      var albO = a0; if (t0 < 0.0) { albO = vec3<f32>(1.0); }
       // DIAGNOSTIC (dbg = 7): the accumulator's WEIGHT, not a colour — mean effective samples per pixel,
       // scaled by 1/64 so a probe of this plane reads back as a fraction. It is the one number that says
       // whether a moving image is noisy because the history is being REJECTED or because the estimate
       // behind it is simply that loud, and the two want opposite fixes.
-      if (pt.dbg > 6.5) { albO = vec3<f32>(acc.a / 64.0); }
-      textureStore(ptAlb, vec2<i32>(gid.xy), vec4<f32>(albO, 1.0));
-      textureStore(ptNrm, vec2<i32>(gid.xy), vec4<f32>(n0, 1.0));
+      var albW = albO;
+      if (pt.dbg > 6.5) { albW = vec3<f32>(acc.a / 64.0); }
+      textureStore(ptAlb, vec2<i32>(gid.xy), vec4<f32>(albW, t0));   // …with DEPTH in alpha: the blit needs it for the fog this pass no longer applies
+      textureStore(ptNrm, vec2<i32>(gid.xy), vec4<f32>(n0, ptFogA(rd0, t0)));
+    }`;
+
+  // ── FILT_SRC ── THE EDGE-AWARE A-TROUS, AND WHY THIS ONE IS ALLOWED ─────────────────────────────────
+  // A spatial filter was built in September and rejected: "it blurred the image". That one filtered COLOUR.
+  // This one filters ILLUMINATION only — the albedo was divided out in the trace pass and is multiplied back
+  // after every pass here has run — so the thing it averages is the smooth half of the image and the thing
+  // it cannot touch is the sharp half. In a voxel world that separation is unusually clean: albedo is
+  // constant across a face and discontinuous at the edge, which is exactly where a colour filter does its
+  // damage and exactly what is no longer present in this signal.
+  // ── THE EDGE STOPS ARE EXACT, NOT TOLERANCED ── voxel normals are axis-aligned, so two samples either
+  // share a face orientation or they do not; there is no angle threshold to tune and no chance of a
+  // perpendicular face leaking in. Depth does the rest, scaled by the stride so a wide pass is not held to a
+  // narrow pass's tolerance.
+  // A-trous: five taps per axis at a doubling stride, so N passes reach 2^N pixels for N x 25 taps instead of
+  // the (2^N)^2 a single wide kernel would cost.
+  const FILT_SRC = () => /* wgsl */`
+    @group(0) @binding(1) var fIn  : texture_2d<f32>;               // illumination in
+    @group(0) @binding(2) var fAlb : texture_2d<f32>;               // albedo.rgb, primary depth in .a
+    @group(0) @binding(3) var fNrm : texture_2d<f32>;               // normal.rgb, fog in .a
+    @group(0) @binding(4) var fOut : texture_storage_2d<rgba16float, write>;
+    struct FP { stride : f32, phiZ : f32, pad0 : f32, pad1 : f32 };
+    @group(0) @binding(5) var<uniform> fp : FP;
+    @group(0) @binding(6) var<storage, read> fAcc : array<vec4<f32>>;   // the accumulator, for its WEIGHT: how converged this pixel already is
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let RWu = u32(u.res.x);
+      let RHu = u32(u.res.y);
+      if (gid.x >= RWu || gid.y >= RHu) { return; }
+      let p = vec2<i32>(gid.xy);
+      let cA = textureLoad(fAlb, p, 0);
+      let cN = textureLoad(fNrm, p, 0).xyz;
+      let cI = textureLoad(fIn, p, 0).rgb;
+      let zc = cA.a;
+      // A SKY pixel has no surface to compare against and no noise worth filtering — it is one analytic
+      // evaluation, not an estimate. Pass it through untouched rather than averaging it with the canopy.
+      if (zc <= 0.0) { textureStore(fOut, p, vec4<f32>(cI, 1.0)); return; }
+      // ── AND IT FADES OUT AS THE PIXEL CONVERGES ─────────────────────────────────────────────────────────
+      // Filtering a settled pixel spends detail to remove noise that is no longer there. Measured on a
+      // 600-sample still: leaving the filter on cost 8.5% of the frame's fine detail for nothing. The
+      // accumulator already knows how many effective samples each pixel holds, so the strength is tied to
+      // it — full while moving, where a pixel is one sample deep and the noise is the whole problem, and off
+      // by the time it is 32 deep, where the estimate is its own best answer. Stopping the camera therefore
+      // resolves INTO the true converged image rather than away from it.
+      let ne = fAcc[u32(p.y) * RWu + u32(p.x)].a;
+      let kF = clamp((32.0 - ne) / 28.0, 0.0, 1.0);
+      if (kF <= 0.0) { textureStore(fOut, p, vec4<f32>(cI, 1.0)); return; }
+      var kern = array<f32, 5>(0.0625, 0.25, 0.375, 0.25, 0.0625);
+      let st = i32(fp.stride + 0.5);
+      let mxy = vec2<i32>(i32(RWu) - 1, i32(RHu) - 1);
+      // ══ VARIANCE, AND WHY THIS IS THE PART THAT MAKES IT SVGF ═══════════════════════════════════════
+      // A fixed-width blur cannot tell a NOISY region from a genuine lighting edge, so it treats a shadow
+      // boundary and a patch of Monte-Carlo fizz identically and softens both. SVGF's answer is to drive
+      // the filter with the per-pixel VARIANCE of the estimate: where the signal is uncertain it averages
+      // hard, and where neighbouring pixels disagree by more than their noise explains — a shadow edge, a
+      // shaft of sun — it refuses. Estimated spatially over 3x3 here rather than from temporal moments,
+      // which is SVGF's own fallback for a short history and needs no extra storage: this pass is already
+      // at four storage textures and eight storage buffers, and there is no room for a moments target.
+      // The same depth and normal tests gate it, so the variance of a surface never includes another one.
+      let lc = dot(cI, vec3<f32>(0.2126, 0.7152, 0.0722));
+      var lsum = 0.0;
+      var lsum2 = 0.0;
+      var ln = 0.0;
+      for (var vy = -1; vy <= 1; vy = vy + 1) {
+        for (var vx = -1; vx <= 1; vx = vx + 1) {
+          let q = clamp(p + vec2<i32>(vx * st, vy * st), vec2<i32>(0, 0), mxy);
+          let qa = textureLoad(fAlb, q, 0);
+          if (qa.a <= 0.0) { continue; }
+          if (dot(textureLoad(fNrm, q, 0).xyz, cN) < 0.99) { continue; }
+          if (abs(qa.a - zc) > fp.phiZ * zc + f32(st) * 0.5) { continue; }
+          let lq = dot(textureLoad(fIn, q, 0).rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+          lsum = lsum + lq;
+          lsum2 = lsum2 + lq * lq;
+          ln = ln + 1.0;
+        }
+      }
+      var lvar = 0.0;
+      if (ln > 1.0) {
+        let lmean = lsum / ln;
+        lvar = max(lsum2 / ln - lmean * lmean, 0.0);
+      }
+      // phiL scales the luminance tolerance by the noise actually present. The floor matters: with a bare
+      // sqrt(0) a converged pixel divides by nothing and every neighbour is rejected, which freezes the
+      // filter exactly where it is still wanted at the start of a disocclusion.
+      let phiL = 4.0 * sqrt(lvar) + 1e-3;
+      var sum = vec3<f32>(0.0);
+      var wsum = 0.0;
+      for (var dy = -2; dy <= 2; dy = dy + 1) {
+        for (var dx = -2; dx <= 2; dx = dx + 1) {
+          let q = clamp(p + vec2<i32>(dx * st, dy * st), vec2<i32>(0, 0), mxy);
+          let qa = textureLoad(fAlb, q, 0);
+          let zq = qa.a;
+          if (zq <= 0.0) { continue; }
+          let nq = textureLoad(fNrm, q, 0).xyz;
+          if (dot(nq, cN) < 0.99) { continue; }                     // same face orientation, exactly — voxel normals are axis-aligned
+          if (abs(zq - zc) > fp.phiZ * zc + f32(st) * 0.5) { continue; }
+          // ── THE LUMINANCE EDGE STOP ── the SVGF weight proper: a neighbour is trusted in proportion to
+          // how well its brightness agrees with this pixel, MEASURED IN UNITS OF THE LOCAL NOISE. Two
+          // pixels that differ by less than the variance explains are the same surface under the same
+          // light and may be averaged; two that differ by far more are a real edge and must not be.
+          let qc = textureLoad(fIn, q, 0).rgb;
+          let lq = dot(qc, vec3<f32>(0.2126, 0.7152, 0.0722));
+          let wl = exp(-abs(lq - lc) / phiL);
+          let w = kern[dx + 2] * kern[dy + 2] * wl;
+          sum = sum + qc * w;
+          wsum = wsum + w;
+        }
+      }
+      var o = cI;
+      if (wsum > 0.0) { o = mix(cI, sum / wsum, kF); }
+      textureStore(fOut, p, vec4<f32>(o, 1.0));
     }`;
 
   // ── PTBLIT_SRC ── the presentation pass: upscale the (renderScale-sized) path-traced target onto the
@@ -16818,14 +17069,41 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // metric was the thing that was wrong.
   const PTBLIT_SRC = () => /* wgsl */`
     @group(0) @binding(1) var ptSrc : texture_2d<f32>;
-    @group(0) @binding(2) var ptSamp : sampler;
+    // ── NO SAMPLER ── every fetch below is a textureLoad, and layout:'auto' PRUNES a binding the shader
+    // never reads. Leaving the sampler declared and still passing it made the bind group invalid, which
+    // presents as a black canvas at an absurd framerate and is reported only in __vbGpuErr.
+    @group(0) @binding(3) var ptAlbT : texture_2d<f32>;             // albedo, with the primary depth in alpha
+    @group(0) @binding(4) var ptNrmT : texture_2d<f32>;             // normal, with the fog factor in alpha
     @vertex fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4<f32> {
       var P = array<vec2<f32>, 3>(vec2<f32>(-1.0, -3.0), vec2<f32>(3.0, 1.0), vec2<f32>(-1.0, 1.0));
       return vec4<f32>(P[vi], 0.0, 1.0);
     }
     @fragment fn fs(@builtin(position) fc : vec4<f32>) -> @location(0) vec4<f32> {
-      var c = textureSampleLevel(ptSrc, ptSamp, fc.xy / u.canvasRes, 0.0).rgb;
-      c = aces(c * 0.95);                                            // the composite's own tonemap and gamma — here rather than in the trace pass, so the denoiser sees linear light
+      let uv = fc.xy / u.canvasRes;
+      let rd = rayDir(uv * u.res);
+      let sky = skyBase(normalize(vec3<f32>(rd.x, max(rd.y, 0.02), rd.z)));
+      // ── REMODULATE, AND INTERPOLATE THE PRODUCT RATHER THAN THE FACTORS ──────────────────────────────────
+      // The sharp half of the image goes back in HERE, at the very end, having been kept out of every filter
+      // upstream. But the upscale has to multiply BEFORE it blends: sampling illumination and albedo with two
+      // separate bilinear fetches interpolates each across an albedo discontinuity and multiplies the
+      // mismatched halves together. At a shoreline — dark water albedo, therefore large water illumination,
+      // against bright sand — that printed a red fringe along the water's edge. Weighting each of the four
+      // taps by its OWN albedo makes this exactly linear(ill * alb), which is what the renderer produced
+      // before demodulation existed, so the upscale is unchanged and only the filtering upstream is new.
+      let rp = uv * u.res - vec2<f32>(0.5);
+      let bf = floor(rp);
+      let fr = rp - bf;
+      var tw = array<f32, 4>((1.0 - fr.x) * (1.0 - fr.y), fr.x * (1.0 - fr.y),
+                             (1.0 - fr.x) * fr.y, fr.x * fr.y);
+      let mxy = vec2<i32>(u.res) - vec2<i32>(1, 1);
+      var c = vec3<f32>(0.0);
+      for (var i = 0; i < 4; i = i + 1) {
+        let q = clamp(vec2<i32>(bf) + vec2<i32>(i & 1, i >> 1), vec2<i32>(0, 0), mxy);
+        let ai = textureLoad(ptAlbT, q, 0);
+        let fi = textureLoad(ptNrmT, q, 0).a;
+        c = c + tw[i] * mix(textureLoad(ptSrc, q, 0).rgb * ai.rgb, sky, fi);
+      }
+      c = aces(c * 0.95);                                            // the composite's own tonemap and gamma — after remodulation, so the denoiser upstream saw linear light
       return vec4<f32>(pow(c, vec3<f32>(1.0 / 2.2)), 1.0);
     }`;
   const __m_render_wgsl_vis = (() => {
@@ -17061,16 +17339,20 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // 4-bounce budget with Russian roulette cannot push light through six voxels of canopy however much each
   // leaf transmits, while the energy it takes out of the reflected lobe darkens the sunlit tops immediately.
   // The knob stays (__vbPT.set({folT})) because the question is worth being able to answer again.
-  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, neeB: 1, shCap: 0, coh: 1, bnoise: 1, oidn: 1, n: 0, seq: 0, w: 0, h: 0,
-               acc: null, tex: null, alb: null, nrm: null, dnTex: null, dnSig: null, dnBusy: false, hA: null, hB: null, bg: null, bgB: null, bgBlit: null, sig: null, par: 0 };
+  const PT = { on: false, spp: 1, bounces: 4, cap: 1024, secR: 512, folT: 0, reproj: 1, hist: 24, dbg: 0, neeMin: 0, fClamp: 0, fog: 0.25, reflK: 0.5, neeB: 1, shCap: 0, coh: 1, bnoise: 1, leafT: 0.5, life: 1, atrous: 3, phiZ: 0.05, oidn: 1, dnEvery: 0, n: 0, seq: 0, w: 0, h: 0,
+               acc: null, tex: null, alb: null, nrm: null, fA: null, fB: null, fUni: null, bgF: null, dnTex: null, dnSig: null, dnBusy: false, hA: null, hB: null, bg: null, bgB: null, bgBlit: null, sig: null, par: 0 };
   const ptUni = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });   // 8 floats became 9 when `reproj` joined the struct; 48 keeps it 16-byte aligned with room for the next one
   const ptData = new Float32Array(20);   // [spp, bounces, reset, seq, cap, secR, folT, reproj, ...spare]
   // §FOL§ is DDAW's foliage-see-through specialization constant (see render/wgsl/dda.js). The path tracer
   // takes the 'false' variant unconditionally: the see-through hack exists to stop a clipped-into canopy
   // filling the screen in a renderer whose primary ray is the whole image, and a path tracer that made leaves
   // near the eye vanish would then light the scene through a hole that is not there.
-  const ptMod = device.createShaderModule({ code: (PRE_SRC() + PT_SRC({ DDAW })).replaceAll('§FOL§', 'false') });
+  const ptMod = device.createShaderModule({ code: (PRE_SRC() + PT_SRC({ DDAW, pickWGSL })).replaceAll('§FOL§', 'false') });
   const pPath = device.createComputePipeline({ layout: 'auto', compute: { module: ptMod, entryPoint: 'main' } });
+  // ── THE A-TROUS PIPELINE ── one shader, run several times at a doubling stride. See FILT_SRC for why a
+  // spatial filter is admissible here when the September one was not: it only ever sees illumination.
+  const ptFiltMod = device.createShaderModule({ code: PRE_SRC() + FILT_SRC() });
+  const pFilt = device.createComputePipeline({ layout: 'auto', compute: { module: ptFiltMod, entryPoint: 'main' } });
   const ptBlitMod = device.createShaderModule({ code: PRE_SRC() + PTBLIT_SRC() });
   const pPtBlit = device.createRenderPipeline({ layout: 'auto', vertex: { module: ptBlitMod, entryPoint: 'vs' },
     fragment: { module: ptBlitMod, entryPoint: 'fs', targets: [{ format }] }, primitive: { topology: 'triangle-list' } });
@@ -17106,7 +17388,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       { binding: 15, resource: linSamp }, { binding: 23, resource: { buffer: bodyBuf } },
       { binding: 16, resource: PT.hA.createView() }, { binding: 17, resource: PT.hB.createView() },
       { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp },
-      { binding: 18, resource: PT.alb.createView() }, { binding: 19, resource: PT.nrm.createView() }] });
+      { binding: 18, resource: PT.alb.createView() }, { binding: 19, resource: PT.nrm.createView() },
+      { binding: 13, resource: { buffer: itemMapBuf } }] });
     PT.bgB = device.createBindGroup({ layout: pPath.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: { buffer: poolBuf } },
       { binding: 2, resource: { buffer: bdescBuf } }, { binding: 3, resource: { buffer: palBuf } },
@@ -17116,11 +17399,33 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       { binding: 15, resource: linSamp }, { binding: 23, resource: { buffer: bodyBuf } },
       { binding: 16, resource: PT.hB.createView() }, { binding: 17, resource: PT.hA.createView() },
       { binding: 24, resource: cgView }, { binding: 25, resource: cgSamp },
-      { binding: 18, resource: PT.alb.createView() }, { binding: 19, resource: PT.nrm.createView() }] });
+      { binding: 18, resource: PT.alb.createView() }, { binding: 19, resource: PT.nrm.createView() },
+      { binding: 13, resource: { buffer: itemMapBuf } }] });
     const mkBlit = (t) => device.createBindGroup({ layout: pPtBlit.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: t.createView() },
-      { binding: 2, resource: linSamp }] });
+      { binding: 3, resource: PT.alb.createView() }, { binding: 4, resource: PT.nrm.createView() }] });
     PT.bgBlit = mkBlit(PT.tex); PT.bgBlitDn = mkBlit(PT.dnTex);      // raw estimate, or the denoised one when it is current
+    // ── THE FILTER'S PING-PONG ── pass i reads what pass i-1 wrote, so two targets alternate. The stride
+    // doubles per pass and lives in its own tiny uniform: five buffers written once here rather than one
+    // buffer rewritten between dispatches, because several dispatches share an encoder and would all see
+    // whichever value was written last.
+    const oldFA = PT.fA, oldFB = PT.fB;
+    PT.fA = mkF(); PT.fB = mkF();
+    PT.fUni = []; PT.bgF = [];
+    for (let i = 0; i < 5; i++) {
+      const ub = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(ub, 0, new Float32Array([1 << i, PT.phiZ, 0, 0]));
+      PT.fUni.push(ub);
+      const src = i === 0 ? PT.tex : ((i % 2) ? PT.fA : PT.fB);
+      const dst = (i % 2) ? PT.fB : PT.fA;
+      PT.bgF.push(device.createBindGroup({ layout: pFilt.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: uniBuf } }, { binding: 1, resource: src.createView() },
+        { binding: 2, resource: PT.alb.createView() }, { binding: 3, resource: PT.nrm.createView() },
+        { binding: 4, resource: dst.createView() }, { binding: 5, resource: { buffer: ub } },
+        { binding: 6, resource: { buffer: PT.acc } }] }));
+    }
+    PT.bgBlitFA = mkBlit(PT.fA); PT.bgBlitFB = mkBlit(PT.fB);
+    if (oldFA) { device.queue.onSubmittedWorkDone().then(() => { oldFA.destroy(); oldFB.destroy(); }); }
     if (oldA || oldT) device.queue.onSubmittedWorkDone().then(() => {          // released only once no submitted frame still references them
       try { if (oldA) oldA.destroy(); } catch (e) {}
       try { if (oldT) oldT.destroy(); } catch (e) {}
@@ -17179,13 +17484,23 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   })().catch((e) => { PT.oidn = 0; console.warn('[vb] OIDN unavailable, path tracer stays raw:', e); return null; }));
   const DN_MIN = 12;                                                 // samples before it is worth denoising — below this the estimate is still moving fast enough that the result is stale by the time it lands
   function dnMaybe() {
-    if (!PT.oidn || PT.dnBusy || PT.n < DN_MIN || PT.dnSig === PT.sig) { return; }
+    // ── dnEvery: DENOISE THE 1-SPP FRAME, WHICH IS THE CASE OIDN IS ACTUALLY FOR ──────────────────────
+    // The gates below describe a "clean it up once it settles" denoiser: wait for DN_MIN samples, run once
+    // per converged estimate. That is what was measured before, and it flattered nothing — at 9-27 spp the
+    // accumulator has already removed the noise and the network has almost nothing left to do (-15% to
+    // -3.6% error for 50-65 ms). Feeding it a ONE-SAMPLE frame with a clean albedo and normal is the input
+    // it was trained for, and a different question entirely.
+    if (!PT.oidn || PT.dnBusy) { return; }
+    if (!PT.dnEvery && (PT.n < DN_MIN || PT.dnSig === PT.sig)) { return; }
     PT.dnBusy = true;
     const sig = PT.sig;
     dnLoad().then((d) => {
       if (!d) { PT.dnBusy = false; return null; }
-      return d.denoiseTextures({ color: PT.tex, albedo: PT.alb, normal: PT.nrm, hdr: true, output: PT.dnTex });
-    }).then((t) => { PT.dnRet = t ? (t === PT.dnTex ? 'ours' : 'engine') : 'none'; PT.dnStats = (PT.dn && PT.dn.stats) || null;
+      // COLOUR-ONLY, and that is the demodulation paying for itself twice: PT.tex is illumination now, with
+      // the albedo already divided out, so handing OIDN the albedo plane as well would have it demodulate a
+      // second time. The 3-channel HDR model is also markedly cheaper than the 9-channel cleanAux one.
+      return d.denoiseTextures({ color: PT.tex, hdr: true, output: PT.dnTex });
+    }).then((t) => { PT.dnRet = t ? (t === PT.dnTex ? 'ours' : 'engine') : 'none'; PT.dnStats = (PT.dn && PT.dn.stats) || null; PT.dnN = (PT.dnN || 0) + 1;
       // a run that aborted returns undefined and leaves the output texture untouched — showing it would
       // blit an empty frame while every status flag still claimed the denoiser was current
       if (t && PT.sig === sig) { PT.dnSig = sig; } PT.dnBusy = false; })
@@ -17219,6 +17534,8 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     // pass (see the long note at `coh` in the PTU struct). 0 restores the per-pixel estimator.
     ptData[16] = PT.coh;
     ptData[17] = PT.bnoise;
+    ptData[18] = PT.leafT;
+    ptData[19] = PT.life;
     device.queue.writeBuffer(ptUni, 0, ptData.buffer, 0, 80);
     // Timestamps reuse the shipping query set when __vb.prof(true) has armed it, so the path tracer's own
     // cost lands in profEma[0] — printed under the name 'trace', which is exactly the pass it replaces.
@@ -17230,12 +17547,30 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
       enc.resolveQuerySet(profQS, 0, 14, profRes, 0);
       if (!profBusy) { enc.copyBufferToBuffer(profRes, 0, profStg, 0, 112); profNew = true; }
     }
+    // ── AND THE FILTER RUNS BETWEEN THEM ── after the estimate is written, before it is shown. All of it
+    // lives on illumination; the albedo goes back on in the blit, untouched by any of this.
+    const nF = Math.max(0, Math.min(5, PT.atrous | 0));
+    if (nF > 0) {
+      // Timestamped into the query pair the shipping renderer's TEMPORAL pass owns, which is idle while this
+      // renderer is drawing — so __vb.profMin().temporal is the a-trous cost. Wall-clock frame timing cannot
+      // measure it: the harness's rAF cadence pins at the vsync interval however much work is queued.
+      const cf = enc.beginComputePass(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 2, endOfPassWriteIndex: 3 } } : {});
+      cf.setPipeline(pFilt);
+      for (let i = 0; i < nF; i++) { cf.setBindGroup(0, PT.bgF[i]); cf.dispatchWorkgroups(Math.ceil(RW / 8), Math.ceil(RH / 8)); }
+      cf.end();
+    }
     const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(),
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       ...(profQS ? { timestampWrites: { querySet: profQS, beginningOfPassWriteIndex: 12, endOfPassWriteIndex: 13 } } : {}) });
     // the denoised image only while it belongs to THIS estimate — the moment the camera moves, sig changes
     // and the raw progressive frame comes back rather than a clean picture of where you used to be looking
-    rp.setPipeline(pPtBlit); rp.setBindGroup(0, (PT.dnSig === PT.sig && PT.dnSig !== null) ? PT.bgBlitDn : PT.bgBlit); rp.draw(3); rp.end();
+    // Running every frame, the denoise is async and lands a frame or two late, so pinning it to THIS
+    // estimate's signature would show the raw image permanently. A frame of latency on a denoised result is
+    // the trade a per-frame denoiser makes; the sig test is what the settle-once mode wants.
+    const dnFresh = PT.dnEvery ? (PT.dnSig !== null) : (PT.dnSig === PT.sig && PT.dnSig !== null);
+    var blitBg = PT.bgBlit;
+    if (dnFresh) { blitBg = PT.bgBlitDn; } else if (nF > 0) { blitBg = ((nF - 1) % 2) ? PT.bgBlitFB : PT.bgBlitFA; }
+    rp.setPipeline(pPtBlit); rp.setBindGroup(0, blitBg); rp.draw(3); rp.end();
     if (PT.cap <= 0 || PT.n < PT.cap) PT.n += PT.spp;
     dnMaybe();                                                       // …after the submit, never inside the encoder: this is async and runs its own passes
   }
@@ -17271,7 +17606,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
   // planes, the denoised result) and the canvas shows only the last of them, so it cannot tell them apart.
   // rgba16float is 8 B/px, so a 64-wide row is exactly 512 B and already meets the 256 B row alignment.
   async function ptProbe(which) {
-    const t = ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex })[which];
+    const t = ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex, fA: PT.fA, fB: PT.fB })[which];
     if (!t) { return { err: 'no texture ' + which }; }
     const W = 64, H = 64, bpr = W * 8;
     const buf = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -17290,7 +17625,7 @@ ${POOL ? `    @group(0) @binding(1) var<storage, read> pool : array<u32>;    // 
     for (let i = 0; i < u.length; i++) { if (i % 4 === 3) { continue; } const v = h2f(u[i]); if (v > mx) { mx = v; } sum += v; if (u[i]) { nz++; } }
     return { which, max: +mx.toFixed(4), mean: +(sum / (u.length * 0.75)).toFixed(5), nonzero: nz };
   }
-  window.__vbPT = { probe: (w) => ptProbe(w), dev: () => device, texs: () => ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex }), inst: () => PT.dn || null, dbg: () => ({ dnRet: PT.dnRet || null, dnStats: PT.dnStats || null }), on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, neeB: PT.neeB, shCap: PT.shCap, coh: PT.coh, bnoise: PT.bnoise, oidn: PT.oidn, oidnReady: !!PT.dn, oidnSig: PT.dnSig === PT.sig, cap: PT.cap, w: PT.w, h: PT.h }),
+  window.__vbPT = { probe: (w) => ptProbe(w), dev: () => device, texs: () => ({ tex: PT.tex, alb: PT.alb, nrm: PT.nrm, dn: PT.dnTex }), inst: () => PT.dn || null, dbg: () => ({ dnRet: PT.dnRet || null, dnStats: PT.dnStats || null }), on: (v) => ptToggle(v), stat: () => ({ on: PT.on, samples: PT.n, spp: PT.spp, bounces: PT.bounces, secR: PT.secR, folT: PT.folT, reproj: PT.reproj, hist: PT.hist, neeMin: PT.neeMin, fClamp: PT.fClamp, fog: PT.fog, reflK: PT.reflK, neeB: PT.neeB, shCap: PT.shCap, coh: PT.coh, bnoise: PT.bnoise, leafT: PT.leafT, life: PT.life, atrous: PT.atrous, phiZ: PT.phiZ, oidn: PT.oidn, dnEvery: PT.dnEvery, dnN: PT.dnN || 0, oidnReady: !!PT.dn, oidnSig: PT.dnSig === PT.sig, cap: PT.cap, w: PT.w, h: PT.h }),
                     set: (o) => { Object.assign(PT, o || {}); PT.n = 0; PT.sig = null; PT.dnSig = null; return PT.on; },
                     denoise: () => { PT.dnSig = null; dnMaybe(); return { busy: PT.dnBusy, samples: PT.n }; } };
   // ── DEMAND-DRIVEN STREAMING ── the world holds a fully-generated RECTANGLE (`rect`, world coords, 8-aligned)

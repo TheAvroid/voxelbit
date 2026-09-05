@@ -1,0 +1,14 @@
+build/
+*.exe
+*.o
+*.a
+*.optixir
+*.ptx
+*.pfm
+v2_shot_*.png
+spike/nrd/out/
+*.cso
+spike/dlss/out/
+spike/menu/out/
+spike/sampler/out/
+spike/nrd/out/
