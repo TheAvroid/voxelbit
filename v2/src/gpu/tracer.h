@@ -284,7 +284,7 @@ class Tracer {
     const Post &post() const { return post_; }
 
     // The sun glare and lens flare, drawn in the tone-map pass. 0 disables it.
-    float flare = 1.0f;
+    float flare = 2.0f;
 
     // Where the moon photograph lives. Beside the decoration set rather than in
     // it: it is not decor, it is the sky. Same hardcoded-default style the pine

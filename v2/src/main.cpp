@@ -71,7 +71,7 @@ void usage() {
         "                            NOT the window size -- the frame is MADE this big\n"
         "                            and stretched up to fill the window. Under DLSS it\n"
         "                            is what gets produced; the mode picks what is traced.\n"
-        "  --flare F                 sun glare and lens flare, 0 = off             (1.0)\n"
+        "  --flare F                 sun glare and lens flare, 0 = off             (2.0)\n"
         "  --rec SECONDS             record a take this long from startup, then exit\n"
         "  --rec-fps N               recorder capture rate, frames/s                 (60)\n"
         "  --rec-width N             cap the recording width; H.264 stops at 4096  (3840)\n"

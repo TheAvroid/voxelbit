@@ -18,7 +18,7 @@ namespace defaults {
 constexpr float kScale = 1.00f;
 constexpr int kDepth = 6;
 constexpr int kMovingDepth = 4;
-constexpr float kExposure = 0.70f;
+constexpr float kExposure = 0.500f;
 constexpr float kShadowLift = 0.350f;
 constexpr float kSpeed = 4.97f;
 constexpr float kSensitivity = 0.120f;

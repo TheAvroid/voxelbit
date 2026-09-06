@@ -1992,7 +1992,10 @@ class ForestApp : public SampleApp {
         // game. It is a look, and every other look in this menu is a slider.
         // 0 removes the glare and the ghosts entirely and costs nothing else --
         // the sun disc itself is drawn by the sky, not by this.
-        w.slider("Sun glare", tracer_.flare, 0.0f, 2.0f, false, "%.2f");
+        // RANGE RAISED WITH THE DEFAULT. 2.0 was the ceiling and is now where
+        // the slider starts, which would have made it a knob that only turns
+        // down. 4.0 keeps as much headroom above the default as there is below.
+        w.slider("Sun glare", tracer_.flare, 0.0f, 4.0f, false, "%.2f");
         w.slider("Vignette", tracer_.vignette, 0.0f, 1.0f, false, "%.2f");
 
         // AUTO-EXPOSURE, BLOOM AND THE DEEP-LIFT'S REACH ARE NOT IN THIS MENU,
