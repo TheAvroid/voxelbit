@@ -1,29 +1,44 @@
 // ---------------------------------------------------------------------------
-// volfog.h -- the froxel grid, its two passes, and the textures they live in.
+// volfog.h -- the world-anchored fog volume: its cascades, its snapping, and
+//             the one pass that fills them.
 //
-// The algorithm is in shaders/VolFog.slang and the passes are VolFogInject and
-// VolFogMarch. This file owns the memory and the order, and explains the one
-// non-obvious thing about the memory: why there are three grids and not one.
+// The algorithm is in shaders/VolFog.slang and the pass is VolFogInject. This
+// file owns the memory and the arithmetic that decides WHERE each cascade sits
+// in the world, which is the part that makes the volume anchored rather than
+// merely large.
 //
 // ---------------------------------------------------------------------------
-// THREE TEXTURES.
+// FOUR TEXTURES, TWO PER CASCADE.
 //
-//   inject[2]   what the lighting pass produced -- RGB in-scatter, A density.
-//               DOUBLED, because the pass reads last frame's result as history
-//               while writing this frame's, and a single grid would have it
-//               reading values it was in the middle of overwriting.
-//   marched     the front-to-back integral -- RGB scattering, A transmittance.
-//               What the tracer samples.
+// Each cascade is double-buffered because the pass reads last frame's copy as
+// history while writing this frame's, and a single volume would have it reading
+// values it was in the middle of overwriting. There is no third "marched"
+// volume any more: a world grid has no axis to pre-integrate along, so the
+// integration moved into the tracer. See the march note in Trace.cs.slang.
 //
-// The reference integrates in place, reading and writing one grid, which works
-// because each slice only touches itself. v7 cannot: doing that would destroy
-// the very values the NEXT frame wants as history. The extra grid is 7 MB and
-// buys a temporal blend that is the difference between fog and fog that
-// flickers.
+// At 128 x 48 x 128 in RGBA16F each volume is 6.3 MB, so the whole system is
+// about 25 MB -- against 22 MB for the froxel grid it replaces, which is close
+// enough to call a wash.
 //
-// At 160 x 90 x 64 in RGBA16F each grid is about 7 MB, so the whole system is
-// roughly 22 MB -- against a 326 MB triangle pool, which is the right sense of
-// scale for something that replaces one exp().
+// ---------------------------------------------------------------------------
+// SNAPPING, WHICH IS THE WHOLE TRICK.
+//
+// A cascade follows the player, or the far half of the wood would fall out of
+// it. What it must NOT do is follow continuously: if the origin slid by a
+// fraction of a cell, every cell would cover a slightly different parcel of air
+// each frame, the temporal history would be averaging different questions, and
+// the fog would swim exactly the way the froxel grid did.
+//
+// So the origin is quantised to a whole number of the cascade's own cells --
+// one floor() per axis. Two consequences follow, and both are the point:
+//
+//   1. A cell is a FIXED region of the world for as long as it is in the
+//      volume. The shadow ray is re-asked about the same air every frame, so
+//      the blend is a real average instead of a smear.
+//   2. Last frame's volume differs from this one by a WHOLE NUMBER OF CELLS,
+//      so reprojection is an integer offset. No matrix, no perspective divide,
+//      no landing between texels. A cell either has history or has walked off
+//      the edge, and that is the only case there is.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -34,6 +49,7 @@
 #include "Core/API/Texture.h"
 #include "Core/Pass/ComputePass.h"
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -45,9 +61,10 @@ namespace v7 {
 
 // MUST MATCH the constants in shaders/VolFog.slang.
 struct VolFogGrid {
-    static constexpr uint32_t kX = 160;
-    static constexpr uint32_t kY = 90;
-    static constexpr uint32_t kZ = 64;
+    static constexpr uint32_t kX = 128;
+    static constexpr uint32_t kY = 48;
+    static constexpr uint32_t kZ = 128;
+    static constexpr int kCascades = 2;
 };
 
 class VolFog {
@@ -55,51 +72,60 @@ class VolFog {
     // ---- knobs, live from the settings menu ------------------------------
     bool enabled = true;
 
-    // Where the grid begins and ends, in metres. The far limit is what the
-    // exponential slice distribution is stretched across: too near and distant
-    // haze simply stops, too far and every slice is wasted on air nobody can
-    // resolve.
-    float nearD = 0.5f;
+    // How far the tracer marches, in metres. Not a property of the volume any
+    // more -- the far cascade reaches 512 m whatever this says -- but of how
+    // much of it is worth integrating per pixel.
     float farD = 400.0f;
+
+    // CELL SIZES, AND THE REASON THERE ARE TWO.
+    //
+    // A single uniform volume big enough for the view distance would be far too
+    // coarse near the camera, which is precisely the property the froxel grid
+    // had for free and this had to find another way to keep. Two cascades: one
+    // fine and close, one coarse and far.
+    //
+    //   L0  0.75 m cells -> 96 x 36 x 96 m around the player
+    //   L1  4.00 m cells -> 512 x 192 x 512 m
+    float cell0 = 0.75f;
+    float cell1 = 4.00f;
 
     // Forward scattering. Water droplets and dust are strongly forward, which
     // is what makes the air near the sun glow instead of the whole volume
     // lifting uniformly. Zero would be isotropic and would look like milk.
     float anisotropy = 0.7f;
 
-    // How much of the sky dome reaches a froxel. Not traced -- see the note in
-    // the injection shader -- so this is the one honestly fudged number in the
-    // system, and it is what stops shadowed air going black.
-    //
-    // BACK TO 0.25, AND THIS IS THE GLARE KNOB.
-    //
-    // It went to 0.6 to keep shadowed air from reading as a hole, and 0.6 turned
-    // out to be what washes the frame out toward the sun. That reads as sun
-    // glare and it is not: the term is isotropic and unshadowed, so it does not
-    // know where the sun is at all. What it does is accumulate along the march,
-    // so the further you can see the more of it piles up -- and the direction
-    // you can see furthest in a wood is the one the light is coming from,
-    // because that is where the canopy is thinnest. The glare follows the sun
-    // without being caused by it.
-    //
-    // Measured over the frame, dropping it from 0.6 to 0.25 takes the median
-    // from 46 to 30; the forward-scattering lobe, which was the obvious suspect,
-    // moves it by nothing at all -- g = 0.7 to g = 0.0 changes the brightest
-    // tenth from 176 to 187, the wrong way.
+    // How much of the sky dome reaches a cell that can see it. Applied at march
+    // time now, against the visibility the volume stores.
     float ambient = 0.25f;
 
+    // How much sky light still reaches a cell the up ray found covered.
+    //
+    // NOT ZERO, AND NOT A QUARTER EITHER. One ray straight up is a proxy for a
+    // hemisphere and the paths it misses are real. Measured on the wood: at
+    // 0.25 the sky came out DARKER than the ground under it, which is fog
+    // absorbing sky light without scattering any back. 0.65 keeps the sky above
+    // the ground where it belongs and still takes the glare off. 1.0 is the old
+    // unshadowed term, sun blur and all.
+    float skyShadow = 0.65f;
+
     // How much of each new frame survives the temporal blend, standing still
-    // and moving. The still number is the reference's and buys a very quiet
-    // grid; the moving one is what stops the wood dragging its own shadows
-    // behind it. See the long note in VolFogInject.
+    // and moving.
+    //
+    // THE MOVING NUMBER CAN BE FAR LOWER THAN THE FROXEL VERSION'S 0.40, and
+    // that is a direct dividend of anchoring. That number was high because a
+    // moving camera invalidated the history: a froxel that was shadowed and was
+    // now in the open held a value that was simply WRONG rather than misplaced,
+    // and no reprojection makes a stale value fresh. Here the camera does not
+    // enter into it. A cell is the same air whether you walk or stand, so the
+    // history only goes stale when the WORLD changes.
     float settleStill = 0.05f;
-    float settleMoving = 0.40f;
+    float settleMoving = 0.10f;
 
     bool init(const Falcor::ref<Falcor::Device> &device) {
         device_ = device;
         try {
-            inject_ = Falcor::ComputePass::create(device_, "v7/shaders/VolFogInject.cs.slang", "main");
-            march_ = Falcor::ComputePass::create(device_, "v7/shaders/VolFogMarch.cs.slang", "main");
+            inject_ =
+                Falcor::ComputePass::create(device_, "v7/shaders/VolFogInject.cs.slang", "main");
         } catch (const std::exception &e) {
             status_ = std::string("fog shaders did not compile: ") + e.what();
             return false;
@@ -107,21 +133,20 @@ class VolFog {
 
         using Falcor::ResourceBindFlags;
         const auto kRw = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
-        for (int i = 0; i < 2; ++i) {
-            injectTex_[i] = device_->createTexture3D(VolFogGrid::kX, VolFogGrid::kY, VolFogGrid::kZ,
-                                                     Falcor::ResourceFormat::RGBA16Float, 1,
-                                                     nullptr, kRw);
-            injectTex_[i]->setName("v7::fogInject");
+        for (int c = 0; c < VolFogGrid::kCascades; ++c) {
+            for (int i = 0; i < 2; ++i) {
+                vol_[c][i] = device_->createTexture3D(VolFogGrid::kX, VolFogGrid::kY,
+                                                      VolFogGrid::kZ,
+                                                      Falcor::ResourceFormat::RGBA16Float, 1,
+                                                      nullptr, kRw);
+                vol_[c][i]->setName("v7::fogVolume");
+            }
         }
-        marched_ = device_->createTexture3D(VolFogGrid::kX, VolFogGrid::kY, VolFogGrid::kZ,
-                                            Falcor::ResourceFormat::RGBA16Float, 1, nullptr, kRw);
-        marched_->setName("v7::fogMarched");
 
-        // LINEAR AND CLAMPED. The tracer samples this grid at an arbitrary
-        // depth between slices, so point sampling would put every slice
-        // boundary on the screen as a visible step. Clamping matters at the
-        // edges: a pixel just outside the grid should get the nearest air, not
-        // wrap round to the far side of the frustum.
+        // LINEAR AND CLAMPED. The tracer samples this at arbitrary world
+        // positions between cell centres, so point sampling would show the
+        // lattice directly. Clamping matters at the edges: the march tests the
+        // bounds itself, and a wrapped tap would fetch the far side of the wood.
         Falcor::Sampler::Desc sd;
         sd.setFilterMode(Falcor::TextureFilteringMode::Linear, Falcor::TextureFilteringMode::Linear,
                          Falcor::TextureFilteringMode::Linear);
@@ -131,74 +156,91 @@ class VolFog {
         sampler_ = device_->createSampler(sd);
 
         ready_ = true;
-        status_ = "froxel grid 160x90x64";
+        status_ = "world volume 128x48x128, 2 cascades";
         return true;
     }
 
     bool available() const { return ready_; }
     bool active() const { return ready_ && enabled; }
     const std::string &status() const { return status_; }
-    const Falcor::ref<Falcor::Texture> &grid() const { return marched_; }
     const Falcor::ref<Falcor::Sampler> &sampler() const { return sampler_; }
 
-    // A camera cut, a resize, a teleport: anything that makes last frame's grid
-    // describe somewhere else. One frame of noise beats several seconds of the
-    // previous location bleeding through.
+    // What the tracer binds and reads. cur_ has already flipped by the time the
+    // trace runs, so the volume written this frame is the one at cur_ ^ 1.
+    const Falcor::ref<Falcor::Texture> &volume(int c) const { return vol_[c][cur_ ^ 1u]; }
+    float3 originWs(int c) const { return originWs_[c]; }
+    float cellSize(int c) const { return c == 0 ? cell0 : cell1; }
+
+    // A teleport, or anything else that makes the history describe somewhere
+    // else. One frame of noise beats several seconds of bleed-through.
     void invalidate() { warm_ = false; }
 
     // ---------------------------------------------------------------------
-    // Light the grid, then integrate it. Run before the trace that samples it.
+    // Fill both cascades. Run before the trace that marches them.
     // ---------------------------------------------------------------------
-    void render(Falcor::RenderContext *ctx, const V6Camera &cam, const V6Camera &prevCam,
-                const V6Sky &sky, float density, float height, uint32_t frame,
-                Falcor::RtAccelerationStructure *tlas, bool moving) {
+    void render(Falcor::RenderContext *ctx, const V6Camera &cam, const V6Sky &sky, float density,
+                float height, uint32_t frame, Falcor::RtAccelerationStructure *tlas, bool moving) {
         if (!ready_ || !tlas) return;
         const uint32_t cur = cur_, prev = cur_ ^ 1u;
 
-        {
+        for (int c = 0; c < VolFogGrid::kCascades; ++c) {
+            const float cell = cellSize(c);
+
+            // The snap. Centre the volume on the camera, then quantise the min
+            // corner to a whole number of cells.
+            const int32_t ox = snapCell(cam.pos.x, cell) - int32_t(VolFogGrid::kX) / 2;
+            const int32_t oy = snapCell(cam.pos.y, cell) - int32_t(VolFogGrid::kY) / 2;
+            const int32_t oz = snapCell(cam.pos.z, cell) - int32_t(VolFogGrid::kZ) / 2;
+
+            // This frame's cell c holds world cell (origin + c); last frame it
+            // sat at (origin + c) - prevOrigin. One integer add in the shader.
+            const int32_t shiftX = ox - prevCell_[c][0];
+            const int32_t shiftY = oy - prevCell_[c][1];
+            const int32_t shiftZ = oz - prevCell_[c][2];
+
+            originWs_[c] = float3(float(ox) * cell, float(oy) * cell, float(oz) * cell);
+
             auto var = inject_->getRootVar();
             var["gScene"].setAccelerationStructure(
                 Falcor::ref<Falcor::RtAccelerationStructure>(tlas));
-            var["gFogGrid"] = injectTex_[cur];
-            var["gFogHistory"] = injectTex_[prev];
-            var["gFogSampler"] = sampler_;
-            var["VolFogCB"]["gCam"].setBlob(&cam, sizeof(cam));
-            var["VolFogCB"]["gPrevCam"].setBlob(&prevCam, sizeof(prevCam));
-            var["VolFogCB"]["gSky"].setBlob(&sky, sizeof(sky));
-            var["VolFogCB"]["gNear"] = nearD;
-            var["VolFogCB"]["gFar"] = farD;
+            var["gFogVol"].setTexture(vol_[c][cur]);
+            var["gFogHistory"].setTexture(vol_[c][prev]);
+            var["VolFogCB"]["gOriginWs"] = originWs_[c];
             var["VolFogCB"]["gDensity"] = density;
+            var["VolFogCB"]["gCellSize"] = float3(cell, cell, cell);
             var["VolFogCB"]["gHeight"] = height;
-            var["VolFogCB"]["gAnisotropy"] = anisotropy;
-            var["VolFogCB"]["gAmbient"] = ambient;
+            var["VolFogCB"]["gSunDir"] = sky.sunDir;
+            var["VolFogCB"]["gSkyShadow"] = skyShadow;
+            var["VolFogCB"]["gHistShift"] = int3(shiftX, shiftY, shiftZ);
+            var["VolFogCB"]["gOriginCell"] = int3(ox, oy, oz);
             var["VolFogCB"]["gFrame"] = frame;
             var["VolFogCB"]["gAccumulate"] = warm_ ? 1u : 0u;
             var["VolFogCB"]["gAlpha"] = moving ? settleMoving : settleStill;
             inject_->execute(ctx, VolFogGrid::kX, VolFogGrid::kY, VolFogGrid::kZ);
-        }
 
-        ctx->uavBarrier(injectTex_[cur].get());
+            ctx->uavBarrier(vol_[c][cur].get());
 
-        {
-            auto var = march_->getRootVar();
-            var["gFogIn"] = injectTex_[cur];
-            var["gFogOut"] = marched_;
-            var["VolFogMarchCB"]["gNear"] = nearD;
-            var["VolFogMarchCB"]["gFar"] = farD;
-            // One thread per COLUMN -- the walk down z is serial, see the pass.
-            march_->execute(ctx, VolFogGrid::kX, VolFogGrid::kY, 1);
+            prevCell_[c][0] = ox;
+            prevCell_[c][1] = oy;
+            prevCell_[c][2] = oz;
         }
-        ctx->uavBarrier(marched_.get());
 
         cur_ ^= 1u;
         warm_ = true;
     }
 
   private:
+    // floor(v / cell) as an integer, which is what keeps the lattice stable
+    // across the origin. Truncation would fold -0.4 and +0.4 into the same cell
+    // and put a seam through the middle of the world.
+    static int32_t snapCell(float v, float cell) { return int32_t(std::floor(v / cell)); }
+
     Falcor::ref<Falcor::Device> device_;
-    Falcor::ref<Falcor::ComputePass> inject_, march_;
-    Falcor::ref<Falcor::Texture> injectTex_[2], marched_;
+    Falcor::ref<Falcor::ComputePass> inject_;
+    Falcor::ref<Falcor::Texture> vol_[VolFogGrid::kCascades][2];
     Falcor::ref<Falcor::Sampler> sampler_;
+    float3 originWs_[VolFogGrid::kCascades] = {};
+    int32_t prevCell_[VolFogGrid::kCascades][3] = {};
     uint32_t cur_ = 0;
     bool ready_ = false, warm_ = false;
     std::string status_ = "not initialised";

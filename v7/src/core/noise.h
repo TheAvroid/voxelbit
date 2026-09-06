@@ -75,25 +75,67 @@ inline float vnoise(float x, float z) {
 // still be correct -- it checks the cell before trusting it -- but it would
 // miss every time and cost a branch for nothing.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// AND THE ROW REMEMBERED TOO, which is a second saving on top of the first and
+// a larger one than it looks.
+//
+// The memo above stops the four corner hashes being recomputed. It does not
+// stop anything else: floor(z), the integer row, and sstep(z - fz) were still
+// evaluated on EVERY sample, per octave, even though the mesher walks i on the
+// inside and z therefore holds for a whole row of 260 columns. That is a floor,
+// a convert, a subtract, a saturate and a cubic -- roughly as much arithmetic
+// as the interpolation it feeds -- thrown away and redone hundreds of times to
+// arrive at the number it already had.
+//
+// Cached on the VALUE of z rather than on a row index the caller would have to
+// keep, so nothing above this line has to know that rows exist and the
+// memo-less form below stays exactly as it was.
+//
+// THE SENTINEL IS FINITE ON PURPOSE. The obvious choice is a NaN, which never
+// compares equal and so always misses first time -- but this builds with
+// /fp:fast, and "there are no NaNs" is precisely the assumption fast math is
+// licensed to make. 1e30f is unreachable for a coordinate in this world (the
+// largest z any call site produces is world metres times 0.55) and it compares
+// like an ordinary number under any float model.
+//
+// STILL BIT-EXACT. The cached values come from the same expressions applied to
+// the same z; tx is computed where it always was; the two lerps and the third
+// that blends them are in the order they always were. Nothing here reassociates
+// anything, which is the whole reason this version was worth having over the
+// faster one that hoists the vertical lerp -- see the note above on what a last
+// bit costs when every decision downstream is a threshold.
+// ---------------------------------------------------------------------------
 struct NoiseCell {
-    // A cell index no real coordinate reaches, so the first query always misses.
-    int32_t ix = 0x7FFFFFFF, iz = 0x7FFFFFFF;
+    // Row state: everything that is a function of z alone.
+    float zKey = 1e30f;  // no coordinate reaches this, so the first query misses
+    float tz = 0.0f;
+    int32_t rz = 0;
+
+    // Cell state: the four corner hashes. A cell index no real coordinate
+    // reaches, so the first query always misses.
+    int32_t cx = 0x7FFFFFFF, cz = 0x7FFFFFFF;
     float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
 };
 
 inline float vnoise(NoiseCell &k, float x, float z) {
-    const float fx = std::floor(x), fz = std::floor(z);
-    const int32_t ix = int32_t(fx), iz = int32_t(fz);
-    if (ix != k.ix || iz != k.iz) {
-        k.ix = ix;
-        k.iz = iz;
-        k.a = ihash2(ix, iz);
-        k.b = ihash2(ix + 1, iz);
-        k.c = ihash2(ix, iz + 1);
-        k.d = ihash2(ix + 1, iz + 1);
+    if (z != k.zKey) {
+        const float fz = std::floor(z);
+        k.zKey = z;
+        k.rz = int32_t(fz);
+        k.tz = sstep(z - fz);
     }
-    const float tx = sstep(x - fx), tz = sstep(z - fz);
-    return lerpf(lerpf(k.a, k.b, tx), lerpf(k.c, k.d, tx), tz);
+    const float fx = std::floor(x);
+    const int32_t ix = int32_t(fx);
+    if (ix != k.cx || k.rz != k.cz) {
+        k.cx = ix;
+        k.cz = k.rz;
+        k.a = ihash2(ix, k.rz);
+        k.b = ihash2(ix + 1, k.rz);
+        k.c = ihash2(ix, k.rz + 1);
+        k.d = ihash2(ix + 1, k.rz + 1);
+    }
+    const float tx = sstep(x - fx);
+    return lerpf(lerpf(k.a, k.b, tx), lerpf(k.c, k.d, tx), k.tz);
 }
 
 // Eight octaves of memo, which is more than any call site in the engine asks

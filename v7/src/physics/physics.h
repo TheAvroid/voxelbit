@@ -54,7 +54,10 @@ class Physics {
   public:
     // Off by default. It is the newest moving part in the engine and it changes
     // how the PLAYER moves, which is the one thing a person notices instantly.
-    bool enabled = false;
+    // ON. There is no longer a switch for this: PhysX comes up with the engine
+    // or it does not come up at all, and which of those happened is in the
+    // startup line rather than in a setting anybody has to find.
+    bool enabled = true;
 
     // Metres. The capsule the player is, and the step it can walk up without
     // jumping -- a voxel is 10 cm, so a step height below that would catch on

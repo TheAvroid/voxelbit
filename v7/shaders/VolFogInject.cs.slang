@@ -1,169 +1,136 @@
 // ---------------------------------------------------------------------------
-// VolFogInject.cs.slang -- light every froxel, once.
+// VolFogInject.cs.slang -- ask every cell of the world volume what it can see.
 //
-// One thread per froxel. For each one: where is it, how dense is the air there,
-// can it see the sun, and how much of that light bounces toward the camera.
-// The answer goes into the grid as RGB = in-scattered radiance, A = density,
-// and the march pass turns that into what the pixel actually sees.
+// One thread per cell, one dispatch per cascade. For each cell: where in the
+// world is it, how dense is the air there, can it see the sun, can it see the
+// sky. Not how bright it looks -- see the note in VolFog.slang on why this
+// stores VISIBILITY and leaves the radiance to the march.
 //
 // ---------------------------------------------------------------------------
-// THE SHADOW RAY IS THE WHOLE POINT.
+// THE SHADOW RAY IS STILL THE WHOLE POINT.
 //
-// Everything else here is bookkeeping around one question -- is this parcel of
-// air lit -- and the reference answers it with a shadow map, because it is a
-// rasteriser and that is the only tool it has. v7 is a path tracer with a
-// top-level structure over the entire resident wood, so it can ask the
-// geometry directly.
+// Everything here is bookkeeping around one question -- is this parcel of air
+// lit -- and a rasteriser has to answer it with a shadow map because that is
+// the only tool it owns. v7 is a path tracer with a top-level structure over
+// the whole resident wood, so it can ask the geometry directly. No shadow map
+// covering a 625-chunk ring, no cascade to fit, no depth bias, and the beams
+// are shaped by actual needles rather than by a depth texture's resolution.
 //
-// That is not merely tidier. A shadow map covering a 625-chunk ring at a
-// resolution fine enough to resolve pine needles does not exist; a ray does not
-// care how far the ring reaches, needs no cascade, no bias, and no filtering.
-// The beams this produces are shaped by actual needles rather than by a depth
-// texture's resolution.
+// WHAT IS NEW IS THAT THE ANSWER KEEPS. In the froxel version this cell was a
+// different piece of air every frame, so the shadow ray was re-asked from
+// scratch each time and the temporal blend was averaging answers to different
+// questions. Here the cell is a fixed piece of the world: the ray is re-asked
+// about the SAME air, and the blend is a genuine average rather than a smear.
 // ---------------------------------------------------------------------------
 #include "VolFog.slang"
-#include "Sky.slang"
-#include "Vecmath.slang"
 
 RaytracingAccelerationStructure gScene;
-RWTexture3D<float4> gFogGrid;      // RGB in-scatter, A density
-Texture3D<float4> gFogHistory;     // last frame's, for the temporal blend
-SamplerState gFogSampler;
+RWTexture3D<float4> gFogVol;    // R sun vis, G sky vis, B spare, A density
+Texture3D<float4> gFogHistory;  // last frame's, same cascade
 
 cbuffer VolFogCB {
-    V6Camera gCam;
-    V6Camera gPrevCam;
-    V6Sky gSky;
-    float gNear;
-    float gFar;
+    float3 gOriginWs;   // this cascade's min corner, world metres, snapped
     float gDensity;
+    float3 gCellSize;
     float gHeight;
-    float gAnisotropy;
-    float gAmbient;      // how much of the sky dome reaches a froxel
+    float3 gSunDir;
+    float gSkyShadow;   // how much sky reaches a cell the up ray found covered
+    int3 gHistShift;    // whole-cell offset from this volume to last frame's
     uint gFrame;
-    uint gAccumulate;    // 0 on the first frame and after a camera cut
-    float gAlpha;        // how much of THIS frame survives the temporal blend
-    float gAlphaPad;
+    uint gAccumulate;   // 0 on the first frame and after a teleport
+    float gAlpha;       // how much of THIS frame survives the blend
+    float gPad0;
+    float gPad1;
+
+    // THE WORLD-CELL INDEX OF THIS VOLUME.S MIN CORNER.
+    //
+    // The jitter below is hashed on (gOriginCell + c), not on c. A volume-local
+    // hash looks equivalent and is not: the origin shifts by whole cells as the
+    // player walks, so a fixed parcel of air lands on a DIFFERENT local index
+    // from one frame to the next and its jitter jumps. The blend then smears
+    // that jump over its whole tail, which reads as the fog dragging while you
+    // run -- a camera-dependent artefact in a volume that is supposed to have
+    // none. Anchoring the hash to the world is what actually removes it.
+    int3 gOriginCell;
+    uint gPad2;
 };
 
-// A cheap per-froxel hash, standing in for the reference's blue-noise texture.
+// A cheap per-cell hash, moved every frame.
 //
-// Blue noise would be better distributed, but it is a texture to ship and load
-// for a value that is immediately averaged over eight frames by the temporal
-// blend below. White noise that decorrelates across frames gets to the same
-// place; what matters is that neighbouring froxels do not share a jitter and
-// that the sequence moves every frame.
-float fogJitter(int3 coord, uint frame)
+// The jitter is what turns a hard yes/no shadow ray into a soft edge: the
+// sample wanders inside its own cell, the blend averages several frames of it,
+// and a binary answer arrives as a gradient. The froxel version needed the same
+// trick to hide slice banding; here it is buying penumbra instead.
+float3 fogCellJitter(int3 c, uint frame)
 {
-    uint h = uint(coord.x) * 73856093u ^ uint(coord.y) * 19349663u ^ uint(coord.z) * 83492791u;
+    uint h = uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u;
     h ^= frame * 0x9E3779B9u;
-    h ^= h >> 16;
-    h *= 0x85EBCA6Bu;
-    h ^= h >> 13;
-    return float(h & 0xFFFFFFu) / float(0x1000000u) - 0.5f;
+    float3 o;
+    h ^= h >> 16; h *= 0x85EBCA6Bu; o.x = float(h & 0xFFFFu) / 65536.0f - 0.5f;
+    h ^= h >> 13; h *= 0xC2B2AE35u; o.y = float(h & 0xFFFFu) / 65536.0f - 0.5f;
+    h ^= h >> 16; h *= 0x27D4EB2Fu; o.z = float(h & 0xFFFFu) / 65536.0f - 0.5f;
+    return o;
 }
 
-[numthreads(8, 8, 1)]
+bool fogOccluded(float3 origin, float3 dir, float tmax)
+{
+    RayDesc r;
+    r.Origin = origin;
+    r.Direction = dir;
+    r.TMin = 0.05f;
+    r.TMax = tmax;
+    // ANY-HIT, NOT CLOSEST-HIT. Nothing here needs to know WHAT occluded the
+    // light, only whether anything did, so the query may stop at the first hit
+    // -- which for a canopy is the difference between traversing to the ground
+    // and stopping at the first needle.
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_NON_OPAQUE> q;
+    q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, r);
+    q.Proceed();
+    return q.CommittedStatus() != COMMITTED_NOTHING;
+}
+
+[numthreads(4, 4, 4)]
 void main(uint3 tid: SV_DispatchThreadID)
 {
-    if (tid.x >= uint(kFogX) || tid.y >= uint(kFogY) || tid.z >= uint(kFogZ))
+    if (tid.x >= uint(kFogCellsX) || tid.y >= uint(kFogCellsY) || tid.z >= uint(kFogCellsZ))
         return;
-    const int3 coord = int3(tid);
+    const int3 c = int3(tid);
 
-    const float jitter = fogJitter(coord, gFrame);
-    const float3 p = fogFroxelWorld(coord, jitter, gCam, gNear, gFar);
+    const float3 jit = fogCellJitter(gOriginCell + c, gFrame);
+    const float3 p = gOriginWs + (float3(c) + 0.5f + jit) * gCellSize;
 
     const float density = fogDensityAt(p, gDensity, gHeight);
     if (density <= 0.0f) {
-        gFogGrid[coord] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        gFogVol[c] = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return;
     }
 
-    // Toward the camera: the direction the scattered light has to leave in.
-    const float3 wo = normalize(gCam.pos - p);
+    const float sunVis = fogOccluded(p, gSunDir, 4000.0f) ? 0.0f : 1.0f;
 
-    // -- the sun, if this parcel of air can see it ---------------------------
-    float3 inscatter = float3(0.0f);
-    const float3 sunDir = gSky.sunDir;
-    const float3 sunL = gSky.sunRadiance;
-    if (!isBlack(sunL)) {
-        // ANY-HIT, NOT CLOSEST-HIT. Nothing here needs to know WHAT occluded
-        // the sun, only whether anything did, so the query is allowed to stop
-        // at the first hit -- which for a canopy is the difference between
-        // traversing to the ground and stopping at the first needle.
-        RayDesc r;
-        r.Origin = p;
-        r.Direction = sunDir;
-        r.TMin = 0.05f;
-        r.TMax = 4000.0f;
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_NON_OPAQUE> q;
-        q.TraceRayInline(gScene, RAY_FLAG_NONE, 0xFF, r);
-        q.Proceed();
-        const bool lit = q.CommittedStatus() == COMMITTED_NOTHING;
-        if (lit) {
-            // IRRADIANCE, NOT THE DISK'S RADIANCE, and the difference is a
-            // factor of about fifteen thousand.
-            //
-            // sunRadiance is what a ray sees when it HITS the sun's disk -- a
-            // huge number, correct for that purpose. What a parcel of air
-            // receives is that radiance integrated over the solid angle the
-            // disk actually subtends, which is 6.8e-5 steradians. Using the
-            // radiance directly is exactly the mistake the old analytic fog
-            // warned about in its own comment: "the sun's irradiance through a
-            // forward-peaked phase is two orders of magnitude above the dome,
-            // which washes the whole frame to white". It does; the first render
-            // of this pass was solid white.
-            inscatter += sunL * skySolidAngle() * fogPhase(wo, sunDir, gAnisotropy);
-        }
-    }
+    // Straight up, and only far enough to clear the tallest pine. A proxy for
+    // the hemisphere rather than an integral of it -- affordable where the
+    // integral is not, and up is the direction that separates a clearing from a
+    // canopy. NOT ZERO when covered: the dome is not a point source and light
+    // reaches shadowed air by paths this one ray never tested.
+    const float skyVis = fogOccluded(p, float3(0.0f, 1.0f, 0.0f), 60.0f) ? gSkyShadow : 1.0f;
 
-    // -- and the sky, which reaches everywhere ------------------------------
-    //
-    // Isotropic and unshadowed, which is a deliberate approximation: the dome
-    // is a hemisphere of low-intensity light and tracing it properly would cost
-    // as much as the rest of the renderer. Without it the air in shadow goes
-    // black, which is far more wrong than the approximation is.
-    inscatter += skyDome(gSky, float3(0.0f, 1.0f, 0.0f)) * gAmbient;
+    float4 result = float4(sunVis, skyVis, 0.0f, density);
 
-    float4 result = float4(inscatter * density, density);
-
-    // -- temporal blend ------------------------------------------------------
+    // -- temporal blend, by whole cells --------------------------------------
     //
-    // The jitter above turns slice banding into noise; this is what turns the
-    // noise into an answer.
-    //
-    // THE RATE IS NOT CONSTANT, AND THE REFERENCE'S 0.05 IS A STANDING-STILL
-    // NUMBER. Five percent means a twenty-frame tail: lovely for a still camera,
-    // where nobody sees the fog converge, and a third of a second of smear
-    // behind a moving one. Walking past a trunk, the shadow cone it casts in the
-    // air is still being blended out of the grid long after the trunk has gone
-    // by, and that is exactly what ghosting looks like.
-    //
-    // Reprojection alone cannot fix it. It moves the history to the right PLACE,
-    // but a froxel that was shadowed and is now in the open has history that is
-    // simply WRONG rather than misplaced, and no amount of correct reprojection
-    // makes a stale value fresh. The only cure is to stop trusting it so hard
-    // while the view is changing -- so the caller raises this while moving and
-    // drops it again the moment the camera settles.
-    //
-    // REPROJECTED THROUGH LAST FRAME'S CAMERA, so the history follows the world
-    // rather than the screen. Outside the old frustum there is no history and
-    // this frame's value stands alone.
+    // THE ENTIRE REPROJECTION. Both volumes are snapped to the same lattice, so
+    // last frame's copy of this cell is at a fixed integer offset -- no matrix,
+    // no perspective divide, no filtering, and no way to land between texels
+    // and blend two different parcels of air together. A cell either has
+    // history or has walked off the edge of last frame's volume, and the edge
+    // is the only case there is.
     if (gAccumulate != 0) {
-        const float3 pn = fogFroxelWorld(coord, 0.0f, gCam, gNear, gFar);
-        const float3 rel = pn - gPrevCam.pos;
-        const float fwd = dot(rel, gPrevCam.w);
-        if (fwd > gNear) {
-            const float2 prevNdc = float2(dot(rel, gPrevCam.u) / (fwd * gPrevCam.halfW),
-                                          dot(rel, gPrevCam.v) / (fwd * gPrevCam.halfH));
-            const float3 uvw = float3(prevNdc * 0.5f + 0.5f,
-                                      fogDistanceToSlice(fwd, gNear, gFar) / float(kFogZ));
-            if (all(uvw >= 0.0f) && all(uvw <= 1.0f)) {
-                const float4 hist = gFogHistory.SampleLevel(gFogSampler, uvw, 0.0f);
-                result = lerp(hist, result, gAlpha);
-            }
+        const int3 h = c + gHistShift;
+        if (all(h >= int3(0, 0, 0)) &&
+            h.x < kFogCellsX && h.y < kFogCellsY && h.z < kFogCellsZ) {
+            result = lerp(gFogHistory[h], result, gAlpha);
         }
     }
 
-    gFogGrid[coord] = result;
+    gFogVol[c] = result;
 }

@@ -1,98 +1,105 @@
 // ---------------------------------------------------------------------------
-// VolFog.slang -- the froxel grid: how a voxel of it maps to the world, and
-//                 what a slice of it is worth.
+// VolFog.slang -- a WORLD-ANCHORED fog volume, and how a cell of it maps to
+//                 the wood.
 //
-// REPLACES THE ANALYTIC HEIGHT FOG. That fog was one exp() along the primary
-// ray: exact for a uniform exponential atmosphere, deterministic, free. What it
-// could not do is be SHADOWED. Its in-scatter was the sky in that direction and
-// nothing else, so the air was equally bright inside a stand of pines and out
-// in the open, and a sunbeam through a gap in the canopy -- the thing a conifer
-// wood is actually FOR -- could not exist.
+// WHAT CHANGED, AND WHY IT IS NOT A TWEAK.
 //
-// This is the Frostbite/Wronski froxel method, as implemented by
-// github.com/diharaw/volumetric-fog: a 3D grid laid over the view frustum,
-// lit once per froxel, then integrated front to back into scattering and
-// transmittance. Once the medium is a grid rather than a formula, shadowing it
-// is just a visibility test per froxel.
+// The froxel version laid its grid over the VIEW FRUSTUM: 160x90x64 cells built
+// out of the camera's own basis and spaced exponentially in depth. That is the
+// standard method and it has one real advantage, given up here on purpose --
+// exponential slices spend most of their resolution in the first ten metres,
+// where a beam through the canopy is actually resolved, and almost none at four
+// hundred where nobody could tell.
+//
+// What it could not do is hold fog that EXISTS. Every cell was a function of
+// where the camera stood and which way it faced, so turning around rebuilt the
+// entire medium. The lighting in a cell described a different parcel of air
+// each frame; the history had to be reprojected through the previous camera and
+// was wrong wherever that reprojection was; and -- the one that showed -- an
+// unshadowed term accumulated along whatever the sightline happened to be,
+// which made the glow a property of the VIEWER rather than of the wood.
+//
+// This version stores the medium in the world. A cell is a fixed cubic region
+// of forest. It holds what that air is doing whether or not anyone is looking
+// at it, and it holds the same thing next frame.
 //
 // ---------------------------------------------------------------------------
-// WHAT THIS PORT DOES DIFFERENTLY FROM THE REFERENCE, and why.
+// THE VOLUME STORES VISIBILITY, NOT RADIANCE, and that is the load-bearing
+// decision.
 //
-// VISIBILITY IS A RAY QUERY, NOT A SHADOW MAP. The reference projects each
-// froxel into a light-space depth map and compares, with a bias constant to
-// tune. v7 has a top-level acceleration structure over the whole resident wood
-// and traces inline already -- so a froxel can simply ASK whether the sun is
-// occluded. No shadow map to render, no cascade to fit around a 625-chunk ring,
-// no depth bias, and the answer is exact rather than filtered. It costs one
-// shadow ray per froxel, which is the same shape of work the path tracer does
-// per vertex anyway.
+// In-scattered radiance depends on the angle between the sun and the VIEW --
+// that is what the phase function is -- so radiance is not a property of the
+// air, and a world volume that stored it would be camera-dependent again in
+// everything but name. What IS a property of the air is what the air can SEE:
 //
-// DENSITY KEEPS ITS HEIGHT FALLOFF. The reference uses one constant density for
-// the whole volume. v7's haze pools in the hollows and thins with altitude --
-// that is what fogHeight meant -- and losing it would flatten the wood as
-// surely as having no fog at all. Density is therefore the old exponential,
-// evaluated per froxel instead of integrated along a ray.
+//   R  sun visibility, 0 or 1, softened by the temporal blend
+//   G  sky visibility, from the up ray
+//   B  spare
+//   A  density
 //
-// THE CAMERA IS RAY-BASED, so none of the reference's inverse view-projection
-// machinery is needed. v7's camera is an origin and three axes; a froxel's
-// world position is the origin plus a direction times a distance, which is
-// three multiplies rather than a matrix inverse and a perspective divide.
+// The lighting is then evaluated at MARCH time, where the view direction is
+// known, from quantities the volume never had to guess. The consequence worth
+// the trouble: this volume is correct for any viewer, from anywhere, and it
+// does not have to be rebuilt when the camera moves -- only when the geometry
+// or the sun does.
+//
+// ---------------------------------------------------------------------------
+// TWO CASCADES, each snapped to its own cell size.
+//
+//   L0   fine, near     0.75 m cells,  96 m across
+//   L1   coarse, far    4.00 m cells, 512 m across
+//
+// The clipmap answer to the problem exponential slices were solving: instead of
+// one grid dense where the camera LOOKS, two grids dense where the camera IS.
+// The near cascade carries the beams; the far one carries the haze on the ridge.
+//
+// SNAPPING IS WHAT MAKES IT WORLD-ANCHORED, and it is one floor(). The volume
+// follows the player, but its origin is quantised to a whole number of its own
+// cells, so a cell never straddles the world differently from one frame to the
+// next. Without it the volume would slide continuously and every cell would
+// resample a slightly different parcel of air every frame -- which is the
+// swimming the froxel grid had, let back in through the side door.
+//
+// It also makes the history EXACT. Two frames' volumes differ by a WHOLE NUMBER
+// OF CELLS, so reprojection is an integer offset instead of a projection
+// through a matrix: a cell either has history, or it is off the edge of last
+// frame's volume and has none. There is no disocclusion case left to be wrong
+// about, which is the entire class of bug the froxel reprojection lived with.
 // ---------------------------------------------------------------------------
 #pragma once
 
 #include "Shared.slang"
 
-// The grid. X and Y are a coarse version of the screen; Z runs from the near
-// plane to the fog's far limit.
-//
-// SIXTY-FOUR SLICES, EXPONENTIALLY SPACED. Linear slices would put most of the
-// resolution where there is nothing to see -- the far half of a 400 m view
-// distance -- and none of it in the first ten metres, which is where a beam
-// through the canopy is actually resolved. The exponential distribution is the
-// same one the reference uses and the same reasoning as a depth buffer's.
-static const int kFogX = 160;
-static const int kFogY = 90;
-static const int kFogZ = 64;
+// One cascade's resolution. Y is coarser than XZ because the haze is stratified
+// by height -- it varies far more across the wood than up through it.
+static const int kFogCellsX = 128;
+static const int kFogCellsY = 48;
+static const int kFogCellsZ = 128;
+static const int kFogCascades = 2;
 
-// Where slice z begins, in metres from the camera.
-float fogSliceDistance(int z, float nearD, float farD)
+// The centre of cell `c`, in world metres.
+float3 fogCellWorld(int3 c, float3 originWs, float3 cellSize)
 {
-    return nearD * pow(farD / nearD, (float(z) + 0.5f) / float(kFogZ));
+    return originWs + (float3(c) + 0.5f) * cellSize;
 }
 
-float fogSliceThickness(int z, float nearD, float farD)
+// The extent of one cascade, in world metres.
+float3 fogCascadeSpan(float3 cellSize)
 {
-    return abs(fogSliceDistance(z + 1, nearD, farD) - fogSliceDistance(z, nearD, farD));
+    return cellSize * float3(float(kFogCellsX), float(kFogCellsY), float(kFogCellsZ));
 }
 
-// The inverse: which slice a distance falls in. Needed when the frame is
-// composited and a pixel's depth has to become a Z coordinate in the grid.
-float fogDistanceToSlice(float dist, float nearD, float farD)
+// Where a world point falls in a cascade, as a [0,1] texture coordinate.
+float3 fogWorldToUvw(float3 p, float3 originWs, float3 cellSize)
 {
-    return log(max(dist, nearD) / nearD) / log(farD / nearD) * float(kFogZ);
+    return (p - originWs) / fogCascadeSpan(cellSize);
 }
 
-// A froxel's world position.
-//
-// `jitter` moves the sample within its slice, in [-0.5, 0.5]. Without it the
-// grid is a lattice and the fog shows it as banding along every slice boundary;
-// with it, and with the temporal blend in the injection pass, the banding
-// becomes noise and then averages away.
-float3 fogFroxelWorld(int3 coord, float jitter, V6Camera cam, float nearD, float farD)
+// Whether that coordinate is actually inside, with a margin so a trilinear tap
+// never reaches past the edge and pulls in the clamped border.
+bool fogInside(float3 uvw, float margin)
 {
-    // Screen position of this column, in [-1, 1].
-    const float2 uv = (float2(coord.xy) + 0.5f) / float2(kFogX, kFogY);
-    const float2 ndc = uv * 2.0f - 1.0f;
-
-    // The same ray the tracer would build for that point -- see the camera
-    // block in Trace.cs.slang. Not normalised on purpose: distances along the
-    // frustum are measured on the FORWARD axis, so scaling this by a slice
-    // distance lands on the plane of that slice rather than on a sphere.
-    const float3 dir = cam.w + cam.u * (ndc.x * cam.halfW) + cam.v * (ndc.y * cam.halfH);
-
-    const float d = fogSliceDistance(coord.z, nearD, farD) +
-                    jitter * fogSliceThickness(coord.z, nearD, farD);
-    return cam.pos + dir * d;
+    return all(uvw > margin) && all(uvw < 1.0f - margin);
 }
 
 // Henyey-Greenstein. `g` is the anisotropy: 0 is isotropic, positive is
@@ -106,10 +113,7 @@ float3 fogFroxelWorld(int3 coord, float jitter, V6Camera cam, float nearD, float
 //
 // Handing it an inward vector instead flips the whole lobe back to front, and
 // it does so silently -- the fog stays plausible, it is just brightest with the
-// sun BEHIND you instead of in front. That was the bug: measured with the sky
-// fill off, looking away from the sun came out at mean 27.7 against 18.1
-// looking into it, when forward scattering should make it the other way round
-// by a wide margin.
+// sun BEHIND you instead of in front.
 float fogPhase(float3 wo, float3 wi, float g)
 {
     const float cosTheta = dot(wo, wi);
@@ -117,7 +121,8 @@ float fogPhase(float3 wo, float3 wi, float g)
     return (1.0f / (4.0f * 3.14159265f)) * (1.0f - g * g) / max(pow(denom, 1.5f), 1e-4f);
 }
 
-// Density at a world point: the old height falloff, per froxel.
+// Density at a world point. Already world-space in the froxel version, and the
+// one piece of it that needed no change at all.
 float fogDensityAt(float3 p, float baseDensity, float heightFalloff)
 {
     if (baseDensity <= 0.0f)

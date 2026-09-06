@@ -10,3 +10,4 @@ build/
 # build. external/falcor is not a git repo of its own, so there is no diff to
 # take against upstream.
 external/
+build-rtxgi/

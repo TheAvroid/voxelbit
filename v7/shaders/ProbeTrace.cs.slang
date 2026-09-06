@@ -50,6 +50,13 @@ Texture2DArray<float4> gProbeDistance;
 Texture2DArray<float4> gProbeDataTex;
 SamplerState gProbeSampler;
 
+// The sky-view table, when the atmosphere path is on. Bound unconditionally --
+// atmosphere.h creates the texture whether the feature is enabled or not -- so
+// there is no unbound-resource case to guard; sky.atmoOn decides whether
+// skyDome() actually reads it.
+Texture2D<float4> gProbeAtmoSky;
+SamplerState gProbeAtmoSamp;
+
 cbuffer gProbeCB
 {
     V6DdgiConsts gDdgi;
@@ -202,7 +209,19 @@ void main(uint3 tid: SV_DispatchThreadID)
     // A probe classified as inactive is inside geometry and sees nothing worth
     // having. Skipping it is where most of the ray budget is won back -- in a
     // wood a good fraction of any grid is underground or inside a trunk.
-    const float4 pdata = gProbeDataTex[uint3(dst.yz, 0)];
+    // THE PROBE-DATA TEXTURE IS NOT SHAPED LIKE THE RAY-DATA TEXTURE, and
+    // reusing dst here was wrong. Ray data is (ray, probe-within-plane, plane)
+    // -- 192 x 400 x 8 -- because GetDDGIVolumeTextureDimensions folds x and z
+    // together for that one type only. Every other volume texture keeps the
+    // probe grid's own shape, so probe data is 20 x 20 x 8 and is addressed
+    // (x, z, y), exactly as DDGIGetProbeTexelCoords() does it.
+    //
+    // Indexed the old way, x ran to 399 on a texture 20 wide: a read far out of
+    // bounds, which D3D12 answers with zero rather than an error -- so every
+    // probe read as active with no relocation offset, and nothing anywhere said
+    // so.
+    const float4 pdata =
+        gProbeDataTex[uint3(uint(coords.x), uint(coords.z), uint(coords.y))];
     // w < 0 marks inactive in RTXGI's probe-data encoding; the xyz is the
     // relocation offset, applied below.
     const bool inactive = (gDdgi.useClassification != 0) && (pdata.w < 0.0f);
@@ -231,7 +250,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         // Missed: the sky, at full distance. The distance matters as much as
         // the radiance -- the blend pass builds a depth map from it that later
         // lookups use to reject probes on the far side of a wall.
-        gProbeRayData[dst] = float4(skyDome(gProbeSky, dir), gDdgi.maxRayDistance);
+        gProbeRayData[dst] = float4(skyDome(gProbeSky, gProbeAtmoSky, gProbeAtmoSamp, dir), gDdgi.maxRayDistance);
         return;
     }
 
@@ -271,19 +290,53 @@ void main(uint3 tid: SV_DispatchThreadID)
             // view-dependent term stored in a view-independent cache is exactly
             // the sort of thing that makes probe GI look wrong when the camera
             // turns. Diffuse only, on purpose.
-            radiance += albedo * INV_PI * gProbeSky.sunRadiance * ndl;
+            // TIMES THE SOLAR SOLID ANGLE, and leaving it out is the single
+            // most expensive mistake this shader can make.
+            //
+            // sky.sunRadiance is the disk's RADIANCE -- a five-figure number.
+            // What a surface receives is that radiance integrated over the
+            // solid angle the disk subtends, which for a half-degree sun is
+            // about 6.7e-5 steradians. The camera path never has to say this
+            // because its NEE divides by the sampling pdf, and 1/pdf for a cone
+            // sample IS the solid angle. A probe shader does no such division,
+            // so it has to write the factor down.
+            //
+            // Omitted, this term comes out ~15000x too large. It does not show
+            // as a white image, because the irradiance atlas is a UNORM and
+            // simply saturates -- so the cache pins at its maximum and the
+            // wood looks merely, plausibly, far too bright.
+            radiance += albedo * INV_PI * gProbeSky.sunRadiance * ndl * kSunSolidAngle;
         }
     }
 
     // -- sky, as ambient from the visible hemisphere -------------------------
-    radiance += albedo * INV_PI * skyDome(gProbeSky, ng) * PI * 0.5f;
+    //
+    // Irradiance from a hemisphere of uniform radiance L is PI * L, so a
+    // Lambert surface leaves with albedo * L. The half is for the sky this
+    // point cannot actually see: the probe traces no second ray here, and in a
+    // canopy an unoccluded dome would be a large overestimate.
+    radiance += albedo * skyDome(gProbeSky, gProbeAtmoSky, gProbeAtmoSamp, ng) * 0.5f;
 
     // -- last frame's probes: the bounce that makes the cache multi-bounce ----
     if (gProbeUseCache != 0)
     {
-        radiance += albedo * ddgiSampleIrradiance(p, ng, dir, gDdgi, gProbeIrradiance,
-                                                 gProbeDistance, gProbeDataTex,
-                                                 gProbeSampler);
+        const float3 E = ddgiSampleIrradiance(p, ng, dir, gDdgi, gProbeIrradiance,
+                                              gProbeDistance, gProbeDataTex, gProbeSampler);
+        // THE 1/PI AND THE CLAMP ARE BOTH LOAD-BEARING, and both are RTXGI's
+        // own (see its probe shader). This term feeds the atlas back into
+        // itself, so it is a geometric series and its RATIO is what matters,
+        // not its value:
+        //
+        //   without the 1/PI the ratio gains a factor of PI every iteration and
+        //   the cache diverges rather than converges -- brightness that climbs
+        //   frame after frame and never settles;
+        //
+        //   the 0.9 ceiling on albedo keeps the ratio strictly below one, so a
+        //   white surface in a white room cannot reach a sum that never ends.
+        //
+        // A DIVERGING ERROR IS A FEEDBACK GAIN BUG, not a scale bug. If this
+        // wood ever brightens with every pass, look here first.
+        radiance += (min(albedo, 0.9f) * INV_PI) * E;
     }
 
     gProbeRayData[dst] = float4(radiance, t);

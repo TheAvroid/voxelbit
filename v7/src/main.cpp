@@ -71,6 +71,9 @@ void usage() {
         "                            NOT the window size -- the frame is MADE this big\n"
         "                            and stretched up to fill the window. Under DLSS it\n"
         "                            is what gets produced; the mode picks what is traced.\n"
+        "  --rec SECONDS             record a take this long from startup, then exit\n"
+        "  --rec-fps N               recorder capture rate, frames/s                 (60)\n"
+        "  --rec-width N             cap the recording width; H.264 stops at 4096  (3840)\n"
         "  --speed F                 walk speed, m/s                                (9.2)\n"
         "  --sensitivity F           mouse look, degrees of turn per pixel         (0.12)\n"
         "  --eye F                   eye height, metres -- 20 voxels               (2.00)\n"
@@ -84,6 +87,9 @@ void usage() {
         "  --pines DIR               folder with pine_1..9.vox\n"
         "  --decor DIR               folder with rocks/ and flowers.vox\n"
         "  --sun-az DEG --sun-el DEG sun position, offline\n"
+        "  --no-atmosphere           the OLD Preetham fit instead of Hillaire\n"
+        "                            scattering -- cheaper, and its sunset freezes\n"
+        "                            once the sun is under the horizon\n"
         "  --time H                  viewer start hour, 0-24\n"
         "  --cycle N                 day/night speed, negative rewinds (default 1)\n"
         "                            a day is 20 minutes at 1x; X + wheel changes it\n"
@@ -100,6 +106,12 @@ void usage() {
         "  --exposure F              tone-map exposure\n"
         "  --shadow-lift F           tone curve toe, 0.03 crushed .. 0.20 open  (0.100)\n"
         "  --fog F                   haze density          (default 0.0022)\n"
+        "  --fog-sky-under F         how much sky light reaches fog under the\n"
+        "                            canopy, 0-1. The sky fill used to be added\n"
+        "                            unshadowed, which piled up along whichever\n"
+        "                            sightline was longest and read as a sun\n"
+        "                            glare that followed the camera. 1 is that\n"
+        "                            old behaviour back            (default 0.65)\n"
         "  --demodulate              PHASE B: split the lighting from the texture\n"
         "                            before denoising, and multiply it back after.\n"
         "                            Needed by NRD and the Super Resolution route;\n"
@@ -206,6 +218,16 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--fog") argFloat(argc, argv, i, &o->r.fogDensity);
         else if (a == "--fog-aniso") { argFloat(argc, argv, i, &o->fogAniso); o->fogAnisoGiven = true; }
         else if (a == "--fog-ambient") { argFloat(argc, argv, i, &o->fogAmbient); o->fogAmbientGiven = true; }
+        else if (a == "--fog-sky-under") { argFloat(argc, argv, i, &o->fogSkyUnder); o->fogSkyUnderGiven = true; }
+        else if (a == "--cloud-cut") { argFloat(argc, argv, i, &o->cloudCut); o->cloudCutGiven = true; }
+        else if (a == "--cloud-var") { argFloat(argc, argv, i, &o->cloudVar); o->cloudVarGiven = true; }
+        else if (a == "--cloud-sun") { argFloat(argc, argv, i, &o->cloudSun); o->cloudSunGiven = true; }
+        else if (a == "--atmosphere") o->atmosphere = true;
+        else if (a == "--no-atmosphere") o->atmosphere = false;
+        else if (a == "--cloud-moon-key") { argFloat(argc, argv, i, &o->cloudMoonKey); o->cloudMoonKeyGiven = true; }
+        else if (a == "--moon") { argFloat(argc, argv, i, &o->moonScale); o->moonScaleGiven = true; }
+        else if (a == "--moon-key") { argFloat(argc, argv, i, &o->moonKey); o->moonKeyGiven = true; }
+        else if (a == "--moon-phase") { argFloat(argc, argv, i, &o->moonPhase); o->moonPhaseGiven = true; }
         else if (a == "--demodulate") o->demodulate = true;
         else if (a == "--check-demod") { o->checkDemod = true; o->outGiven = true; }
         else if (a == "--no-dlss") o->dlss = false;
@@ -235,8 +257,19 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--hdr") o->writeHdr = true;
         else if (a == "--vulkan") *vulkan = true;
         else if (a == "--nrc") o->nrc = true;
+        // Sky-dome next event estimation, and the irradiance cache. Both are on
+        // by default; these turn them off or retune them without a rebuild,
+        // which is also how a "did this change the picture" comparison is made.
+        else if (a == "--sky-rays") argInt(argc, argv, i, &o->r.skyRays);
+        else if (a == "--sky-ray-depth") argInt(argc, argv, i, &o->r.skyRayDepth);
+        else if (a == "--no-sky-nee") o->r.skyRays = 0;
+        // 0 none, 1 DDGI probes, 2 SHaRC.
+        else if (a == "--gi") argInt(argc, argv, i, &o->r.giMode);
+        else if (a == "--no-gi") o->r.giMode = 0;
+        else if (a == "--gi-depth") argInt(argc, argv, i, &o->r.giDepth);
+        else if (a == "--gi-strength") argFloat(argc, argv, i, &o->r.giStrength);
         else if (a == "--cluster-test") o->clusterTest = true;
-        else if (a == "--physx") o->physx = true;
+
         // Debug switches: the two halves of the reuse, separately, so a bias can
         // be attributed to one of them instead of guessed at.
         else if (a == "--fg") {
@@ -251,6 +284,9 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--debug") *debugLayer = true;
         else if (a == "--seed") { int s = 0; argInt(argc, argv, i, &s); o->r.seed = uint32_t(s); }
         else if (a == "--scale") argFloat(argc, argv, i, &o->scale);
+        else if (a == "--rec") argFloat(argc, argv, i, &o->recSeconds);
+        else if (a == "--rec-fps") argInt(argc, argv, i, &o->recFps);
+        else if (a == "--rec-width") argInt(argc, argv, i, &o->recMaxWidth);
         else if (a == "--speed") argFloat(argc, argv, i, &o->speed);
         else if (a == "--sensitivity") argFloat(argc, argv, i, &o->sensitivity);
         else if (a == "--out" || a == "--render") {

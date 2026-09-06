@@ -42,10 +42,14 @@
 
 #include "../../shaders/Shared.slang"
 #include "../core/vecmath.h"
+#include "ddgi.h"
+#include "sharc.h"
 #include "dlss.h"
 #include "nrc.h"
 #include "restir.h"
+#include "atmosphere.h"
 #include "volfog.h"
+#include "clouds.h"
 #include "world.h"
 
 namespace v7 {
@@ -90,6 +94,39 @@ struct RenderSettings {
     int shadowRays = 1;
     int shadowRayDepth = 1;
 
+    // Sky-dome samples per vertex, and how many bounces get more than one.
+    //
+    // ON BY DEFAULT, because under a canopy the dome is the only light there
+    // is and leaving it to be found by chance is what made the shadows read as
+    // black -- see the long note on sampleSkySplit in Trace.cs.slang. 0 turns
+    // it off and restores the previous estimator exactly.
+    int skyRays = 1;
+    int skyRayDepth = 1;
+
+    // -- the irradiance cache ------------------------------------------------
+    //
+    // 0 none, 1 DDGI probes, 2 SHaRC. Defaults to DDGI where the device can
+    // run it; app.h drops it to SHaRC on Vulkan, where RTXGI cannot go, and to
+    // none if neither came up.
+    int giMode = 1;
+    // TWO, AND THE NUMBER WAS MEASURED RATHER THAN CHOSEN.
+    //
+    // Against a 32-bounce, late-roulette reference of the same frame, the
+    // darkest quarter of the image comes out:
+    //
+    //   path tracer alone (depth 6, rr 1)   -12.4 %   too dark, as reported
+    //   + sky NEE                            -4.6 %
+    //   + DDGI at giDepth 1                 +22.5 %   over-bright
+    //   + DDGI at giDepth 2                  +2.2 %
+    //
+    // At 1 the cache replaces the FIRST bounce, and a six-metre probe grid is
+    // too coarse to stand in for light that close to the camera -- it fills the
+    // shadows past where they should stop. At 2 the path resolves two bounces
+    // honestly and the cache only carries the tail, which is the part that was
+    // being thrown away by roulette in the first place.
+    int giDepth = 2;
+    float giStrength = 1.0f;
+
     // How many samples the caller will put into the film for this frame. Only
     // the shader cares, and only to decide whether there IS a film -- see
     // keepFilm in Shared.slang.
@@ -109,11 +146,31 @@ class Tracer {
 
         Falcor::DefineList defs;
         if (coopVec_) defs.add("V7_NRC", "1");
+#if V7_HAS_SHARC
+        // The camera pass READS the cache; the update pass WRITES it. They are
+        // the same source file compiled twice, because the update has to shade
+        // exactly the way the camera shades or the cache records a different
+        // renderer -- see the note on sharcUpdateMain in Trace.cs.slang. The
+        // SDK's own headers insist the two modes are separate compilations, so
+        // this is also the only shape it allows.
+        defs.add("V7_SHARC_QUERY", "1");
+#endif
         Falcor::ProgramDesc dt;
         dt.addShaderLibrary("v7/shaders/Trace.cs.slang").csEntry("main");
         if (coopVec_ && device_->getType() == Falcor::Device::Type::Vulkan)
             dt.addCompilerArguments({"-capability", "spvCooperativeVectorNV"});
         trace_ = ComputePass::create(device_, dt, defs);
+
+#if V7_HAS_SHARC
+        Falcor::DefineList updDefs;
+        if (coopVec_) updDefs.add("V7_NRC", "1");
+        updDefs.add("V7_SHARC_UPDATE", "1");
+        Falcor::ProgramDesc du;
+        du.addShaderLibrary("v7/shaders/Trace.cs.slang").csEntry("sharcUpdateMain");
+        if (coopVec_ && device_->getType() == Falcor::Device::Type::Vulkan)
+            du.addCompilerArguments({"-capability", "spvCooperativeVectorNV"});
+        sharcUpdate_ = ComputePass::create(device_, du, updDefs);
+#endif
         tonemap_ = ComputePass::create(device_, "v7/shaders/Tonemap.cs.slang", "main");
         // PHASE B, and the back half of PHASE D. Created unconditionally: they
         // are two small compute passes, and having them always present means the
@@ -121,6 +178,59 @@ class Tracer {
         // rebuild. Neither is DISPATCHED unless the route that needs it is on.
         demodulate_ = ComputePass::create(device_, "v7/shaders/Demodulate.cs.slang", "main");
         remodulate_ = ComputePass::create(device_, "v7/shaders/Remodulate.cs.slang", "main");
+
+        // The probe placeholder and the sampler the irradiance lookup uses.
+        // Made here rather than in ddgi.h because they are needed on the frames
+        // -- and the backends -- where there is no Ddgi at all.
+        //
+        // BILINEAR AND CLAMPED, and both halves matter. The lookup leans on
+        // hardware filtering to blend across the one-texel border each probe
+        // carries, so point sampling would show the octahedral seam; and a
+        // wrapping address mode would fetch the probe on the far side of the
+        // atlas at every edge, which reads as light leaking out of nowhere.
+        ddgiPlaceholder_ = device_->createTexture2D(1, 1, ResourceFormat::RGBA16Float, 1, 1,
+                                                    nullptr,
+                                                    Falcor::ResourceBindFlags::ShaderResource);
+        ddgiPlaceholder_->setName("v7::ddgiPlaceholder");
+        Falcor::Sampler::Desc sd;
+        sd.setFilterMode(Falcor::TextureFilteringMode::Linear,
+                         Falcor::TextureFilteringMode::Linear,
+                         Falcor::TextureFilteringMode::Linear);
+        sd.setAddressingMode(Falcor::TextureAddressingMode::Clamp,
+                             Falcor::TextureAddressingMode::Clamp,
+                             Falcor::TextureAddressingMode::Clamp);
+        ddgiSampler_ = device_->createSampler(sd);
+
+        // ── THE MOON.S FACE ────────────────────────────────────────────────
+        //
+        // The one image file this renderer loads. Everything else in the wood
+        // is generated, so there is no texture pipeline to hang this on -- and
+        // it does not need one: a photograph of the near side is a fixed,
+        // tidally locked thing that will never want mips, streaming or variants.
+        //
+        // NOT sRGB. It goes into a linear radiance term, and letting the loader
+        // apply a transfer curve here would double one that the tone map is
+        // already going to apply.
+        //
+        // A MISSING FILE IS NOT FATAL. The tracer DECLARES this texture, so
+        // something has to be bound -- a 1x1 white pixel leaves a plain white
+        // moon rather than a failed dispatch.
+        try {
+            moonTex_ = Falcor::Texture::createFromFile(device_, moonPath, false, false);
+        } catch (const std::exception &) {
+            moonTex_ = nullptr;
+        }
+        if (!moonTex_) {
+            const uint32_t white = 0xffffffffu;
+            moonTex_ = device_->createTexture2D(1, 1, ResourceFormat::RGBA8Unorm, 1, 1, &white,
+                                                Falcor::ResourceBindFlags::ShaderResource);
+            moonTex_->setName("v7::moonFallback");
+        }
+
+        // The probe rays. Plain Slang on both backends -- it is only the SDK's
+        // blend that is D3D12 -- so it is compiled unconditionally and simply
+        // never dispatched where there is no volume to fill.
+        probeTrace_ = ComputePass::create(device_, "v7/shaders/ProbeTrace.cs.slang", "main");
     }
 
     // How far the cache reaches, in metres. The encoding normalises world
@@ -131,8 +241,39 @@ class Tracer {
     static constexpr float kNrcExtent = 128.0f;
 
     void setNrc(Nrc *nrc) { nrc_ = nrc; }
+    void setDdgi(Ddgi *d) { ddgi_ = d; }
+    void setSharc(Sharc *s) { sharc_ = s; }
     void setRestir(Restir *r) { restir_ = r; }
     void setVolFog(VolFog *f) { volfog_ = f; }
+    void setClouds(Clouds *c) { clouds_ = c; }
+    void setAtmosphere(Atmosphere *a) { atmo_ = a; }
+
+    // The sun glare and lens flare, drawn in the tone-map pass. 0 disables it.
+    float flare = 1.0f;
+
+    // Where the moon photograph lives. Beside the decoration set rather than in
+    // it: it is not decor, it is the sky. Same hardcoded-default style the pine
+    // and decor paths use.
+    std::string moonPath = "C:/voxelbit/game/assets/moon.png";
+
+    // The vignette, 0..1. OFF by default: it is a look, not a correction, and
+    // turning one on for someone who did not ask is how a renderer acquires a
+    // signature nobody chose.
+    float vignette = 0.0f;
+
+    // THE FLARE HAS ITS OWN SUN, AND IT MUST.
+    //
+    // kSunCosThetaMax is the real sun: a 0.53 degree disc, which at 1080p is
+    // about three pixels. It is also what the sun sampling and the MIS weights
+    // are built on, so widening it to make the sun VISIBLE would widen the
+    // light source as well -- 23x the solid angle, and every shadow edge in
+    // the wood goes soft with it.
+    //
+    // So the light keeps the physical cone and the LOOK gets its own. This is
+    // the WebGPU game.s SUN_COS_R, a 1.27 degree half-angle -- a sun about
+    // five times life size, which is what the flare radii in blit.js were
+    // fitted against and what makes a sun read as a sun rather than a dot.
+    float flareSunCosR = 0.999756245f;
 
     int width() const { return w_; }      // traced
     int height() const { return h_; }
@@ -276,6 +417,10 @@ class Tracer {
     // One sample per pixel.
     // -----------------------------------------------------------------------
     void renderSample(Falcor::RenderContext *ctx, const V6Camera &cam, const RenderSettings &cfg) {
+        // Kept for the tone-map pass, which draws the lens flare and therefore
+        // needs to know where the sun lands on screen. resolve() runs after
+        // this and has no camera of its own.
+        flareCam_ = cam;
         if (!accum_ || !world_->tlasRef()) return;
 
         V6Params p{};
@@ -285,6 +430,12 @@ class Tracer {
         // history for them to point into yet.
         p.prevCam = havePrev_ ? prevCam_ : cam;
         p.sky = world_->sky.gpu();
+        // The atmosphere's two borrowed words, patched in per frame rather than
+        // baked by the Perez fit. Neither is a function of the sun, so making
+        // them wait for a sun rebuild would leave the menu toggle a frame late
+        // and the viewer's altitude permanently one rebuild stale.
+        p.sky.atmoOn = (atmo_ && atmo_->active()) ? 1.0f : 0.0f;
+        p.sky.atmoViewHeight = atmo_ ? atmo_->viewHeightKm() : kAtmoGroundR;
         p.dim = uint2(uint32_t(w_), uint32_t(h_));
         p.frame = frame_;
         p.tick = tick_;
@@ -310,6 +461,11 @@ class Tracer {
         lastJitter_ = j;
         p.shadowRays = cfg.shadowRays;
         p.shadowRayDepth = cfg.shadowRayDepth;
+        p.skyRays = cfg.skyRays;
+        p.skyRayDepth = cfg.skyRayDepth;
+        p.giMode = cfg.giMode;
+        p.giDepth = cfg.giDepth;
+        p.giStrength = cfg.giStrength;
         // THE GUIDES ARE NOT ONLY FOR THE DENOISER any more. Demodulation
         // divides the specular channel by gGuideSpecular, and NRD reads the
         // normal, depth and motion guides directly -- so the guide block has to
@@ -320,7 +476,13 @@ class Tracer {
         // ReSTIR joins the list of things that need the guides: the temporal
         // pass reprojects on the motion vector and rejects on normal and depth,
         // none of which exist unless these are written.
-        p.writeGuides = (denoise_ || demod_ || (restir_ && restir_->active())) ? 1 : 0;
+        // THE FLARE IS IN THIS LIST BECAUSE IT READS THE DEPTH GUIDE. Its
+        // occlusion test asks "is something solid in front of the sun", and
+        // the guide is where that answer lives -- so a pass that needs it has
+        // to ask for it. Without this the flare silently vanished in any
+        // configuration that had no other reason to write guides.
+        p.writeGuides =
+            (denoise_ || demod_ || (restir_ && restir_->active()) || flare > 0.0f) ? 1 : 0;
         p.depthNear = kDepthNear;
         p.depthFar = kDepthFar;
         p.demodulate = demod_ ? 1 : 0;
@@ -354,9 +516,34 @@ class Tracer {
         // reservoirs once there is a resampled result to shade from.
         // The froxel grid, and the limits the tracer must map depth through.
         p.volFog = (volfog_ && volfog_->active()) ? 1 : 0;
-        p.fogNear = volfog_ ? volfog_->nearD : 0.5f;
         p.fogFar = volfog_ ? volfog_->farD : 400.0f;
-        p.volFogPad = 0;
+        // The phase lobe and the dome moved into the tracer with the radiance:
+        // the volume stores only what each cell can SEE. See VolFog.slang.
+        p.fogAniso = volfog_ ? volfog_->anisotropy : 0.7f;
+        p.fogAmbient = volfog_ ? volfog_->ambient : 0.25f;
+        if (volfog_) {
+            p.fogOrigin0 = volfog_->originWs(0);
+            p.fogCell0 = volfog_->cellSize(0);
+            p.fogOrigin1 = volfog_->originWs(1);
+            p.fogCell1 = volfog_->cellSize(1);
+        } else {
+            // A cell size of 1 rather than 0: the march divides by it before it
+            // ever checks volFog, and a NaN there would poison the whole frame.
+            p.fogOrigin0 = float3(0.0f);
+            p.fogCell0 = 1.0f;
+            p.fogOrigin1 = float3(0.0f);
+            p.fogCell1 = 1.0f;
+        }
+
+        // The deck marches only when the cache actually HOLDS something. It is
+        // filled a band of slices at a time over the first few frames, and a
+        // march against a half-written volume shows as the sky growing clouds
+        // in from one end.
+        p.clouds = (clouds_ && clouds_->active() && clouds_->filled()) ? 1 : 0;
+        p.cloudWindT = clouds_ ? clouds_->windT() : 0.0f;
+        p.cloudSun = clouds_ ? clouds_->sunStrength : 2.2f;
+        p.cloudAmb = clouds_ ? clouds_->ambStrength : 0.55f;
+        p.cloudMoonKey = clouds_ ? clouds_->moonStrength : 16.0f;
 
         p.restirMode = (restir_ && restir_->active()) ? (restirWarm_ ? 2 : 1) : 0;
 
@@ -388,15 +575,109 @@ class Tracer {
             var["gNrcSamples"] = nrc_->sampleBuffer();
         }
         if (volfog_ && volfog_->available()) {
-            var["gFogGrid"] = volfog_->grid();
+            var["gFogVol0"].setTexture(volfog_->volume(0));
+            var["gFogVol1"].setTexture(volfog_->volume(1));
             var["gFogSampler"] = volfog_->sampler();
+        }
+        // ALWAYS BOUND when the object exists, because the tracer DECLARES the
+        // volume and an unbound declared resource fails the dispatch rather
+        // than the branch. gParams.clouds is what actually gates the march.
+        if (clouds_ && clouds_->volume()) {
+            var["gCloudVol"].setTexture(clouds_->volume());
+            var["gCloudSamp"] = clouds_->sampler();
+        }
+        // ALWAYS BOUND when the textures exist, for the same reason the cloud
+        // volume is: Trace.cs.slang DECLARES the table, and an unbound declared
+        // resource fails the whole dispatch rather than the branch that reads
+        // it. atmosphere.h therefore creates its textures even when its shaders
+        // failed to compile, so this binding cannot be the thing that breaks.
+        if (atmo_ && atmo_->skyView()) {
+            var["gAtmoSkyView"].setTexture(atmo_->skyView());
+            var["gAtmoSamp"] = atmo_->sampler();
+        }
+        if (moonTex_) {
+            var["gMoonTex"].setTexture(moonTex_);
+            var["gMoonSamp"] = ddgiSampler_;
         }
         if (restir_ && restir_->available()) {
             var["gRestirCandidate"] = restir_->candidateBuffer();
             var["gRestirFinal"] = restir_->finalBuffer();
             var["gPrimaryPos"] = restir_->primaryPos();
         }
+
+        // -- the irradiance probes -------------------------------------------
+        //
+        // ALWAYS BOUND, even on Vulkan where the volume can never come up: the
+        // shader declares the three arrays unconditionally and D3D12 validates
+        // descriptors at dispatch, not at first use. A 1x1 placeholder costs
+        // one texture for the life of the process and removes a whole class of
+        // "works until the toggle is off" failure.
+        //
+        // The constants go up either way too. With the volume off they are
+        // zeroed, and a zero probeCounts is what stops ddgiSampleIrradiance
+        // from ever looking at the placeholder -- but giMode is 0 in that case
+        // and the branch is not taken at all, so this is the second of two
+        // independent reasons nothing reads it.
+        // ref, not the raw pointer the accessors hand back: Falcor only ever
+        // instantiates ShaderVar::operator= for ref<Texture>, so binding a
+        // Texture* compiles happily against the template and then fails to
+        // link, naming a mangled symbol that says nothing about which line.
+        const bool ddgiLive = ddgi_ && ddgi_->available();
+        var["gDdgiIrradiance"] =
+            ddgiLive ? Falcor::ref<Texture>(ddgi_->irradiance()) : ddgiPlaceholder_;
+        var["gDdgiDistance"] =
+            ddgiLive ? Falcor::ref<Texture>(ddgi_->distance()) : ddgiPlaceholder_;
+        var["gDdgiProbeData"] =
+            ddgiLive ? Falcor::ref<Texture>(ddgi_->probeData()) : ddgiPlaceholder_;
+        var["gDdgiSampler"] = ddgiSampler_;
+        const V6DdgiConsts dc = ddgiLive ? ddgi_->consts() : V6DdgiConsts{};
+        var["gDdgiCB"]["gDdgiConsts"].setBlob(&dc, sizeof(dc));
+
+#if V7_HAS_SHARC
+        // Bound whenever the cache exists, for the same reason as the probes:
+        // the shader declares the buffers unconditionally.
+        if (sharc_ && sharc_->available())
+            sharc_->bind(var, Vec3(cam.pos.x, cam.pos.y, cam.pos.z));
+#endif
+
         var["gParamsCB"]["gParams"].setBlob(&p, sizeof(p));
+
+#if V7_HAS_SHARC
+        // -- the hash cache: update, resolve, and only then render ------------
+        //
+        // ALL THREE IN THIS ORDER, INSIDE ONE SAMPLE. The update writes raw
+        // sums, the resolve folds them into the running average, and the render
+        // reads that average -- so resolving before updating would average last
+        // frame's samples into this frame's, and rendering before resolving
+        // would read half-written entries. Neither goes wrong loudly.
+        //
+        // Done here rather than from the app because the launch parameters the
+        // update pass needs are `p`, which is assembled just above and nowhere
+        // else. Handing it out through an accessor so somebody else could call
+        // two dispatches in a fixed order would be a wider interface for
+        // nothing -- the same argument runRestir makes.
+        if (sharc_ && sharc_->available() && p.giMode == 2 && sharcUpdate_) {
+            const Vec3 camPos(cam.pos.x, cam.pos.y, cam.pos.z);
+            if (sharc_->needsClear()) sharc_->clear(ctx);
+
+            auto uv = sharcUpdate_->getRootVar();
+            uv["gScene"].setAccelerationStructure(world_->tlasRef());
+            uv["gTriPool"] = world_->triPool();
+            uv["gInstances"] = world_->instanceBuffer();
+            uv["gMaterials"] = world_->materialBuffer();
+            sharc_->bind(uv, camPos);
+            uv["gParamsCB"]["gParams"].setBlob(&p, sizeof(p));
+
+            // One path per 5x5 block: 4 % of the pixels, which the SDK's
+            // integration guide recommends as the starting point and which is
+            // enough to cover the screen over a second of frames.
+            sharcUpdate_->execute(ctx, uint32_t((w_ + 4) / 5), uint32_t((h_ + 4) / 5));
+            ctx->uavBarrier(sharc_->accumBuffer());
+            ctx->uavBarrier(sharc_->hashBuffer());
+
+            sharc_->runResolve(ctx, camPos);
+        }
+#endif
 
         trace_->execute(ctx, uint32_t(w_), uint32_t(h_));
         ++frame_;
@@ -521,11 +802,88 @@ class Tracer {
     // just so somebody else could call two dispatches in a fixed order would be
     // a wider interface for nothing.
     // -----------------------------------------------------------------------
-    void renderVolFog(Falcor::RenderContext *ctx, const V6Camera &cam, float density,
-                      float height, uint32_t frame, bool moving) {
+    void renderVolFog(Falcor::RenderContext *ctx, const V6Camera &cam, float density, float height,
+                      bool moving) {
         if (!volfog_ || !volfog_->active() || !world_ || !world_->tlasRef()) return;
-        volfog_->render(ctx, cam, havePrev_ ? prevCam_ : cam, world_->sky.gpu(), density, height,
-                        frame, world_->tlasRef().get(), moving);
+        // TICK, NOT THE SAMPLE COUNT, and the difference is a bug that showed as
+        // the fog dragging while you ran.
+        //
+        // frame_ is "samples in the film for THIS camera" and resetAccumulation
+        // zeroes it every time the camera moves. Feeding it to the injection
+        // pass meant that while walking, the per-cell jitter was handed the same
+        // number every frame -- so every cell re-sampled the SAME point inside
+        // itself, the shadow ray returned the same hard 0 or 1 forever, and the
+        // penumbra the jitter exists to produce never formed. The temporal blend
+        // then held that frozen pattern and only refreshed it where cells
+        // shifted, which is what the smearing was. Standing still let frame_
+        // climb again and the fog visibly re-converged.
+        //
+        // tick_ is monotonic and never reset -- it is what the path tracer's own
+        // sampler and Halton jitter already use, for exactly this reason.
+        volfog_->render(ctx, cam, world_->sky.gpu(), density, height, tick_,
+                        world_->tlasRef().get(), moving);
+    }
+
+    // -----------------------------------------------------------------------
+    // PHASE A: cast this frame's probe rays, then let RTXGI blend them in.
+    //
+    // THE ORDER IS THE WHOLE OF IT, and getting it wrong is silent. The SDK
+    // needs its constants uploaded BEFORE the rays are cast, because the ray
+    // rotation those constants carry is the rotation this dispatch reads out
+    // of consts() to aim with -- upload after and every probe traces one
+    // frame's rotation while the blend pass unpacks them with the next one, so
+    // radiance is folded into the wrong texels. It does not look like an error,
+    // it looks like probes that never quite converge.
+    //
+    // Called before the camera sample rather than after, so the tracer reads an
+    // atlas that already includes this frame's rays.
+    // -----------------------------------------------------------------------
+    void traceProbes(Falcor::RenderContext *ctx) {
+        if (!ddgi_ || !ddgi_->available() || !probeTrace_) return;
+        if (!world_ || !world_->tlasRef()) return;
+
+        if (!ddgi_->uploadConstants(ctx)) return;
+
+        const V6DdgiConsts dc = ddgi_->consts();
+
+        auto var = probeTrace_->getRootVar();
+        var["gScene"].setAccelerationStructure(world_->tlasRef());
+        var["gTriPool"] = world_->triPool();
+        var["gInstances"] = world_->instanceBuffer();
+        var["gMaterials"] = world_->materialBuffer();
+        var["gProbeRayData"] = Falcor::ref<Texture>(ddgi_->rayData());
+        var["gProbeIrradiance"] = Falcor::ref<Texture>(ddgi_->irradiance());
+        var["gProbeDistance"] = Falcor::ref<Texture>(ddgi_->distance());
+        var["gProbeDataTex"] = Falcor::ref<Texture>(ddgi_->probeData());
+        var["gProbeSampler"] = ddgiSampler_;
+        var["gProbeCB"]["gDdgi"].setBlob(&dc, sizeof(dc));
+        // THE PROBES GET THE SAME SKY THE PRIMARY RAYS DO. Leaving them on the
+        // fit while the tracer used the tables would put the indirect fill a
+        // different colour from the direct light at every hour where the two
+        // models disagree -- which is precisely twilight, where almost all of
+        // the light in a wood IS the fill.
+        V6Sky sky = world_->sky.gpu();
+        sky.atmoOn = (atmo_ && atmo_->active()) ? 1.0f : 0.0f;
+        sky.atmoViewHeight = atmo_ ? atmo_->viewHeightKm() : kAtmoGroundR;
+        var["gProbeCB"]["gProbeSky"].setBlob(&sky, sizeof(sky));
+        if (atmo_ && atmo_->skyView()) {
+            var["gProbeAtmoSky"].setTexture(atmo_->skyView());
+            var["gProbeAtmoSamp"] = atmo_->sampler();
+        }
+        var["gProbeCB"]["gProbeSeed"] = uint32_t(0x9E3779B9u);
+        var["gProbeCB"]["gProbeTick"] = tick_;
+        // FEEDING LAST FRAME'S ATLAS BACK IN is what makes the cache
+        // multi-bounce -- see the note at the top of ProbeTrace.cs.slang. It is
+        // withheld for the first few frames only because an atlas that has
+        // never been blended is not yet zero-meaningful, it is uninitialised.
+        var["gProbeCB"]["gProbeUseCache"] = (probeFrames_ > 2u) ? 1 : 0;
+        var["gProbeCB"]["gProbePad"] = 0.0f;
+
+        probeTrace_->execute(ctx, uint32_t(ddgi_->raysPerProbe()),
+                             uint32_t(ddgi_->numProbes()));
+
+        ddgi_->updateProbes(ctx);
+        ++probeFrames_;
     }
 
     void runRestir(Falcor::RenderContext *ctx, uint32_t frame) {
@@ -549,6 +907,20 @@ class Tracer {
         var["gTonemapCB"]["gToe"] = cfg.shadowLift;
         var["gTonemapCB"]["gDeepLift"] = cfg.deepLift;
         var["gTonemapCB"]["gDeepRange"] = cfg.deepRange;
+
+        // The flare. gFlare 0 disables the whole block in the shader.
+        var["gFlareDepth"].setTexture(guideDepth_);
+        var["gFlareSamp"] = ddgiSampler_;
+        const V6Sky sky = world_ ? world_->sky.gpu() : V6Sky{};
+        var["gTonemapCB"]["gSunDir"] = sky.sunDir;
+        var["gTonemapCB"]["gFlare"] = flare;
+        var["gTonemapCB"]["gCamRight"] = flareCam_.u;
+        var["gTonemapCB"]["gTanH"] = flareCam_.halfH;
+        var["gTonemapCB"]["gCamUp"] = flareCam_.v;
+        var["gTonemapCB"]["gAspect"] = flareCam_.halfH > 0.0f ? flareCam_.halfW / flareCam_.halfH : 1.0f;
+        var["gTonemapCB"]["gCamFwd"] = flareCam_.w;
+        var["gTonemapCB"]["gSunCosR"] = flareSunCosR;
+        var["gTonemapCB"]["gVignette"] = vignette;
         tonemap_->execute(ctx, dim.x, dim.y);
         displayW_ = int(dim.x);
         displayH_ = int(dim.y);
@@ -636,8 +1008,23 @@ class Tracer {
     uint32_t frame_ = 0;  // samples in the film for THIS camera
     uint32_t tick_ = 0;   // monotonic; seeds the sampler and picks the jitter
     Nrc *nrc_ = nullptr;
+    Ddgi *ddgi_ = nullptr;
+    Sharc *sharc_ = nullptr;
+    Falcor::ref<ComputePass> sharcUpdate_;
+
+    // A 1x1 array texture standing in for the three probe atlases whenever the
+    // volume is not running, and the sampler the lookup reads them all with.
+    // Created once in init(); see the note where they are bound.
+    Falcor::ref<Texture> ddgiPlaceholder_;
+    Falcor::ref<Falcor::Sampler> ddgiSampler_;
+    Falcor::ref<Falcor::Texture> moonTex_;
+    Falcor::ref<ComputePass> probeTrace_;
+    uint32_t probeFrames_ = 0;
     Restir *restir_ = nullptr;
+    V6Camera flareCam_ = {};
     VolFog *volfog_ = nullptr;
+    Clouds *clouds_ = nullptr;
+    Atmosphere *atmo_ = nullptr;
     bool restirWarm_ = false;
     bool coopVec_ = false;
     bool denoise_ = false;

@@ -48,6 +48,20 @@
 #include "Sky.slang"
 #include "Restir.slang"
 #include "VolFog.slang"
+#include "Clouds.slang"
+#include "Ddgi.slang"
+
+// The hash cache. Included in BOTH of this file's compilations -- the query one
+// that the camera uses and the update one that fills it -- because they share
+// every helper below and only differ in which entry point they end at.
+#if V7_SHARC_QUERY || V7_SHARC_UPDATE
+#if V7_SHARC_UPDATE
+#define SHARC_UPDATE 1
+#else
+#define SHARC_QUERY 1
+#endif
+#include "Sharc.slang"
+#endif
 
 // THE CACHE IS COMPILED IN ONLY WHERE IT CAN RUN. Nrc.slang uses CoopVec, which
 // does not exist on a D3D12 target below Shader Model 6.10 -- including it
@@ -89,12 +103,48 @@ RWStructuredBuffer<Reservoir> gRestirCandidate;
 StructuredBuffer<Reservoir> gRestirFinal;
 RWTexture2D<float4> gPrimaryPos;
 
-// The volumetric fog, already lit and already integrated -- RGB is the light
-// scattered toward the camera between here and that froxel, A is how much of
-// what lies beyond still gets through. Produced by VolFogInject + VolFogMarch;
-// this shader only ever reads it.
-Texture3D<float4> gFogGrid;
+// The world-anchored fog volume, two cascades. R is sun visibility, G is sky
+// visibility, A is density -- NOT radiance. What a parcel of air can see is a
+// property of the air; how bright it looks is a property of where you are
+// standing, so the radiance is assembled below, at march time, where the view
+// direction exists. See the long note in VolFog.slang.
+Texture3D<float4> gFogVol0;   // near cascade, fine cells
+Texture3D<float4> gFogVol1;   // far cascade, coarse cells
 SamplerState gFogSampler;
+
+// The sky-view table, when the atmosphere path is on. Bound unconditionally --
+// atmosphere.h creates the texture whether the feature is enabled or not -- so
+// there is no unbound-resource case to guard; sky.atmoOn decides whether
+// skyDome() actually reads it.
+Texture2D<float4> gAtmoSkyView;
+SamplerState gAtmoSamp;
+
+// The cloud density cache -- a TILE of an endless deck, so the march samples it
+// at frac(world / tile) and it never needs refilling as the player moves. Filled
+// The moon's face. A photograph, sampled flat -- see moonDisk in Sky.slang.
+Texture2D<float4> gMoonTex;
+SamplerState gMoonSamp;
+
+// once by CloudFill; this shader only ever reads it.
+Texture3D<float> gCloudVol;
+SamplerState gCloudSamp;
+
+// -- the irradiance probes ---------------------------------------------------
+//
+// Bound every frame whether or not the volume is running, for the same reason
+// the radiance cache is: a declared resource with nothing behind it is a
+// validation error at dispatch time, not a dead branch. With DDGI off these
+// point at a 1x1 placeholder the tracer owns and gParams.giMode is 0, so
+// nothing ever reads them.
+Texture2DArray<float4> gDdgiIrradiance;
+Texture2DArray<float4> gDdgiDistance;
+Texture2DArray<float4> gDdgiProbeData;
+SamplerState gDdgiSampler;
+
+cbuffer gDdgiCB
+{
+    V6DdgiConsts gDdgiConsts;
+};
 
 // The film. accum holds sums with the sample count in .w, so a resolve never
 // has to consult a second buffer to know what to divide by.
@@ -461,7 +511,7 @@ void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out fl
     sumDiff = float3(0.0f);
     sumSpec = float3(0.0f);
 
-    const float3 Lsun = gParams.sky.sunRadiance;
+    const float3 Lsun = keyRadiance(gParams.sky);
     if (isBlack(Lsun))
         return;
 
@@ -471,12 +521,12 @@ void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out fl
     // contribute is too dim for their variance to show.
     const int n = (depth < gParams.shadowRayDepth) ? max(1, gParams.shadowRays) : 1;
 
-    const Frame sf = Frame.make(gParams.sky.sunDir);
-    const float lightPdf = uniformConePdf(kSunCosThetaMax);
+    const Frame sf = Frame.make(keyDir(gParams.sky));
+    const float lightPdf = uniformConePdf(keyCosR(gParams.sky));
 
     for (int i = 0; i < n; ++i)
     {
-        const float3 wWorld = sf.toWorld(sampleUniformCone(rng.next2D(), kSunCosThetaMax));
+        const float3 wWorld = sf.toWorld(sampleUniformCone(rng.next2D(), keyCosR(gParams.sky)));
         const float3 wi = fr.toLocal(wWorld);
 
         // A needle transmits, so a direction on the far side is still a valid
@@ -542,18 +592,182 @@ float3 sampleSun(Hit h, Frame fr, float3 wo, inout Rng rng, int depth)
 }
 
 // ---------------------------------------------------------------------------
-// Aerial perspective, integrated in closed form along the primary segment.
+// Next event estimation: the sky dome.
 //
-// Depth cues in a wood come almost entirely from haze: without it a trunk forty
-// metres away has the same contrast as one at four, and the stand collapses
-// into a flat wall. Analytic rather than a traced medium -- one exp() instead
-// of a whole extra integration, and being deterministic it adds no variance.
+// WHY THIS EXISTS AT ALL, when the dome was already being collected. A path
+// that escapes the canopy lands on the sky and the dome arrives at full
+// weight. That is correct, and before this it was the ONLY way light ever
+// reached a shadowed pixel -- under a canopy the sun is occluded by
+// definition, so the dome is the whole of the light.
+//
+// The trouble is what reaching it that way costs. It takes a whole path
+// segment, and that segment has to survive two things first:
+//
+//   RUSSIAN ROULETTE, which at a foliage albedo of 0.19 kills roughly four
+//   paths in five at the first bounce. Unbiased, so the film converges -- but
+//   what it converges FROM is a spike distribution, most pixels holding zero
+//   and a few holding a large escape. A tone curve compresses the spikes and
+//   leaves the zeros alone, so the eye reads the mean as far darker than it is.
+//
+//   THE DEPTH BUDGET, which at the last vertex draws a direction, updates the
+//   throughput, and then exits the loop without ever tracing it. That one is
+//   not variance at all -- it is energy the estimator simply drops, and it
+//   drops it in exactly the places that are already darkest.
+//
+// A dome sample here is an occlusion ray and nothing more. It does not
+// continue, so roulette cannot take it, and it is taken at every vertex
+// INCLUDING the last one -- which is where the truncation loss lived.
+//
+// THE SAMPLER IS COSINE-WEIGHTED ABOUT THE SHADING NORMAL, deliberately the
+// same shape the diffuse lobe draws from. As a DISTRIBUTION that buys nothing:
+// MIS between two identical strategies is two half-weight copies of one
+// estimator. What it buys is that the two copies are INDEPENDENT and one of
+// them is unconditional, so the variance of the sky term halves and the half
+// that does not depend on surviving roulette is the half the shadows were
+// missing. Importance-sampling the Perez dome by luminance would do better
+// still; it needs a CDF rebuilt whenever the sun moves, which this does not.
+//
+// THE DOME ONLY. The solar disk is next-event-sampled on its own cone in
+// sampleSunSplit, and skyDome() excludes the disk entirely -- so the two light
+// sources never overlap, and neither MIS pair needs to know about the other.
+// ---------------------------------------------------------------------------
+
+// The pdf the dome sampler would have used for a direction leaving a surface
+// with this shading normal.
+//
+// It has to be evaluable for ANY direction, not just for ones this sampler
+// drew, because the escape path asks it the reverse question: "could the light
+// sampler have found the direction the BSDF chose?" Without an answer to that
+// there is no MIS weight, and without the weight the dome gets counted twice.
+float skyDomePdf(float3 ns, float3 wWorld)
+{
+    return max(0.0f, dot(ns, wWorld)) * INV_PI;
+}
+
+void sampleSkySplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out float3 sumDiff,
+                    out float3 sumSpec)
+{
+    sumDiff = float3(0.0f);
+    sumSpec = float3(0.0f);
+    if (gParams.skyRays <= 0)
+        return;
+
+    // The same staircase the sun uses, and for the same reason: by the second
+    // bounce the throughput is small enough that this vertex's variance does
+    // not show in the frame.
+    const int n = (depth < gParams.skyRayDepth) ? max(1, gParams.skyRays) : 1;
+
+    for (int i = 0; i < n; ++i)
+    {
+        // Drawn in the local frame, so the sample is already the direction the
+        // diffuse lobe cares about and no rotation is needed to get its pdf.
+        const float3 wi = sampleCosineHemisphere(rng.next2D());
+        const float lightPdf = wi.z * INV_PI;
+        if (lightPdf <= 1e-6f)
+            continue;
+
+        const float3 wWorld = fr.toWorld(wi);
+
+        float pdf = 0.0f;
+        float3 fD, fS;
+        evalOpaqueSplit(h.mat, wo, wi, fD, fS, pdf);
+        if (pdf <= 0.0f || (isBlack(fD) && isBlack(fS)))
+            continue;
+
+        const float3 Lsky = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, wWorld);
+        if (isBlack(Lsky))
+            continue;
+
+        if (traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, INF))
+            continue;
+
+        const float w = powerHeuristic(1.0f, lightPdf, 1.0f, pdf);
+        const float3 common = Lsky * (abs(wi.z) * w / lightPdf);
+        float3 cD = fD * common;
+        float3 cS = fS * common;
+
+        // The same indirect ceiling the sun term carries, applied the same way
+        // -- per sample, on the sum of the two lobes. The dome is four orders
+        // of magnitude below the solar disk so it will rarely reach it, but a
+        // grazing specular lobe can still manufacture a spike and the clamp
+        // costs nothing when it does not fire.
+        if (depth > 0 && gParams.clampIndirect > 0.0f)
+        {
+            const float m = maxComp(cD + cS);
+            if (m > gParams.clampIndirect)
+            {
+                const float k = gParams.clampIndirect / m;
+                cD *= k;
+                cS *= k;
+            }
+        }
+        sumDiff += cD;
+        sumSpec += cS;
+    }
+
+    // Occluded and below-horizon samples are zeros in the average, not skipped
+    // -- the same rule as the sun, and for the same reason.
+    const float inv = 1.0f / float(n);
+    sumDiff *= inv;
+    sumSpec *= inv;
+}
+
+float3 sampleSky(Hit h, Frame fr, float3 wo, inout Rng rng, int depth)
+{
+    float3 dif, spc;
+    sampleSkySplit(h, fr, wo, rng, depth, dif, spc);
+    return dif + spc;
+}
+
+// ---------------------------------------------------------------------------
+// Aerial perspective, ray-marched through the world volume.
+//
+// WHY THIS IS A MARCH NOW AND USED TO BE A LOOKUP.
+//
+// The froxel grid was integrated front to back by a pass of its own, in a grid
+// whose z axis WAS the view ray -- so a pixel's fog was a single fetch at its
+// own depth. A world volume cannot do that: view rays cross it at every angle,
+// so there is no axis to pre-integrate along. The integral has to be taken per
+// pixel, here.
+//
+// That is the honest price of world-anchored fog, and it is not small: one
+// fetch becomes kFogSteps of them. What it buys is fog that is the same fog
+// from every direction, that does not swim when you turn, and whose brightness
+// is not a function of how far you happen to be able to see.
+//
+// EXPONENTIAL STEPS, WHICH IS WHERE THE FROXEL GRID'S BEST PROPERTY COMES BACK.
+// The volume is uniform in space, but the MARCH need not be uniform along the
+// ray. Steps grow geometrically with distance, so the first few metres -- where
+// a beam through the canopy is actually resolved -- take most of the samples,
+// and the far haze, which is smooth, takes the few it needs. The same reasoning
+// the old exponential slices used, moved from the storage to the integration.
 //
 // The transmittance is handed back separately from the composited result so the
 // demodulated channels can be attenuated by the SAME number -- fog that
-// disagreed between the two would show up as a halo the moment the textures
-// were multiplied back on.
+// disagreed between the two would show as a halo the moment the textures were
+// multiplied back on.
 // ---------------------------------------------------------------------------
+static const int kFogSteps = 40;
+
+// One sample of the volume: the near cascade if the point is inside it, the far
+// one otherwise, nothing past the edge of both. The margin keeps a trilinear
+// tap from reaching across the boundary and pulling in the clamped border.
+bool fogSampleVolume(float3 p, out float4 s)
+{
+    s = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    const float3 uvw0 = fogWorldToUvw(p, gParams.fogOrigin0, float3(gParams.fogCell0));
+    if (fogInside(uvw0, 0.002f)) {
+        s = gFogVol0.SampleLevel(gFogSampler, uvw0, 0.0f);
+        return true;
+    }
+    const float3 uvw1 = fogWorldToUvw(p, gParams.fogOrigin1, float3(gParams.fogCell1));
+    if (fogInside(uvw1, 0.002f)) {
+        s = gFogVol1.SampleLevel(gFogSampler, uvw1, 0.0f);
+        return true;
+    }
+    return false;
+}
+
 void fogTerms(float2 pixelUv, float3 dir, float dist, out float T, out float3 inscatter)
 {
     T = 1.0f;
@@ -561,20 +775,93 @@ void fogTerms(float2 pixelUv, float3 dir, float dist, out float T, out float3 in
     if (gParams.fogDensity <= 0.0f || gParams.volFog == 0)
         return;
 
-    // THE FROXEL THIS PIXEL ENDS IN. x and y are simply where the pixel is; z
-    // is the distance the primary ray travelled, mapped through the same
-    // exponential slice distribution the grid was built with.
-    //
-    // MEASURED ALONG THE FORWARD AXIS, not along the ray. The grid's slices are
-    // planes parallel to the near plane, so a pixel at the corner of the screen
-    // reaches slice n at a greater ray distance than one at the centre. Using
-    // the ray length would bow the fog toward the camera at the edges.
-    const float fwd = max(dist * dot(dir, gParams.cam.w), gParams.fogNear);
-    const float slice = fogDistanceToSlice(fwd, gParams.fogNear, gParams.fogFar) / float(kFogZ);
+    const float tNear = 0.25f;
+    const float tFar = min(dist, gParams.fogFar);
+    if (tFar <= tNear)
+        return;
 
-    const float4 fog = gFogGrid.SampleLevel(gFogSampler, float3(pixelUv, saturate(slice)), 0.0f);
-    inscatter = fog.rgb;
-    T = fog.a;
+    // THE LIGHTING THAT DOES NOT VARY ALONG THE RAY, hoisted out of the loop.
+    //
+    // The sun's irradiance through the phase lobe for this view direction, and
+    // the dome. Neither depends on where along the ray we are -- only on the
+    // VISIBILITY of each, which is exactly what the volume stores. This is the
+    // whole reason it can store visibility instead of radiance.
+    //
+    // wo points back toward the camera, which is the convention fogPhase is
+    // written for; handing it the inward vector flips the lobe silently.
+    const float3 wo = -dir;
+    const float3 sunTerm = keyRadiance(gParams.sky) * keySolidAngle(gParams.sky) *
+                           fogPhase(wo, keyDir(gParams.sky), gParams.fogAniso);
+    const float3 skyTerm = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, float3(0.0f, 1.0f, 0.0f)) * gParams.fogAmbient;
+
+    // A SPATIAL DITHER, AND DELIBERATELY NOT A TEMPORAL ONE.
+    //
+    // The geometric steps have to be broken up per pixel or they print
+    // themselves on the screen as concentric shells. What they must NOT be
+    // broken up by is TIME, and doing that was a bug that showed as the fog
+    // ghosting through the trees whenever the camera moved quickly.
+    //
+    // The march writes its result into Lemit, which is handed to Ray
+    // Reconstruction. RR accumulates temporally along the SURFACE motion
+    // vectors -- but fog lives in the volume in FRONT of the surface, and its
+    // parallax is not the surface's. Feed that a fresh white-noise value every
+    // frame and RR has to reproject noise it cannot place: the error trails
+    // behind, and it trails worst exactly where motion vectors are least
+    // reliable and disocclusion is constant, which is a canopy. With the
+    // denoiser off the accumulator simply averaged the noise away, which is why
+    // the artefact vanished with upscaling disabled and looked like an
+    // upscaler bug rather than a fog one.
+    //
+    // The temporal filtering this medium needs already exists, in the right
+    // place: the VOLUME is blended over frames in VolFogInject. The march on
+    // top of it should be a deterministic function of where the camera is, so
+    // that a still camera yields a still image and a moving one yields only the
+    // change that actually moved.
+    //
+    // Interleaved gradient noise: high frequency, well distributed, and fixed
+    // per pixel. It breaks the shells as well as the hash did and gives RR a
+    // signal that holds still.
+    const float2 pixf = pixelUv * float2(gParams.dim);
+    const float jitter =
+        frac(52.9829189f * frac(0.06711056f * pixf.x + 0.00583715f * pixf.y));
+
+    const float ratio = tFar / tNear;
+    float3 scattering = float3(0.0f);
+    float trans = 1.0f;
+    float tPrev = 0.0f;
+
+    for (int i = 1; i <= kFogSteps; ++i) {
+        const float t = tNear * pow(ratio, float(i) / float(kFogSteps));
+        const float ds = t - tPrev;
+        const float3 p = gParams.cam.pos + dir * (tPrev + ds * jitter);
+        tPrev = t;
+
+        float4 s;
+        if (!fogSampleVolume(p, s))
+            continue;
+
+        const float density = s.a;
+        if (density <= 1e-6f)
+            continue;
+
+        const float stepT = exp(-density * ds);
+
+        // THE ANALYTIC INTEGRAL OF THE STEP, not radiance times thickness.
+        // Scattering and absorption happen together: light scattered at the far
+        // end of a step is attenuated by the near end of the same step. The
+        // closed form saturates, where multiplying through would let the fog
+        // gain energy with density instead.
+        const float3 stepL = sunTerm * s.r + skyTerm * s.g;
+        scattering += stepL * (1.0f - stepT) * trans;
+        trans *= stepT;
+
+        // Nothing behind this is going to be seen through it.
+        if (trans < 0.003f)
+            break;
+    }
+
+    inscatter = scattering;
+    T = trans;
 }
 
 float3 applyFog(float2 pixelUv, float3 L, float3 dir, float dist)
@@ -658,6 +945,13 @@ void main(uint3 tid: SV_DispatchThreadID)
     float gRough = 1.0f, gViewZ = 0.0f;
     bool specularBounce = true; // the camera ray itself carries no light pdf
     float bsdfPdf = 1.0f;
+    // The pdf the DOME sampler would have had for the direction this path is
+    // currently travelling, carried forward from the vertex that chose it so
+    // the escape branch can weight the two strategies against each other.
+    // Zero means "no light sampler could have produced this direction", which
+    // is the truth for the camera ray, for a specular bounce, and for every
+    // frame where sky NEE is switched off.
+    float skyPdfPrev = 0.0f;
     bool inWater = false;
     float primaryDist = -1.0f;
 
@@ -705,13 +999,68 @@ void main(uint3 tid: SV_DispatchThreadID)
             // Escaped: the sky. The dome is never light-sampled, so it always
             // arrives at full weight; the disk may have been, so it is weighted
             // against the cone pdf that could have found it.
-            float3 sky = skyDome(gParams.sky, d);
-            const float3 disk = skyDisk(gParams.sky, d);
+            float3 sky = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, d);
+            // THE DOME IS NOW REACHABLE TWO WAYS, so it can no longer arrive at
+            // full weight. Before sky NEE existed this was correct because
+            // continuing the path was the only strategy that could find the
+            // dome; now sampleSkySplit finds it too, and a pair of strategies
+            // that both pay in full is the textbook double count -- it would
+            // show up as the whole sky getting brighter, not as an error.
+            //
+            // Guarded on skyPdfPrev rather than on the toggle so that turning
+            // sky NEE off restores the old weight exactly, with no second place
+            // to keep in step.
+            if (!specularBounce && skyPdfPrev > 0.0f)
+                sky *= powerHeuristic(1.0f, bsdfPdf, 1.0f, skyPdfPrev);
+            // The moon rides in the same slot as the sun disk: same cone size,
+            // same MIS weight, and exactly one of them is ever non-zero
+            // because they sit at opposite points of the sky.
+            const float3 disk = skyDisk(gParams.sky, d) + moonDisk(gParams.sky, d, gMoonTex, gMoonSamp);
             if (!isBlack(disk))
             {
-                const float lightPdf = uniformConePdf(kSunCosThetaMax);
+                const float lightPdf = uniformConePdf(keyCosR(gParams.sky));
                 const float w = specularBounce ? 1.0f : powerHeuristic(1.0f, bsdfPdf, 1.0f, lightPdf);
                 sky += disk * w;
+            }
+            // -- THE DECK, over the sky and only down the PRIMARY ray --------
+            //
+            // Composited as a surface with alpha rather than blended against
+            // the raw sky, so an opaque cloud hides the sun DISK completely
+            // instead of letting a fifth of a very bright disk through as a
+            // crisp circle. The brightness still arrives -- as the deck
+            // scattering the sun, which is what the phase function and the
+            // light march are for, so a cloud in front of the sun glows.
+            //
+            // depth == 0 ONLY. A miss at depth > 0 is an indirect bounce that
+            // escaped, and putting a 28-step march with a 4-step light march
+            // inside it on every one of those would cost more than the entire
+            // path trace. The sky those bounces see is the clear-sky dome, which
+            // is the same approximation every other cache in here already makes.
+            if (depth == 0 && gParams.clouds != 0)
+            {
+                // THE UNBOOSTED DISC, THEN THE DECK'S OWN NIGHT KEY. Taking
+                // keyRadiance here took moonKey with it -- 300, calibrated for
+                // surfaces lit through NEE -- while ambC below comes from the
+                // dome with no boost at all. sunC 1.62 against ambC 0.003 is
+                // the white deck over the black sky: the moon's surface
+                // calibration leaking into a consumer that never wanted it.
+                const float3 sunC = keyDiscRadiance(gParams.sky) *
+                                    keySolidAngle(gParams.sky) * gParams.cloudSun *
+                                    (gParams.sky.sunDir.y > 0.0f ? 1.0f : gParams.cloudMoonKey);
+                const float3 ambC =
+                    skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, float3(0.0f, 1.0f, 0.0f)) * gParams.cloudAmb;
+                // The colour a far cloud fades INTO: the dome just above the
+                // horizon, with no sun disk in it. Taking the disk here would
+                // let a distant cloud fade toward the brightness of the sun
+                // itself, which is the hole-in-the-cloud the alpha composite
+                // exists to prevent.
+                const float3 hazeC =
+                    skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, normalize(float3(d.x, max(d.y, 0.02f), d.z)));
+                const float4 deck =
+                    cloudMarch(gCloudVol, gCloudSamp, gParams.cam.pos, d, keyDir(gParams.sky),
+                               sunC, ambC, hazeC, gParams.cloudWindT,
+                               cgIGN(float2(pix), gParams.tick));
+                sky = sky * (1.0f - deck.a) + deck.rgb;
             }
             L += beta * sky;
             // The sky down the PRIMARY ray is modulated by no surface at all,
@@ -787,6 +1136,7 @@ void main(uint3 tid: SV_DispatchThreadID)
             o = offsetRay(h.p, h.ng, wi);
             d = wi;
             specularBounce = true;
+            skyPdfPrev = 0.0f;  // a delta surface: no light sampler drew this
             continue;
         }
 
@@ -850,6 +1200,79 @@ void main(uint3 tid: SV_DispatchThreadID)
         }
 #endif
 
+#if V7_SHARC_QUERY
+        // -- the hash cache ---------------------------------------------------
+        //
+        // Same placement and the same argument as the probe query below: what
+        // comes back is the radiance LEAVING this point, everything included,
+        // so the path is finished and this vertex's own next event estimation
+        // must not also run.
+        //
+        // Radiance, not irradiance -- so unlike the probe lookup there is no
+        // albedo and no 1/pi here. The update pass stored what left the surface,
+        // not what arrived at it.
+        //
+        // THE SEGMENT LENGTH TEST IS NOT OPTIONAL. A cache entry covers a whole
+        // voxel of the hash grid, so a path segment shorter than that voxel
+        // lands several neighbouring shading points in one cell and hands them
+        // all the same answer. That is the blocky look SHaRC is blamed for, and
+        // it is avoidable by simply carrying on tracing until the segment is
+        // long enough to be filed honestly.
+        if (gParams.giMode == 2 && depth >= gParams.giDepth &&
+            sharcSegmentLongEnough(h.p, h.t))
+        {
+            SharcHitData hd;
+            hd.positionWorld = h.p;
+            hd.normalWorld = h.ng;
+
+            float3 cached;
+            if (SharcGetCachedRadiance(sharcParams(), hd, cached, false))
+            {
+                const float3 cs = beta * cached * gParams.giStrength;
+                L += cs;
+                Ldiff += cs * wDiff;
+                Lspec += cs * (1.0f - wDiff);
+                break;
+            }
+        }
+#endif
+
+        // -- the irradiance cache ---------------------------------------------
+        //
+        // PLACED HERE, ABOVE THIS VERTEX'S NEXT EVENT ESTIMATION, and the
+        // placement IS the correctness argument.
+        //
+        // A probe holds the TOTAL irradiance arriving at a point: the sun it
+        // can see, the sky it can see, and every bounce that ever reached it.
+        // So the cache does not supplement this vertex's direct lighting, it
+        // REPLACES it -- query it and the path is finished, because everything
+        // the path would have gone on to gather is already inside the number.
+        //
+        // Run the sun and sky NEE below as well and the direct light is counted
+        // twice: once sharply from the shadow ray and once smeared across a
+        // six-metre probe grid. That does not look like an error, it looks like
+        // a wood that gets brighter the more of it is cached -- which is the
+        // hardest kind of bug to attribute, so the structure rules it out
+        // instead. This sits above the NEE block and ends in a break, exactly
+        // where the neural cache sits and for exactly the same reason.
+        //
+        // Dielectrics never reach here: that branch continues above.
+        if (gParams.giMode == 1 && depth >= gParams.giDepth)
+        {
+            const float3 E = ddgiSampleIrradiance(h.p, h.ns, -d, gDdgiConsts,
+                                                  gDdgiIrradiance, gDdgiDistance,
+                                                  gDdgiProbeData, gDdgiSampler);
+            // Lambert: a diffuse surface under an irradiance E leaves with
+            // albedo/pi * E. The specular lobe goes with the rest of the path.
+            // A probe grid holds no directional detail to give a mirror, and
+            // pretending it does is what makes cached reflections read as fog.
+            const float3 c = beta * h.mat.albedo * INV_PI * E * gParams.giStrength;
+            L += c;
+            Ldiff += c * wDiff;
+            Lspec += c * (1.0f - wDiff);
+            break;
+        }
+
         const Frame fr = Frame.make(h.ns);
         const float3 wo = fr.toLocal(-d);
         if (wo.z > 0.0f)
@@ -860,15 +1283,24 @@ void main(uint3 tid: SV_DispatchThreadID)
             // wDiff, so the cheaper composited form is used.
             if (depth == 0)
             {
-                float3 neeD, neeS;
+                float3 neeD, neeS, skyD, skyS;
                 sampleSunSplit(h, fr, wo, rng, depth, neeD, neeS);
+                // The dome, sampled as its own light. Summed into the sun's
+                // channels rather than kept apart: they are the same two lobes
+                // of the same surface, and everything downstream -- the
+                // demodulated split, ReSTIR, the denoiser guides -- asks about
+                // the lobe, not about which light it came from.
+                sampleSkySplit(h, fr, wo, rng, depth, skyD, skyS);
+                neeD += skyD;
+                neeS += skyS;
                 L += beta * (neeD + neeS);
                 Ldiff += beta * neeD;
                 Lspec += beta * neeS;
             }
             else
             {
-                const float3 c = beta * sampleSun(h, fr, wo, rng, depth);
+                const float3 c =
+                    beta * (sampleSun(h, fr, wo, rng, depth) + sampleSky(h, fr, wo, rng, depth));
                 L += c;
                 Ldiff += c * wDiff;
                 Lspec += c * (1.0f - wDiff);
@@ -902,6 +1334,14 @@ void main(uint3 tid: SV_DispatchThreadID)
         const float3 wi = fr.toWorld(bs.wi);
         o = offsetRay(h.p, h.ng, wi);
         d = wi;
+
+        // What the dome sampler would have thought of this direction, recorded
+        // here because this is the one place both the shading normal and the
+        // chosen direction are in hand. A specular lobe gets zero: a delta
+        // direction is not one any light sampler could have drawn, so the
+        // escape branch must pay it in full.
+        skyPdfPrev =
+            (gParams.skyRays > 0 && !bs.specular) ? skyDomePdf(h.ns, wi) : 0.0f;
 
         // Russian roulette on throughput, from the SECOND bounce. Starting it
         // late is the textbook advice and it is wrong here: a conifer canopy is
@@ -1146,3 +1586,144 @@ void main(uint3 tid: SV_DispatchThreadID)
 
     gColor[pix] = float4(acc.xyz / max(1.0f, acc.w), 1.0f);
 }
+
+#if V7_SHARC_UPDATE
+// ---------------------------------------------------------------------------
+// The SHaRC update pass: sparse paths whose only job is to fill the cache.
+//
+// A SECOND ENTRY POINT IN THIS FILE RATHER THAN A FILE OF ITS OWN, deliberately.
+// The update has to shade exactly the way the camera path shades -- the same
+// sun and sky next event estimation, the same BSDF, the same offsets -- or the
+// cache is a record of a slightly different renderer and every path that
+// terminates into it steps sideways into that other world. Sharing the file
+// shares the helpers by construction; a separate file would share them by
+// somebody remembering to.
+//
+// ONE PATH PER 5x5 BLOCK, which is 4 % of the pixels. The block's pixel is
+// picked from the frame's hash, so successive frames walk over the whole screen
+// and the cache ends up covering everything the camera can see rather than a
+// fixed lattice of points.
+//
+// EVERY SEGMENT IS TREATED INDEPENDENTLY. This is the part of the algorithm
+// that looks wrong and is not: the throughput is reset to one at every bounce
+// and the radiance gathered is reset to zero, because what a cache entry stores
+// is the radiance leaving THAT point -- a property of the point, not of the
+// path that happened to arrive there. SharcSetThroughput is how the segment's
+// throughput gets folded back in for the entries further up the path, and
+// SharcUpdateHit is what propagates a vertex's radiance to the ones behind it.
+// ---------------------------------------------------------------------------
+[numthreads(8, 8, 1)]
+void sharcUpdateMain(uint3 tid: SV_DispatchThreadID)
+{
+    const uint2 blocks = (gParams.dim + 4u) / 5u;
+    if (tid.x >= blocks.x || tid.y >= blocks.y)
+        return;
+
+    const uint blockIndex = tid.y * blocks.x + tid.x;
+
+    Rng rng;
+    rng.init(uint64_t(blockIndex) + 1ull,
+             uint64_t(gParams.tick) * 0x9E3779B97F4A7C15ull + uint64_t(gParams.seed) + 7919ull);
+
+    // Somewhere in this block, different every frame.
+    const uint2 pix = min(tid.xy * 5u + uint2(uint(rng.nextFloat() * 5.0f),
+                                              uint(rng.nextFloat() * 5.0f)),
+                          gParams.dim - 1u);
+
+    const float px = float(pix.x) + rng.nextFloat();
+    const float py = float(pix.y) + rng.nextFloat();
+
+    const V6Camera c = gParams.cam;
+    const float sx = (2.0f * px / float(gParams.dim.x) - 1.0f) * c.halfW;
+    const float sy = (1.0f - 2.0f * py / float(gParams.dim.y)) * c.halfH;
+
+    float3 o = c.pos;
+    float3 d = normalize(c.w + c.u * sx + c.v * sy);
+
+    const SharcParameters sp = sharcParams();
+    SharcState state;
+    SharcInit(state);
+
+    // Reset at every vertex, not carried: see the note above.
+    float3 throughput = float3(1.0f);
+
+    for (int depth = 0; depth < gParams.maxDepth; ++depth)
+    {
+        const Hit h = traceRadiance(o, d);
+
+        if (!h.hit)
+        {
+            // The sky closes the path and is written back along it. The disk is
+            // included at full weight here because this path did not light
+            // sample it on the way out -- there is no MIS partner to halve.
+            SharcUpdateMiss(sp, state, skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, d) + skyDisk(gParams.sky, d));
+            break;
+        }
+
+        // Water is a delta surface: it has no diffuse radiance to file under a
+        // world position, so the path passes through without touching the cache.
+        if (h.mat.type == MAT_DIELECTRIC)
+        {
+            const bool entering = dot(d, h.ns) < 0.0f;
+            const Frame wfr = Frame.make(entering ? h.ns : -h.ns);
+            const BsdfSample ws = sampleDielectric(h.mat, wfr.toLocal(-d), entering, rng);
+            if (ws.pdf <= 0.0f)
+                break;
+            const float3 wwi = wfr.toWorld(ws.wi);
+            o = offsetRay(h.p, h.ng, wwi);
+            d = wwi;
+            continue;
+        }
+
+        const Frame fr = Frame.make(h.ns);
+        const float3 wo = fr.toLocal(-d);
+        if (wo.z <= 0.0f)
+            break;
+
+        // The direct term at this vertex, by the same two estimators the camera
+        // path uses. Depth is passed as 0 so both spend their full sample count:
+        // an update path is rare enough that its vertices are worth resolving
+        // properly, and what it writes is shared by every later camera path that
+        // lands in the same cell.
+        const float3 direct = sampleSun(h, fr, wo, rng, 0) + sampleSky(h, fr, wo, rng, 0);
+
+        SharcHitData hd;
+        hd.positionWorld = h.p;
+        hd.normalWorld = h.ng;
+
+        // Returns false when this vertex resolved from the cache and there is
+        // nothing further to learn down this path.
+        if (!SharcUpdateHit(sp, state, hd, direct, rng.nextFloat()))
+            break;
+
+        const BsdfSample bs = sampleOpaque(h.mat, wo, rng);
+        if (bs.pdf <= 0.0f || isBlack(bs.f))
+            break;
+
+        const float3 contrib = bs.f * (abs(bs.wi.z) / bs.pdf);
+        if (!allFinite(contrib))
+            break;
+        throughput = contrib;
+
+        const float3 wi = fr.toWorld(bs.wi);
+        o = offsetRay(h.p, h.ng, wi);
+        d = wi;
+
+        // Hand the segment's throughput to the cache, then start the next one
+        // from one again.
+        SharcSetThroughput(state, throughput);
+        throughput = float3(1.0f);
+
+        // Roulette on the SEGMENT throughput. A cache-filling path wants to
+        // reach further than a camera path -- the whole point is to record the
+        // tail the camera path throws away -- so this starts later than
+        // gParams.rrStart deliberately.
+        if (depth >= max(gParams.rrStart, 3))
+        {
+            const float q = min(0.95f, maxComp(contrib));
+            if (rng.nextFloat() > q)
+                break;
+        }
+    }
+}
+#endif  // V7_SHARC_UPDATE

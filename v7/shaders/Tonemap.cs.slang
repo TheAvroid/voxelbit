@@ -17,6 +17,13 @@
 Texture2D<float4> gSrc;
 RWTexture2D<float4> gDst;
 
+// The guide depth, for the flare occlusion test only. 1.0 where the primary ray
+// escaped, so it answers "is something solid in front of the sun" and nothing
+// else. Sampled rather than loaded because it is at RENDER resolution while
+// this pass runs at DISPLAY resolution.
+Texture2D<float> gFlareDepth;
+SamplerState gFlareSamp;
+
 cbuffer gTonemapCB
 {
     uint2 gDim;
@@ -28,6 +35,27 @@ cbuffer gTonemapCB
     // The deep-shadow lift: how much, and how far up the range it reaches.
     float gDeepLift;
     float gDeepRange;
+
+    // -- the sun flare. gFlare is the master strength; 0 disables the block --
+    //
+    // The camera basis comes in rather than a matrix because the flare needs
+    // exactly three dot products to place the sun on screen, and gTanH with
+    // gAspect is what turns those into NDC. Same tangent projection the tracer
+    // builds its rays with, so the flare lands where the disc is drawn.
+    float3 gSunDir;
+    float gFlare;
+    float3 gCamRight;
+    float gTanH;
+    float3 gCamUp;
+    float gAspect;
+    float3 gCamFwd;
+    float gSunCosR;
+
+    // The vignette. 0 is off, which is the default -- it is a look, not a fix.
+    float gVignette;
+    float gVigPad0;
+    float gVigPad1;
+    float gVigPad2;
 };
 
 // The ACES filmic approximation (Narkowicz). Reinhard desaturates highlights
@@ -98,6 +126,107 @@ float3 deepShadowLift(float3 ldr, float amount, float range)
     return saturate(ldr * (1.0f + amount * w / max(l, 0.03f)));
 }
 
+
+// ---------------------------------------------------------------------------
+// THE SUN'S GLARE AND ITS LENS FLARE, ported from the WebGPU game's blit.js.
+//
+// A LENS FLARE IS MADE AT THE LENS, NOT AT THE SUBJECT, which is why it is
+// added to the tone-mapped image here rather than traced. Scattering it back
+// through the tone curve would read as a smudge on the scene instead of an
+// artefact of the glass.
+//
+// ---------------------------------------------------------------------------
+// THE GLARE AND THE FLARE ARE THE SAME FOUR DISCS.
+//
+// That is the whole trick, and it is not obvious. The ghosts sit along the axis
+// from the sun to the screen centre, at sunPix + axis * (1 + K). When the sun
+// IS at the centre, axis collapses to zero and all four pile onto the sun --
+// and that pile is what a glare looks like. So the same four discs, the same
+// radii and the same tints are ALSO drawn centred on the sun at every angle,
+// which makes the look you get staring straight at it available from any angle
+// rather than an imitation of it.
+//
+// They are additive, deliberately: the axis train is a real lens artefact and
+// is worth keeping when the sun is off to one side.
+//
+// EACH GHOST FADES AS IT LANDS ON THE SUN. Without that, a centred sun gets the
+// four ghosts on top of the four sun-centred discs -- eight against four --
+// which reads as the glare dying as you turn away rather than doubling as you
+// turn toward.
+// ---------------------------------------------------------------------------
+
+// smoothstep with the edges reversed: 1 inside `lo`, 0 outside `hi`. HLSL does
+// not define smoothstep for e0 > e1, which the source relied on.
+float sstepDown(float hi, float lo, float x) { return 1.0f - smoothstep(lo, hi, x); }
+
+float3 sunFlare(float2 fc, float2 dim)
+{
+    if (gFlare <= 0.0f) return float3(0.0f);
+
+    // Behind the camera, or below the horizon: nothing.
+    const float sf = dot(gSunDir, gCamFwd);
+    const float dayK = smoothstep(-0.03f, 0.05f, gSunDir.y);
+    if (sf <= 0.05f || dayK <= 0.0f) return float3(0.0f);
+
+    const float2 sunNDC = float2(dot(gSunDir, gCamRight) / (sf * gTanH * gAspect),
+                                 dot(gSunDir, gCamUp) / (sf * gTanH));
+    const float2 sunPix = float2((sunNDC.x * 0.5f + 0.5f) * dim.x,
+                                 (0.5f - sunNDC.y * 0.5f) * dim.y);
+
+    // THE FLARE IS SIZED OFF THE DISC, and it GROWS OFF-AXIS because the disc
+    // does. A tangent projection magnifies away from centre -- radially by
+    // 1/sf^2 and tangentially by 1/sf -- and the sky draws the disc by ANGLE so
+    // it grows automatically. Pinning the flare to the centre-of-screen size
+    // instead lets the disc outgrow its own glare past about 15 degrees off
+    // axis, leaving a bare hard circle. 1.5 is the exponent between the two
+    // magnifications. The max() guards 1/sf^1.5 from blowing up at the gate.
+    const float sunPx = tan(acos(gSunCosR)) / gTanH * 0.5f * dim.y / pow(max(sf, 0.2f), 1.5f);
+    const float2 ctr = dim * 0.5f;
+    const float2 axis = ctr - sunPix;
+
+    const float K[4] = {0.35f, 0.65f, 1.15f, 1.7f};
+    const float3 TINT[4] = {float3(1.00f, 0.85f, 0.60f), float3(0.60f, 1.00f, 0.75f),
+                            float3(0.65f, 0.75f, 1.00f), float3(1.00f, 0.70f, 0.85f)};
+
+    float ghw[4];
+    float sgw[4];
+    float gAny = 0.0f;
+    const float dSun = length(fc - sunPix);
+    for (int i = 0; i < 4; ++i)
+    {
+        const float2 gp = sunPix + axis * (1.0f + K[i]);
+        const float rr = sunPx * (0.65f + 1.15f * K[i]);
+        const float sep = length(gp - sunPix) / max(rr, 1.0f);
+        ghw[i] = sstepDown(rr, rr * 0.22f, length(fc - gp)) * smoothstep(0.6f, 1.6f, sep);
+        sgw[i] = sstepDown(rr, rr * 0.22f, dSun);
+        gAny += ghw[i] + sgw[i];
+    }
+    if (gAny <= 0.0f) return float3(0.0f);
+
+    // ── IS SOMETHING SOLID IN FRONT OF THE SUN, and nothing else ────────────
+    //
+    // The guide depth is 1.0 where the primary ray escaped, so this asks the
+    // one question an occlusion test should. It deliberately does NOT ask
+    // whether the sun is still BRIGHT there: cloud is sky, so the sun keeps
+    // behind a cloud the same halo it has in the open, while a trunk or a
+    // ridge hides it because those clear the sky mask.
+    float sv = 0.0f;
+    for (int fy = -1; fy <= 1; ++fy)
+        for (int fx = -1; fx <= 1; ++fx)
+        {
+            const float2 uv = (sunPix + float2(float(fx), float(fy)) * 6.0f) / dim;
+            sv += gFlareDepth.SampleLevel(gFlareSamp, saturate(uv), 0.0f) > 0.999f ? 1.0f : 0.0f;
+        }
+    sv /= 9.0f;
+    if (sv <= 0.02f) return float3(0.0f);
+
+    // TWO WEIGHTS, not one: with the doubling gone the sun-centred stack has to
+    // carry alone what eight discs used to, so it takes the larger share.
+    float3 add = float3(0.0f);
+    for (int i = 0; i < 4; ++i)
+        add += TINT[i] * (ghw[i] * 0.16f + sgw[i] * 0.24f);
+    return add * sv * dayK * gFlare;
+}
 [numthreads(8, 8, 1)]
 void main(uint3 tid: SV_DispatchThreadID)
 {
@@ -106,5 +235,24 @@ void main(uint3 tid: SV_DispatchThreadID)
     const float3 c = gSrc[tid.xy].rgb * gExposure;
     const float3 ldr =
         float3(acesFilmic(c.r, gToe), acesFilmic(c.g, gToe), acesFilmic(c.b, gToe));
-    gDst[tid.xy] = float4(deepShadowLift(ldr, gDeepLift, gDeepRange), 1.0f);
+    float3 outc = deepShadowLift(ldr, gDeepLift, gDeepRange);
+    // LAST, onto the finished image -- see the note above sunFlare.
+    outc += sunFlare(float2(tid.xy) + 0.5f, float2(gDim));
+
+    // ── CINEMATIC VIGNETTE, LAST ───────────────────────────────────────────
+    //
+    // After the flare on purpose, so it darkens the finished image -- ghosts
+    // included -- rather than having them scatter back out over the top of it.
+    //
+    // ASPECT-CORRECTED. Measuring the falloff on raw UV makes an ellipse
+    // stretched to the window, which reads as letterboxing rather than as a
+    // vignette; correcting the shorter axis keeps it a circle at any shape of
+    // window.
+    if (gVignette > 0.001f)
+    {
+        const float2 uv = (float2(tid.xy) + 0.5f) / float2(gDim);
+        const float2 q = (uv - 0.5f) * float2(max(1.0f, gAspect), max(1.0f, 1.0f / gAspect));
+        outc *= max(1.0f - gVignette * smoothstep(0.18f, 0.78f, length(q)), 0.0f);
+    }
+    gDst[tid.xy] = float4(outc, 1.0f);
 }

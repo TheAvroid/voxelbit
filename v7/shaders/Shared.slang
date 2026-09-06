@@ -48,6 +48,22 @@ using uint = uint32_t;
 // A static_assert in world.h checks the two agree.
 static const float kVoxelM = 0.1f;
 
+// ---------------------------------------------------------------------------
+// THE ATMOSPHERE'S PLANET, AND THE SIZES OF ITS THREE TABLES.
+//
+// Here rather than in Atmosphere.slang because the host needs them too: it
+// creates the textures at these dimensions and converts the camera's altitude
+// from metres to this radius. Atmosphere.slang carries the MEDIUM -- the
+// scattering coefficients, the scale heights, the ozone tent -- which only the
+// GPU evaluates and which therefore stays there.
+// ---------------------------------------------------------------------------
+static const float kAtmoGroundR = 6360.0f;  // km
+static const float kAtmoTopR = 6460.0f;     // km
+
+static const int kAtmoTransW = 256, kAtmoTransH = 64;
+static const int kAtmoMultiW = 32, kAtmoMultiH = 32;
+static const int kAtmoSkyW = 192, kAtmoSkyH = 108;
+
 // WHERE THE GROUND RAMPS LIVE IN THE MATERIAL TABLE.
 //
 // Duplicated from mat:: in voxelworld.h for the same reason kVoxelM is -- this
@@ -68,6 +84,13 @@ static const uint kLitterCount = 3;
 // The sun subtends about 0.53 degrees; this is the cosine of its half-angle.
 // Also duplicated, also asserted.
 static const float kSunCosThetaMax = 0.99998932f;
+
+// The solid angle that cone subtends, in steradians -- about 6.7e-5 for a
+// half-degree sun. Written down once because two different shaders need it and
+// only one of them gets it for free: the camera path's NEE divides by the cone
+// pdf, and 1/pdf IS this number, while a probe shader that light-samples
+// nothing has to multiply by it explicitly. See the note in ProbeTrace.
+static const float kSunSolidAngle = 6.28318530717958647692f * (1.0f - kSunCosThetaMax);
 
 // What a surface is, which is all the shading needs to know beyond its
 // material. The terrain and the rocks are the same thing to the shader; a tree
@@ -111,12 +134,37 @@ struct V6Sky
     float3 sunDir;
     float skyScale;
     float3 sunRadiance; // constant across the disk
-    float sunPad;
+    // THE VIEWER'S RADIUS IN KILOMETRES, for the atmosphere path -- planet plus
+    // the camera's altitude. Took the padding word, exactly as moonKey did
+    // below, so V6Sky is still 192 bytes and the static_assert still holds.
+    // It lives in V6Sky rather than V6Params because skyDome() takes a V6Sky
+    // and nothing else, and it is read by ProbeTrace as well as the tracer.
+    float atmoViewHeight;
     float3 groundAlbedo;
-    float groundPad;
+    // 0 for the Preetham fit, 1 for the Hillaire tables. A float rather than a
+    // bool or an int because this is the last word of a 16-byte row and a
+    // 4-byte scalar of any type fits; float keeps the comparison in skyDome()
+    // free of an integer unit that shader has no other use for.
+    float atmoOn;
     float4 A, B, C, D, E;
     float4 zenith; // Y in cd/m^2, then x and y
     float4 normF;
+
+    // -- the moon ------------------------------------------------------------
+    //
+    // HUNG AT THE ANTI-SOLAR POINT, so it is up exactly when the sun is down and
+    // the two never share the sky. That is also why the phase cannot come from
+    // its POSITION: geometrically it would be full every single night. The phase
+    // is a separate clock, and the disc is shaded from a synthetic light swung
+    // by it -- see moonDisk in Sky.slang.
+    float3 moonDir;
+    float moonPhase;    // 0..1 around the synodic month; 0 is full
+    float3 moonRadiance;  // the DISC.s own radiance, sized for the tone curve
+    // How much brighter the KEY light is than the disc. They cannot be one
+    // number: a daylight-calibrated curve cannot hold a body bright enough to
+    // light a wood AND show a gradient across its own face. Took the padding
+    // word, so the struct is the same size.
+    float moonKey;
 };
 
 // ---------------------------------------------------------------------------
@@ -309,22 +357,80 @@ struct V6Params
     // disagree with this one in edge cases is worse than the switch being
     // honest about what it does.
     //
-    // The near and far limits are here because the tracer has to map a pixel's
-    // DISTANCE into the same exponential slice distribution the grid was built
-    // with, and getting that mapping out of step with volfog.h would show up as
-    // fog at the wrong depth rather than as an error.
+    // fogNear is gone with the froxel grid. There is no slice distribution left
+    // to map a pixel's depth into -- the tracer marches the world volume from
+    // the camera, so all it needs is where to stop.
+    //
+    // THE ANISOTROPY AND THE SKY FILL ARE HERE NOW, and they were not before,
+    // because the volume stores VISIBILITY and the radiance is assembled at
+    // march time. The phase lobe needs the view direction, which only the
+    // tracer has. See VolFog.slang.
     int volFog;
-    float fogNear;
     float fogFar;
-    int volFogPad;
+    float fogAniso;
+    float fogAmbient;
+
+    // Each cascade's min corner in world metres, and its cell size. Snapped to
+    // a whole number of cells host-side; the shader only ever reads them.
+    float3 fogOrigin0;
+    float fogCell0;
+    float3 fogOrigin1;
+    float fogCell1;
+
+    // -- the cloud deck --------------------------------------------------
+    //
+    // Marched only down the PRIMARY ray, where it is composited over the sky.
+    // Doing it on every miss would put a 28-step march with a 4-step light
+    // march inside it on every bounce that escapes, which is most of them.
+    int clouds;
+    float cloudWindT;   // wind as a lookup offset, on the day cycle clock
+    float cloudSun;     // the deck brightness against this renderer illuminant
+    float cloudAmb;
+    // THE DECK'S OWN NIGHT KEY, and it is not moonKey.
+    //
+    // moonKey is 300 -- a SURFACE calibration, sized so next event estimation
+    // can still land a navigable amount of light on the forest floor through a
+    // daylight tone curve. The deck does not go through NEE. It multiplies the
+    // key radiance directly while its ambient comes from the unboosted dome, so
+    // inheriting that 300 made the two halves of one cloud disagree by the whole
+    // factor and lit the deck about 550x its own sky. Its own number, so the
+    // surface calibration and the deck calibration can move independently.
+    float cloudMoonKey;
+
+    // -- sky-dome next event estimation --------------------------------------
+    //
+    // How many dome samples a vertex takes, and how deep more than one is worth
+    // paying for. Exactly the shape of shadowRays/shadowRayDepth above, and for
+    // the same reason -- one more occlusion ray is far cheaper than one more
+    // path.
+    //
+    // 0 turns the strategy off AND restores the dome to full weight on the
+    // escape path, so the toggle is exact rather than approximate: with it off
+    // the tracer computes the same numbers it computed before this existed.
+    // See the MIS note in sampleSkySplit for why those two have to move
+    // together.
+    int skyRays;
+    int skyRayDepth;
+
+    // -- the irradiance cache ------------------------------------------------
+    //
+    // 0 none, 1 DDGI probes, 2 SHaRC. ONE knob rather than two flags, because
+    // the two caches answer the same question in the same units: running both
+    // would count the indirect light twice and nothing downstream could notice,
+    // since neither cache can tell that the probe atlas and the hash cell
+    // describe the same photons.
+    int giMode;
+    int giDepth;       // first bounce a cache may answer for
+    float giStrength;  // scale on what it returns, 1 = as measured
+    int giPad0, giPad1;
 };
 
 #ifdef HOST_CODE
 static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
-static_assert(sizeof(V6Sky) == 160, "V6Sky must fill whole 16-byte rows");
+static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");
 static_assert(sizeof(V6Instance) == 32, "V6Instance must fill whole 16-byte rows");
-static_assert(sizeof(V6Params) == 416, "V6Params must fill whole 16-byte rows");
+static_assert(sizeof(V6Params) == 528, "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v7
 #endif

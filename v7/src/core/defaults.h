@@ -23,7 +23,7 @@ constexpr float kShadowLift = 0.140f;
 constexpr float kSpeed = 9.2f;
 constexpr float kSensitivity = 0.12f;
 constexpr float kEye = 2.00f;
-constexpr float kFov = 80.0f;
+constexpr float kFov = 90.0f;
 constexpr float kSunAz = 6.9f;
 constexpr float kSunEl = 46.6f;
 constexpr int kWidth = 3820;
@@ -31,6 +31,7 @@ constexpr int kHeight = 1990;
 constexpr int kTrees = 900;
 constexpr float kTimeOfDay = 0.5388f;  // 12:55
 constexpr float kCycleSpeed = 1.00f;
+constexpr bool kAtmosphere = true;
 
 }  // namespace defaults
 }  // namespace v7

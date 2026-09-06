@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <map>
 #include <vector>
@@ -709,6 +710,46 @@ struct TerrainMemo {
     FbmMemo stand, litter, grassMask;                       // topMaterial
 };
 
+// ---------------------------------------------------------------------------
+// The working storage a chunk is meshed through -- ONE PER WORKER, not one per
+// chunk.
+//
+// These three grids never leave meshChunk: they are filled, read by the quad
+// loops, and dropped. Allocating them per chunk cost about 400 KB of malloc and
+// free every time -- and, less obviously but worse, 400 KB of value
+// initialisation that the fill loops immediately overwrote. A worker meshes
+// thousands of chunks over a walk, so that is the same four hundred kilobytes
+// zeroed and thrown away thousands of times to hold numbers that were about to
+// be written anyway.
+//
+// Reusing them across chunks is safe for a reason worth stating: every element
+// is written before it is read, on every chunk. The heights and materials are
+// filled over their whole padded extent, and the strand rows now assign zero on
+// the paths that used to `continue` -- so there is no stale value from the last
+// chunk that anything can see. resize() is a no-op after the first call, which
+// is where the zeroing went.
+//
+// THE MEMO COMES ALONG, and reusing that is safe for a different reason: it is
+// a cache that validates itself. Every lookup compares the cell it wants
+// against the cell it holds, so an entry left over from the previous chunk is
+// either genuinely the right cell -- which happens at the shared edge, and is
+// then a free hit -- or a miss that recomputes. It cannot be wrong.
+//
+// HEIGHTS ARE int16. The field runs from about -10 voxels in a cut basin to
+// about 940 at the top of the relief, against a range of +-32767, so the margin
+// is three orders of magnitude and the assert below is there to notice if the
+// amplitudes in heightM are ever raised far enough to matter. Halving the array
+// is worth having in the slope pass, which reads four neighbours per column and
+// is the one loop here whose speed is a question of how much of the grid is in
+// cache.
+// ---------------------------------------------------------------------------
+struct ChunkScratch {
+    TerrainMemo memo;
+    std::vector<int16_t> h;    // padded by two: a slope reaches one past a material
+    std::vector<uint8_t> top;  // padded by one
+    std::vector<uint8_t> sr;   // padded by one
+};
+
 class VoxelTerrain {
   public:
     float waterLevel = 2.6f;  // metres
@@ -944,7 +985,7 @@ class VoxelTerrain {
     // would show as walls -- and because both chunks would do it, the geometry
     // would be doubled there too.
     // -----------------------------------------------------------------------
-    VoxMesh meshChunk(int cx, int cz) const {
+    VoxMesh meshChunk(int cx, int cz, ChunkScratch &scratch) const {
         VoxMesh m;
         const int n = CHUNK_VOX;
         // Measured at roughly 1.5 quads per column across this terrain; two is
@@ -964,16 +1005,23 @@ class VoxelTerrain {
         // pay: i on the inside means x advances by a voxel at a time while z
         // holds, so every octave's lattice cell is the one it was last column
         // for hundreds of columns at a stretch. See TerrainMemo.
-        TerrainMemo memo;
+        // Carried by the worker rather than built here -- see ChunkScratch.
+        TerrainMemo &memo = scratch.memo;
 
-        std::vector<int> h((size_t(n) + 4) * (size_t(n) + 4));
-        auto H = [&](int i, int j) -> int & { return h[size_t(j + 2) * (n + 4) + size_t(i + 2)]; };
+        scratch.h.resize((size_t(n) + 4) * (size_t(n) + 4));
+        int16_t *const hp = scratch.h.data();
+        auto H = [&](int i, int j) -> int16_t & { return hp[size_t(j + 2) * (n + 4) + size_t(i + 2)]; };
         for (int j = -2; j <= n + 1; ++j)
-            for (int i = -2; i <= n + 1; ++i) H(i, j) = heightVox(I0 + i, J0 + j, memo);
+            for (int i = -2; i <= n + 1; ++i) {
+                const int hv = heightVox(I0 + i, J0 + j, memo);
+                assert(hv > -32768 && hv < 32767);  // see the note on int16 in ChunkScratch
+                H(i, j) = int16_t(hv);
+            }
 
-        std::vector<uint8_t> top((size_t(n) + 2) * (size_t(n) + 2));
+        scratch.top.resize((size_t(n) + 2) * (size_t(n) + 2));
+        uint8_t *const tp = scratch.top.data();
         auto T = [&](int i, int j) -> uint8_t & {
-            return top[size_t(j + 1) * (n + 2) + size_t(i + 1)];
+            return tp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
         };
         for (int j = -1; j <= n; ++j)
             for (int i = -1; i <= n; ++i) {
@@ -984,12 +1032,20 @@ class VoxelTerrain {
 
         // How tall a strand stands on each column, 0 for none. Computed for the
         // padded grid so a column on the edge can still ask its neighbours.
-        std::vector<uint8_t> sr((size_t(n) + 2) * (size_t(n) + 2), 0);
+        // WRITTEN ON EVERY PATH, including the two that used to `continue` and
+        // leave the value alone. That is what lets the grid be reused across
+        // chunks without a fill: a stale row from the last chunk is overwritten
+        // rather than inherited, and the zero goes into a cache line this loop
+        // is touching anyway instead of into a separate 66 KB memset.
+        scratch.sr.resize((size_t(n) + 2) * (size_t(n) + 2));
+        uint8_t *const srp = scratch.sr.data();
         auto SR = [&](int i, int j) -> uint8_t & {
-            return sr[size_t(j + 1) * (n + 2) + size_t(i + 1)];
+            return srp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
         };
         for (int j = -1; j <= n; ++j)
             for (int i = -1; i <= n; ++i) {
+                uint8_t &rows = SR(i, j);
+                rows = 0;
                 if (!isGrass(T(i, j))) continue;
                 // Hashed on the WORLD column, so a strand is in the same place
                 // no matter which chunk happens to be meshing it -- otherwise
@@ -997,8 +1053,8 @@ class VoxelTerrain {
                 const uint32_t cell = hashU32(uint32_t(I0 + i), uint32_t(J0 + j));
                 if (hashUnit(strandSeed, cell) >= grassDensity) continue;
                 const int span = maxi(1, grassMaxRows - grassMinRows + 1);
-                SR(i, j) = uint8_t(grassMinRows +
-                                   mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span)));
+                rows = uint8_t(grassMinRows +
+                               mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span)));
             }
 
         // A side quad from voxel row lo up to row hi (exclusive), in one band,

@@ -43,6 +43,41 @@ python tools/vbtest.py     # boots the real game in a browser and diffs it vs a 
 [`docs/architecture.md`](docs/architecture.md) is the map — what every fragment owns, and
 the four things in here that do not behave like ordinary code.
 
+## The native engine (v7)
+
+The browser game above is the original. `v7/` is a second renderer that shares its
+world and its look but not a line of its code: a path tracer on NVIDIA Falcor and
+DXR, in C++ and Slang, built to see how far the same forest goes with hardware ray
+tracing under it.
+
+The same wood — same seed, same terrain, same nine pines — lit by a real path
+tracer:
+
+- **Path traced**, one bounce per pixel per frame, with **ReSTIR GI** resampling
+  the indirect and a **SHaRC** hash radiance cache terminating paths early.
+- **RTXGI DDGI** probes for the diffuse fill, and **DLSS Ray Reconstruction**
+  denoising and upscaling the result. Frame Generation and Reflex on top.
+- **World-anchored volumetric fog** — a snapped two-cascade clipmap that stores
+  what each parcel of air can *see* rather than how it looks, so the medium is
+  the same medium from every direction.
+- **Volumetric clouds**, ported from the browser game's own deck: a periodic
+  density cache marched per pixel, with the wind riding the day cycle.
+- **A sun and a moon.** The moon hangs at the anti-solar point with real phases,
+  a photographed face, and moonlight that is ray traced by the same shadow rays
+  the sun uses.
+- **PhysX 5**, CUDA interop, and RTX Mega Geometry clusters.
+
+```
+v7\build.bat        # build it
+v7.bat              # run it, --help for every option
+v7.bat --vulkan     # the Vulkan path: neural shaders, no DLSS
+```
+
+It needs an RTX card and the SDKs it links; `v7/CMakeLists.txt` says which, and
+every one of them degrades to "unavailable" at startup rather than failing to
+build. `v2/`, `v4/` and `v5/` are earlier attempts kept for comparison — OptiX,
+Falcor with inline RT, and Bevy Solari respectively.
+
 ## Contributing
 
 Yes, please — see [CONTRIBUTING.md](CONTRIBUTING.md). Fork it, branch, open a pull

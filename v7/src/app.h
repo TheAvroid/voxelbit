@@ -58,6 +58,7 @@
 #include "gpu/neural.h"
 #include "gpu/streamline.h"
 #include "gpu/nrc.h"
+#include "gpu/atmosphere.h"
 #include "gpu/volfog.h"
 #include "gpu/cuda.h"
 #include "gpu/clusters.h"
@@ -66,6 +67,8 @@
 #include "gpu/world.h"
 #include "render/camera.h"
 #include "render/player.h"
+#include "render/recorder.h"
+#include "render/videoedit.h"
 #include "scene/daynight.h"
 
 namespace v7 {
@@ -186,7 +189,7 @@ struct Options {
     // Issue a real cluster build at startup. Off by default -- see the note at
     // the call site.
     bool clusterTest = false;
-    bool physx = false;
+
 
 
     bool nrc = false;
@@ -221,6 +224,29 @@ struct Options {
     // Open the settings panel at startup, so a scripted capture can see it.
     bool menuAtStart = false;
     bool groundStats = false;
+
+    // -- the built-in recorder, on R -------------------------------------
+    //
+    // A FIXED CAPTURE RATE, NOT THE DISPLAY'S. The WebGPU game derived its
+    // rate from the refresh rate, because it was sampling the compositor and
+    // had no choice; this recorder owns its own timeline and can simply state
+    // one. 60 is stated: it is what the footage will be watched at, it is
+    // below what this engine sustains, and a rate that is not a property of
+    // whichever monitor the window happened to be on is a rate two takes can
+    // be cut together at.
+    int recFps = 60;
+    // A SCRIPTED TAKE. Record this many seconds from startup, then exit --
+    // exactly what --shot is for a still, and for the same reason: the only
+    // honest way to check a recorder is to look at the file it produced, and
+    // reaching that file through a window a person has to press R in is not
+    // something a script or a headless run can do. Pairs with --shot-walk,
+    // which is the case worth capturing: a still take tells you nothing about
+    // frame pacing.
+    float recSeconds = 0.0f;
+    // The recording is never wider than this. Hardware H.264 stops at 4096 and
+    // the encoder is the one thing in the pipeline that cannot be told to try
+    // harder, so a 5K window records at 3840 rather than failing to record.
+    int recMaxWidth = 3840;
 
     int shotFrame = 240;
     // Hold W while the frames run. The point is to judge the picture WHILE
@@ -299,6 +325,34 @@ struct Options {
     bool collideProbe = false;
     float fogAmbient = 0.60f;
     bool fogAmbientGiven = false;
+
+    // How much sky light reaches air the up-ray finds under canopy. 1.0 is the
+    // old unshadowed term and brings the sun blur back with it.
+    float fogSkyUnder = 0.65f;
+    bool fogSkyUnderGiven = false;
+
+    // The cloud deck. Given-flags because the defaults live in gpu/clouds.h
+    // beside the reasoning for them.
+    float cloudCut = 0.45f;
+    bool cloudCutGiven = false;
+    float cloudVar = 0.26f;
+    bool cloudVarGiven = false;
+    float cloudSun = 2.2f;
+    bool cloudSunGiven = false;
+    float cloudMoonKey = 16.0f;
+    bool cloudMoonKeyGiven = false;
+    // The Hillaire sky. Defaulted from defaults.h like every other start-up
+    // setting, so --no-atmosphere is the override rather than --atmosphere
+    // being the opt-in.
+    bool atmosphere = defaults::kAtmosphere;
+    float moonScale = 1.0f;
+    bool moonScaleGiven = false;
+    // Pins the phase, 0 full .. 0.5 new. Without it the phase runs off the day
+    // counter, which an offline render has no way to advance.
+    float moonPhase = 0.0f;
+    bool moonPhaseGiven = false;
+    float moonKey = 1.0f;
+    bool moonKeyGiven = false;
 
     float camX = -6.0f, camZ = 34.0f;
     // Whether the two above were ASKED for. A named camera is a named camera:
@@ -422,6 +476,18 @@ class ForestApp : public SampleApp {
         // varied.
         world_.terrain.strandSeed = opt_.r.seed + 991u;
         world_.sky.turbidity = opt_.turbidity;
+        // THE SCALES GO ON BEFORE THE BUILD, not after. setSun below is what
+        // rebuilds the sky, and anything applied to these after it has run is a
+        // value the GPU never sees on the offline path -- which never rebuilds
+        // again because it never starts the clock.
+        if (opt_.moonScaleGiven) world_.sky.moonScale = opt_.moonScale;
+        if (opt_.moonKeyGiven) world_.sky.moonKeyScale = opt_.moonKey;
+
+        // THE PHASE HAS TO BE SET HERE TOO. This is the branch the OFFLINE path
+        // takes -- it never starts the clock, so applySun (where the phase
+        // normally comes from) never runs and the moon would be stuck full in
+        // every --out render however --moon-phase was set.
+        world_.sky.setMoonPhase(opt_.moonPhase * Sky::MOON_PERIOD_DAYS);
         world_.sky.setSun(opt_.sunAz, opt_.sunEl);
 
         // SOMEWHERE NEW EACH TIME, but only in the viewer. --out renders one
@@ -574,7 +640,6 @@ class ForestApp : public SampleApp {
 
         // PHYSX 5. Beside collide.h rather than instead of it -- see
         // physics/physics.h for why the hand-written collision stays.
-        physics_.enabled = opt_.physx;
         if (physics_.init())
             std::printf("  physx    %s\n", physics_.status().c_str());
         else
@@ -591,14 +656,46 @@ class ForestApp : public SampleApp {
         // VOLUMETRIC FOG, replacing the analytic height fog entirely.
         if (opt_.fogAnisoGiven) volfog_.anisotropy = opt_.fogAniso;
         if (opt_.fogAmbientGiven) volfog_.ambient = opt_.fogAmbient;
+        if (opt_.fogSkyUnderGiven) volfog_.skyShadow = opt_.fogSkyUnder;
         if (volfog_.init(getDevice())) {
             tracer_.setVolFog(&volfog_);
             std::printf("  fog      volumetric, %s\n", volfog_.status().c_str());
         } else {
             std::printf("  fog      unavailable: %s\n", volfog_.status().c_str());
         }
+
+        // THE CLOUD DECK. Sky.slang is Preetham -- a closed-form clear-sky
+        // model with no volume in it anywhere -- so clouds cannot live in the
+        // sky function and need a medium of their own. Ported from the WebGPU
+        // game in src/render/wgsl/cloudgen.js; see Clouds.slang.
+        if (opt_.cloudCutGiven) clouds_.cut = opt_.cloudCut;
+        if (opt_.cloudVarGiven) clouds_.regVar = opt_.cloudVar;
+        if (opt_.cloudSunGiven) clouds_.sunStrength = opt_.cloudSun;
+        if (opt_.cloudMoonKeyGiven) clouds_.moonStrength = opt_.cloudMoonKey;
+        if (opt_.moonScaleGiven) world_.sky.moonScale = opt_.moonScale;
+        if (opt_.moonKeyGiven) world_.sky.moonKeyScale = opt_.moonKey;
+        if (clouds_.init(getDevice())) {
+            tracer_.setClouds(&clouds_);
+            std::printf("  clouds   %s\n", clouds_.status().c_str());
+        } else {
+            std::printf("  clouds   unavailable: %s\n", clouds_.status().c_str());
+        }
         std::fflush(stdout);
 
+
+        // THE ATMOSPHERE, and the tracer is told about it either way. Its
+        // textures exist even when its shaders did not compile -- see the note
+        // on the ordering in Atmosphere::init -- precisely so that the binding
+        // in tracer.h can be unconditional and cannot itself be what breaks.
+        const bool atmoOk = atmo_.init(getDevice());
+        atmo_.enabled = opt_.atmosphere && atmoOk;
+        tracer_.setAtmosphere(&atmo_);
+        std::printf("  sky      %s\n",
+                    !atmoOk ? atmo_.status().c_str()
+                            : (atmo_.enabled
+                                   ? "Hillaire scattering -- Rayleigh, Mie, ozone (Y switches back)"
+                                   : "Preetham fit; Hillaire tables ready (Y to switch)"));
+        std::fflush(stdout);
 
         // THE RADIANCE CACHE, only where the hardware can actually run it.
         // Cooperative vectors are the whole mechanism, so this follows neural_
@@ -614,6 +711,41 @@ class ForestApp : public SampleApp {
                 std::printf("  cache    unavailable: %s\n", nrc_.status().c_str());
             std::fflush(stdout);
         }
+
+        // THE IRRADIANCE PROBES. On by default wherever they can run, because
+        // what they fix is not a nicety: under a canopy the indirect term is
+        // most of the light there is, and a path tracer finds it only by
+        // surviving roulette long enough to bounce its way back out to the sky.
+        //
+        // D3D12 only -- RTXGI's D3D12 backend is what v7 links -- so on Vulkan
+        // this reports why and the cache mode drops to none.
+        if (ddgi_.init(getDevice(), Falcor::getRuntimeDirectory() / "shaders" / "v7")) {
+            tracer_.setDdgi(&ddgi_);
+            std::printf("  probes   DDGI, %d probes x %d rays a frame\n", ddgi_.numProbes(),
+                        ddgi_.raysPerProbe());
+        } else {
+            std::printf("  probes   unavailable: %s\n", ddgi_.status().c_str());
+            // FALL THROUGH TO SHaRC RATHER THAN TO NOTHING. The probes are
+            // D3D12-only, and the Vulkan path is exactly the one that has
+            // already lost DLSS, Streamline and Ray Reconstruction -- so it is
+            // the path that can least afford to lose the indirect fill as well.
+            if (opt_.r.giMode == 1) opt_.r.giMode = 2;
+        }
+        std::fflush(stdout);
+
+        // THE HASH CACHE. Shader-only and backend-agnostic, so it comes up
+        // wherever its headers were staged. It is the fallback above, and it can
+        // also be asked for outright with --gi 2 on D3D12, where the two are a
+        // real choice: probes interpolate and never have holes, the hash map is
+        // exact where it has samples and empty where it does not.
+        if (sharc_.init(getDevice())) {
+            tracer_.setSharc(&sharc_);
+            std::printf("  hash gi  SHaRC, %s\n", sharc_.status().c_str());
+        } else {
+            std::printf("  hash gi  unavailable: %s\n", sharc_.status().c_str());
+            if (opt_.r.giMode == 2) opt_.r.giMode = 0;
+        }
+        std::fflush(stdout);
 
         tracer_.setQuality(opt_.dlssQuality);
 
@@ -664,6 +796,12 @@ class ForestApp : public SampleApp {
         if (opt_.profile && getDevice()->getProfiler()) getDevice()->getProfiler()->setEnabled(true);
 
         if (opt_.menuAtStart) setMenuOpen(true);
+
+        // The recorder compiles its conversion shader here rather than on the
+        // first R: a first take that spent 300 ms in the shader compiler would
+        // start by recording a hitch.
+        recorder_.init(getDevice());
+        editor_.init(getDevice(), &recorder_.converter());
 
         printHelp();
         lastTime_ = std::chrono::steady_clock::now();
@@ -749,6 +887,22 @@ class ForestApp : public SampleApp {
         const float dt = opt_.shotPath.empty() ? wallDt : opt_.shotDt;
 
         clock_.advance(dt);
+        // THE DECK DRIFTS ON THE DAY CYCLE CLOCK, NOT ON THE WALL CLOCK.
+        //
+        // dt * cycleSpeed is the amount of SIMULATED time this frame covered --
+        // exactly the quantity DayNight::advance divides by DAY_SECONDS. So the
+        // wind is whatever the sky is doing: at 1x it is identical to the wall
+        // clock, at 32x the deck crosses the sky as fast as the sun does, and
+        // pausing the cycle stops the weather with it instead of leaving clouds
+        // sliding under a sun that has stopped.
+        //
+        // SIGNED, because cycleSpeed is. Running time backwards runs the wind
+        // backwards too, which is the only reading of "the clouds follow the
+        // day" that stays true at a negative speed.
+        //
+        // None of it touches the cache: wind is a lookup offset in the march,
+        // so even 512x costs nothing and refills nothing.
+        clouds_.advance(clock_.paused ? 0.0f : dt * clock_.cycleSpeed);
         applySun(false);
 
         // Stream the world around the camera. A changed ring means new geometry
@@ -875,7 +1029,15 @@ class ForestApp : public SampleApp {
         // Constant grain: start from nothing EVERY frame, not just when the
         // camera moves. Moving already did this -- it is what made a walking
         // frame noisy -- so doing it always is what makes the two identical.
-        const int spf = maxi(1, opt_.samplesPerFrame);
+        // AN EXPORT TAKES THE FRAME. It is decoding, converting and encoding
+        // as fast as the machine allows behind a progress bar, and the forest
+        // it would be sharing the GPU with is entirely hidden by the panel. One
+        // sample keeps the pipeline alive -- the display texture, the guides
+        // and the accumulator all stay valid, so closing the panel resumes
+        // rather than restarts -- and costs a fraction of what the export is
+        // spending. (The WebGPU game did the same thing with its `exporting`
+        // flag, for the same reason.)
+        const int spf = editor_.exporting() ? 1 : maxi(1, opt_.samplesPerFrame);
         cfg.samplesPerFrame = spf;
         // GPU TIMESTAMPS, and only under --profile. The whole point is to be
         // able to say "the denoiser is two thirds of the frame" as a
@@ -883,6 +1045,45 @@ class ForestApp : public SampleApp {
         // different settings, which is a comparison of two different frames.
         Falcor::Profiler *prof = opt_.profile ? getDevice()->getProfiler() : nullptr;
         bool reconstructed = false;
+
+        // -- the sky, before anything that reads IT --------------------------
+        //
+        // Ahead of the probes as well as the trace: both read skyDome(), and a
+        // table rebuilt after the probes had already sampled it would light the
+        // indirect fill from the PREVIOUS sun position. Almost always a no-op --
+        // see the movement test in Atmosphere::update.
+        if (atmo_.enabled && atmo_.available()) {
+            FALCOR_PROFILE(ctx, "atmosphere");
+            atmo_.update(ctx, world_.sky.gpu(), pos_.y,
+                         Sky::SUN_IRRADIANCE * world_.sky.sunScale);
+        }
+
+        // -- the probes, before anything that reads them ---------------------
+        //
+        // THE VOLUME FOLLOWS THE PLAYER, snapped to whole probe spacings inside
+        // setOrigin. An unsnapped origin would slide the grid a fraction of a
+        // cell every frame, and since a probe's irradiance is a moving average
+        // over about thirty frames, sliding it means every probe is permanently
+        // averaging light from somewhere it no longer is. The symptom is
+        // indirect light that smears along behind you as you walk.
+        //
+        // Traced BEFORE the camera sample, so the atlas the tracer reads
+        // already holds this frame's rays rather than last frame's.
+        if (opt_.r.giMode == 1 && ddgi_.available()) {
+            FALCOR_PROFILE(ctx, "probes");
+            ddgi_.setOrigin(pos_);
+            tracer_.traceProbes(ctx);
+        }
+
+        // Fill the next band of the cloud cache. Does nothing once the volume
+        // is complete, which is the normal state after the first few frames --
+        // the deck is a periodic TILE and has no evolution clock, so there is
+        // never anything to refill for either movement or time.
+        if (clouds_.available() && !clouds_.filled()) {
+            FALCOR_PROFILE(ctx, "cloudfill");
+            clouds_.update(ctx);
+        }
+
         if (useDlss) {
             // ONE FRAME'S WORTH OF SAMPLES, AND NO FILM. The reconstruction IS
             // the history, so accumulating underneath it would be two temporal
@@ -913,14 +1114,32 @@ class ForestApp : public SampleApp {
         }
         {
             FALCOR_PROFILE(ctx, "tonemap");
-            // THE FOG IS LIT BEFORE THE FRAME IS TRACED, because the trace
-            // samples it. Both passes are over a 160x90x64 grid rather than the
-            // screen, so this is a fixed cost that does not grow with
-            // resolution -- which is most of the argument for froxels.
-            tracer_.renderVolFog(ctx, gcam, opt_.r.fogDensity, opt_.r.fogHeight,
-                                 tracer_.samples(), moving_);
-
-
+            // -- the fog volume, under a scope of its OWN ---------------------
+            //
+            // It used to sit unlabelled inside "tonemap", which made its cost
+            // read as tone mapping in every profile ever taken of this engine.
+            // That was survivable when it was two dispatches over a 160x90x64
+            // froxel grid; it is not now. The injection pass fires TWO RAYS PER
+            // CELL over two 128x48x128 cascades -- about 3.1 million rays a
+            // frame, in the same order as the camera paths themselves.
+            //
+            // NOTE WHAT THIS SCOPE STILL DOES NOT CATCH: the fog MARCH runs
+            // inside the tracer's own shader, so it is counted under "trace".
+            // The fog therefore costs time in two scopes and owns neither
+            // outright, which is worth remembering before reading a number here
+            // as the price of the fog.
+            //
+            // RUNS AFTER THE TRACE, DELIBERATELY. The trace above samples LAST
+            // frame's volume -- a one-frame lag that a world-anchored volume can
+            // afford, because a cell describes the same air whichever frame you
+            // ask. (The froxel version could not: its cells were rebuilt from
+            // the camera every frame, which is why the comment that used to sit
+            // here claimed the fog was lit first. It was not, and with the grid
+            // gone the claim is not even the right thing to want.)
+            {
+                FALCOR_PROFILE(ctx, "fog");
+                tracer_.renderVolFog(ctx, gcam, opt_.r.fogDensity, opt_.r.fogHeight, moving_);
+            }
             tracer_.resolve(ctx, cfg, reconstructed);
 
             // -- teach the cache what this frame found -----------------------
@@ -991,6 +1210,47 @@ class ForestApp : public SampleApp {
                       Falcor::uint4(0, 0, uint32_t(tracer_.displayWidth()),
                                     uint32_t(tracer_.displayHeight())));
             drawCrosshair(ctx, target);
+        }
+
+        // -- the recorder ----------------------------------------------------
+        //
+        // FROM THE DISPLAY TEXTURE, NOT FROM THE WINDOW, and that is what keeps
+        // the interface out of the recording. Everything drawn after this point
+        // -- the crosshair, the fps readout, the settings panel, the REC badge
+        // itself -- goes into `target`, which the recorder never reads. The
+        // WebGPU game solved the same problem by making its banner a DOM
+        // element; here the clean feed already exists and is simply the one
+        // that gets recorded.
+        //
+        // It is also the tone-mapped frame at the PRODUCED resolution, so a
+        // take is unaffected by the window being resized or by the blit.
+        {
+            const double nowSec = std::chrono::duration<double>(now.time_since_epoch()).count();
+            recorder_.tick(ctx, tracer_.display(), tracer_.displayWidth(),
+                           tracer_.displayHeight(), nowSec);
+            vb::Take take;
+            if (recorder_.poll(take)) openEditorOn(take);
+            editor_.tick(ctx, nowSec);
+        }
+
+        // -- the scripted take ------------------------------------------------
+        //
+        // STOPPED ON THE RECORDER'S OWN CLOCK, not on a frame count and not on
+        // the wall clock. elapsed() is the slot clock, so "--rec 5" is five
+        // seconds of VIDEO however many frames the engine managed to render
+        // underneath it -- which is the only definition that makes two runs on
+        // two machines comparable.
+        if (opt_.recSeconds > 0.0f) {
+            if (!recStarted_ && tracer_.displayWidth() > 0) {
+                recStarted_ = true;
+                toggleRecording();
+            } else if (recorder_.recording() &&
+                       recorder_.elapsed() >= double(opt_.recSeconds)) {
+                recorder_.stop();
+            } else if (recStarted_ && !recorder_.busy() && !recorder_.recording()) {
+                shutdown(0);
+                return;
+            }
         }
 
         if (shotRequested_) {
@@ -1153,6 +1413,53 @@ class ForestApp : public SampleApp {
             // worth telling apart.
             ImGui::TextUnformatted(fmt("%.0f fps", fps_ + genFps_).c_str());
             ImGui::PopStyleColor();
+
+            // THE BADGE IS DRAWN INTO THE WINDOW, NOT INTO THE FRAME, so it can
+            // never end up in the recording -- see the note at the capture site
+            // in onFrameRender. It pulses because a recorder that is running is
+            // the one piece of state where "I did not notice it was still on"
+            // is expensive.
+            if (recorder_.recording()) {
+                const float pulse = 0.55f + 0.45f * std::sin(float(ImGui::GetTime()) * 4.0f);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, pulse));
+                ImGui::TextUnformatted(
+                    fmt("REC  %s", clockLabel(recorder_.elapsed()).c_str()).c_str());
+                ImGui::PopStyleColor();
+                // The costs, only once they are non-zero. A held frame is the
+                // recorder covering a hitch in the GAME; a dropped one is the
+                // encoder falling behind the recorder. They are different
+                // problems and the readout does not merge them.
+                if (recorder_.heldFrames() || recorder_.droppedFrames()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(200, 160, 90));
+                    ImGui::TextUnformatted(fmt("  %lld held  %lld dropped",
+                                               (long long)recorder_.heldFrames(),
+                                               (long long)recorder_.droppedFrames())
+                                               .c_str());
+                    ImGui::PopStyleColor();
+                }
+            } else if (recorder_.busy()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(255, 214, 120));
+                ImGui::TextUnformatted("encoding...");
+                ImGui::PopStyleColor();
+            }
+        }
+
+        // THE PANEL, BEFORE THE EARLY RETURN BELOW. The settings menu is not
+        // open while the editor is, but the readout above and this both have to
+        // be drawn every frame regardless of that menu's state, and putting
+        // this after `if (!menuOpen_) return;` is how it would silently only
+        // appear when the settings panel happened to be up too.
+        if (editor_.open()) {
+            styleV2 vstyle(pGui, 1.0f, fbH);
+            editor_.draw(fbW, fbH, vstyle.scale);
+            // The panel has a close box of its own, so it can shut without
+            // going through closeEditor() -- and the mouse would then stay
+            // handed back for good. Checked after the draw rather than wired
+            // into the panel, which has no business knowing about the camera.
+            if (!editor_.open() && captureBeforeEditor_) {
+                setCapture(true);
+                captureBeforeEditor_ = false;
+            }
         }
 
         if (!menuOpen_) return;
@@ -1466,6 +1773,14 @@ class ForestApp : public SampleApp {
         if (w.slider("Sun samples", opt_.r.shadowRays, 1, 16)) invalidate();
         if (w.slider("Sun sample depth", opt_.r.shadowRayDepth, 0, 8)) invalidate();
 
+        // THE SAME THING FOR THE SKY, and under a canopy it matters more than
+        // the sun does -- the sun is occluded by definition in a shadow, so the
+        // dome is the whole of the light. At 0 the dome is left to be found by
+        // a bounce that happens to escape the needles, which is what made the
+        // shadows read as black.
+        if (w.slider("Sky samples", opt_.r.skyRays, 0, 16)) invalidate();
+        if (w.slider("Sky sample depth", opt_.r.skyRayDepth, 0, 8)) invalidate();
+
         // Paths per pixel per frame. The only honest way to buy less noise, and
         // the only one that costs exactly what it looks like it costs.
         if (w.slider("Samples / frame", opt_.samplesPerFrame, 1, 64)) invalidate();
@@ -1510,6 +1825,61 @@ class ForestApp : public SampleApp {
         }
         w.separator();
 
+        // ---- the indirect cache ---------------------------------------------
+        //
+        // THE ONE CONTROL THAT ACTUALLY MOVES THE SHADOWS. Under a canopy the
+        // sun is occluded by definition, so nearly all the light in a shadow is
+        // indirect -- and a path tracer only finds it by surviving roulette
+        // long enough to bounce back out to the sky, which at foliage albedo
+        // 0.19 most paths do not. A cache remembers it instead.
+        //
+        // ONE RADIO GROUP, NOT TWO CHECKBOXES, because the two caches answer
+        // the same question in the same units and the tracer adds whichever it
+        // is handed. Both on would count the indirect light twice.
+        {
+            const bool haveD = ddgi_.available();
+            const bool haveS = sharc_.available();
+            if (haveD || haveS) {
+                int mode = opt_.r.giMode;
+                bool changed = false;
+                changed |= ImGui::RadioButton("Indirect cache: off", &mode, 0);
+                if (haveD) {
+                    ImGui::SameLine();
+                    changed |= ImGui::RadioButton("probes", &mode, 1);
+                }
+                if (haveS) {
+                    ImGui::SameLine();
+                    changed |= ImGui::RadioButton("hash", &mode, 2);
+                }
+                if (changed && mode != opt_.r.giMode) {
+                    opt_.r.giMode = mode;
+                    invalidate();
+                }
+
+                if (opt_.r.giMode != 0) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+                    ImGui::TextUnformatted(
+                        fmt("   %s", opt_.r.giMode == 1 ? "DDGI irradiance probes, D3D12"
+                                                        : "SHaRC hash grid, either backend")
+                            .c_str());
+                    ImGui::PopStyleColor();
+
+                    // WHERE THE CACHE TAKES OVER, and 2 is measured rather than
+                    // preferred: against a 32-bounce reference of the same
+                    // frame, 1 comes out 22 % too bright in the darkest quarter
+                    // -- a six-metre probe grid standing in for light one bounce
+                    // from the eye -- and 2 lands within about 2 %.
+                    if (w.slider("  from bounce", opt_.r.giDepth, 1, 6)) invalidate();
+                    // A cheat, and labelled as one. The transport is right at 1;
+                    // this is for when you want the wood lighter than it is.
+                    if (w.slider("  strength", opt_.r.giStrength, 0.0f, 3.0f)) invalidate();
+                }
+            } else {
+                w.text(fmt("Indirect cache: %s", ddgi_.status().c_str()));
+            }
+        }
+        w.separator();
+
         // ---- what the hardware is doing under all of this --------------------
         //
         // Read-only where there is nothing to decide. Clusters and cooperative
@@ -1527,11 +1897,6 @@ class ForestApp : public SampleApp {
                                                                      : "unavailable")
                                    .c_str());
         ImGui::PopStyleColor();
-        if (physics_.available()) {
-            // PhysX runs beside the hand-written collision rather than instead
-            // of it, so this genuinely is a choice.
-            if (w.checkbox("PhysX rigid bodies", opt_.physx)) physics_.enabled = opt_.physx;
-        }
         w.separator();
 
         // Exposure changes no sample already drawn, so it deliberately does NOT
@@ -1555,6 +1920,10 @@ class ForestApp : public SampleApp {
         // Reach for this one when the undersides of the canopy are too dark and
         // the rest of the frame is right, which is the usual case in a wood.
         w.slider("Deep shadow lift", opt_.r.deepLift, 0.0f, 0.15f, false, "%.3f");
+        // How far the corners fall off. 0 is off, which is where it starts --
+        // the tone map runs it last, after the flare, so it darkens the
+        // finished image rather than having the ghosts scatter back over it.
+        w.slider("Vignette", tracer_.vignette, 0.0f, 1.0f, false, "%.2f");
         w.slider("  reaches up to", opt_.r.deepRange, 0.10f, 0.60f, false, "%.2f luma");
         w.slider("Walk speed", player_.walk, 0.2f, 200.0f);
         // No invalidate: it changes nothing that has already been traced, only
@@ -1605,11 +1974,20 @@ class ForestApp : public SampleApp {
                     invalidate();
                 }
 
+                // How much sky light reaches air the up-ray found under
+                // canopy. 1.00 is the old unshadowed behaviour and brings the
+                // sun blur back with it; 0 puts black holes under the trees.
+                if (w.slider("  sky under canopy", volfog_.skyShadow, 0.0f, 1.0f, false,
+                             "%.2f")) {
+                    volfog_.invalidate();
+                    invalidate();
+                }
+
                 // How far the 64 slices are stretched. Short and the haze stops
                 // dead at a visible wall; long and every slice is spent on air
                 // too distant to resolve, so the beams in the first ten metres
                 // coarsen. 400 m is about where the wood stops being legible.
-                if (w.slider("  grid reaches", volfog_.farD, 50.0f, 1200.0f, false, "%.0f m")) {
+                if (w.slider("  march reaches", volfog_.farD, 50.0f, 1200.0f, false, "%.0f m")) {
                     volfog_.invalidate();
                     invalidate();
                 }
@@ -1617,6 +1995,40 @@ class ForestApp : public SampleApp {
                 w.slider("  settle (moving)", volfog_.settleMoving, 0.05f, 1.0f, false, "%.2f");
                 w.text("  160x90x64 froxels, one shadow ray each");
             }
+        }
+        // ---- WHICH SKY ------------------------------------------------------
+        if (atmo_.available()) {
+            if (w.checkbox("Atmospheric scattering (Hillaire)", atmo_.enabled)) {
+                // Rebuild the SUN as well as the dome. Its colour is baked into
+                // the fit's output rather than read from a per-frame uniform, so
+                // without this the sky would change model and the key light
+                // would not -- until the next time the clock happened to move it.
+                applySun(true);
+                invalidate();
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+            ImGui::TextUnformatted(
+                atmo_.enabled
+                    ? "   Rayleigh, Mie and ozone, integrated. Twilight is a wedge\n"
+                      "   over where the sun set, and it goes out."
+                    : "   Preetham fit. Cheaper, and its sunset FREEZES once the sun\n"
+                      "   is under the horizon -- the hue cannot change, only dim.");
+            if (atmo_.enabled)
+                ImGui::TextUnformatted(
+                    "   turbidity below is a Preetham parameter; this path carries\n"
+                    "   its own fixed aerosol profile and ignores it");
+            ImGui::PopStyleColor();
+            if (atmo_.enabled) {
+                // WHAT THE PHYSICS CANNOT SUPPLY. The model knows about sunlight
+                // and nothing else, so at 0 a deep night is honestly -- and
+                // uselessly -- black. This stands in for airglow and starlight.
+                if (w.slider("  night floor", atmo_.nightFloor, 0.0f, 0.02f, false, "%.4f")) {
+                    atmo_.invalidate();
+                    invalidate();
+                }
+            }
+        } else {
+            w.text(fmt("Atmosphere: %s", atmo_.status().c_str()));
         }
         if (w.slider("Sky turbidity", opt_.turbidity, 1.8f, 8.0f)) {
             applySun(true);
@@ -1679,6 +2091,15 @@ class ForestApp : public SampleApp {
         if (e.key == Input::Key::Escape) {
             // ESC closes the menu before it starts arming the quit -- otherwise
             // dismissing a panel would leave the window one press from closing.
+            // The video panel comes FIRST because it is the one drawn over
+            // everything else, so it is what ESC is being aimed at. An export
+            // in progress is left alone: it has its own cancel button, and
+            // losing four minutes of transcode to a stray ESC is not a thing a
+            // panel should let happen.
+            if (editor_.open() && !editor_.exporting()) {
+                closeEditor();
+                return true;
+            }
             if (menuOpen_) {
                 setMenuOpen(false);
                 return true;
@@ -1712,6 +2133,7 @@ class ForestApp : public SampleApp {
             std::printf("v7: bounces = %d\n", opt_.r.maxDepth);
             tracer_.resetAccumulation();
         }
+        if (e.key == Input::Key::R) toggleRecording();
         if (e.key == Input::Key::P) shotRequested_ = true;
         if (e.key == Input::Key::F1) printHelp();
         std::fflush(stdout);
@@ -1721,6 +2143,13 @@ class ForestApp : public SampleApp {
     // -----------------------------------------------------------------------
     bool onMouseEvent(const MouseEvent &e) override {
         if (e.type == MouseEvent::Type::ButtonDown) quitArmed_ = false;
+
+        // Clicks that land ON the panel never get here -- Falcor hands those to
+        // ImGui first. This is for the ones that miss it: with the editor up,
+        // a click on the wood beside the panel would capture the mouse, hide
+        // the cursor and leave the person dragging a timeline they can no
+        // longer see a pointer on.
+        if (editor_.open()) return true;
 
         if (e.type == MouseEvent::Type::Wheel) {
             // X IS A HELD MODIFIER, and it is POLLED rather than tracked from
@@ -1787,7 +2216,17 @@ class ForestApp : public SampleApp {
     std::string windowStateFile() const {
         const char *base = std::getenv("LOCALAPPDATA");
         if (!base || !*base) return std::string();
-        return std::string(base) + "\voxelbit-v7-window.txt";
+        // THE SEPARATOR NEEDS A DOUBLED BACKSLASH, and for a long time it did
+        // not have one. A single backslash followed by a v is the VERTICAL TAB
+        // escape, 0x0B -- so this built a path with a control character where
+        // the separator should be, and fopen refused it every time. Silently,
+        // because neither the save nor the load has anywhere to report to.
+        //
+        // The effect was that window placement NEVER PERSISTED. Every launch
+        // failed to read a file that had never been written, fell through to
+        // the centred default, and looked like it was working -- because
+        // centring a window is a reasonable-looking answer.
+        return std::string(base) + "\\voxelbit-v7-window.txt";
     }
 
     // -----------------------------------------------------------------------
@@ -1827,6 +2266,11 @@ class ForestApp : public SampleApp {
         return ::GetWindowRect(hwnd, out) != 0;
     }
 
+    // How far above centre a window with no remembered placement opens, in
+    // pixels. See the note in restoreWindowPlacement for why it is not applied to
+    // a restored one.
+    static constexpr long kLaunchNudgeUpPx = 20;
+
     void restoreWindowPlacement() {
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         if (!hwnd) return;
@@ -1859,6 +2303,19 @@ class ForestApp : public SampleApp {
             want = RECT{(sw - w) / 2, (sh - h) / 2, 0, 0};
             want.right = want.left + w;
             want.bottom = want.top + h;
+
+            // TEN PIXELS ABOVE DEAD CENTRE.
+            //
+            // ONLY ON THE CENTRED DEFAULT, and that restriction is the whole
+            // of the design. This function runs on EVERY launch and
+            // saveWindowPlacement writes the result back on every shutdown, so
+            // a nudge applied to the restored rect would be saved, restored,
+            // and nudged again -- the window would walk ten pixels up the
+            // screen per run until it went off the top. Applied here it moves
+            // a window that has no remembered position, once, and the moment
+            // the window is moved by hand that placement is what comes back.
+            want.top -= kLaunchNudgeUpPx;
+            want.bottom -= kLaunchNudgeUpPx;
         }
 
         const FrameMargin m = frameMargin(hwnd);
@@ -1886,7 +2343,14 @@ class ForestApp : public SampleApp {
         }
     }
 
-    void onShutdown() override { saveWindowPlacement(); }
+    void onShutdown() override {
+        // A take still finalising owns a thread and a sink writer. Abandoning
+        // it drops the file rather than waiting on an encoder while the device
+        // is being torn down underneath it.
+        editor_.close();
+        recorder_.abandon();
+        saveWindowPlacement();
+    }
 
     void onResize(uint32_t, uint32_t) override { tracer_.resetAccumulation(); }
 
@@ -1904,6 +2368,8 @@ class ForestApp : public SampleApp {
     Vec3 pos_{0, 2, 0};  // the EYE, derived from the player every frame
     float yaw_ = 0.0f, pitch_ = 0.0f, fov_ = 50.0f;
     float sunAz_ = 38.0f, sunEl_ = 24.0f;
+    // Last phase uploaded, so applySun can tell when the moon has moved on.
+    float moonPh_ = -1.0f;
 
     bool looking_ = false;   // cursor captured, mouse turns the camera
     bool holdLook_ = false;  // ...because the right button is held
@@ -1916,6 +2382,13 @@ class ForestApp : public SampleApp {
     bool shotRequested_ = false;
     int shotIndex_ = 0;
     int shotFrames_ = 0;
+
+    // -- the recorder and the panel it opens ------------------------------
+    vb::Recorder recorder_;
+    vb::VideoEditor editor_;
+    int takeIndex_ = 0;
+    bool captureBeforeEditor_ = false;
+    bool recStarted_ = false;  // --rec has fired; see the scripted take
 
     // One entry per displayed frame, in milliseconds. Kept whole rather than
     // reduced online because the interesting statistics are the tail ones, and
@@ -1941,6 +2414,10 @@ class ForestApp : public SampleApp {
     Neural neural_;
     Nrc nrc_;
     VolFog volfog_;
+    Clouds clouds_;
+    Atmosphere atmo_;
+    Ddgi ddgi_;
+    Sharc sharc_;
     Cuda cuda_;
     Clusters clusters_;
     Physics physics_;
@@ -1992,14 +2469,49 @@ class ForestApp : public SampleApp {
     // throw the accumulation away sixty times a second and never let a still
     // frame converge at all.
     // -----------------------------------------------------------------------
+    // THE SUN'S COLOUR FOLLOWS WHICHEVER SKY IS ON, through the same air the
+    // dome is integrated through. Negative hands sky.h back to its own
+    // Kasten-Young fit, so the Preetham path stays bit-for-bit what it was.
+    //
+    // Its own function because there are TWO places that place the sun -- the
+    // day/night clock, and --sun-az/--sun-el on the offline path -- and the
+    // offline one deliberately never runs applySun. Returns whether the value
+    // changed, so the caller only pays for a rebuild when it has to.
+    bool syncSunToSky() {
+        const Vec3 want = (atmo_.enabled && atmo_.available())
+                              ? atmo_.sunTransmittance(world_.sky.sunDir())
+                              : Vec3(-1.0f, -1.0f, -1.0f);
+        const Vec3 had = world_.sky.sunTransOverride;
+        if (fabsf(want.x - had.x) + fabsf(want.y - had.y) + fabsf(want.z - had.z) < 1e-6f)
+            return false;
+        world_.sky.sunTransOverride = want;
+        return true;
+    }
+
     bool applySun(bool force) {
         const float el = clock_.elevationDeg();
         const float az = clock_.azimuthDeg();
-        const float moved = fabsf(el - sunEl_) + fabsf(az - sunAz_);
+        // THE PHASE IS PART OF THE "HAS ANYTHING CHANGED" TEST. It runs on its
+        // own clock, hundreds of times slower than the sun.s elevation, so
+        // leaving it out meant the moon only ever changed face when the sun
+        // happened to move enough -- and never at all on a paused night.
+        // Scaled up because a phase delta is tiny in absolute terms.
+        const float ph = opt_.moonPhaseGiven
+                             ? opt_.moonPhase
+                             : (clock_.days + clock_.tday) / Sky::MOON_PERIOD_DAYS;
+        const float moved =
+            fabsf(el - sunEl_) + fabsf(az - sunAz_) + fabsf(ph - moonPh_) * 720.0f;
         if (!force && moved < 0.02f) return false;
         sunEl_ = el;
         sunAz_ = az;
+        moonPh_ = ph;
+        world_.sky.setMoonPhase(ph * Sky::MOON_PERIOD_DAYS);
         world_.sky.setSun(az, el);
+        // AFTER setSun, because it needs the direction setSun just computed --
+        // and then setSun again, because the colour it produces is baked by the
+        // fit rather than read per frame. Two rebuilds only on the frames the
+        // sun actually moved, which applySun has already established.
+        if (syncSunToSky()) world_.sky.setSun(az, el);
         return true;
     }
 
@@ -2007,6 +2519,77 @@ class ForestApp : public SampleApp {
     // Opening the menu hands the mouse back, and closing it takes it again if
     // it had it. A menu you can see but not point at is worse than no menu.
     // -----------------------------------------------------------------------
+    // mm:ss for the REC badge. Not the editor's timecode helper: that one
+    // carries tenths, which on a badge that is already pulsing is a digit
+    // flickering in the corner of the eye for no information at all.
+    static std::string clockLabel(double seconds) {
+        const int t = int(seconds < 0.0 ? 0.0 : seconds);
+        char b[16];
+        std::snprintf(b, sizeof(b), "%02d:%02d", t / 60, t % 60);
+        return b;
+    }
+
+    // -----------------------------------------------------------------------
+    // R. One key, two states, and the panel that follows the second one.
+    // -----------------------------------------------------------------------
+    void toggleRecording() {
+        if (recorder_.recording()) {
+            recorder_.stop();
+            std::printf("v7: recording stopped -- encoding\n");
+            std::fflush(stdout);
+            return;
+        }
+        // Still writing the last one. Refuse rather than queue: two sink
+        // writers and two encoder threads for one hardware encoder is a way to
+        // make both takes worse.
+        if (recorder_.busy()) {
+            std::printf("v7: still finishing the last take\n");
+            std::fflush(stdout);
+            return;
+        }
+        // R with the panel up means "record again", which is the only reading
+        // that keeps R meaning one thing. The take on disk is left alone -- it
+        // is a file, and the next panel can be pointed back at it.
+        if (editor_.open()) closeEditor();
+
+        if (tracer_.displayWidth() <= 0) return;
+
+        char name[64];
+        std::snprintf(name, sizeof(name), "v7_take_%03d.mp4", takeIndex_++);
+        const double nowSec =
+            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        if (!recorder_.start(name, tracer_.displayWidth(), tracer_.displayHeight(),
+                             opt_.recMaxWidth, opt_.recFps, 1, nowSec)) {
+            std::fprintf(stderr, "v7: could not start recording\n");
+            return;
+        }
+        std::printf("v7: recording to %s -- %dx%d @ %d fps (R again to stop)\n", name,
+                    recorder_.captureWidth(), recorder_.captureHeight(), opt_.recFps);
+        std::fflush(stdout);
+    }
+
+    void openEditorOn(const vb::Take &take) {
+        // A scripted run has nobody to show a panel to, and opening one would
+        // hold the process open past the take it was asked for.
+        if (opt_.recSeconds > 0.0f || opt_.background) return;
+        if (!editor_.load(take)) return;
+        // Same hand-back the settings menu does: the panel needs the cursor,
+        // and whoever was looking around wants it back when the panel closes.
+        captureBeforeEditor_ = looking_;
+        if (looking_) setCapture(false);
+        holdLook_ = false;
+        if (menuOpen_) setMenuOpen(false);
+    }
+
+    void closeEditor() {
+        editor_.close();
+        if (captureBeforeEditor_) {
+            setCapture(true);
+            captureBeforeEditor_ = false;
+        }
+    }
+
     void setMenuOpen(bool on) {
         // Re-centre next time it is drawn. See menuPlaced_.
         if (on && !menuOpen_) menuPlaced_ = false;
@@ -2096,6 +2679,14 @@ class ForestApp : public SampleApp {
 
     // -----------------------------------------------------------------------
     bool processInput(float dt) {
+        // THE PANEL IS MODAL TO THE WORLD. Not because it must be, but because
+        // WASD under an open editor walks the camera behind it while somebody
+        // is dragging a trim handle -- and the world it walks into is a world
+        // the accumulator then has to converge again. Returning false rather
+        // than early-exiting past the mouse look also parks the camera: nothing
+        // this function would have changed is changed.
+        if (editor_.open()) return false;
+
         const Falcor::InputState &in = getInputState();
         bool turned = applyMouseLook();
 
@@ -2270,6 +2861,46 @@ class ForestApp : public SampleApp {
                     cam.origin.y, cam.origin.z, cam.fovDeg, cam.focusDist);
 
         const Vec3 walkDir = normalize(cam.target - cam.origin);
+
+        // -- LIGHT THE FOG GRID, WHICH OFFLINE NEVER DID --------------------
+        //
+        // A fog-enabled --out render came out SOLID BLACK, and had done since
+        // the froxel grid replaced the analytic fog. Nothing here ever wrote
+        // the grid, and the tracer reads its alpha as TRANSMITTANCE: an
+        // untouched grid reads zero, zero transmittance multiplies the whole
+        // frame away, and the only offline render that ever looked right was
+        // one with --fog 0. The interactive path was never affected, because it
+        // lights the grid every frame before the trace.
+        //
+        // ONCE IS ENOUGH FOR A STILL CAMERA. With no history the injection pass
+        // takes this frame whole rather than blending, and a camera that is not
+        // moving has nothing left to converge. A --walk render moves per
+        // sample, so it relights inside the loop below.
+
+        // FILL THE CLOUD CACHE TO COMPLETION FIRST. The interactive path fills
+        // a band a frame and lets the deck arrive over the first few frames;
+        // an offline render has no "next frame" to finish in, and a march
+        // against a part-written volume would put clouds over half the sky and
+        // nothing over the other half.
+        while (clouds_.available() && !clouds_.filled()) clouds_.update(ctx);
+
+        // AND BUILD THE SKY, for exactly the reason the fog note above gives.
+        // The interactive path rebuilds the sky-view table on any frame the sun
+        // has moved; offline there is no such frame, so without this the table
+        // would never be built at all, Atmosphere::active() would stay false,
+        // and --atmosphere would quietly render the Preetham sky instead. A
+        // silent fallback rather than the fog's black frame, which is worse:
+        // the render would look plausible and be the wrong model.
+        if (atmo_.enabled && atmo_.available()) {
+            if (syncSunToSky()) world_.sky.setSun(opt_.sunAz, opt_.sunEl);
+            atmo_.update(ctx, world_.sky.gpu(), cam.origin.y,
+                         Sky::SUN_IRRADIANCE * world_.sky.sunScale);
+        }
+        const bool fogPerStep = opt_.walk > 0.0f;
+        if (!fogPerStep) {
+            tracer_.renderVolFog(ctx, cam.gpu(tracer_.width(), tracer_.height()),
+                                 opt_.r.fogDensity, opt_.r.fogHeight, false);
+        }
         const auto t0 = std::chrono::steady_clock::now();
         for (int s = 0; s < opt_.r.spp; ++s) {
             Camera c = cam;
@@ -2281,6 +2912,10 @@ class ForestApp : public SampleApp {
                 // the camera actually moves. This IS the thing being measured:
                 // a still image converges, a moving one is back to one sample.
                 tracer_.resetAccumulation();
+            }
+            if (fogPerStep) {
+                tracer_.renderVolFog(ctx, c.gpu(tracer_.width(), tracer_.height()),
+                                     opt_.r.fogDensity, opt_.r.fogHeight, true);
             }
             tracer_.renderSample(ctx, c.gpu(tracer_.width(), tracer_.height()), opt_.r);
             if ((s % 16) == 15 || s + 1 == opt_.r.spp) {
@@ -2797,7 +3432,12 @@ class ForestApp : public SampleApp {
                 const size_t slash = path.find_last_of('/');
                 const std::string leaf =
                     slash == std::string::npos ? path : path.substr(slash + 1);
-                if (leaf != "trace" && leaf != "reconstruct" && leaf != "tonemap") continue;
+                // "probes" and "fog" were being COLLECTED and then dropped here, so
+                // every profile this engine has ever printed was silent about the
+                // DDGI probe trace and about the fog volume.
+                if (leaf != "probes" && leaf != "trace" && leaf != "fog" &&
+                    leaf != "reconstruct" && leaf != "tonemap")
+                    continue;
                 line += fmt("   %s %.2f ms", leaf.c_str(), e->getGpuTimeAverage());
             }
             if (!line.empty()) std::printf("  gpu      %s\n", line.c_str());
@@ -2847,6 +3487,7 @@ class ForestApp : public SampleApp {
             "  arrow keys            scrub time (up/down = fast)\n"
             "  X + scroll wheel      day/night speed -- scroll down past 0.25x to REWIND\n"
             "  Y                     SETTINGS MENU\n"
+            "  R                     RECORD -- press again to stop and edit\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
             "  P                     screenshot            F1   this help\n"
@@ -2913,6 +3554,7 @@ class ForestApp : public SampleApp {
             "constexpr int kTrees = %d;\n"
             "constexpr float kTimeOfDay = %.4ff;  // %s\n"
             "constexpr float kCycleSpeed = %.2ff;\n"
+            "constexpr bool kAtmosphere = %s;\n"
             "\n"
             "}  // namespace defaults\n"
             "}  // namespace v7\n",
@@ -2921,7 +3563,7 @@ class ForestApp : public SampleApp {
             opt_.sensitivity, player_.eye, fov_, sunAz_, sunEl_,
             int(getTargetFbo()->getWidth()),
             int(getTargetFbo()->getHeight()), defaults::kTrees, clock_.tday, clockText,
-            clock_.cycleSpeed);
+            clock_.cycleSpeed, atmo_.enabled ? "true" : "false");
         std::fclose(f);
         // The FULL PATH, not just the file name. "run rebuild.bat" is only
         // useful if you already know which of the engine trees it lives in,

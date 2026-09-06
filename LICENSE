@@ -61,9 +61,18 @@ only reason. Publishing it grants no licence to use it.
    that portion.
 
    ── procedural-clouds ──────────────────────────────────────────────────────
-   src/render/wgsl/cloudgen.js contains a WGSL port of the cloud density
-   function from jeantimex/procedural-clouds
-   (https://github.com/jeantimex/procedural-clouds), used under the MIT licence:
+   The cloud density function is a port of jeantimex/procedural-clouds
+   (https://github.com/jeantimex/procedural-clouds), used under the MIT licence.
+   It now appears TWICE -- ported once into the browser game, and again into the
+   native engine -- and both copies are covered:
+
+     src/render/wgsl/cloudgen.js      the original WGSL port
+     v7/shaders/Clouds.slang          the Slang port of that port
+     v7/shaders/CloudFill.cs.slang    the pass that evaluates it
+
+   The MIT licence requires its notice to travel with substantial portions of
+   the work, so naming only the first file would have left the second uncovered.
+   The licence text below applies to all three:
 
      MIT License
 

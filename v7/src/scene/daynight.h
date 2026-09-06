@@ -48,11 +48,19 @@ class DayNight {
     float azimuthBase = 68.0f;
     float peakElevation = 48.0f;
 
+    // WHOLE DAYS ELAPSED, signed, which is what the moon phase runs on. A phase
+    // needs a clock longer than one day and tday only carries the fraction, so
+    // without this every night would show the same moon.
+    float days = 0.0f;
+
     void advance(float dt) {
         if (paused) return;
         // The wrap is `raw - floor(raw)` rather than fmod, so it is correct for
         // a NEGATIVE raw too -- which is the whole point of a signed speed.
         const float raw = tday + dt * cycleSpeed / DAY_SECONDS;
+        // floorf, not a wrap test: it is correct for a NEGATIVE raw too, so
+        // running the cycle backwards runs the moon back through its phases.
+        days += floorf(raw);
         tday = raw - floorf(raw);
     }
 

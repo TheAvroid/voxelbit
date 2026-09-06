@@ -69,3 +69,19 @@ source/pine9/
 docs/end-alpha.mov
 renders/
 v2_shot_*.png
+
+# ── 2026-09-06: build output and scratch that must not reach GitHub ───────────
+# rust/target is 335 MB of cargo build output and rust/shots 23 MB of captures.
+# Committing either makes a clone unusable and neither is reproducible input.
+rust/target/
+rust/shots/
+# Debug dumps from v6 frame-generation runs, and a scratch screenshot. Logs of
+# one session on one machine; they answer no question a later reader will have.
+auto2.txt
+dbgout.txt
+fgb.txt
+fgtest.txt
+q.png
+# Video captures written by the in-engine recorder. Output, not input.
+v7_take_*.mp4
+*.mp4

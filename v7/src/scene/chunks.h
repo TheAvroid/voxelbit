@@ -178,6 +178,12 @@ class ChunkMesher {
     size_t busy_ = 0;
 
     void run() {
+        // ONE PER WORKER, for the life of the thread -- the grids and the noise
+        // memo inside it are pure working storage, and rebuilding them per
+        // chunk was several hundred kilobytes of allocate-and-zero per job.
+        // See ChunkScratch in voxelworld.h for why reuse is safe.
+        ChunkScratch scratch;
+
         for (;;) {
             std::pair<int, int> job;
             {
@@ -193,7 +199,7 @@ class ChunkMesher {
             b.cx = job.first;
             b.cz = job.second;
             const auto t0 = std::chrono::steady_clock::now();
-            b.mesh = terrain_.meshChunk(b.cx, b.cz);
+            b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch);
             scatter(&b);
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
@@ -432,7 +438,7 @@ class ChunkMesher {
         if (pp.empty()) return;
 
         const Footprint &pf = pineFoot[size_t(pineIndex)];
-        const int treeSink = decorSink(0, pf.sy, seed, cell);
+        const int treeSink = decorSink(0, pineIndex, pf.sy, seed, cell);
 
         for (int n = 0; n < pineconesPerTree; ++n) {
             const uint32_t r = hashU32(seed + 0x9E37u + uint32_t(n), cell);
@@ -551,7 +557,7 @@ class ChunkMesher {
                     const int footX = (yaw & 1) ? f.baseZ : f.baseX;
                     const int footZ = (yaw & 1) ? f.baseX : f.baseZ;
                     if (footX > 0 && footZ > 0 && !groundHolds(ci, cj, h, footX, footZ,
-                                                         decorSink(1, f.sy, seed, cell), memo))
+                                                         decorSink(1, k, f.sy, seed, cell), memo))
                         continue;
                 }
 

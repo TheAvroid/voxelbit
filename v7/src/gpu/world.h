@@ -1204,18 +1204,38 @@ class World {
     // globbed: a fixed list means a missing file is a warning about that file
     // rather than a scene that silently has fewer rocks in it than it should.
     void loadRocks() {
-        static const char *kNames[] = {
-            "BIG_1_BiG_0",     "Big_2_BiG_0",     "Big_3_BiG_0",     "Big_4_BiG_0",
-            "Big_5_BiG_0",     "Mid_1_MID_0",     "Mid_2_MID_0",     "Mid_3_MID_0",
-            "Mid_4_MID_0",     "Mid_4_MID_0_001", "Mid_5_MID_0",     "Runic_1_Runic_0",
-            "Runic_2_Runic_0", "Runic_3_Runic_0", "Runic_4_Runic_0", "Runic_5_Runic_0",
-            "Runic_6_Runic_0", "Runic_7_Runic_0", "Small_1_SMall_0", "Small_2_SMall_0",
-            "Small_3_SMall_0", "Small_4_SMall_0", "Small_5_SMall_0", "Small_6_SMall_0",
-            "Small_7_SMall_0", "Small_8_SMall_0"};
-        std::vector<std::string> paths;
-        for (const char *n : kNames) paths.push_back(decorDir + "/rocks/" + n + ".vox");
+        // THE ORDER OF THESE TWO LISTS IS LOAD-BEARING. decorSink in
+        // scene/collide.h decides how deep a rock sits from its INDEX -- big
+        // below kRockBigEnd, mid below kRockBigMidEnd -- so the big five have
+        // to land at 0..4 and the mid six at 5..10. loadModelSet appends, so
+        // two calls in this order give exactly that.
+        static const char *kBigNames[] = {
+            "BIG_1_BiG_0", "Big_2_BiG_0", "Big_3_BiG_0", "Big_4_BiG_0", "Big_5_BiG_0"};
+        static const char *kRestNames[] = {
+            "Mid_1_MID_0",     "Mid_2_MID_0",     "Mid_3_MID_0",     "Mid_4_MID_0",
+            "Mid_4_MID_0_001", "Mid_5_MID_0",     "Runic_1_Runic_0", "Runic_2_Runic_0",
+            "Runic_3_Runic_0", "Runic_4_Runic_0", "Runic_5_Runic_0", "Runic_6_Runic_0",
+            "Runic_7_Runic_0", "Small_1_SMall_0", "Small_2_SMall_0", "Small_3_SMall_0",
+            "Small_4_SMall_0", "Small_5_SMall_0", "Small_6_SMall_0", "Small_7_SMall_0",
+            "Small_8_SMall_0"};
+
+        std::vector<std::string> big, rest;
+        for (const char *n : kBigNames) big.push_back(decorDir + "/rocks/" + n + ".vox");
+        for (const char *n : kRestNames) rest.push_back(decorDir + "/rocks/" + n + ".vox");
+
+        // THE BIG FIVE ARE REVOXELISED AT 2x, the same doubling the large
+        // mushrooms use. It is a real 8x in voxels and they are already the
+        // heaviest models in the set, but there are only five of them and the
+        // scatter puts one on a hundredth of the columns.
+        //
+        // Doubling here rather than in the .vox files keeps ONE copy of each
+        // asset on disk, and keeps the footprint, the collider and the moss
+        // consistent -- all three are measured off the template after loading,
+        // so they scale with it instead of needing to be told.
+        //
         // The only model set that grows moss -- see mossFace in voxelworld.h.
-        loadModelSet(paths, &rocks_, false, false, 0x4D055EEDu);
+        loadModelSet(big, &rocks_, false, false, 0x4D055EEDu, false, /*doubleSize=*/true);
+        loadModelSet(rest, &rocks_, false, false, 0x4D055EEDu);
         loadedRocks = int(rocks_.size());
     }
 
@@ -1364,10 +1384,12 @@ class World {
         const int fz = (p.yaw & 1) ? t.sx : t.sz;
 
         // A tree standing exactly on the surface looks like it is on tiptoe, so
-        // it is sunk a voxel or two. A rock is sunk in proportion to its own
-        // height, which is what makes a boulder read as embedded in the ground
-        // rather than set down on it.
-        const int sink = decorSink(p.kind, t.sy, seed, p.cell);
+        // it is sunk half a metre. Rocks are sunk by category rather than by
+        // height -- the big and mid boulders a metre and a half, everything
+        // else half a metre -- so that a boulder reads as embedded in the
+        // ground rather than set down on it. See decorSink in scene/collide.h,
+        // which the scatter shares so the two cannot disagree.
+        const int sink = decorSink(p.kind, p.index, t.sy, seed, p.cell);
 
         const float tx = float(p.ci) * VOXEL_M - halfOf(fx);
         const float tz = float(p.cj) * VOXEL_M - halfOf(fz);

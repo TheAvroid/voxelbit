@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // collide.h -- the things in the wood a body can walk into.
 //
 // The terrain needs nothing here. It is a height field and a pure function of
@@ -70,7 +70,23 @@ struct ModelCollider {
 // hide its base, and makeInstance uses it to actually put the rock there. Two
 // copies of this rule would agree until the first time one of them changed.
 // ---------------------------------------------------------------------------
-inline int decorSink(int kind, int sy, uint32_t seed, uint32_t cell) {
+// WHICH ROCKS ARE "BIG AND MID", as a range over the model list.
+//
+// loadRocks() in gpu/world.h loads the twenty-six rocks from a FIXED, NAMED
+// list, in size order: five BIG, six Mid, seven Runic, eight Small. So the big
+// and mid boulders are exactly the first eleven models, and this is the single
+// place that turns that ordering into a rule.
+//
+// AN INDEX RANGE AND NOT A HEIGHT TEST, on purpose. Classifying by sy would
+// look tidier and would quietly reclassify a squat Big as a Mid, or a tall
+// Runic as a Big, the first time one of the assets was re-authored. The names
+// are what the artist decided; the order is what the loader promises. If a rock
+// is ever inserted into that list, this number moves with it -- which is why
+// it names the boundary rather than counting.
+constexpr int kRockBigEnd = 5;      // one past Big_5_BiG_0, where Mid_1 begins
+constexpr int kRockBigMidEnd = 11;  // one past Mid_5_MID_0, where Runic_1 begins
+
+inline int decorSink(int kind, int model, int sy, uint32_t seed, uint32_t cell) {
     // FIVE VOXELS, HALF A METRE, for both trees and rocks.
     //
     // A tree standing exactly on the surface looks like it is on tiptoe, and
@@ -84,7 +100,30 @@ inline int decorSink(int kind, int sy, uint32_t seed, uint32_t cell) {
     // start reading as set down on the ground rather than embedded in it, this
     // is the number.
     if (kind == 0) return 5;
-    if (kind == 1) return 5;
+    if (kind == 1) {
+        // BIG AND MID GO DEEPER THAN THE REST, and the two are not the same.
+        //
+        // The big boulders are loaded at DOUBLE SCALE (see loadRocks in
+        // gpu/world.h), so they stand up to 114 voxels -- eleven metres -- and
+        // a sink that reads as "set into the ground" on a three-metre rock is
+        // a rounding error on one that size. Twenty voxels, two metres, is
+        // what buries the flat underside the .vox models are modelled with.
+        //
+        // Mid keeps fifteen: at 28 to 38 voxels tall, twenty would start
+        // swallowing the shorter ones.
+        //
+        // NOTHING IS BURIED BY EITHER. The shortest Mid is Mid_4 at 28 voxels
+        // and still stands 13 out of the ground; the shortest Big is Big_5,
+        // 32 voxels as authored and 64 at double scale, which keeps 44.
+        //
+        // Deeper is also the SAFE direction for what the slope test used to
+        // catch. A rock is hung on one column and spans many, so the failure
+        // was always a boulder on a fall-away showing daylight under its far
+        // side; burying it further can only hide more of that, never less.
+        if (model >= 0 && model < kRockBigEnd) return 20;
+        if (model < kRockBigMidEnd) return 15;
+        return 5;
+    }
     // Mushrooms grow out of the ground rather than sitting on it.
     if (kind == 3) return 3;
     // A pinecone's height is given to it by the branch it is sitting on, not by

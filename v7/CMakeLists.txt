@@ -32,14 +32,19 @@ target_sources(v7 PRIVATE
 
     src/render/camera.h
     src/render/player.h
+    src/render/recorder.h
+    src/render/mfvideo.h
+    src/render/videoedit.h
 
     src/gpu/tracer.h
     src/gpu/world.h
     src/gpu/ddgi.h
+    src/gpu/sharc.h
     src/gpu/streamline.h
     src/gpu/neural.h
     src/gpu/nrc.h
     src/gpu/restir.h
+    src/gpu/atmosphere.h
     src/gpu/volfog.h
     src/gpu/cuda.h
     src/gpu/clusters.h
@@ -50,24 +55,48 @@ target_sources(v7 PRIVATE
     shaders/Vecmath.slang
     shaders/Material.slang
     shaders/Sky.slang
+    shaders/Atmosphere.slang
+    shaders/AtmoTransmittance.cs.slang
+    shaders/AtmoMultiScatter.cs.slang
+    shaders/AtmoSkyView.cs.slang
     shaders/Trace.cs.slang
     shaders/ProbeTrace.cs.slang
     shaders/Ddgi.slang
+    shaders/Sharc.slang
+    shaders/SharcResolve.cs.slang
     shaders/Demodulate.cs.slang
     shaders/Remodulate.cs.slang
     shaders/NeuralProbe.cs.slang
     shaders/Nrc.slang
     shaders/Restir.slang
+    shaders/Clouds.slang
+    shaders/CloudFill.cs.slang
     shaders/VolFog.slang
     shaders/VolFogInject.cs.slang
-    shaders/VolFogMarch.cs.slang
     shaders/RestirTemporal.cs.slang
     shaders/RestirSpatial.cs.slang
     shaders/NrcTrain.cs.slang
     shaders/NrcUpdate.cs.slang
     shaders/Tonemap.cs.slang
     shaders/Crosshair.ps.slang
+    shaders/CaptureNv12.cs.slang
 )
+
+# ---------------------------------------------------------------------------
+# The screen recorder (R) and the editing panel behind it.
+#
+# Media Foundation, not NVENC -- the reasoning is at the top of
+# src/render/mfvideo.h. The practical consequence is these four import
+# libraries and no vendored SDK at all: mfplat and mfuuid are the platform and
+# its GUIDs, mfreadwrite is the sink writer and the source reader, and mf is
+# where MFTranscodeContainerType_MPEG4 lives. shell32 is the "show the take"
+# button, which asks Explorer to select the file.
+#
+# All four ship with Windows, so unlike DLSS, RTXGI and PhysX below there is
+# nothing to find and nothing to guard on -- the recorder is not an optional
+# feature of this build.
+# ---------------------------------------------------------------------------
+target_link_libraries(v7 PRIVATE mfplat.lib mfreadwrite.lib mfuuid.lib mf.lib shell32.lib)
 
 target_include_directories(v7 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -196,6 +225,37 @@ target_include_directories(v7 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # Copies every .slang above into <runtime>/shaders/v7/, preserving the shaders/
 # subfolder -- which is why the tracer loads "v7/shaders/Trace.cs.slang".
 target_copy_shaders(v7 v7)
+
+# ---------------------------------------------------------------------------
+# SHaRC -- the spatial hash radiance cache, from RTXGI 2.x.
+#
+# SHADER HEADERS ONLY. Unlike DDGI there is no library to build and nothing to
+# link: SHaRC is three HLSL headers and the algorithm lives entirely in v7's own
+# shaders. That is also why it works on BOTH backends, where DDGI is D3D12 only.
+#
+# They are STAGED next to v7's shaders rather than vendored into this tree, so
+# the checkout stays the single copy and `#include "sharc/SharcCommon.h"`
+# resolves through the shader search path that target_copy_shaders already set
+# up. Copied on every build for the same reason the probe shaders are: a stale
+# header that disagrees with the host's struct sizes is a silent wrong answer.
+# ---------------------------------------------------------------------------
+set(V7_SHARC_DIR "C:/Users/mrwbh/RTXGI/Libraries/Sharc" CACHE PATH "SHaRC (RTXGI 2.x) checkout")
+if(EXISTS "${V7_SHARC_DIR}/include/SharcCommon.h")
+    message(STATUS "v7: SHaRC headers from ${V7_SHARC_DIR}")
+    target_compile_definitions(v7 PRIVATE V7_HAS_SHARC=1)
+    add_custom_command(TARGET v7 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                # NOTE THE DOUBLED "shaders": target_copy_shaders preserves the
+                # shaders/ prefix each file is listed with, so v7's own shaders
+                # deploy to shaders/v7/shaders/. The SDK headers are included
+                # relative to Sharc.slang, so they have to land beside it rather
+                # than one level up -- which is where the obvious path puts them.
+                "${V7_SHARC_DIR}/include" "$<TARGET_FILE_DIR:v7>/shaders/v7/shaders/sharc"
+        COMMENT "v7: staging the SHaRC shader headers"
+        VERBATIM)
+else()
+    message(STATUS "v7: no SHaRC at ${V7_SHARC_DIR} -- building without the hash cache")
+endif()
 
 # ---------------------------------------------------------------------------
 # dx/linalg.h, next to the exe.
@@ -379,7 +439,18 @@ if(EXISTS "${V7_RTXGI_DIR}/rtxgi-sdk/include/rtxgi/ddgi/DDGIVolume.h" AND EXISTS
     # getting it wrong transposes the probe grid silently. 2 is Right Hand,
     # Y-Up, and it MUST match both the value build_rtxgi.bat compiled the
     # library with and the -D the probe shaders were compiled with.
-    target_compile_definitions(v7 PRIVATE V7_HAS_DDGI=1 RTXGI_COORDINATE_SYSTEM=2)
+    # RTXGI_DDGI_RESOURCE_MANAGEMENT is #error if undefined, exactly as the
+    # coordinate system is, and for the same reason: it changes the SHAPE of
+    # DDGIVolume -- managed mode adds the texture pointers the SDK would own --
+    # so a consumer compiled without it would disagree with the library about
+    # the layout of the object it is passing around.
+    #
+    # 0 is UNMANAGED and it MUST match the -DRTXGI_DDGI_RESOURCE_MANAGEMENT=OFF
+    # that build_rtxgi.bat compiled the library with. This was missing until the
+    # first build that actually had the library to link against, because until
+    # then no translation unit ever reached the SDK header.
+    target_compile_definitions(v7 PRIVATE V7_HAS_DDGI=1 RTXGI_COORDINATE_SYSTEM=2
+                                          RTXGI_DDGI_RESOURCE_MANAGEMENT=0)
 
     # The probe shaders, rebuilt into the runtime folder on every build. Cheap
     # (eight small compute shaders) and it means a change to the volume's shape
