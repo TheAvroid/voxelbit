@@ -92,10 +92,13 @@ class VolFog {
     // Forward scattering. Water droplets and dust are strongly forward, which
     // is what makes the air near the sun glow instead of the whole volume
     // lifting uniformly. Zero would be isotropic and would look like milk.
-    // Halfway, rather than the 0.7 this opened with: the tighter lobe put a
-    // hard bright core around the sun and left the rest of the wood flat, and
-    // 0.5 spreads the same light further into the trees without going milky.
-    float anisotropy = 0.5f;
+    // WALKED DOWN TWICE, 0.7 -> 0.5 -> 0.30, and in the same direction each
+    // time. The tight lobe this opened with put a hard bright core around the
+    // sun and left the rest of the wood flat; every step away from it spreads
+    // the same light further into the trees. 0.30 is still forward -- zero
+    // would be isotropic milk -- but the glow reads as haze in the air rather
+    // than a lamp pointed at the camera.
+    float anisotropy = 0.30f;
 
     // How much of the sky dome reaches a cell that can see it. Applied at march
     // time now, against the visibility the volume stores.

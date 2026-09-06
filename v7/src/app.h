@@ -1249,8 +1249,8 @@ class ForestApp : public SampleApp {
 
         if (shotRequested_) {
             shotRequested_ = false;
-            char name[64];
-            std::snprintf(name, sizeof(name), "v7_shot_%03d.png", shotIndex_++);
+            const std::string shot = outputPath("v7_shot_%03d.png", &shotIndex_);
+            const char *name = shot.c_str();
             if (tracer_.writePng(ctx, name))
                 std::printf("v7: wrote %s at %dx%d\n", name, tracer_.displayWidth(),
                             tracer_.displayHeight());
@@ -1507,14 +1507,38 @@ class ForestApp : public SampleApp {
         // immovable: ImGui moves a dragged window and the next frame put it
         // straight back, so it did not so much refuse to move as twitch.
         //
-        // So the centring happens once, when the menu opens, and after that the
-        // window is ImGui's to drag. Reopening re-centres it, which is the
-        // behaviour worth having: a panel dragged somewhere awkward is never
-        // lost, it just needs closing and opening again.
+        // So the placement happens once, when the menu opens, and after that
+        // the window is ImGui's to drag.
+        //
+        // AND WHERE IT OPENS IS WHERE IT WAS LEFT. It used to re-centre on
+        // every opening, on the argument that a panel dragged somewhere
+        // awkward is never lost. That is true and it is still the wrong
+        // default: someone who moves a panel out of the way of the thing they
+        // are tuning means it, and having it jump back to the middle of the
+        // screen every time undoes the move as fast as they can make it.
+        // Centring is now only what happens the FIRST time, before there is a
+        // remembered place to prefer.
+        //
+        // Clamped to the framebuffer on the way back out, because the window
+        // can be resized between one opening and the next -- a panel remembered
+        // at x = 3000 on a wide monitor must not be off the edge of a narrow
+        // one, which would leave it genuinely lost with no way to drag it back.
         if (!menuPlaced_) {
-            ImGui::SetWindowPos(ImVec2(floorf(maxf(0.0f, (fbW - panelW) * 0.5f)),
-                                       floorf(maxf(0.0f, (fbH - panelH) * 0.5f))));
+            if (menuPos_.x < 0.0f) {  // never opened: the middle of the screen
+                menuPos_ = ImVec2(floorf(maxf(0.0f, (fbW - panelW) * 0.5f)),
+                                  floorf(maxf(0.0f, (fbH - panelH) * 0.5f)));
+            }
+            const float mx = maxf(0.0f, fbW - panelW);
+            const float my = maxf(0.0f, fbH - 40.0f);  // keep the title grabbable
+            ImGui::SetWindowPos(ImVec2(clampf(menuPos_.x, 0.0f, mx),
+                                       clampf(menuPos_.y, 0.0f, my)));
             menuPlaced_ = true;
+        } else {
+            // Read back every frame rather than on close: ImGui does not tell
+            // us when a drag ends, and the menu can be shut by ESC, by Y or by
+            // its own close box, so there is no one place a "save on close"
+            // hook could live without one of the three missing it.
+            menuPos_ = ImGui::GetWindowPos();
         }
 
         // EVERY WIDGET IN THE PANEL, one width. ImGui's default is a fraction of
@@ -2306,6 +2330,9 @@ class ForestApp : public SampleApp {
     bool menuOpen_ = false;
     // False until the panel has been centred for this opening; see onGuiRender.
     bool menuPlaced_ = false;
+    // Where the player last dragged the settings panel, in framebuffer pixels.
+    // Negative x means "never opened", which is the only state that centres.
+    ImVec2 menuPos_ = ImVec2(-1.0f, -1.0f);
     bool captureBeforeMenu_ = false;
     bool shotRequested_ = false;
     int shotIndex_ = 0;
@@ -2458,6 +2485,41 @@ class ForestApp : public SampleApp {
     // Opening the menu hands the mouse back, and closing it takes it again if
     // it had it. A menu you can see but not point at is worse than no menu.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHERE A TAKE OR A SCREENSHOT GOES: the recordings folder, not the
+    // working directory.
+    //
+    // v7.bat deliberately runs the exe from the repo root so that output lands
+    // "next to the launcher where it can be found", and for one screenshot that
+    // was right. It stops being right the moment the recorder exists: a
+    // afternoon of takes and shots buries the repo root in v7_take_004.mp4 and
+    // has to be swept up by hand. recordings/ already existed for exactly this
+    // sort of thing.
+    //
+    // AND IT NEVER OVERWRITES. The counters start at zero every run, so before
+    // this a second session quietly wrote over the first one's v7_take_000.mp4
+    // -- which mattered little when the file was in your face at the repo root
+    // and matters a great deal once takes accumulate somewhere tidy. The index
+    // walks forward until it finds a name nobody is using.
+    //
+    // Falling back to the working directory if the folder cannot be made:
+    // losing a recording because a directory was read-only would be a worse
+    // failure than putting it in the wrong place.
+    // -----------------------------------------------------------------------
+    static std::string outputPath(const char *fmt, int *counter) {
+        std::error_code ec;
+        const bool dir = std::filesystem::exists("recordings", ec) ||
+                         std::filesystem::create_directories("recordings", ec);
+        char name[64];
+        for (int guard = 0; guard < 10000; ++guard) {
+            std::snprintf(name, sizeof(name), fmt, *counter);
+            ++*counter;
+            std::string path = dir ? (std::string("recordings/") + name) : std::string(name);
+            if (!std::filesystem::exists(path, ec)) return path;
+        }
+        return dir ? (std::string("recordings/") + name) : std::string(name);
+    }
+
     // mm:ss for the REC badge. Not the editor's timecode helper: that one
     // carries tenths, which on a badge that is already pulsing is a digit
     // flickering in the corner of the eye for no information at all.
@@ -2489,8 +2551,8 @@ class ForestApp : public SampleApp {
 
         if (tracer_.displayWidth() <= 0) return;
 
-        char name[64];
-        std::snprintf(name, sizeof(name), "v7_take_%03d.mp4", takeIndex_++);
+        const std::string take = outputPath("v7_take_%03d.mp4", &takeIndex_);
+        const char *name = take.c_str();
         const double nowSec =
             std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
                 .count();

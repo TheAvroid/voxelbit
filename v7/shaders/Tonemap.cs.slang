@@ -210,15 +210,68 @@ float3 sunFlare(float2 fc, float2 dim)
     // whether the sun is still BRIGHT there: cloud is sky, so the sun keeps
     // behind a cloud the same halo it has in the open, while a trunk or a
     // ridge hides it because those clear the sky mask.
+    //
+    // ── THE PROBE IS THE DISC, NOT A FIXED LITTLE BOX ───────────────────────
+    //
+    // This used to be nine taps on a 6 px grid: an 18 px probe of a disc that
+    // is 44 px across at the centre of the screen and half as much again off
+    // axis. So it asked about a patch near the MIDDLE of the sun and called the
+    // answer the whole sun -- and through a pine canopy that patch lands in the
+    // gaps between needles often enough to report the sun mostly clear. The
+    // flare then drew a bright soft blob straight over the tree, which is what
+    // "I can see the sun through the tree" was.
+    //
+    // Rings scaled to sunPx instead, so the probe is the sun whatever the field
+    // of view is and wherever on screen it has got to. Taps that fall outside
+    // the frame are not counted rather than clamped to the edge: an edge texel
+    // is not evidence about a part of the sky nobody rendered, and clamping let
+    // one bright border pixel vote nine times.
     float sv = 0.0f;
-    for (int fy = -1; fy <= 1; ++fy)
-        for (int fx = -1; fx <= 1; ++fx)
+    float wsum = 0.0f;
+    {
+        // The middle of the disc counts for more than its rim, which is what
+        // keeps a branch clipping the edge from behaving like a trunk.
+        const float ringR[3] = {0.0f, 0.55f, 0.95f};
+        const float ringW[3] = {2.0f, 1.0f, 0.55f};
+        for (int ring = 0; ring < 3; ++ring)
         {
-            const float2 uv = (sunPix + float2(float(fx), float(fy)) * 6.0f) / dim;
-            sv += gFlareDepth.SampleLevel(gFlareSamp, saturate(uv), 0.0f) > 0.999f ? 1.0f : 0.0f;
+            const int taps = (ring == 0) ? 1 : 8;
+            for (int t = 0; t < taps; ++t)
+            {
+                float2 o = float2(0.0f, 0.0f);
+                if (ring > 0)
+                {
+                    // Half a step of rotation per ring so the two rings do not
+                    // line up into eight spokes that can all sit in one gap.
+                    const float ang = (float(t) + 0.5f * float(ring)) * (6.2831853f / 8.0f);
+                    o = float2(cos(ang), sin(ang)) * (ringR[ring] * sunPx);
+                }
+                const float2 uv = (sunPix + o) / dim;
+                if (ring > 0 && (any(uv < 0.0f) || any(uv > 1.0f))) continue;
+                const float d = gFlareDepth.SampleLevel(gFlareSamp, saturate(uv), 0.0f);
+                sv += ringW[ring] * (d > 0.999f ? 1.0f : 0.0f);
+                wsum += ringW[ring];
+            }
         }
-    sv /= 9.0f;
-    if (sv <= 0.02f) return float3(0.0f);
+    }
+    sv = wsum > 0.0f ? sv / wsum : 0.0f;
+
+    // ── AND A DISC BROKEN UP BY FOLIAGE IS NOT A DIMMER SUN ─────────────────
+    //
+    // Scaling the flare linearly by the visible fraction is the wrong curve for
+    // what a lens does. The ghosts come from the disc's light bouncing between
+    // glass elements, and a disc chopped into slivers by needles throws far
+    // less of that around than the fraction of it that survives -- the light is
+    // there, but it no longer forms the coherent bright source the artefact
+    // needs. Linearly, a sun 40 % hidden still drew 60 % of a full flare, and
+    // over a canopy 60 % of a full flare is precisely the blob.
+    //
+    // Full strength in clear sky, gone by the time the sun is nominally half
+    // visible. A thin bare branch across the sun killing the flare is not an
+    // overshoot: that is what it does through a real lens too.
+    sv = smoothstep(0.55f, 0.98f, sv);
+    sv *= sv;
+    if (sv <= 0.002f) return float3(0.0f);
 
     // TWO WEIGHTS, not one: with the doubling gone the sun-centred stack has to
     // carry alone what eight discs used to, so it takes the larger share.
