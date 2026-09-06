@@ -1,105 +1,55 @@
 // ---------------------------------------------------------------------------
-// v2 -- a voxel pine forest, path traced on NVIDIA OptiX.
+// v2 -- an endless voxel pine forest, path traced on NVIDIA Falcor.
 //
 //   The world is 10 cm voxels, the same grid the pine_1..9 assets are authored
 //   on, so a trunk stands in ground made of the same lattice it is. The terrain
 //   is a height field evaluated as a pure function of position and meshed to
-//   its exposed faces only -- interior voxels never become geometry.
+//   its exposed faces only -- interior voxels never become geometry. You walk
+//   it as a person: 20 voxels to the eye, gravity, a jump, and a head bob.
 //
-//   OptiX 9 does the intersection work on the RT cores: one acceleration
-//   structure per pine model, instanced across the terrain in quarter turns, so
-//   a stand of hundreds of trees costs the memory of nine.
+//   WHAT IS NEW IS THE PIPELINE, and nothing else. The world, the walk, the
+//   day/night clock, the sky, the BSDFs and the integrator are v2's, carried
+//   across with their numbers untouched. What changed is that the renderer
+//   underneath them stopped being an OptiX pipeline and became one compute
+//   shader doing inline ray tracing.
 //
-//   There is no denoiser. Every mode of the OptiX one was tried and removed:
-//   on a voxel canopy the spatial models turn thousands of needle-sized faces
-//   to felt, and the temporal ones lag a moving camera. What is left is
-//   accumulation -- a jittered sample per frame on a card fast enough to make
-//   hundreds of them a second, with a rolling window so a moving sun does not
-//   invalidate the lot.
+//   THAT IS THE WHOLE POINT OF THIS ENGINE. OptiX is built for offline
+//   rendering, and it shows in the shape it forces on a game: a shader binding
+//   table that has to be allocated, published and kept in step with what is
+//   resident; a device artefact on disk that has to match the exe field for
+//   field or the next launch dies with an illegal address; a continuation stack
+//   sized for the deepest path any thread might take. None of that is about
+//   drawing a forest. Under DXR inline ray tracing there is no table, no
+//   separate artefact, and no stack -- the path loop is an ordinary loop in an
+//   ordinary kernel, and a ray is a call. See shaders/Trace.cs.slang.
 //
 // Run with no --out to walk around; with --out to render one frame and exit.
 // Scene, camera and sun are all reproducible from --seed.
 // ---------------------------------------------------------------------------
-#include <chrono>
+#include "Core/SampleApp.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
-// optix_stubs.h declares the OptiX function table; exactly one translation
-// unit in the program has to DEFINE it, and this is that unit. Include it in a
-// second one and the link fails on a duplicate symbol; include it in none and
-// every optixSomething() call dereferences a null table at the first launch.
-#include <optix_function_table_definition.h>
+#include "app.h"
+#include "gpu/streamline.h"
 
-#include "core/defaults.h"
-#include "core/image.h"
-#include "gpu/renderer.h"
-#include "render/camera.h"
-#include "render/viewer.h"
+// D3D12 reads this out of the PROCESS IMAGE before anything of ours runs, so it
+// has to be exported from the executable and cannot live inside Falcor.dll.
+// Without it the redistributable D3D12 runtime beside the exe is ignored, the
+// OS one is used instead, and Falcor says so at startup.
+FALCOR_EXPORT_D3D12_AGILITY_SDK
 
 using namespace v2;
 
 namespace {
 
-
-struct Options {
-    RenderSettings r;
-    ViewerOptions v;
-    std::string out = "forest.png";
-    bool outGiven = false;  // absent means: open a window instead
-    bool writeHdr = false;
-    bool validation = false;
-
-    int trees = defaults::kTrees;
-    int view = 12;
-    float treeDensity = 0.31f;
-    float grass = 0.105f, flowers = 0.45f, rocks = 0.010f;
-    int grassMin = 3, grassMax = 6;
-    float extent = 62.0f;  // half-size of the voxel patch, metres
-    std::string pines = "C:/voxelbit/game/assets/foilage/pine9";
-    std::string decor = "C:/voxelbit/game/assets/decoration";
-
-    float sunAz = defaults::kSunAz;
-    float sunEl = defaults::kSunEl;
-    float turbidity = 2.8f;
-
-    float camX = -6.0f, camZ = 34.0f;
-    // Metres to advance the camera per frame, offline only. This exists to
-    // make the one question a denoiser has to answer here MEASURABLE: the
-    // noise that matters is the noise while walking, and comparing two
-    // hand-flown screenshots compares two different views as much as two
-    // denoiser settings. With --walk the camera path is identical in both
-    // runs, so the difference is the denoiser and nothing else.
-    float walk = 0.0f;
-    float yaw = 205.0f, pitch = 7.0f;
-    float eye = 1.80f;
-    float fov = defaults::kFov;
-    float aperture = 0.055f;
-    float focus = 0.0f;
-
-    // Everything the settings menu can bake. Applied to r and v in run(),
-    // after the defaults those structs declare for themselves -- so a baked
-    // value wins over the struct default and a flag wins over both.
-    Options() {
-        r.width = defaults::kWidth;
-        r.height = defaults::kHeight;
-        r.maxDepth = defaults::kDepth;
-        r.exposure = defaults::kExposure;
-        v.scale = defaults::kScale;
-        v.speed = defaults::kSpeed;
-        v.eye = defaults::kEye;
-        v.movingDepth = defaults::kMovingDepth;
-        v.timeOfDay = defaults::kTimeOfDay;
-        v.cycleSpeed = defaults::kCycleSpeed;
-    }
-};
-
 void usage() {
     std::printf(
-        "v2 -- voxel pine forest, path traced on OptiX 9\n"
+        "v2 -- voxel pine forest, path traced on Falcor (DXR inline ray tracing)\n"
         "\n"
         "  With no --out, v2 opens a window and you can walk around in it.\n"
         "  With --out, it renders one frame offline and exits.\n"
@@ -111,36 +61,96 @@ void usage() {
         "  --shadow-ray-depth N      bounces that get them            (default 1)\n"
         "  --settle                  let a still camera converge; default holds the grain\n"
         "  --background              open minimised, never take focus or the mouse\n"
-        "  --walk F                  offline: advance F m/frame, film resets as it "
-        "would when walking\n"
+        "  --walk F                  offline: advance F m/frame, film resets as it would\n"
+        "                            when walking\n"
         "  --depth N                 max path length        (default 10)\n"
         "  --rr N                    first bounce Russian roulette may kill (default 1)\n"
         "  --clamp F                 firefly ceiling on indirect light, 0 = off (default 24)\n"
         "  --out PATH                render offline to this png and exit\n"
-        "  --scale F                 viewer output res as a fraction of the window (0.70)\n"
-        "  --speed F                 walk speed, m/s                          (4.6)\n""  --eye F                   eye height, metres -- 18 voxels         (1.80)\n"
+        "  --scale F                 game resolution as a fraction of the window   (0.70)\n"
+        "                            NOT the window size -- the frame is MADE this big\n"
+        "                            and stretched up to fill the window. Under DLSS it\n"
+        "                            is what gets produced; the mode picks what is traced.\n"
+        "  --flare F                 sun glare and lens flare, 0 = off             (1.0)\n"
+        "  --rec SECONDS             record a take this long from startup, then exit\n"
+        "  --rec-fps N               recorder capture rate, frames/s                 (60)\n"
+        "  --rec-width N             cap the recording width; H.264 stops at 4096  (3840)\n"
+        "  --speed F                 walk speed, m/s; sprint is 1.85x it           (4.97)\n"
+        "  --sensitivity F           mouse look, degrees of turn per pixel         (0.12)\n"
+        "  --eye F                   eye height, metres -- 20 voxels               (2.00)\n"
         "  --seed N                  world seed            (default 20260904)\n"
-        "  --view N                  chunks of 25.6 m kept resident, radius    (12)\n"
-        "  --density F               how thick the wood is, 0..1            (0.31)\n"
-        "  --grass F                 fraction of grass columns with a strand (0.105)\n"
-        "  --grass-rows MIN MAX      strand height in voxels                 (3 6)\n"
-        "  --flowers F               how thick a flower bed is, 0..1         (0.45)\n"
-        "  --rocks F                 rock density                           (0.010)\n"
+        "  --view N                  chunks of 25.6 m kept resident, radius          (12)\n"
+        "  --density F               how thick the wood is, 0..1                 (0.2325)\n"
+        "  --grass F                 fraction of grass columns with a strand      (0.105)\n"
+        "  --grass-rows MIN MAX      strand height in voxels                        (3 6)\n"
+        "  --flowers F               how thick a flower bed is, 0..1               (0.45)\n"
+        "  --rocks F                 rock density                                (0.0075)\n"
         "  --pines DIR               folder with pine_1..9.vox\n"
-        "  --sun-az DEG --sun-el DEG sun position, offline  (default 38, 24)\n"
-        "  --time H                  viewer start hour, 0-24          (default 7)\n"
+        "  --decor DIR               folder with rocks/ and flowers.vox\n"
+        "  --sun-az DEG --sun-el DEG sun position, offline\n"
+        "  --no-atmosphere           the OLD Preetham fit instead of Hillaire\n"
+        "                            scattering -- cheaper, and its sunset freezes\n"
+        "                            once the sun is under the horizon\n"
+        "  --night-floor V           airglow/starlight the sky never goes below\n"
+        "  --blue-noise              void-and-cluster sampling on the shallow\n"
+        "                            dimensions -- same variance, less of it visible\n"
+        "  --auto-exposure           a trimmed histogram sets the stop, and adapts\n"
+        "  --exposure-key V          what the middle of the frame is aimed at\n"
+        "  --bloom V                 lens bloom strength, 0 off\n"
+        "  --bloom-threshold V       where highlights start to bloom, exposed units\n"
+        "  --time H                  viewer start hour, 0-24\n"
         "  --cycle N                 day/night speed, negative rewinds (default 1)\n"
         "                            a day is 20 minutes at 1x; X + wheel changes it\n"
         "  --turbidity F             haze, 2 clear .. 8    (default 2.8)\n"
-        "  --cam-x F --cam-z F       camera ground position (default -6, 34)\n"
+        "  --cam-x F --cam-z F       camera ground position -- naming either one also\n"
+        "                            turns off the random spawn\n"
+        "  --spawn N                 spawn seed; 0 (the default) is somewhere new every\n"
+        "                            launch. The world is unchanged -- only where in it\n"
+        "                            you wake up. Viewer only; --out keeps its camera.\n"
         "  --yaw DEG --pitch DEG     camera direction      (default 205, 7)\n"
-        "  --fov DEG                 vertical fov          (default 50)\n"
+        "  --fov DEG                 vertical fov          (default 80)\n"
         "  --aperture F              lens diameter, metres (default 0.055)\n"
         "  --focus F                 focus distance        (default: auto)\n"
-        "  --exposure F              tone-map exposure     (default 1.0)\n"
+        "  --exposure F              tone-map exposure\n"
+        "  --shadow-lift F           tone curve toe, 0.03 crushed .. 0.20 open  (0.100)\n"
         "  --fog F                   haze density          (default 0.0022)\n"
+        "  --fog-sky-under F         how much sky light reaches fog under the\n"
+        "                            canopy, 0-1. The sky fill used to be added\n"
+        "                            unshadowed, which piled up along whichever\n"
+        "                            sightline was longest and read as a sun\n"
+        "                            glare that followed the camera. 1 is that\n"
+        "                            old behaviour back            (default 0.65)\n"
+        "  --demodulate              PHASE B: split the lighting from the texture\n"
+        "                            before denoising, and multiply it back after.\n"
+        "                            Needed by NRD and the Super Resolution route;\n"
+        "                            Ray Reconstruction demodulates internally and\n"
+        "                            does NOT want it\n"
+        "  --check-demod             prove the split is lossless -- one sample in,\n"
+        "                            divided and multiplied straight back, compared\n"
+        "                            against the composited trace -- then exit\n"
+        "  --no-dlss                 turn off DLSS Ray Reconstruction and accumulate\n"
+        "                            instead -- unbiased, and far noisier while walking\n"
+        "  --dlss MODE               ultra-performance | performance | balanced |\n"
+        "                            quality | dlaa            (default quality)\n"
+        "  --shot PATH               run the viewer, write a png, quit -- the only way\n"
+        "                            to see a TEMPORAL renderer, which --out cannot\n"
+        "  --shot-frame N            how many frames first          (default 240)\n"
+        "  --shot-walk               hold W while they run\n"
+        "  --shot-ui PATH            photograph the WINDOW instead -- the crosshair and\n"
+        "                            the menu live there, not in the render\n"
+        "  --menu                    open the settings panel at startup\n"
+        "  --ground-stats            print what the ground is made of, region by region,\n"
+        "                            and what it is lit by -- sun against sky -- then exit\n"
+        "  --fly                     start in fly mode -- no collision, so a scripted\n"
+        "                            walk cannot park itself against a trunk\n"
+        "  --shot-dt F               simulated seconds per frame  (default 1/60), so\n"
+        "                            two captures cover the same ground\n"
         "  --stats                   print per-frame timings in the viewer\n"
-        "  --validation              turn on OptiX validation mode (slow)\n"
+        "  --profile                 measure --shot-frame frames and print where the\n"
+        "                            time went -- percentiles, hitches, and how much of\n"
+        "                            the main thread the streamer took. No png needed.\n"
+        "  --vulkan                  use Vulkan instead of D3D12\n"
+        "  --debug                   turn on the graphics debug layer (slow)\n"
         "  --hdr                     also write a linear .pfm\n");
 }
 
@@ -154,8 +164,15 @@ bool argInt(int argc, char **argv, int &i, int *out) {
     *out = std::atoi(argv[++i]);
     return true;
 }
+// Seeds are unsigned and use the whole range. atoi would saturate the top half
+// of it at INT_MAX, so a seed the engine printed could not be typed back in.
+bool argUint(int argc, char **argv, int &i, uint32_t *out) {
+    if (i + 1 >= argc) return false;
+    *out = uint32_t(std::strtoul(argv[++i], nullptr, 10));
+    return true;
+}
 
-bool parse(int argc, char **argv, Options *o) {
+bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--help" || a == "-h") { usage(); return false; }
@@ -163,15 +180,14 @@ bool parse(int argc, char **argv, Options *o) {
         else if (a == "--height") argInt(argc, argv, i, &o->r.height);
         else if (a == "--spp") argInt(argc, argv, i, &o->r.spp);
         else if (a == "--walk") argFloat(argc, argv, i, &o->walk);
-        else if (a == "--spf") argInt(argc, argv, i, &o->v.samplesPerFrame);
+        else if (a == "--spf") argInt(argc, argv, i, &o->samplesPerFrame);
         else if (a == "--shadow-rays") argInt(argc, argv, i, &o->r.shadowRays);
         else if (a == "--shadow-ray-depth") argInt(argc, argv, i, &o->r.shadowRayDepth);
-        else if (a == "--settle") o->v.constantGrain = false;
-        else if (a == "--background") o->v.background = true;
+        else if (a == "--settle") o->constantGrain = false;
+        else if (a == "--background") o->background = true;
         else if (a == "--depth") argInt(argc, argv, i, &o->r.maxDepth);
         else if (a == "--rr") argInt(argc, argv, i, &o->r.rrStart);
         else if (a == "--clamp") argFloat(argc, argv, i, &o->r.clampIndirect);
-        else if (a == "--trees") argInt(argc, argv, i, &o->trees);
         else if (a == "--grass") argFloat(argc, argv, i, &o->grass);
         else if (a == "--flowers") argFloat(argc, argv, i, &o->flowers);
         else if (a == "--rocks") argFloat(argc, argv, i, &o->rocks);
@@ -181,238 +197,195 @@ bool parse(int argc, char **argv, Options *o) {
             argInt(argc, argv, i, &o->grassMin);
             argInt(argc, argv, i, &o->grassMax);
         }
-        else if (a == "--extent") argFloat(argc, argv, i, &o->extent);
         else if (a == "--pines") { if (i + 1 < argc) o->pines = argv[++i]; }
         else if (a == "--decor") { if (i + 1 < argc) o->decor = argv[++i]; }
-        else if (a == "--time") { float h = 7.0f; argFloat(argc, argv, i, &h); o->v.timeOfDay = (h / 24.0f) - floorf(h / 24.0f); }
-        else if (a == "--cycle") argFloat(argc, argv, i, &o->v.cycleSpeed);
+        else if (a == "--time") {
+            float h = 7.0f;
+            argFloat(argc, argv, i, &h);
+            o->timeOfDay = (h / 24.0f) - floorf(h / 24.0f);
+        }
+        else if (a == "--cycle") argFloat(argc, argv, i, &o->cycleSpeed);
         else if (a == "--sun-az") argFloat(argc, argv, i, &o->sunAz);
         else if (a == "--sun-el") argFloat(argc, argv, i, &o->sunEl);
         else if (a == "--turbidity") argFloat(argc, argv, i, &o->turbidity);
-        else if (a == "--cam-x") argFloat(argc, argv, i, &o->camX);
-        else if (a == "--cam-z") argFloat(argc, argv, i, &o->camZ);
+        else if (a == "--cam-x") { argFloat(argc, argv, i, &o->camX); o->camGiven = true; }
+        else if (a == "--cam-z") { argFloat(argc, argv, i, &o->camZ); o->camGiven = true; }
+        else if (a == "--spawn") argUint(argc, argv, i, &o->spawnSeed);
         else if (a == "--yaw") argFloat(argc, argv, i, &o->yaw);
         else if (a == "--pitch") argFloat(argc, argv, i, &o->pitch);
         else if (a == "--eye") argFloat(argc, argv, i, &o->eye);
         else if (a == "--fov") argFloat(argc, argv, i, &o->fov);
+        else if (a == "--pinecones") argInt(argc, argv, i, &o->pineconesPerTree);
+        else if (a == "--collide-probe") o->collideProbe = true;
         else if (a == "--aperture") argFloat(argc, argv, i, &o->aperture);
         else if (a == "--focus") argFloat(argc, argv, i, &o->focus);
         else if (a == "--exposure") argFloat(argc, argv, i, &o->r.exposure);
+        else if (a == "--shadow-lift") argFloat(argc, argv, i, &o->r.shadowLift);
+        else if (a == "--deep-lift") argFloat(argc, argv, i, &o->r.deepLift);
+        else if (a == "--deep-range") argFloat(argc, argv, i, &o->r.deepRange);
         else if (a == "--fog") argFloat(argc, argv, i, &o->r.fogDensity);
-        else if (a == "--stats") o->v.stats = true;
-        else if (a == "--validation") o->validation = true;
+        else if (a == "--fog-aniso") { argFloat(argc, argv, i, &o->fogAniso); o->fogAnisoGiven = true; }
+        else if (a == "--fog-ambient") { argFloat(argc, argv, i, &o->fogAmbient); o->fogAmbientGiven = true; }
+        else if (a == "--fog-sky-under") { argFloat(argc, argv, i, &o->fogSkyUnder); o->fogSkyUnderGiven = true; }
+        else if (a == "--cloud-cut") { argFloat(argc, argv, i, &o->cloudCut); o->cloudCutGiven = true; }
+        else if (a == "--cloud-var") { argFloat(argc, argv, i, &o->cloudVar); o->cloudVarGiven = true; }
+        else if (a == "--cloud-sun") { argFloat(argc, argv, i, &o->cloudSun); o->cloudSunGiven = true; }
+        else if (a == "--atmosphere") o->atmosphere = true;
+        else if (a == "--no-atmosphere") o->atmosphere = false;
+        else if (a == "--night-floor") {
+            argFloat(argc, argv, i, &o->nightFloor);
+            o->nightFloorGiven = true;
+        }
+        else if (a == "--blue-noise") o->blueNoise = true;
+        else if (a == "--no-blue-noise") o->blueNoise = false;
+        else if (a == "--auto-exposure") o->autoExposure = true;
+        else if (a == "--no-auto-exposure") o->autoExposure = false;
+        else if (a == "--bloom") argFloat(argc, argv, i, &o->bloom);
+        else if (a == "--bloom-threshold") {
+            argFloat(argc, argv, i, &o->bloomThreshold);
+            o->bloomThresholdGiven = true;
+        }
+        else if (a == "--exposure-key") {
+            argFloat(argc, argv, i, &o->expKey);
+            o->expKeyGiven = true;
+        }
+        else if (a == "--cloud-moon-key") { argFloat(argc, argv, i, &o->cloudMoonKey); o->cloudMoonKeyGiven = true; }
+        else if (a == "--moon") { argFloat(argc, argv, i, &o->moonScale); o->moonScaleGiven = true; }
+        else if (a == "--moon-key") { argFloat(argc, argv, i, &o->moonKey); o->moonKeyGiven = true; }
+        else if (a == "--moon-phase") { argFloat(argc, argv, i, &o->moonPhase); o->moonPhaseGiven = true; }
+        else if (a == "--demodulate") o->demodulate = true;
+        else if (a == "--check-demod") { o->checkDemod = true; o->outGiven = true; }
+        else if (a == "--no-dlss") o->dlss = false;
+        else if (a == "--dlss") {
+            if (i + 1 >= argc) { std::fprintf(stderr, "v2: --dlss needs a mode\n"); return false; }
+            const std::string m = argv[++i];
+            if (m == "ultra-performance") o->dlssQuality = DlssQuality::UltraPerformance;
+            else if (m == "performance") o->dlssQuality = DlssQuality::Performance;
+            else if (m == "balanced") o->dlssQuality = DlssQuality::Balanced;
+            else if (m == "quality") o->dlssQuality = DlssQuality::Quality;
+            else if (m == "dlaa") o->dlssQuality = DlssQuality::Dlaa;
+            else {
+                std::fprintf(stderr, "v2: unknown DLSS mode %s\n", m.c_str());
+                return false;
+            }
+        }
+        else if (a == "--shot") { if (i + 1 < argc) o->shotPath = argv[++i]; }
+        else if (a == "--shot-frame") argInt(argc, argv, i, &o->shotFrame);
+        else if (a == "--shot-walk") o->shotWalk = true;
+        else if (a == "--shot-ui") { if (i + 1 < argc) o->shotUi = argv[++i]; }
+        else if (a == "--menu") o->menuAtStart = true;
+        else if (a == "--ground-stats") o->groundStats = true;
+        else if (a == "--fly") o->startFly = true;
+        else if (a == "--shot-dt") argFloat(argc, argv, i, &o->shotDt);
+        else if (a == "--stats") o->stats = true;
+        else if (a == "--profile") o->profile = true;
         else if (a == "--hdr") o->writeHdr = true;
+        else if (a == "--vulkan") *vulkan = true;
+        else if (a == "--nrc") o->nrc = true;
+        // Sky-dome next event estimation, and the irradiance cache. Both are on
+        // by default; these turn them off or retune them without a rebuild,
+        // which is also how a "did this change the picture" comparison is made.
+        else if (a == "--sky-rays") argInt(argc, argv, i, &o->r.skyRays);
+        else if (a == "--sky-ray-depth") argInt(argc, argv, i, &o->r.skyRayDepth);
+        else if (a == "--no-sky-nee") o->r.skyRays = 0;
+        // 0 none, 1 DDGI probes, 2 SHaRC.
+        else if (a == "--gi") argInt(argc, argv, i, &o->r.giMode);
+        else if (a == "--no-gi") o->r.giMode = 0;
+        else if (a == "--gi-depth") argInt(argc, argv, i, &o->r.giDepth);
+        else if (a == "--gi-strength") argFloat(argc, argv, i, &o->r.giStrength);
+        else if (a == "--cluster-test") o->clusterTest = true;
+
+        // Debug switches: the two halves of the reuse, separately, so a bias can
+        // be attributed to one of them instead of guessed at.
+        else if (a == "--fg") {
+            if (i + 1 < argc) {
+                const std::string m = argv[++i];
+                o->frameGen = (m == "2x")   ? FrameGen::On2x
+                              : (m == "3x") ? FrameGen::On3x
+                              : (m == "4x") ? FrameGen::On4x
+                                            : FrameGen::Off;
+            }
+        }
+        else if (a == "--debug") *debugLayer = true;
         else if (a == "--seed") { int s = 0; argInt(argc, argv, i, &s); o->r.seed = uint32_t(s); }
-        else if (a == "--scale") argFloat(argc, argv, i, &o->v.scale);
-        else if (a == "--speed") argFloat(argc, argv, i, &o->v.speed);
+        else if (a == "--scale") argFloat(argc, argv, i, &o->scale);
+        else if (a == "--flare") { argFloat(argc, argv, i, &o->flare); o->flareGiven = true; }
+        else if (a == "--rec") argFloat(argc, argv, i, &o->recSeconds);
+        else if (a == "--rec-fps") argInt(argc, argv, i, &o->recFps);
+        else if (a == "--rec-width") argInt(argc, argv, i, &o->recMaxWidth);
+        else if (a == "--speed") argFloat(argc, argv, i, &o->speed);
+        else if (a == "--sensitivity") argFloat(argc, argv, i, &o->sensitivity);
         else if (a == "--out" || a == "--render") {
             if (i + 1 < argc) { o->out = argv[++i]; o->outGiven = true; }
         }
-        else { std::fprintf(stderr, "v2: unknown option %s\n", a.c_str()); usage(); return false; }
+        else {
+            std::fprintf(stderr, "v2: unknown option %s\n", a.c_str());
+            usage();
+            return false;
+        }
     }
     return true;
-}
-
-double secondsSince(std::chrono::steady_clock::time_point t0) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-}
-
-// The device artefacts sit next to the exe and are NAMED AFTER IT: v2.exe
-// loads v2.optixir, v2_test.exe loads v2_test.optixir.
-//
-// That is not tidiness. LaunchParams is shared between host and device, so an
-// exe and an optixir built from different revisions of it disagree about where
-// every field lives, and the device code reads the wrong offsets -- which
-// surfaces as an illegal address at launch and looks like a GPU fault rather
-// than a stale build. A test build used to overwrite the artefacts the real exe
-// loads, and broke it without touching it.
-//
-// Resolving from argv[0] rather than the working directory also means the .bat
-// can be double-clicked from anywhere.
-std::string beside(const char *argv0, const char *name) {
-    std::string p(argv0 ? argv0 : "");
-    const size_t cut = p.find_last_of("/\\");
-    return (cut == std::string::npos ? std::string() : p.substr(0, cut + 1)) + name;
-}
-
-// "<exe stem><suffix>", so the artefacts follow whatever this binary is called.
-std::string artifact(const char *argv0, const char *suffix) {
-    std::string p(argv0 ? argv0 : "v2");
-    const size_t cut = p.find_last_of("/\\");
-    std::string dir = (cut == std::string::npos) ? std::string() : p.substr(0, cut + 1);
-    std::string stem = (cut == std::string::npos) ? p : p.substr(cut + 1);
-    const size_t dot = stem.find_last_of('.');
-    if (dot != std::string::npos) stem = stem.substr(0, dot);
-    return dir + stem + suffix;
-}
-
-int run(int argc, char **argv) {
-    Options o;
-    if (!parse(argc, argv, &o)) return 0;
-    if (o.r.width < 8 || o.r.height < 8 || o.r.spp < 1) {
-        std::fprintf(stderr, "v2: nonsensical image parameters\n");
-        return 1;
-    }
-    o.v.width = o.r.width;
-    o.v.height = o.r.height;
-    o.v.sunAz = o.sunAz;
-    o.v.sunEl = o.sunEl;
-    o.v.trees = o.trees;
-    o.v.eye = o.eye;
-    o.v.scale = clampf(o.v.scale, 0.15f, 2.0f);
-
-    // -----------------------------------------------------------------------
-    // Device
-    // -----------------------------------------------------------------------
-    Pipeline pipe;
-    pipe.initContext(o.validation);
-    char devName[256] = {0};
-    pipe.deviceName(devName, sizeof(devName));
-    std::printf("v2 -- OptiX %d.%d.%d on %s\n", OPTIX_VERSION / 10000,
-                (OPTIX_VERSION % 10000) / 100, OPTIX_VERSION % 100, devName);
-
-    auto t0 = std::chrono::steady_clock::now();
-    pipe.buildPipeline(artifact(argv[0], ".optixir"), o.r.maxDepth);
-    std::printf("  pipeline %.2f s\n", secondsSince(t0));
-
-    // -----------------------------------------------------------------------
-    // World
-    // -----------------------------------------------------------------------
-    t0 = std::chrono::steady_clock::now();
-    GpuScene scene;
-    scene.seed = o.r.seed;
-    scene.terrain.grassDensity = clampf(o.grass, 0.0f, 1.0f);
-    scene.flowerDensity = clampf(o.flowers, 0.0f, 1.0f);
-    scene.rockDensity = clampf(o.rocks, 0.0f, 1.0f);
-    scene.treeDensity = clampf(o.treeDensity, 0.0f, 1.0f);
-    scene.decorDir = o.decor;
-    scene.viewChunks = mini(15, maxi(1, o.view));
-    scene.terrain.grassMinRows = maxi(1, o.grassMin);
-    scene.terrain.grassMaxRows = maxi(o.grassMin, o.grassMax);
-    // A stream of its own, so re-seeding the wood does not also reshuffle every
-    // blade of grass in it -- the two are independent things to want varied.
-    scene.terrain.strandSeed = o.r.seed + 991u;
-    scene.pineDir = o.pines;
-    scene.sky.turbidity = o.turbidity;
-    scene.sky.setSun(o.sunAz, o.sunEl);
-    if (!scene.build(pipe.context())) return 1;
-    pipe.buildSbt(scene.hitGroups());
-
-    // From here a chunk can publish its own SBT record when it takes a slot.
-    scene.sbtOwner = &pipe;
-    scene.sbtWrite = [](void *owner, unsigned index, const HitGroupData &d) {
-        static_cast<Pipeline *>(owner)->writeHitRecord(index, d);
-    };
-
-    std::printf("  models   %.2f s -- %d pines, %d rocks, %d flowers, %d materials\n",
-                secondsSince(t0), scene.loadedPines, scene.loadedRocks, scene.loadedFlowers,
-                scene.palette.used());
-    std::printf("           %.2f M unique tris in %d models at %.0f cm voxels\n",
-                scene.uniqueTris / 1e6, scene.loadedPines + scene.loadedRocks +
-                    scene.loadedFlowers, VOXEL_M * 100.0f);
-    std::printf("           %.2f GB of video memory free after the build\n",
-                double(pipe.freeVideoMemory()) / (1024.0 * 1024.0 * 1024.0));
-
-    // Fill the ring before the first frame, so nobody sees a hole in the
-    // ground while the workers catch up.
-    t0 = std::chrono::steady_clock::now();
-    {
-        const float gy = scene.terrain.heightM(o.camX, o.camZ);
-        scene.primeBlocking(Vec3(o.camX, gy + o.eye, o.camZ));
-    }
-    std::printf("  world    %.2f s -- %zu chunks of %.1f m resident, %.1f M tris, %zu instances\n",
-                secondsSince(t0), scene.chunkCount(), CHUNK_M, scene.residentTris() / 1e6,
-                scene.instanceCount());
-    std::printf("           %.0f ms of that was GPU structure building\n", scene.gasMs());
-
-    Renderer renderer;
-    renderer.init(&pipe, &scene, artifact(argv[0], "_tonemap.ptx"));
-
-    // -----------------------------------------------------------------------
-    // Camera
-    // -----------------------------------------------------------------------
-    Camera cam;
-    const float groundY = scene.terrain.heightM(o.camX, o.camZ);
-    cam.origin = Vec3(o.camX, groundY + o.eye, o.camZ);
-    cam.target = cam.origin + Camera::direction(o.yaw, o.pitch) * 50.0f;
-    cam.fovDeg = o.fov;
-    cam.aperture = o.aperture;
-    cam.focusDist = o.focus > 0.0f ? o.focus : 40.0f;
-    std::printf("  camera   (%.1f, %.1f, %.1f) fov %.0f focus %.1f m\n", cam.origin.x, cam.origin.y,
-                cam.origin.z, cam.fovDeg, cam.focusDist);
-
-    // -----------------------------------------------------------------------
-    // Interactive, unless an output file was named
-    // -----------------------------------------------------------------------
-    if (!o.outGiven) {
-        Viewer viewer(scene, renderer, o.r, o.v);
-        return viewer.run(cam.origin, o.yaw, o.pitch, o.fov);
-    }
-
-    // -----------------------------------------------------------------------
-    // Render one frame
-    // -----------------------------------------------------------------------
-    renderer.resize(o.r.width, o.r.height);
-
-    const CameraGPU gcam = cam.gpu(renderer.renderWidth(), renderer.renderHeight());
-    const Vec3 walkDir = normalize(cam.target - cam.origin);
-    t0 = std::chrono::steady_clock::now();
-    for (int s = 0; s < o.r.spp; ++s) {
-        CameraGPU g = gcam;
-        if (o.walk > 0.0f) {
-            Camera moved = cam;
-            const Vec3 step = walkDir * (o.walk * float(s));
-            moved.origin = cam.origin + step;
-            moved.target = cam.target + step;
-            g = moved.gpu(renderer.renderWidth(), renderer.renderHeight());
-            // The film is thrown away every frame, exactly as it is when the
-            // camera actually moves. This IS the thing being complained about:
-            // a still image converges, a moving one is back to one sample.
-            renderer.resetAccumulation();
-        }
-        renderer.renderSample(g, o.r);
-        if ((s % 16) == 15 || s + 1 == o.r.spp) {
-            renderer.sync();
-            std::printf("\r  render   %5.1f%%  (%.1f s)", 100.0 * (s + 1) / o.r.spp,
-                        secondsSince(t0));
-            std::fflush(stdout);
-        }
-    }
-    renderer.sync();
-    const double renderSec = secondsSince(t0);
-    std::printf("\r  render   %.2f s -- %.1f Mpaths/s                    \n", renderSec,
-                double(o.r.width) * o.r.height * o.r.spp / renderSec / 1e6);
-
-    renderer.resolve(o.r);
-    renderer.sync();
-
-    std::vector<unsigned char> rgba;
-    renderer.downloadDisplay(&rgba);
-    if (!writePng(o.out, rgba, renderer.outWidth(), renderer.outHeight())) {
-        std::fprintf(stderr, "v2: could not write %s\n", o.out.c_str());
-        return 1;
-    }
-    std::printf("  wrote    %s\n", o.out.c_str());
-
-    if (o.writeHdr) {
-        std::vector<float> linear;
-        renderer.downloadLinear(&linear);
-        const std::string p = o.out.substr(0, o.out.find_last_of('.')) + ".pfm";
-        writePfm(p, linear, renderer.outWidth(), renderer.outHeight());
-        std::printf("  wrote    %s\n", p.c_str());
-    }
-    return 0;
 }
 
 }  // namespace
 
 int main(int argc, char **argv) {
-    // Every CUDA and OptiX failure in this engine arrives as an exception
-    // carrying the call that failed and the driver's own description of why.
-    // Catching them here means the exit path prints that instead of the
-    // "terminate called after throwing" that an uncaught one would.
+    Options o;
+    bool vulkan = false, debugLayer = false;
+    if (!parse(argc, argv, &o, &vulkan, &debugLayer)) return 0;
+    if (o.r.width < 8 || o.r.height < 8 || o.r.spp < 1) {
+        std::fprintf(stderr, "v2: nonsensical image parameters\n");
+        return 1;
+    }
+    o.scale = clampf(o.scale, 0.10f, 2.0f);
+
+    // -- Streamline, BEFORE Falcor exists --------------------------------
+    //
+    // slInit has to run before the D3D12 device is created, because what
+    // Streamline does is stand underneath device and swapchain creation. Once
+    // Falcor has made a real device it is too late -- there is nothing left to
+    // interpose on, and Frame Generation has nowhere to put a frame.
+    //
+    // That is why this is in main() and not in onLoad(): SampleApp creates the
+    // device in its own constructor, so onLoad is already past the point of no
+    // return. See gpu/streamline.h for the whole mechanism.
+    //
+    // Vulkan is skipped deliberately. This integration is D3D12 -- it asks for
+    // sl::RenderAPI::eD3D12 and hands Streamline an ID3D12Device -- and calling
+    // it on a Vulkan run would initialise a Streamline that then refuses every
+    // feature, printing failures for something nobody asked for.
+    // UNCONDITIONAL, matching v6. Guarding this on the backend looked tidy --
+    // the integration is D3D12 -- but preInit only loads the interposer and
+    // resolves entry points; it is init() that needs a device. Skipping it on
+    // Vulkan changed nothing there and was one more way for the two engines to
+    // differ while chasing why frame generation was inert.
+    Streamline::preInit(Falcor::getRuntimeDirectory());
+
+    SampleAppConfig c;
+    c.deviceDesc.type = vulkan ? Falcor::Device::Type::Vulkan : Falcor::Device::Type::D3D12;
+    c.deviceDesc.enableDebugLayer = debugLayer;
+    c.windowDesc.width = o.r.width;
+    c.windowDesc.height = o.r.height;
+    c.windowDesc.title = o.background ? "v2 [background] -- pine forest (Falcor)"
+                                      : "v2 -- pine forest (Falcor)";
+    c.windowDesc.resizableWindow = true;
+    // Straight to the taskbar rather than shown and then minimised: the latter
+    // flashes a window across whatever the person at the keyboard is looking at.
+    if (o.background) c.windowDesc.mode = Falcor::Window::WindowMode::Minimized;
+    // No window at all for an offline render. SampleApp then skips the message
+    // loop and simply runs, which is exactly what a one-frame render wants.
+    c.headless = o.outGiven;
+
+    // Every device failure in this engine arrives as an exception carrying the
+    // call that failed and the driver's own description of why. Catching it
+    // here means the exit path prints that, rather than the "terminate called
+    // after throwing" an uncaught one would.
     try {
-        return run(argc, argv);
+        ForestApp app(c, o);
+        std::printf("v2 -- Falcor 8.0, %s, on %s\n", vulkan ? "Vulkan" : "D3D12",
+                    app.getDevice()->getInfo().adapterName.c_str());
+        std::fflush(stdout);
+        return app.run();
     } catch (const std::exception &e) {
         std::fprintf(stderr, "\nv2: %s\n", e.what());
         return 1;

@@ -6,7 +6,7 @@
 # never reach anyone. The NATIVE engines had no equivalent, and the failure they
 # produce is worse, because nothing reports it:
 #
-#   * A pull changes v7/shaders/Trace.cs.slang. The exe on disk is unchanged and
+#   * A pull changes v2/shaders/Trace.cs.slang. The exe on disk is unchanged and
 #     still runs -- Falcor compiles shaders at startup, so the picture silently
 #     becomes a mixture of last week's C++ and today's shader. If a binding was
 #     added on either side, the dispatch fails with an unbound resource and the
@@ -45,25 +45,23 @@ cd "$(git rev-parse --show-toplevel)" 2>/dev/null || exit 0
 
 [ -n "$VOXELBIT_NO_AUTOBUILD" ] && { echo "rebuild-engines: skipped (VOXELBIT_NO_AUTOBUILD)"; exit 0; }
 
-# Where each engine's exe lands. Used for two things: the name of the process to
-# check for, and proof that the engine has ever been built at all -- there is no
-# point spending four minutes on a first build of something this pull merely
-# grazed, so an engine with no exe is left for its own build.bat.
+# Where the engine's exe lands. Used for two things: the name of the process to
+# check for, and proof that it has ever been built at all -- there is no point
+# spending four minutes on a first build of something this pull merely grazed,
+# so an engine with no exe is left for its own build.bat.
+#
+# ONE ENGINE NOW. v2, v4, v5 and v6 were deleted; this was written when there
+# were five and the shape it kept -- a list, a lookup per engine -- is why
+# adding another one back is a two-line change rather than a rewrite.
 engine_exe() {
-    case "$1" in
-        v2) echo "v2/build/v2.exe" ;;
-        v5) echo "v5/target/release/v5.exe" ;;
-        *)  echo "$1/build/bin/Release/$1.exe" ;;
-    esac
+    echo "$1/build/bin/Release/$1.exe"
 }
 
-# The Falcor engines copy shaders/ into their runtime tree at build time. v2 is
-# OptiX and v5 is Rust with its shaders compiled in, so neither has one.
+# Falcor copies shaders/ into the runtime tree at build time, and only ever
+# COPIES -- so a shader deleted from source lingers there until something prunes
+# it. That something is below.
 engine_shader_dir() {
-    case "$1" in
-        v4|v6|v7) echo "$1/build/bin/Release/shaders/$1/shaders" ;;
-        *) echo "" ;;
-    esac
+    echo "$1/build/bin/Release/shaders/$1/shaders"
 }
 
 running() {
@@ -82,7 +80,7 @@ running() {
 # range to read and nothing is built, because "I cannot tell what changed" must
 # never mean "rebuild everything".
 # ---------------------------------------------------------------------------
-ALL="v2 v4 v5 v6 v7"
+ALL="v2"
 if [ $# -gt 0 ]; then
     CHANGED="$*"
 else

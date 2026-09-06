@@ -8,9 +8,21 @@
 // the exception, and knowingly so -- see kBobRate.
 //
 //     WALK 46 vox/s   -> 4.6 m/s        JUMP 66 vox/s -> 6.6 m/s
-//     (both since raised -- see walk and jumpVel)
+//     (jump since raised -- see jumpVel; the walk went up to 9.2 and has
+//      since come back to 4.97, which is within a rounding error of the
+//      original 4.6 -- see the note on walk)
 //     SPRINT x1.85                      GRAVITY 200   -> 20 m/s^2
-//     EYE 18 vox      -> 1.80 m         HEIGHT 20 vox -> 2.00 m
+//     EYE 20 vox      -> 2.00 m         (was 18; see below)
+//
+// THE EYE IS THE ONLY HEIGHT THIS ENGINE HAS. The table above used to carry
+// both an eye at 18 voxels and a height at 20, which is the right relationship
+// for a body -- the top of a head is a couple of voxels above the eyes in it.
+// But nothing ever read the second number: collision is a vertical cylinder
+// tested in x and z, there is no head to bump on anything, and the camera is
+// the whole of the figure as far as the engine is concerned. So a "height" of
+// 20 that put the viewpoint at 18 was a figure that measured 20 on paper and
+// stood 1.8 m in the world, which is what it looked like. The eye is 20 voxels
+// now and the number means what it says.
 //
 // Gravity is 20 m/s^2, not 9.81. Real gravity makes a jump feel like a moon
 // landing -- the arc is right but it takes twice as long, and the hang time
@@ -68,7 +80,25 @@ class Player {
     bool onGround = false;
     bool fly = false;
 
-    float walk = 9.2f;        // m/s -- the JS engine's 4.6, doubled
+    // THE WHOLE GAIT MOVED DOWN ONE STEP: what used to be a walk is now a run.
+    //
+    // 9.2 m/s on foot was a sprinter's pace held indefinitely, and sprinting
+    // from it reached 17 -- fast enough that the chunk streamer, not the
+    // terrain, was setting how far you could see. The anchor for the new
+    // numbers is that OLD WALK, kept exactly, as the new top speed:
+    //
+    //     run  = walk * sprintMul = 4.97 * 1.85 = 9.19  (the old 9.2 walk)
+    //     walk = 4.97                                    (a brisk walk)
+    //
+    // So this is 9.2 / 1.85 rather than a round number, and it is written that
+    // way round on purpose: the thing being preserved is the sprint, and the
+    // walk is whatever falls out of it. Change sprintMul and this has to move
+    // with it or the old walk stops being the new run.
+    //
+    // Nothing else needed touching. The head bob is expressed as a fraction of
+    // `walk` (see updateBob), so the gait rescales itself, and fly mode is
+    // walk * 3 and comes down with it.
+    float walk = 4.97f;       // m/s -- old walk / sprintMul, so sprint == old walk
     float sprintMul = 1.85f;
     // The port's was 6.6 (JUMP 66 vox/s), which apexes at 1.09 m. Raised 50%
     // in HEIGHT on the user's ask -- and height goes as v^2/2g, so that is
@@ -77,7 +107,8 @@ class Player {
     // 1.5x the velocity would have been a 2.45 m moon jump.
     float jumpVel = 8.08f;    // m/s up at the moment of the jump; apex 1.63 m
     float gravity = 20.0f;    // m/s^2
-    float eye = 1.80f;        // 18 voxels
+    float eye = 2.00f;        // 20 voxels -- and the whole of the figure,
+                              // since nothing is modelled above the eye
     float halfWidth = 0.26f;  // 2.6 voxels, as in the JS engine
 
     // How far up a step can be climbed without jumping, and how far down the
@@ -87,6 +118,11 @@ class Player {
     // downhill is a series of tiny falls.
     float stepUp = 0.62f;
     float stepDown = 0.62f;
+
+    // How much faster each successive mushroom throws you, and the ceiling on
+    // it. 3x the jump speed is 9x the jump height.
+    static constexpr float kBounceGain = 1.35f;
+    static constexpr float kBounceMax = 3.0f;
 
     // How fast the eye catches up after a step, per second. 18 is about a
     // 55 ms tail: long enough to remove the jolt, short enough that the view
@@ -167,11 +203,27 @@ class Player {
             if (!onGround) {
                 vy -= gravity * dt;
                 pos.y += vy * dt;
-                const float g = groundHeight(w, pos.x, pos.z);
-                if (pos.y <= g && vy <= 0.0f) {
-                    pos.y = g;
-                    vy = 0.0f;
-                    onGround = true;
+                const Ground g = groundInfo(w, pos.x, pos.z);
+                if (pos.y <= g.y && vy <= 0.0f) {
+                    pos.y = g.y;
+                    if (g.bouncy) {
+                        // COMPOUNDING, AND CAPPED. Each landing multiplies the
+                        // launch speed, so a run of mushrooms throws you higher
+                        // every time -- and since height goes as the SQUARE of
+                        // the speed, the cap is on the speed and is still worth
+                        // nine times the jump in altitude. Uncapped this is not
+                        // a trampoline, it is an escape from the atmosphere in
+                        // about a dozen hops.
+                        bounceMul_ = minf(bounceMul_ * kBounceGain, kBounceMax);
+                        vy = jumpVel * bounceMul_;
+                        onGround = false;
+                    } else {
+                        vy = 0.0f;
+                        onGround = true;
+                        // The chain only survives while you keep finding
+                        // mushrooms: touch real ground and it is spent.
+                        bounceMul_ = 1.0f;
+                    }
                 }
             }
         }
@@ -192,22 +244,75 @@ class Player {
     // they are standing against. A rock is not sampled but INTERSECTED, because
     // a stone can be narrower than the gap between two corners, and a collider
     // a body can straddle is a collider that flickers.
-    float groundHeight(const WalkWorld &w, float x, float z) const {
+    // What the feet are resting on: how high, and whether it throws you back.
+    struct Ground {
+        float y = -1e9f;
+        bool bouncy = false;
+    };
+
+    // THE COLUMN, NOT THE CYLINDER. The old version took a standable solid's
+    // single `top` -- the model's highest voxel -- for every point inside its
+    // footprint ellipse, which turns a domed boulder into a flat drum. You
+    // could stand on air a metre out from the stone, and the surface you landed
+    // on was nowhere near the one you could see.
+    //
+    // Now each candidate is asked for the height of the actual voxel column
+    // under the body, and a body that is off the model or over an empty column
+    // gets no answer at all rather than the top of the whole rock.
+    //
+    // SAMPLED AT FIVE POINTS, the four corners and the centre, and the HIGHEST
+    // wins -- the same rule the terrain already used and for the same reason:
+    // one sample at the centre lets half the body sink into the step it is
+    // standing against.
+    Ground groundInfo(const WalkWorld &w, float x, float z) const {
         const float hw = halfWidth;
-        float best = -1e9f;
+        Ground g;
         for (int c = 0; c < 4; ++c) {
             const float cx = x + ((c & 1) ? hw : -hw);
             const float cz = z + ((c & 2) ? hw : -hw);
             const int i = int(floorf(cx / VOXEL_M));
             const int j = int(floorf(cz / VOXEL_M));
-            best = maxf(best, float(w.terrain->heightVox(i, j) + 1) * VOXEL_M);
+            g.y = maxf(g.y, float(w.terrain->heightVox(i, j) + 1) * VOXEL_M);
         }
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
-            if (!s.standable || s.top <= best) continue;
-            if (touches(s, x, z, hw)) best = s.top;
+            // `top` is the model's highest voxel, so it still works as a cheap
+            // rejection: nothing in this model can be above it.
+            if (!s.standable || s.top <= g.y) continue;
+            // THE MODEL'S FOOTPRINT, NOT THE WALL ELLIPSE -- see overModel.
+            // `touches` is measured over the bottom two metres, so it rejected
+            // a body standing on the wide middle of a big boulder and dropped
+            // it through the stone. Anything without a column heightfield has
+            // no better answer available and keeps the old test.
+            if (s.col ? !overModel(s, x, z, VOXEL_M, hw) : !touches(s, x, z, hw)) continue;
+
+            float hit = -1e9f;
+            bool any = false;
+            for (int c = 0; c < 5; ++c) {
+                const float sx = x + ((c == 4) ? 0.0f : ((c & 1) ? hw : -hw));
+                const float sz = z + ((c == 4) ? 0.0f : ((c & 2) ? hw : -hw));
+                float y = 0.0f;
+                if (solidColumnTop(s, sx, sz, VOXEL_M, &y)) {
+                    hit = maxf(hit, y);
+                    any = true;
+                }
+            }
+            // No heightfield on this model: fall back to the old flat top
+            // rather than letting the body through it.
+            if (!any && !s.col) {
+                hit = s.top;
+                any = true;
+            }
+            if (any && hit > g.y) {
+                g.y = hit;
+                g.bouncy = s.bouncy;
+            }
         }
-        return best;
+        return g;
+    }
+
+    float groundHeight(const WalkWorld &w, float x, float z) const {
+        return groundInfo(w, x, z).y;
     }
 
     // True if the body at (x, z) is inside something that is a wall at every
@@ -244,6 +349,9 @@ class Player {
     // decaying toward zero; never read by anything that decides where the body
     // is.
     float stepLag_ = 0.0f;
+    // 1.0 until the first mushroom; multiplied by every one after it, and spent
+    // the moment the feet find ordinary ground.
+    float bounceMul_ = 1.0f;
 
     void moveAxis(const WalkWorld &w, int axis, float d) {
         if (d == 0.0f) return;

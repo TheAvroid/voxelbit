@@ -43,9 +43,9 @@ python tools/vbtest.py     # boots the real game in a browser and diffs it vs a 
 [`docs/architecture.md`](docs/architecture.md) is the map — what every fragment owns, and
 the four things in here that do not behave like ordinary code.
 
-## The native engine (v7)
+## The native engine (v2)
 
-The browser game above is the original. `v7/` is a second renderer that shares its
+The browser game above is the original. `v2/` is a second renderer that shares its
 world and its look but not a line of its code: a path tracer on NVIDIA Falcor and
 DXR, in C++ and Slang, built to see how far the same forest goes with hardware ray
 tracing under it.
@@ -68,15 +68,20 @@ tracer:
 - **PhysX 5**, CUDA interop, and RTX Mega Geometry clusters.
 
 ```
-v7\build.bat        # build it
-v7.bat              # run it, --help for every option
-v7.bat --vulkan     # the Vulkan path: neural shaders, no DLSS
+v2\build.bat        # build it
+v2.bat              # run it, --help for every option
+v2.bat --vulkan     # the Vulkan path: neural shaders, no DLSS
 ```
 
-It needs an RTX card and the SDKs it links; `v7/CMakeLists.txt` says which, and
+It needs an RTX card and the SDKs it links; `v2/CMakeLists.txt` says which, and
 every one of them degrades to "unavailable" at startup rather than failing to
-build. `v2/`, `v4/` and `v5/` are earlier attempts kept for comparison — OptiX,
-Falcor with inline RT, and Bevy Solari respectively.
+build.
+
+There used to be five of these. Earlier attempts on OptiX, on Falcor with inline
+ray tracing, on Bevy Solari and a Rust spectral renderer sat side by side for
+comparison for a while; they were deleted in September 2026 once this one had
+overtaken all of them, and they remain in the git history for anyone who wants a
+look. This engine was called `v7` while they existed and took `v2` afterwards.
 
 ## Contributing
 

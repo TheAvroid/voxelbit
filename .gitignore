@@ -4,6 +4,14 @@
 #            and mostly NOT tracked — see below. Back this up separately.
 #   tools/   build scripts + the local dev server.
 #   docs/    plans and notes.
+#   src/     the browser engine as ordered fragments -- see src/manifest.txt.
+#            game/index.html is BUILT from these and is never hand-edited.
+#   v2/      the native engine: the voxel pine forest, path traced on Falcor.
+#
+# 2026-09-06: v4, v5, v6 and the old OptiX v2 were deleted, and the Falcor
+# engine that had been v7 took the name v2. Two engines remain -- start.bat
+# for the browser one, v2.bat for the native one -- and the rules below were
+# pruned to match, so nothing here names an engine that no longer exists.
 #
 # git here is for the CODE and the RUNTIME assets that make it run. Source art is
 # binary, effectively static, does not need per-line history, and makes every git
@@ -71,17 +79,7 @@ renders/
 v2_shot_*.png
 
 # ── 2026-09-06: build output and scratch that must not reach GitHub ───────────
-# rust/target is 335 MB of cargo build output and rust/shots 23 MB of captures.
-# Committing either makes a clone unusable and neither is reproducible input.
-rust/target/
-rust/shots/
-# Debug dumps from v6 frame-generation runs, and a scratch screenshot. Logs of
-# one session on one machine; they answer no question a later reader will have.
-auto2.txt
-dbgout.txt
-fgb.txt
-fgtest.txt
 q.png
 # Video captures written by the in-engine recorder. Output, not input.
-v7_take_*.mp4
+v2_take_*.mp4
 *.mp4

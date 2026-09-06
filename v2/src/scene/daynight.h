@@ -43,16 +43,24 @@ class DayNight {
 
     // Which compass direction the arc is anchored to at NOON, and how high it
     // climbs there. 68 and 48 are chosen together so that the default 08:00
-    // start reproduces v4's sun exactly -- azimuth 38, elevation 24 -- which is
+    // start reproduces the Embree engine's sun exactly -- azimuth 38, elevation 24 --
     // the light every reference image of this scene was made under.
     float azimuthBase = 68.0f;
     float peakElevation = 48.0f;
+
+    // WHOLE DAYS ELAPSED, signed, which is what the moon phase runs on. A phase
+    // needs a clock longer than one day and tday only carries the fraction, so
+    // without this every night would show the same moon.
+    float days = 0.0f;
 
     void advance(float dt) {
         if (paused) return;
         // The wrap is `raw - floor(raw)` rather than fmod, so it is correct for
         // a NEGATIVE raw too -- which is the whole point of a signed speed.
         const float raw = tday + dt * cycleSpeed / DAY_SECONDS;
+        // floorf, not a wrap test: it is correct for a NEGATIVE raw too, so
+        // running the cycle backwards runs the moon back through its phases.
+        days += floorf(raw);
         tday = raw - floorf(raw);
     }
 
@@ -87,11 +95,43 @@ class DayNight {
         return peakElevation * sinf(theta);
     }
 
-    // A HALF TURN ACROSS THE DAY, not a full one. Sweeping 360 degrees of
-    // compass in a day put the sun in the north at breakfast and had it running
-    // the wrong way round the sky; a real one rises east, crosses south, sets
-    // west -- about 180 degrees, centred on noon.
-    float azimuthDeg() const { return azimuthBase + (tday - 0.5f) * 180.0f; }
+    // A HALF TURN ACROSS THE DAYLIGHT, and the REST OF THE TURN AT NIGHT.
+    //
+    // The daylight half is unchanged and the reasoning behind it still holds:
+    // sweeping a uniform 360 degrees of compass across the day put the sun in
+    // the north at breakfast and ran it the wrong way round the sky, where a
+    // real one rises east, crosses south and sets west.
+    //
+    // WHAT THAT MODEL COULD NOT DO IS MEET ITSELF AT MIDNIGHT. Half a turn per
+    // day means tday 1.0 gives azimuthBase + 90 and tday 0.0 gives
+    // azimuthBase - 90, so the wrap was a 180 DEGREE JUMP. The sun is 48
+    // degrees under the horizon at that moment so nobody ever saw it move --
+    // but the moon is antipodal to the sun (Sky::moonDir), which puts it at
+    // +48 degrees, high and in plain view, and it teleported across the sky
+    // from one side to the other in a single frame. The night sky's own tint
+    // follows sunDir and swung with it. That was "the moon resets".
+    //
+    // So the sun now completes a FULL turn every day, just not at a uniform
+    // rate: 90 degrees spread across the twelve daylight hours, and the
+    // remaining 270 covered at night, passing under the north at midnight.
+    // Which is what the real one does. Continuous at both handovers by
+    // construction -- dawn and dusk are exactly where the elevation above
+    // crosses zero, tday 0.25 and 0.75, so the two branches meet at the same
+    // azimuth rather than merely close to it.
+    //
+    // A pleasant consequence rather than a fix: the full moon is now due south
+    // and at its highest at midnight, which is where a full moon belongs.
+    float azimuthDeg() const {
+        if (tday >= 0.25f && tday <= 0.75f)     // daylight: the arc as it was
+            return azimuthBase + (tday - 0.5f) * 180.0f;
+        // Night, covering the other 270 degrees over the other half of the day.
+        // Written as two branches around midnight rather than one modular
+        // expression so that each is obviously continuous with the daylight arc
+        // it touches.
+        if (tday > 0.75f)
+            return azimuthBase + 45.0f + (tday - 0.75f) * 540.0f;   // dusk -> north
+        return azimuthBase + 180.0f + tday * 540.0f;                // north -> dawn
+    }
 
     bool isNight() const { return elevationDeg() <= 0.0f; }
 

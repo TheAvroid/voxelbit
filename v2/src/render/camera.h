@@ -7,21 +7,19 @@
 // the frame is actually about and lets the rest fall away -- and because this
 // is a path tracer, it costs nothing but the lens sample.
 //
-// The only difference from v4's version is where the work happens. There the
-// camera generated rays itself, once per pixel per sample, on the CPU. Here it
-// produces a CameraGPU -- a basis and two half-extents -- and the raygen
-// program does the per-pixel arithmetic. All the trigonometry is on this side,
-// evaluated once a frame instead of two million times.
+// All the trigonometry is on this side, evaluated once a frame rather than two
+// million times: what crosses to the GPU is a basis and two half-extents, and
+// the tracer does one multiply-add per pixel with it.
 //
 // A NOTE ON DEPTH OF FIELD IN THE VIEWER: it is deliberately off there. An
-// aperture spreads each pixel's samples over the whole lens, which is exactly
-// the correlation a temporal upscaler cannot reconstruct through -- the history
-// it is blending was drawn through a different part of the lens. Stills get the
-// aperture; the interactive path gets a pinhole.
+// aperture spreads each pixel's samples over the whole lens, which correlates
+// them in a way nothing downstream can undo; stills get the aperture, the
+// interactive path gets a pinhole.
 // ---------------------------------------------------------------------------
 #pragma once
 
-#include "../optix/params.h"
+#include "../../shaders/Shared.slang"
+#include "../core/vecmath.h"
 
 namespace v2 {
 
@@ -34,12 +32,16 @@ class Camera {
     float aperture = 0.0f;   // lens diameter in metres; 0 is a pinhole
     float focusDist = 0.0f;  // metres; 0 means focus on the target
 
-    CameraGPU gpu(int width, int height) const {
-        CameraGPU c;
-        c.pos = origin;
-        c.w = normalize(target - origin);
-        c.u = normalize(cross(c.w, up));
-        c.v = cross(c.u, c.w);
+    V6Camera gpu(int width, int height) const {
+        const Vec3 w = normalize(target - origin);
+        const Vec3 u = normalize(cross(w, up));
+        const Vec3 v = cross(u, w);
+
+        V6Camera c{};
+        c.pos = float3(origin.x, origin.y, origin.z);
+        c.w = float3(w.x, w.y, w.z);
+        c.u = float3(u.x, u.y, u.z);
+        c.v = float3(v.x, v.y, v.z);
 
         const float theta = fovDeg * PI / 180.0f;
         c.halfH = tanf(theta * 0.5f);

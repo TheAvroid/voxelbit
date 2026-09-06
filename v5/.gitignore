@@ -1,3 +1,0 @@
-# Rust build output. Includes the NGX runtime DLLs build.bat copies beside the
-# exe -- the DLSS SDK is not redistributable, so they are never checked in.
-/target

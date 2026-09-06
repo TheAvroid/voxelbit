@@ -1,32 +1,44 @@
 // ---------------------------------------------------------------------------
-// voxelworld.h -- the world as 10 cm voxels, meshed into faces for OptiX.
+// voxelworld.h -- the world as 10 cm voxels, meshed into faces for the RT cores.
 //
 // The terrain is quantised to the same 10 cm grid the pine models are authored
 // on, so a trunk sits in ground made of the lattice the trunk is made of. A
 // smooth landscape under a voxel tree reads as two different games.
 //
-// WHY FACES AND NOT BOXES: a voxel column stack could go to OptiX as one custom
-// AABB primitive per column, which is far less memory. It would also be far
-// slower. Custom primitives are intersected by a shader the SM runs; triangles
-// are intersected by the RT cores in fixed function. On a 4070 that is most of
-// an order of magnitude on a scene traced tens of millions of times a frame. So
+// WHY FACES AND NOT BOXES: a voxel column stack could go into the acceleration
+// structure as one procedural AABB per column, which is far less memory. It
+// would also be far slower. Procedural primitives are intersected by a shader
+// the SM runs, and under inline ray tracing that shader is a loop the caller
+// has to run itself, which is worse again. Triangles are intersected by the RT
+// cores in fixed function. On a 4070 that is most of an order of magnitude on a
+// scene traced tens of millions of times a frame. So
 // the surface is extracted as quads -- only faces with nothing in front of
 // them. Interior voxels never become geometry at all, which is what keeps a
 // 1.5-million-column patch tractable.
 //
-// WHAT v2 ADDS IS THE FACE DIRECTION. v4 let Embree hand back a geometric
-// normal per hit and never stored one. OptiX will do the same via
-// optixGetTriangleVertexData, but only on a GAS built with random vertex access
-// -- which costs memory on every acceleration structure in the scene, to
-// recompute a cross product for a face that was axis-aligned when it was
-// emitted and is axis-aligned still. Storing the direction the face was emitted
-// in costs one byte per triangle and makes the normal exact by construction.
-// It is packed with the material into a single uint16 so the closest-hit
-// program touches one array, not two.
+// THE FACE DIRECTION IS STORED, NOT RECONSTRUCTED, and under DXR that decision
+// pays for itself twice over. The Embree engine had a geometric normal handed
+// to it per hit and never stored one; OptiX could do the same, but only on a
+// structure built with random vertex access, which costs memory on every
+// acceleration structure in the scene to recompute a cross product for a face
+// that was axis-aligned when it was emitted and is axis-aligned still.
+//
+// Inline ray tracing sharpens the argument. A RayQuery hands back an instance
+// id, a primitive index and the barycentrics, and NOTHING ELSE -- there is no
+// vertex data to ask for at all without going back to the index and vertex
+// buffers by hand. Storing the direction the face was emitted in costs one byte
+// per triangle, makes the normal exact by construction, and means the shader
+// never reads a position or an index: the vertex buffers exist purely to build
+// the acceleration structure and are never bound to anything afterwards.
+//
+// It is packed with the material into a single uint16 so the hit path touches
+// one array, not two.
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <map>
 #include <vector>
@@ -52,7 +64,7 @@ constexpr uint8_t DIRT = 2;
 constexpr uint8_t MOSS = 3;
 constexpr uint8_t SAND = 4;
 constexpr uint8_t SILT = 5;
-constexpr uint8_t NEEDLE_LITTER = 6;  // the dropped-needle floor a conifer stand builds
+constexpr uint8_t UNUSED_6 = 6;  // was NEEDLE_LITTER, now a ramp of its own below
 
 // GROUND COLOURS BORROWED FROM THE TREES.
 //
@@ -62,11 +74,24 @@ constexpr uint8_t NEEDLE_LITTER = 6;  // the dropped-needle floor a conifer stan
 // AFTER the pines load, from the greens and browns the models actually use, so
 // the ground is made of the same palette as the things standing in it -- which
 // is the cheapest possible way to make a scene look like it belongs together.
+// THREE RAMPS, and the mesher only ever names the bottom of one.
+//
+// Which SHADE a voxel takes is chosen on the device, from a hash of the voxel
+// itself -- see groundShade() in Trace.cs.slang. That is why the counts live
+// here and in Shared.slang both, and why the terrain no longer carries a field
+// for picking between them.
 constexpr uint8_t GRASS_0 = 7;
-constexpr uint8_t GRASS_COUNT = 4;   // 7..10
-constexpr uint8_t SOIL_0 = 11;
-constexpr uint8_t SOIL_COUNT = 3;    // 11..13
-constexpr uint8_t TREE_BASE = 14;  // model palette entries are allocated from here up
+// SIX greens, sampled across the pines' own foliage entries, so the number is
+// how much of the trees' range the floor gets to show.
+constexpr uint8_t GRASS_COUNT = 6;   // 7..12
+constexpr uint8_t SOIL_0 = 13;
+// Shades of ONE brown -- see deriveGroundFromTrees.
+constexpr uint8_t SOIL_COUNT = 4;    // 13..16
+// The dropped-needle floor a conifer stand builds: the same brown again, at the
+// dark end of it, so the canopy still browns the ground beneath it.
+constexpr uint8_t LITTER_0 = 17;
+constexpr uint8_t LITTER_COUNT = 3;  // 17..19
+constexpr uint8_t TREE_BASE = 20;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -126,6 +151,31 @@ class Palette {
             // it reads as a black mass under its own shadow. A gentle lift
             // toward the asset's own hue keeps the colour and finds the form.
             m.albedo = m.albedo * 1.7f + Vec3(0.012f, 0.020f, 0.006f);
+
+            // A FLOOR UNDER THE BLUE, and it is the difference between a
+            // shaded canopy and a black one.
+            //
+            // These greens arrive from a MagicaVoxel palette, and an artist
+            // picking a green picks a SATURATED one: the nine pines carry
+            // needles with blue between 0.006 and 0.021. A real conifer needle
+            // reflects about 0.04 in blue -- vegetation is never that pure.
+            //
+            // On a sunlit needle it makes no difference worth seeing. On a
+            // SHADED one it is most of the picture, because the only light
+            // reaching the underside of a crown is skylight, and skylight is
+            // half blue by irradiance -- measured here as (3.5, 5.1, 8.8) on a
+            // flat patch, the blue channel being the largest of the three. A
+            // needle reflecting 0.6% of it has nothing to give back, so the
+            // whole underside of the wood went to a flat dark grey-green that
+            // no exposure or tone curve could recover, because the light really
+            // was being absorbed.
+            //
+            // With the floor, what a needle returns of SKYLIGHT rises by 5 to
+            // 23% -- most for the darkest needles, which are the ones that were
+            // black -- while what it returns of SUNLIGHT rises 2 to 9%. It
+            // lifts the shadows and leaves the highlights, which is the shape
+            // the problem has.
+            m.albedo.z = maxf(m.albedo.z, 0.038f);
         } else {
             m.roughness = 0.88f;  // bark is coarse
             m.specular = 0.020f;
@@ -134,6 +184,16 @@ class Palette {
         index_.emplace(key, id);
         return id;
     }
+
+    // Where the pines stopped and the rocks began.
+    //
+    // deriveGroundFromTrees ran over the WHOLE palette, which by the time it is
+    // called also holds twenty-six rocks and six flowers. Rock grey passes a
+    // "warm and unsaturated" test comfortably -- 0.048 0.047 0.041 is warm by
+    // the letter of it -- so stone was being sampled as soil, and the ground
+    // came out in patches of brown and patches of grey. Recording the boundary
+    // is what makes the function's name true.
+    void markPinesLoaded() { pineEnd_ = next_; }
 
     const MaterialLook &operator[](uint8_t id) const { return look_[id]; }
     const std::vector<MaterialLook> &table() const { return look_; }
@@ -152,7 +212,8 @@ class Palette {
     // -----------------------------------------------------------------------
     void deriveGroundFromTrees() {
         std::vector<uint8_t> foliage, bark;
-        for (int i = mat::TREE_BASE; i < next_; ++i) {
+        const int end = pineEnd_ > mat::TREE_BASE ? pineEnd_ : next_;
+        for (int i = mat::TREE_BASE; i < end; ++i) {
             if (look_[i].translucency > 0.0f) { foliage.push_back(uint8_t(i)); continue; }
 
             // NOT EVERY NON-GREEN ENTRY IS BARK. forModelColor classifies by
@@ -161,16 +222,36 @@ class Palette {
             // highlights. Sampling those as soil painted scarlet and chalk-white
             // patches across whole hillsides, which is exactly what showed up.
             //
-            // Soil has to be warm, mid-dark and unsaturated. Anything outside
-            // that is a highlight, not a ground colour.
+            // Soil has to be warm, mid-dark and BROWN. The old test asked for
+            // warm and unsaturated, and a grey satisfies both: r >= g >= b is
+            // true of almost any near-neutral, and a near-neutral is by
+            // definition unsaturated. So a saturation FLOOR does most of the
+            // work here -- it is the line between a brown and a stone.
             const Vec3 c = look_[i].albedo;
             const float lum = luminance(c);
-            const bool warm = c.x >= c.y && c.y >= c.z;
+            const bool warm = c.x >= c.y && c.y >= c.z && c.x > c.z * 1.5f;
             const float sat = maxComp(c) > 0.0f ? (maxComp(c) - minf(c.x, minf(c.y, c.z))) /
                                                       maxComp(c)
                                                 : 0.0f;
-            if (warm && lum > 0.015f && lum < 0.30f && sat < 0.72f) bark.push_back(uint8_t(i));
+            if (warm && lum > 0.015f && lum < 0.30f && sat > 0.35f && sat < 0.80f)
+                bark.push_back(uint8_t(i));
         }
+
+        // SORTED INTO A RAMP, then read ALONG it rather than sampled from it.
+        //
+        // The nine pines share a palette and it holds only five greens, so
+        // picking a nearest entry per slot handed two slots the same colour --
+        // six materials, five of them distinct, and the duplicate did nothing
+        // but cost a patch boundary with no colour change across it. Reading
+        // between the entries gives six greens that are all still the pines'
+        // own, because every one of them is on the line between two needles.
+        //
+        // Sorted by luminance first: the palette's order is the artist's, and
+        // it is not monotonic, so interpolating along it unsorted would walk
+        // back and forth across the ramp instead of up it.
+        std::sort(foliage.begin(), foliage.end(), [this](uint8_t a, uint8_t b) {
+            return luminance(look_[a].albedo) < luminance(look_[b].albedo);
+        });
 
         for (int k = 0; k < mat::GRASS_COUNT; ++k) {
             MaterialLook &m = look_[mat::GRASS_0 + k];
@@ -178,25 +259,34 @@ class Palette {
                 // No models loaded: a plain green, so the world still renders.
                 m.albedo = Vec3(0.14f + 0.04f * k, 0.26f + 0.05f * k, 0.10f + 0.02f * k);
             } else {
-                const size_t pick = (foliage.size() * (2 * k + 1)) / (2 * mat::GRASS_COUNT);
-                // Ground grass sits in the open and is lit far harder than
-                // needles inside a crown, so the canopy value read straight
-                // across looks like wet moss. Lifted, and pushed slightly
-                // yellow, which is what distinguishes grass from conifer.
-                // The foliage albedo has ALREADY been lifted 1.7x by
-                // forModelColor, for a canopy that sits in its own shadow.
-                // Lifting it again on top of that is what made the first pass
-                // read as fluorescent plastic; grass in the open wants a small
-                // nudge toward yellow and nothing more.
-                const Vec3 c = look_[foliage[pick]].albedo;
-                // 0.45, not 1.0, and the reason is LIGHTING not colour. The
-                // foliage value is tuned for needles sitting inside their own
-                // crown, in shadow most of the day. Grass stands in the open
-                // taking full sun, so the same albedo renders far brighter --
-                // reading it across literally is what made the floor glow
-                // yellow-green under a dark canopy. Matching how they LOOK
-                // means the grass albedo has to be well below the foliage one.
-                m.albedo = Vec3(c.x * 0.45f + 0.008f, c.y * 0.44f + 0.010f, c.z * 0.32f);
+                const float t = (mat::GRASS_COUNT > 1)
+                                    ? float(k) / float(int(mat::GRASS_COUNT) - 1) *
+                                          float(foliage.size() - 1)
+                                    : 0.0f;
+                const size_t i0 = size_t(t);
+                const size_t i1 = mini(int(foliage.size()) - 1, int(i0) + 1);
+                const float f = t - float(i0);
+                const Vec3 c = look_[foliage[i0]].albedo * (1.0f - f) +
+                               look_[foliage[i1]].albedo * f;
+                // THE SAME HUE AS THE NEEDLES, ONLY DARKER -- and the "only"
+                // is the whole change. This used to scale the three channels
+                // by 0.45, 0.44 and 0.32, which is a scale plus a shove
+                // towards yellow, and a shove towards yellow is a DIFFERENT
+                // COLOUR. The floor came out its own shade of olive standing
+                // under trees that were green, which reads as two materials
+                // that happen to be near each other rather than one wood.
+                //
+                // Scaling all three by the same number cannot change the hue
+                // by construction: it is the pine's green at a lower value,
+                // which is exactly what grass under conifers is.
+                //
+                // WHY IT IS SCALED AT ALL is lighting, not colour. The foliage
+                // albedo is tuned for needles sitting inside their own crown,
+                // in shadow most of the day; grass stands in the open taking
+                // full sun, so the same albedo renders far brighter. Reading it
+                // across literally is what once made the floor glow under a
+                // dark canopy.
+                m.albedo = c * 0.52f + Vec3(0.006f, 0.008f, 0.005f);
             }
             m.roughness = 0.88f;
             m.specular = 0.022f;
@@ -207,22 +297,62 @@ class Palette {
             m.translucency = 0.22f;
         }
 
+        // -- ONE BROWN, IN SEVERAL SHADES ------------------------------------
+        //
+        // This used to take a DIFFERENT bark entry per soil slot, spread across
+        // whatever browns the pines happened to carry. A pine's palette holds
+        // several genuinely different browns -- a grey-brown for weathered bark,
+        // a red-brown for the cut, a yellow-brown for lit sapwood -- so the
+        // ground came out in patches of visibly different colours, which reads
+        // as three soils rather than as soil.
+        //
+        // A TRUNK does not look like that, and it is the thing being copied: a
+        // trunk is one hue at several values, a shading ramp. So one base is
+        // chosen and the slots are that base scaled. A pure multiply cannot
+        // move the hue, so the ramp is a brown by construction, and every patch
+        // boundary is a change of light rather than a change of material.
+        //
+        // The base is the MEDIAN of the accepted barks by luminance, not the
+        // mean: averaging several browns together gives a grey, because that is
+        // what averaging colours does.
+        Vec3 soilBase(0.26f, 0.19f, 0.13f);
+        if (!bark.empty()) {
+            std::vector<uint8_t> byLum = bark;
+            std::sort(byLum.begin(), byLum.end(), [this](uint8_t a, uint8_t b) {
+                return luminance(look_[a].albedo) < luminance(look_[b].albedo);
+            });
+            const Vec3 c = look_[byLum[byLum.size() / 2]].albedo;
+            // Darker than the trunk it came from -- bark read literally makes
+            // the ground look like decking.
+            soilBase = c * 0.85f + Vec3(0.018f, 0.014f, 0.010f);
+        }
         for (int k = 0; k < mat::SOIL_COUNT; ++k) {
             MaterialLook &m = look_[mat::SOIL_0 + k];
-            if (bark.empty()) {
-                m.albedo = Vec3(0.26f + 0.05f * k, 0.19f + 0.03f * k, 0.13f + 0.02f * k);
-            } else {
-                const size_t pick = (bark.size() * (2 * k + 1)) / (2 * mat::SOIL_COUNT);
-                const Vec3 c = look_[bark[pick]].albedo;
-                // Soil is darker and less saturated than the trunk it came
-                // from -- bark read literally makes the ground look like decking.
-                m.albedo = Vec3(c.x * 0.85f + 0.020f, c.y * 0.80f + 0.014f, c.z * 0.78f + 0.010f);
-            }
+            // 0.74 to 1.22 across the slots, centred on the base. Wide enough
+            // that the ground is not flat, narrow enough that no step reads as
+            // a different material.
+            const float f =
+                0.74f + 0.48f * (float(k) / float(maxi(1, int(mat::SOIL_COUNT) - 1)));
+            m.albedo = soilBase * f;
             m.roughness = 0.95f;
             m.specular = 0.020f;
             m.translucency = 0.0f;
         }
 
+        // The needle floor under a thick stand: the same brown again, at the
+        // dark end of it. A ramp rather than the single colour it used to be,
+        // because a flat patch of one brown sitting in ground that is scattered
+        // across six is the only thing on the floor that would still look
+        // painted on.
+        for (int k = 0; k < mat::LITTER_COUNT; ++k) {
+            MaterialLook &m = look_[mat::LITTER_0 + k];
+            const float f =
+                0.58f + 0.30f * (float(k) / float(maxi(1, int(mat::LITTER_COUNT) - 1)));
+            m.albedo = soilBase * f;
+            m.roughness = 0.97f;
+            m.specular = 0.020f;
+            m.translucency = 0.0f;
+        }
     }
 
   private:
@@ -245,17 +375,21 @@ class Palette {
         set(mat::MOSS, 0.24f, 0.34f, 0.16f, 0.92f);
         set(mat::SAND, 0.68f, 0.61f, 0.45f, 0.85f);
         set(mat::SILT, 0.22f, 0.20f, 0.16f, 0.95f);
-        set(mat::NEEDLE_LITTER, 0.20f, 0.14f, 0.09f, 0.97f);
+
     }
 
     std::vector<MaterialLook> look_ = std::vector<MaterialLook>(mat::COUNT);
     std::map<uint32_t, uint8_t> index_;
     uint8_t next_ = mat::TREE_BASE;
+    int pineEnd_ = 0;
     int overflow_ = 0;
 };
 
 inline bool isGrass(uint8_t m) { return m >= mat::GRASS_0 && m < mat::GRASS_0 + mat::GRASS_COUNT; }
 inline bool isSoil(uint8_t m) { return m >= mat::SOIL_0 && m < mat::SOIL_0 + mat::SOIL_COUNT; }
+inline bool isLitter(uint8_t m) {
+    return m >= mat::LITTER_0 && m < mat::LITTER_0 + mat::LITTER_COUNT;
+}
 
 // ---------------------------------------------------------------------------
 // Face directions. The index is stored per triangle and turned back into a
@@ -267,7 +401,7 @@ constexpr uint8_t POS_Y = 0, NEG_Y = 1, POS_X = 2, NEG_X = 3, POS_Z = 4, NEG_Z =
 
 // Kept next to the constants above so the two cannot drift apart. Indexed by a
 // face:: value; used on the device to expand a stored direction into a normal.
-V2_FN Vec3 faceNormal(uint8_t dir) {
+inline Vec3 faceNormal(uint8_t dir) {
     switch (dir) {
         case face::POS_Y: return Vec3(0.0f, 1.0f, 0.0f);
         case face::NEG_Y: return Vec3(0.0f, -1.0f, 0.0f);
@@ -279,11 +413,11 @@ V2_FN Vec3 faceNormal(uint8_t dir) {
 }
 
 // Material in the low byte, face direction in the high byte.
-V2_FN uint16_t packTri(uint8_t material, uint8_t dir) {
+inline uint16_t packTri(uint8_t material, uint8_t dir) {
     return uint16_t(material) | (uint16_t(dir) << 8);
 }
-V2_FN uint8_t triMaterial(uint16_t p) { return uint8_t(p & 0xFFu); }
-V2_FN uint8_t triFace(uint16_t p) { return uint8_t(p >> 8); }
+inline uint8_t triMaterial(uint16_t p) { return uint8_t(p & 0xFFu); }
+inline uint8_t triFace(uint16_t p) { return uint8_t(p >> 8); }
 
 // ---------------------------------------------------------------------------
 // A meshed voxel surface: quads, plus what each triangle is and which way it
@@ -318,6 +452,186 @@ struct VoxMesh {
 // all surface, which is why a tree of 30k voxels still costs a few hundred
 // thousand triangles.
 // ---------------------------------------------------------------------------
+// MOSS ON THE ROCKS -- REAL VOXELS, written into the model before it is meshed.
+//
+// This has now been three things. First a material swap on the rock's own top
+// face, which reads as a stain: the silhouette never changed, so from any angle
+// where the top was foreshortened there was nothing to see. Then a slab of
+// geometry standing 0.45 of a voxel proud, which looked right and was wrong in
+// two ways -- it is not a voxel, in a world whose entire visual grammar is 10 cm
+// cubes, and the COLLIDER NEVER KNEW ABOUT IT. Column heights are measured off
+// the asset, so the moss was invisible to the feet and you stood inside it.
+//
+// The moss is now a voxel like every other voxel: written into the VoxAsset
+// before meshAsset and columnTops ever see it, so the mesh, the collider and
+// anything else added later all agree by construction rather than by being kept
+// in step. There is no moss code in the mesher at all any more.
+//
+// PATCHY AT TWO SCALES. One hash per voxel is speckle, and speckle at 10 cm
+// reads as noise rather than moss. The coarse term makes patches about half a
+// metre across and the fine one breaks up their edges.
+//
+// The colour is GRASS_0 + k, the same ramp the ground grass is built from, so
+// the moss is the wood's own green. Those materials need palette entries the
+// model does not already use -- hence the search for free ones, and the quiet
+// return if a model somehow uses all 255.
+inline void growMoss(VoxAsset *a, std::vector<uint8_t> *idOfEntry, uint32_t seed) {
+    if (!seed || a->sx <= 0) return;
+
+    std::vector<bool> used(256, false);
+    for (uint8_t v : a->a) used[v] = true;
+
+    uint8_t tintEntry[mat::GRASS_COUNT];
+    int tints = 0;
+    for (int e = 1; e <= 255 && tints < int(mat::GRASS_COUNT); ++e)
+        if (!used[e]) {
+            tintEntry[tints] = uint8_t(e);
+            (*idOfEntry)[e] = uint8_t(mat::GRASS_0 + tints);
+            ++tints;
+        }
+    if (tints == 0) return;
+
+    auto solid = [&](int x, int y, int z) -> bool {
+        const uint8_t v = a->at(x, y, z);
+        return v != 0 && (*idOfEntry)[v] != mat::AIR;
+    };
+
+    // Decided against the ORIGINAL model, then written. Growing moss as we go
+    // would let a voxel just placed count as the rock under the next one, and
+    // the moss would climb the boulder a layer per pass.
+    struct Spot { int x, y, z; uint8_t e; };
+    std::vector<Spot> spots;
+    for (int y = 0; y < a->sy; ++y)
+        for (int z = 0; z < a->sz; ++z)
+            for (int x = 0; x < a->sx; ++x) {
+                if (!solid(x, y, z) || solid(x, y + 1, z)) continue;
+                const float coarse = hashUnit(uint32_t(x >> 2) * 73856093u ^ seed,
+                                              uint32_t(z >> 2) ^ uint32_t(y >> 2) * 2654435761u);
+                if (coarse > 0.72f) continue;
+                const float fine = hashUnit(uint32_t(x) * 19349663u ^ seed,
+                                            uint32_t(z) * 83492791u ^ uint32_t(y));
+                if (fine > 0.82f) continue;
+                const uint32_t t = hashU32(uint32_t(x) ^ seed,
+                                           uint32_t(z) * 2654435761u ^ uint32_t(y));
+                spots.push_back({x, y + 1, z, tintEntry[t % uint32_t(tints)]});
+            }
+    if (spots.empty()) return;
+
+    // One more layer, because moss on the model's topmost voxel has nowhere to
+    // go otherwise. y is the slowest axis, so the new layer is simply zeros on
+    // the end of the vector.
+    a->a.resize(size_t(a->sx) * size_t(a->sz) * size_t(a->sy + 1), 0);
+    a->sy += 1;
+
+    for (const Spot &sp : spots)
+        a->a[size_t(sp.x) + size_t(sp.z) * size_t(a->sx) +
+             size_t(sp.y) * size_t(a->sx) * size_t(a->sz)] = sp.e;
+}
+
+
+// THE TOP OF EVERY COLUMN IN A MODEL, in voxels above its base.
+//
+// This is what makes standing on a rock accurate. The collider it replaces was
+// an elliptic cylinder with ONE height -- the model's highest voxel -- so a
+// boulder was a flat-topped drum the size of its own bounding ellipse. You
+// could stand on thin air a metre out from the stone, and the domed top you
+// could see was not the surface you landed on.
+//
+// A column height per (x, z) is the actual surface, to the voxel. It is not
+// the general solution -- an overhang has two surfaces in one column and this
+// keeps the upper one -- but a boulder is a heightfield from above, which is
+// the only direction a walking body meets it from.
+//
+// Zero means the column is empty, which is why the value stored is the top
+// index PLUS ONE: a single voxel sitting on the base is 1, and its top surface
+// is one voxel above the model's base.
+inline std::vector<int16_t> columnTops(const VoxAsset &a,
+                                       const std::vector<uint8_t> &idOfEntry) {
+    std::vector<int16_t> t(size_t(a.sx) * size_t(a.sz), 0);
+    for (int z = 0; z < a.sz; ++z)
+        for (int x = 0; x < a.sx; ++x)
+            for (int y = a.sy - 1; y >= 0; --y) {
+                const uint8_t v = a.at(x, y, z);
+                if (v != 0 && idOfEntry[v] != mat::AIR) {
+                    t[size_t(x) + size_t(z) * size_t(a.sx)] = int16_t(y + 1);
+                    break;
+                }
+            }
+    return t;
+}
+
+// REVOXELISE A MODEL AT TWICE THE SIZE.
+//
+// Every voxel becomes a 2x2x2 block, so the result is a genuine voxel model at
+// the SAME 10 cm grid as everything else -- twice as tall, twice as wide, and
+// still made of cubes the size of every other cube in the world.
+//
+// NOT A SCALE FACTOR ON THE MESH, which is the tempting one-liner. meshAsset
+// takes a scale and passing it 2 * VOXEL_M would produce a model twice as big
+// out of voxels twice as big, which reads as the same mushroom seen closer up
+// rather than as a bigger mushroom. It would also silently break every piece of
+// placement arithmetic in makeInstance, all of which assumes a model's voxels
+// are VOXEL_M across.
+inline VoxAsset upscale2x(const VoxAsset &a) {
+    VoxAsset o;
+    o.sx = a.sx * 2;
+    o.sy = a.sy * 2;
+    o.sz = a.sz * 2;
+    o.a.assign(size_t(o.sx) * size_t(o.sy) * size_t(o.sz), 0);
+    for (int y = 0; y < o.sy; ++y)
+        for (int z = 0; z < o.sz; ++z)
+            for (int x = 0; x < o.sx; ++x)
+                o.a[size_t(x) + size_t(z) * o.sx + size_t(y) * size_t(o.sx) * size_t(o.sz)] =
+                    a.at(x / 2, y / 2, z / 2);
+    return o;
+}
+
+// WHERE A PINECONE MAY SIT, in the pine model's own voxel coordinates.
+struct Perch {
+    int16_t x, y, z;
+};
+
+// Every spot in a pine where a cone can HANG: an empty voxel with solid wood
+// directly ABOVE it.
+//
+// A cone is attached to the branch by its TOP -- it dangles. The first version
+// tested the voxel BELOW and stood the cone on the branch like a bird, which
+// prevents floating just as well and is the wrong way up.
+//
+// Testing the neighbour is still what makes floating impossible by
+// construction. The alternative -- scatter cones through the crown and nudge
+// them until something is hit -- has a tolerance in it, and a tolerance is a
+// thing that is eventually wrong.
+//
+// ONLY THE CROWN, because below a third of the model's height a pine is bare
+// trunk.
+//
+// AND ONLY WHERE IT CAN BE SEEN FROM BELOW, which is the condition that took a
+// measurement to find. Nearly every voxel with wood above it is an interior gap
+// sealed inside the crown by needles on every side; cones there are real,
+// correct and completely invisible. Requiring the column BENEATH the perch to
+// be clear to the bottom of the model leaves the undersides of the lowest
+// branches -- which is exactly where you see cones from the ground.
+inline std::vector<Perch> collectPerches(const VoxAsset &a,
+                                         const std::vector<uint8_t> &idOfEntry) {
+    std::vector<Perch> out;
+    auto solid = [&](int x, int y, int z) -> bool {
+        const uint8_t v = a.at(x, y, z);
+        return v != 0 && idOfEntry[v] != mat::AIR;
+    };
+    const int y0 = a.sy / 3;
+    for (int y = y0; y < a.sy; ++y)
+        for (int z = 0; z < a.sz; ++z)
+            for (int x = 0; x < a.sx; ++x) {
+                if (solid(x, y, z) || !solid(x, y + 1, z)) continue;
+                bool open = true;
+                for (int yy = y - 1; yy >= 0 && open; --yy)
+                    if (solid(x, yy, z)) open = false;
+                if (open) out.push_back({int16_t(x), int16_t(y), int16_t(z)});
+            }
+    return out;
+}
+
 inline VoxMesh meshAsset(const VoxAsset &a, const std::vector<uint8_t> &idOfEntry, float scale) {
     VoxMesh m;
     const float s = scale;
@@ -342,7 +656,8 @@ inline VoxMesh meshAsset(const VoxAsset &a, const std::vector<uint8_t> &idOfEntr
                 // Wound counter-clockwise seen from outside, so the winding and
                 // the stored direction agree about which way is out.
                 if (!solid(x, y + 1, z))
-                    m.addQuad({x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}, id, face::POS_Y);
+                    m.addQuad({x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}, id,
+                              face::POS_Y);
                 if (!solid(x, y - 1, z))
                     m.addQuad({x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}, id, face::NEG_Y);
                 if (!solid(x + 1, y, z))
@@ -376,6 +691,64 @@ constexpr float CHUNK_M = float(CHUNK_VOX) * VOXEL_M;
 // fold the negative side onto the positive one, which puts a seam through 0.
 inline int floorDiv(int a, int b) { return (a >= 0) ? a / b : -(((-a) + b - 1) / b); }
 inline int floorMod(int a, int b) { const int m = a % b; return m < 0 ? m + b : m; }
+
+// ---------------------------------------------------------------------------
+// One memo per noise CALL SITE in the terrain.
+//
+// Meshing walks the chunk in rows, and a row of 10 cm columns crosses a lattice
+// cell of the coarsest octave about every eight hundred samples -- so the four
+// corner hashes of every octave are, overwhelmingly, the same four numbers as
+// last column. This is where they are kept. See NoiseCell in noise.h for why it
+// is bit-exact and why that matters here in particular.
+//
+// One per site rather than one shared: a memo checks the cell before trusting
+// it, so sharing would still be CORRECT, it would simply miss every time and
+// pay a branch for the privilege.
+// ---------------------------------------------------------------------------
+struct TerrainMemo {
+    FbmMemo warpX, warpZ, roll, swell, ridge, basin, fine;  // heightM
+    FbmMemo stand, litter, grassMask;                       // topMaterial
+};
+
+// ---------------------------------------------------------------------------
+// The working storage a chunk is meshed through -- ONE PER WORKER, not one per
+// chunk.
+//
+// These three grids never leave meshChunk: they are filled, read by the quad
+// loops, and dropped. Allocating them per chunk cost about 400 KB of malloc and
+// free every time -- and, less obviously but worse, 400 KB of value
+// initialisation that the fill loops immediately overwrote. A worker meshes
+// thousands of chunks over a walk, so that is the same four hundred kilobytes
+// zeroed and thrown away thousands of times to hold numbers that were about to
+// be written anyway.
+//
+// Reusing them across chunks is safe for a reason worth stating: every element
+// is written before it is read, on every chunk. The heights and materials are
+// filled over their whole padded extent, and the strand rows now assign zero on
+// the paths that used to `continue` -- so there is no stale value from the last
+// chunk that anything can see. resize() is a no-op after the first call, which
+// is where the zeroing went.
+//
+// THE MEMO COMES ALONG, and reusing that is safe for a different reason: it is
+// a cache that validates itself. Every lookup compares the cell it wants
+// against the cell it holds, so an entry left over from the previous chunk is
+// either genuinely the right cell -- which happens at the shared edge, and is
+// then a free hit -- or a miss that recomputes. It cannot be wrong.
+//
+// HEIGHTS ARE int16. The field runs from about -10 voxels in a cut basin to
+// about 940 at the top of the relief, against a range of +-32767, so the margin
+// is three orders of magnitude and the assert below is there to notice if the
+// amplitudes in heightM are ever raised far enough to matter. Halving the array
+// is worth having in the slope pass, which reads four neighbours per column and
+// is the one loop here whose speed is a question of how much of the grid is in
+// cache.
+// ---------------------------------------------------------------------------
+struct ChunkScratch {
+    TerrainMemo memo;
+    std::vector<int16_t> h;    // padded by two: a slope reaches one past a material
+    std::vector<uint8_t> top;  // padded by one
+    std::vector<uint8_t> sr;   // padded by one
+};
 
 class VoxelTerrain {
   public:
@@ -418,14 +791,15 @@ class VoxelTerrain {
     // amplitude. At 10 cm voxels those were quantising into single-voxel
     // stipple, which reads as gravel rather than as ground and cost a side quad
     // on nearly every column to draw.
-    float heightM(float x, float z) const {
-        const float roll = warpedFbm(x * 0.0130f, z * 0.0130f, 1.5f, 5);
-        const float swell = fbm(x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-        const float ridge = ridged(x * 0.0300f + 13.1f, z * 0.0300f + 7.3f, 3);
+    float heightM(float x, float z, TerrainMemo &memo) const {
+        const float roll =
+            warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 5);
+        const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
+        const float ridge = ridged(memo.ridge, x * 0.0300f + 13.1f, z * 0.0300f + 7.3f, 3);
 
         float h = 4.0f + roll * 60.0f + swell * 24.0f + ridge * 6.0f;
 
-        const float b = fbm(x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
+        const float b = fbm(memo.basin, x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
         if (b < 0.40f) {
             const float m = sstep(minf(1.0f, (0.40f - b) / 0.10f));
             // Scaled with the terrain, every time it grows. This gate is a
@@ -444,14 +818,24 @@ class VoxelTerrain {
         // smooth everywhere terraces into wide flat plateaus -- which reads as
         // worse, not rounder. Roundness belongs in the large shapes; the small
         // ones have to keep enough gradient to break the steps up.
-        h += (fbm(x * 0.090f + 3.7f, z * 0.090f + 9.1f, 3) - 0.5f) * 1.2f;
+        h += (fbm(memo.fine, x * 0.090f + 3.7f, z * 0.090f + 9.1f, 3) - 0.5f) * 1.2f;
         return h;
     }
 
+    // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
+    float heightM(float x, float z) const {
+        TerrainMemo memo;
+        return heightM(x, z, memo);
+    }
+
     // Column height in VOXELS -- the one place the world is quantised.
-    int heightVox(int i, int j) const {
-        const float h = heightM(wx(i), wx(j));
+    int heightVox(int i, int j, TerrainMemo &memo) const {
+        const float h = heightM(wx(i), wx(j), memo);
         return int(floorf(h / VOXEL_M));
+    }
+    int heightVox(int i, int j) const {
+        TerrainMemo memo;
+        return heightVox(i, j, memo);
     }
 
     // Slope, in voxels of drop across two columns. Both thresholds move with
@@ -485,8 +869,12 @@ class VoxelTerrain {
     int grassMinRows = 3, grassMaxRows = 6;
     uint32_t strandSeed = 20260904u;
 
+    float standDensity(float x, float z, FbmMemo &m) const {
+        return fbm(m, x * 0.0165f + 71.3f, z * 0.0165f + 44.1f, 3);
+    }
     float standDensity(float x, float z) const {
-        return fbm(x * 0.0165f + 71.3f, z * 0.0165f + 44.1f, 3);
+        FbmMemo m;
+        return standDensity(x, z, m);
     }
 
     // -----------------------------------------------------------------------
@@ -507,7 +895,7 @@ class VoxelTerrain {
     // The convenience overload below keeps the old signature for the scatter
     // code, which asks about a few thousand scattered columns rather than every
     // column in a chunk and has no grid to read from.
-    uint8_t topMaterial(int i, int j, int h, int slope) const {
+    uint8_t topMaterial(int i, int j, int h, int slope, TerrainMemo &memo) const {
         const int wl = int(waterLevel / VOXEL_M);
         if (h <= wl) return (wl - h <= 8) ? mat::SAND : mat::SILT;
         if (h <= wl + 8) return mat::SAND;  // the shore band
@@ -515,34 +903,69 @@ class VoxelTerrain {
         if (slope >= kRockSlope) return mat::ROCK;  // too steep to hold soil
 
         const float x = wx(i), z = wx(j);
-        // Litter follows the canopy, and the canopy follows the same density
-        // field the trees are planted from -- so the floor browns where the
-        // stand is thick, without storing a mask.
-        if (standDensity(x, z) > 0.44f && fbm(x * 3.1f + 63.0f, z * 3.1f + 88.0f, 2) > 0.36f)
-            return mat::NEEDLE_LITTER;
 
-        // WHICH grass or WHICH soil comes from a field of its own, at a few
-        // metres across. Picking per column from a hash would give confetti --
-        // the variants have to form patches or they average back to the single
-        // flat colour they were brought in to replace.
-        const float patch = fbm(x * 0.30f + 117.3f, z * 0.30f + 241.1f, 3);
-        if (fbm(x * 0.55f + 31.7f, z * 0.55f + 17.2f, 4) > 0.46f) {
-            const int k = mini(int(mat::GRASS_COUNT) - 1, int(patch * float(mat::GRASS_COUNT)));
-            return uint8_t(mat::GRASS_0 + k);
-        }
-        const int k = mini(int(mat::SOIL_COUNT) - 1, int(patch * float(mat::SOIL_COUNT)));
-        return uint8_t(mat::SOIL_0 + k);
+        // WHICH SHADE IS NOT DECIDED HERE ANY MORE.
+        //
+        // It used to come from a three-metre noise field, which is why the
+        // floor read as patches of one green next to patches of another. A
+        // pine does not look like that: its bark is half a dozen browns
+        // scattered voxel by voxel, and that scatter is most of why a trunk
+        // reads as bark rather than as a painted cylinder. The ground is
+        // scattered the same way now, on the device, from a hash of the voxel
+        // the ray hit -- see groundShade() in Trace.cs.slang.
+        //
+        // Moving it there is not merely tidier. A material that changed every
+        // three metres broke the top-face merge at every patch boundary; naming
+        // only the family leaves the runs unbroken, so this costs no triangles
+        // and saves some. It also retires an entire fbm field per column.
+        //
+        // THE GRASS MASK IS ASKED FIRST, and that ordering is the whole fix.
+        //
+        // The litter rule used to run before it and take whatever it wanted.
+        // Litter follows the canopy, the canopy follows the stand-density
+        // field, and that field is a SIXTY-METRE feature -- so whole hillsides
+        // came out two thirds litter while ground a few hundred metres away was
+        // barely a third. Measured over 200 m squares the ground ran from 62%
+        // brown to 80% brown, and grass from 33% down to 20%. The ratio was a
+        // function of where you were standing, which is the one thing it should
+        // not be.
+        //
+        // The mask itself has no such problem: its coarsest octave is under two
+        // metres, so over any patch bigger than a few strides it averages to
+        // the same fraction everywhere. Asking it first is therefore asking the
+        // only field here that is evenly distributed by construction.
+        if (fbm(memo.grassMask, x * 0.55f + 31.7f, z * 0.55f + 17.2f, 4) > 0.50f)
+            return mat::GRASS_0;
+
+        // What is left is brown either way, so the canopy is still allowed to
+        // say WHICH brown -- needle litter under a thick stand, soil in the
+        // open. That is what the rule was for; it was only ever the ratio it
+        // had no business setting.
+        if (standDensity(x, z, memo.stand) > 0.44f &&
+            fbm(memo.litter, x * 3.1f + 63.0f, z * 3.1f + 88.0f, 2) > 0.36f)
+            return mat::LITTER_0;
+
+        return mat::SOIL_0;
     }
 
-    uint8_t topMaterial(int i, int j, int h) const {
+    uint8_t topMaterial(int i, int j, int h, int slope) const {
+        TerrainMemo memo;
+        return topMaterial(i, j, h, slope, memo);
+    }
+
+    uint8_t topMaterial(int i, int j, int h, TerrainMemo &memo) const {
         // Only reached from the sparse scatter paths. Below the shore band the
         // slope is never consulted, so it is not worth four height evaluations
         // to compute one that will be discarded.
         const int wl = int(waterLevel / VOXEL_M);
-        if (h <= wl + 8) return topMaterial(i, j, h, 0);
-        const int slope = maxi(absi(heightVox(i + 1, j) - heightVox(i - 1, j)),
-                               absi(heightVox(i, j + 1) - heightVox(i, j - 1)));
-        return topMaterial(i, j, h, slope);
+        if (h <= wl + 8) return topMaterial(i, j, h, 0, memo);
+        const int slope = maxi(absi(heightVox(i + 1, j, memo) - heightVox(i - 1, j, memo)),
+                               absi(heightVox(i, j + 1, memo) - heightVox(i, j - 1, memo)));
+        return topMaterial(i, j, h, slope, memo);
+    }
+    uint8_t topMaterial(int i, int j, int h) const {
+        TerrainMemo memo;
+        return topMaterial(i, j, h, memo);
     }
 
     // -----------------------------------------------------------------------
@@ -562,7 +985,7 @@ class VoxelTerrain {
     // would show as walls -- and because both chunks would do it, the geometry
     // would be doubled there too.
     // -----------------------------------------------------------------------
-    VoxMesh meshChunk(int cx, int cz) const {
+    VoxMesh meshChunk(int cx, int cz, ChunkScratch &scratch) const {
         VoxMesh m;
         const int n = CHUNK_VOX;
         // Measured at roughly 1.5 quads per column across this terrain; two is
@@ -578,30 +1001,51 @@ class VoxelTerrain {
         // material at a column one outside the chunk needs that column's slope,
         // and a slope reaches one further again -- so the heights have to go out
         // to two while the materials only go out to one.
-        std::vector<int> h((size_t(n) + 4) * (size_t(n) + 4));
-        auto H = [&](int i, int j) -> int & { return h[size_t(j + 2) * (n + 4) + size_t(i + 2)]; };
-        for (int j = -2; j <= n + 1; ++j)
-            for (int i = -2; i <= n + 1; ++i) H(i, j) = heightVox(I0 + i, J0 + j);
+        // ONE MEMO FOR THE WHOLE CHUNK, and the loop order is what makes it
+        // pay: i on the inside means x advances by a voxel at a time while z
+        // holds, so every octave's lattice cell is the one it was last column
+        // for hundreds of columns at a stretch. See TerrainMemo.
+        // Carried by the worker rather than built here -- see ChunkScratch.
+        TerrainMemo &memo = scratch.memo;
 
-        std::vector<uint8_t> top((size_t(n) + 2) * (size_t(n) + 2));
+        scratch.h.resize((size_t(n) + 4) * (size_t(n) + 4));
+        int16_t *const hp = scratch.h.data();
+        auto H = [&](int i, int j) -> int16_t & { return hp[size_t(j + 2) * (n + 4) + size_t(i + 2)]; };
+        for (int j = -2; j <= n + 1; ++j)
+            for (int i = -2; i <= n + 1; ++i) {
+                const int hv = heightVox(I0 + i, J0 + j, memo);
+                assert(hv > -32768 && hv < 32767);  // see the note on int16 in ChunkScratch
+                H(i, j) = int16_t(hv);
+            }
+
+        scratch.top.resize((size_t(n) + 2) * (size_t(n) + 2));
+        uint8_t *const tp = scratch.top.data();
         auto T = [&](int i, int j) -> uint8_t & {
-            return top[size_t(j + 1) * (n + 2) + size_t(i + 1)];
+            return tp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
         };
         for (int j = -1; j <= n; ++j)
             for (int i = -1; i <= n; ++i) {
                 const int slope =
                     maxi(absi(H(i + 1, j) - H(i - 1, j)), absi(H(i, j + 1) - H(i, j - 1)));
-                T(i, j) = topMaterial(I0 + i, J0 + j, H(i, j), slope);
+                T(i, j) = topMaterial(I0 + i, J0 + j, H(i, j), slope, memo);
             }
 
         // How tall a strand stands on each column, 0 for none. Computed for the
         // padded grid so a column on the edge can still ask its neighbours.
-        std::vector<uint8_t> sr((size_t(n) + 2) * (size_t(n) + 2), 0);
+        // WRITTEN ON EVERY PATH, including the two that used to `continue` and
+        // leave the value alone. That is what lets the grid be reused across
+        // chunks without a fill: a stale row from the last chunk is overwritten
+        // rather than inherited, and the zero goes into a cache line this loop
+        // is touching anyway instead of into a separate 66 KB memset.
+        scratch.sr.resize((size_t(n) + 2) * (size_t(n) + 2));
+        uint8_t *const srp = scratch.sr.data();
         auto SR = [&](int i, int j) -> uint8_t & {
-            return sr[size_t(j + 1) * (n + 2) + size_t(i + 1)];
+            return srp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
         };
         for (int j = -1; j <= n; ++j)
             for (int i = -1; i <= n; ++i) {
+                uint8_t &rows = SR(i, j);
+                rows = 0;
                 if (!isGrass(T(i, j))) continue;
                 // Hashed on the WORLD column, so a strand is in the same place
                 // no matter which chunk happens to be meshing it -- otherwise
@@ -609,8 +1053,8 @@ class VoxelTerrain {
                 const uint32_t cell = hashU32(uint32_t(I0 + i), uint32_t(J0 + j));
                 if (hashUnit(strandSeed, cell) >= grassDensity) continue;
                 const int span = maxi(1, grassMaxRows - grassMinRows + 1);
-                SR(i, j) = uint8_t(grassMinRows +
-                                   mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span)));
+                rows = uint8_t(grassMinRows +
+                               mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span)));
             }
 
         // A side quad from voxel row lo up to row hi (exclusive), in one band,
@@ -803,7 +1247,7 @@ class VoxelTerrain {
                     if (cursor > nb + 1) {
                         if (tm != mat::ROCK) {
                             const int soilLo = maxi(nb + 1, hc - 3);
-                            sideBand(m, i, j, d, soilLo, cursor, mat::SOIL_0 + 1, run);
+                            sideBand(m, i, j, d, soilLo, cursor, mat::SOIL_0, run);
                             cursor = soilLo;
                         }
                         if (cursor > nb + 1)
