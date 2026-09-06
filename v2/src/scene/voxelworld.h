@@ -612,13 +612,25 @@ struct Perch {
 // correct and completely invisible. Requiring the column BENEATH the perch to
 // be clear to the bottom of the model leaves the undersides of the lowest
 // branches -- which is exactly where you see cones from the ground.
+// `clearW` widens the empty column the anchor needs, and it is the whole
+// difference between an anchor for a CONE and an anchor for a BEEHIVE.
+//
+// A cone is one voxel across, so a one-voxel clear column is the right question
+// and the default. A beehive is 5 x 5 x 5, and hung on a cone's anchor its
+// SIDES sit in the leaves either side of that single clear column -- the model
+// is technically unobstructed and visually buried, which is what the first
+// birch render showed. Asking for the whole footprint to be clear is the same
+// rule the browser engine's BIRCH_BANCH uses, and it costs a wider inner loop
+// on a list built once per model at load.
 inline std::vector<Perch> collectPerches(const VoxAsset &a,
-                                         const std::vector<uint8_t> &idOfEntry) {
+                                         const std::vector<uint8_t> &idOfEntry,
+                                         int clearW = 1) {
     std::vector<Perch> out;
     auto solid = [&](int x, int y, int z) -> bool {
         const uint8_t v = a.at(x, y, z);
         return v != 0 && idOfEntry[v] != mat::AIR;
     };
+    const int r = (clearW - 1) / 2;
     const int y0 = a.sy / 3;
     for (int y = y0; y < a.sy; ++y)
         for (int z = 0; z < a.sz; ++z)
@@ -626,7 +638,9 @@ inline std::vector<Perch> collectPerches(const VoxAsset &a,
                 if (solid(x, y, z) || !solid(x, y + 1, z)) continue;
                 bool open = true;
                 for (int yy = y - 1; yy >= 0 && open; --yy)
-                    if (solid(x, yy, z)) open = false;
+                    for (int dz = -r; dz <= r && open; ++dz)
+                        for (int dx = -r; dx <= r && open; ++dx)
+                            if (solid(x + dx, yy, z + dz)) open = false;
                 if (open) out.push_back({int16_t(x), int16_t(y), int16_t(z)});
             }
     return out;
@@ -750,8 +764,85 @@ struct ChunkScratch {
     std::vector<uint8_t> sr;   // padded by one
 };
 
+// ---------------------------------------------------------------------------
+// WHICH WOOD THIS IS.
+//
+// One field, read in three places -- the height field, the surface material,
+// and which tree the scatter plants. Everything else in the engine is biome
+// blind: the chunk mesher, the colliders, the perch system that hangs things in
+// crowns, the streamer and the whole renderer never ask.
+//
+// That is deliberate and it is why this is an enum on the terrain rather than a
+// second world class. The two woods differ in their LANDFORM and their PALETTE,
+// not in how a voxel becomes a triangle.
+// ---------------------------------------------------------------------------
+enum class Biome : uint8_t {
+    Pine,   // the original: high relief, ridges, basins, a needle floor
+    Birch,  // low rounded hills, one light green everywhere, beehives
+};
+
 class VoxelTerrain {
   public:
+    // ---------------------------------------------------------------------
+    // THE BIOMES ARE PLACES, NOT A SETTING.
+    //
+    // This started as one enum for the whole world, which was enough to look at
+    // a birch wood but made "go to the birch forest" meaningless -- there was
+    // nowhere to go, the world was already entirely one or the other. So the
+    // biome is now a function of WHERE YOU ARE: bands running north-south,
+    // alternating, repeating forever. The same shape the browser engine uses
+    // (see BIOP and BIRCHC in src/world/window.js), with two bands instead of
+    // seven.
+    //
+    //     ... | pine | birch | pine | birch | ...
+    //          -400   +400    +1200  +2000        metres, band centres
+    //
+    // 800 m a band, which is a real walk -- a minute and a half at the new run
+    // speed -- and wider than the 307 m view radius, so a band fills the view
+    // rather than being a stripe you see both edges of.
+    //
+    // `biome` survives as the FORCED override for --birch and --pine: set it
+    // and the bands are ignored. That is what makes a screenshot or a profile
+    // run reproducible without having to also pin a position.
+    // ---------------------------------------------------------------------
+    static constexpr float kBandW = 800.0f;    // metres of one band
+    static constexpr float kBandBlend = 90.0f; // metres the two are mixed over
+
+    // Where the centre of each band sits, so /locate has somewhere to send you.
+    static float bandCentre(Biome b) {
+        return (b == Biome::Birch) ? kBandW * 0.5f : -kBandW * 0.5f;
+    }
+
+    // 0 in the pine band, 1 in the birch band, eased across the seam. A pure
+    // function of x -- no noise, no memo -- so anything may ask it at any time.
+    static float birchWeight(float x) {
+        const float period = 2.0f * kBandW;
+        float u = fmodf(x, period);
+        if (u < 0.0f) u += period;
+        // Boundaries at u = 0 and u = W. [0, W) is birch -- so the birch centre
+        // is +W/2 -- and [W, 2W) is pine, whose centre 3W/2 is -W/2 wrapped.
+        //
+        // t is the SIGNED distance to the nearest boundary: positive inside the
+        // birch, negative inside the pine, and its magnitude is how far in.
+        // Writing it that way is what makes the blend one expression instead of
+        // two mirrored ones that have to be kept in step.
+        const float t = (u < kBandW) ? minf(u, kBandW - u) : -minf(u - kBandW, period - u);
+        return sstep(saturate(t / kBandBlend * 0.5f + 0.5f));
+    }
+
+    // Forced, when --birch or --pine pinned it; otherwise whatever the bands
+    // say at this position.
+    bool forced = false;
+    Biome biome = Biome::Pine;
+    bool birchAt(float x) const { return forced ? (biome == Biome::Birch) : birchWeight(x) >= 0.5f; }
+    float birchMix(float x) const {
+        return forced ? (biome == Biome::Birch ? 1.0f : 0.0f) : birchWeight(x);
+    }
+    // The old whole-world question, kept for the things that genuinely are
+    // global: which model sets to LOAD, and whether the hive pass can run at
+    // all. Both woods' trees are loaded whenever the bands are live.
+    bool birch() const { return !forced || biome == Biome::Birch; }
+
     float waterLevel = 2.6f;  // metres
 
     // WORLD COLUMN INDICES, not patch-relative ones.
@@ -795,6 +886,38 @@ class VoxelTerrain {
         const float roll =
             warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 5);
         const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
+
+        // ------------------------------------------------------------- birch
+        // MUCH LOWER, AND ROUNDED. The pine wood is a mountain range -- 90 m of
+        // relief with a ridged octave sharpening every crest, because that is
+        // what makes a conifer stand read as altitude. A birch wood is the
+        // opposite kind of place: open, gentle, and low.
+        //
+        // Three changes, and the ridge is the important one. Dropping the
+        // ridged octave entirely is what makes the hills ROUND -- ridged noise
+        // is |1 - 2n|, which has a crease at every zero crossing, and no amount
+        // of scaling it down removes the crease. What is left is the warped fbm
+        // and the swell, both of which are smooth by construction.
+        //
+        //     pine    4 + roll*60 + swell*24 + ridge*6     4 .. 94 m
+        //     birch   2 + roll*15 + swell*7               2 .. 24 m
+        //
+        // A quarter of the relief and no creases: hills you walk over rather
+        // than climb. The basin carve is skipped too -- it exists to hollow out
+        // lakes, and this wood has no water in it yet.
+        // THE FINE OCTAVE IS SHARED, and asked once. Both woods want it for the
+        // same reason -- at 10 cm a smooth slope terraces into wide flat
+        // plateaus and the small stuff is what breaks the steps up -- and
+        // asking it twice inside the blend would be a second evaluation of the
+        // most expensive thing here for no difference in the answer.
+        const float fine = (fbm(memo.fine, x * 0.090f + 3.7f, z * 0.090f + 9.1f, 3) - 0.5f) * 1.2f;
+        const float mix = birchMix(x);
+
+        // WHOLLY BIRCH: the common case inside the band, and it skips the
+        // ridged octave and the basin fbm entirely rather than computing them
+        // and multiplying by zero.
+        if (mix >= 0.999f) return 2.0f + roll * 15.0f + swell * 7.0f + fine;
+
         const float ridge = ridged(memo.ridge, x * 0.0300f + 13.1f, z * 0.0300f + 7.3f, 3);
 
         float h = 4.0f + roll * 60.0f + swell * 24.0f + ridge * 6.0f;
@@ -818,8 +941,16 @@ class VoxelTerrain {
         // smooth everywhere terraces into wide flat plateaus -- which reads as
         // worse, not rounder. Roundness belongs in the large shapes; the small
         // ones have to keep enough gradient to break the steps up.
-        h += (fbm(memo.fine, x * 0.090f + 3.7f, z * 0.090f + 9.1f, 3) - 0.5f) * 1.2f;
-        return h;
+        h += fine;
+        if (mix <= 0.001f) return h;
+
+        // THE SEAM. Ninety metres of blend between a wood whose median floor is
+        // 49 m and one whose median is 13, which is a 36 m drop -- so this is
+        // not a detail, it is a hillside, and it wants to be walked down rather
+        // than fallen off. sstep on both sides of birchWeight is what makes the
+        // join C1: the gradient goes to zero at each end of the blend instead
+        // of changing abruptly where the lerp starts and stops.
+        return lerpf(h, 2.0f + roll * 15.0f + swell * 7.0f + fine, mix);
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
@@ -896,6 +1027,36 @@ class VoxelTerrain {
     // code, which asks about a few thousand scattered columns rather than every
     // column in a chunk and has no grid to read from.
     uint8_t topMaterial(int i, int j, int h, int slope, TerrainMemo &memo) const {
+        // ------------------------------------------------------------- birch
+        // ONE GREEN, EVERYWHERE. No sand, no silt, no soil, no needle litter,
+        // and no rock however steep the ground gets -- a birch wood is a
+        // meadow with trees in it, and the moment a hillside turns brown it
+        // stops reading as one.
+        //
+        // GRASS_0 is the right slot rather than a new ramp, and that is the
+        // whole trick: those six ids are filled by deriveGroundFromTrees from
+        // whatever foliage the loaded models actually use. Load birches and the
+        // floor becomes the birches' own greens without a colour being written
+        // down anywhere. "Light green matching the trees" is not a value here,
+        // it is a consequence.
+        //
+        // It stays a six-step ramp rather than a single flat green for the
+        // reason recorded at the top of this file: one value over a whole
+        // hillside reads as a painted plane, because the eye finds the repeat
+        // instantly. Birch foliage is a narrow range to begin with, so six
+        // steps of it still reads as one colour -- solid, but not flat.
+        // DITHERED ACROSS THE SEAM, not switched at it. A hard line at
+        // mix = 0.5 would draw a straight north-south edge across the world
+        // where the needle floor meets the meadow -- the one shape nothing else
+        // in this terrain has. Testing the mix against a hash of the column
+        // instead interleaves the two over the blend, so the woods dissolve
+        // into each other the way a real treeline does.
+        //
+        // The hash is the COLUMN's, so it is stable: the same column answers
+        // the same way every time it is meshed, from any chunk, on any thread.
+        if (birchMix(wx(i)) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
+            return mat::GRASS_0;
+
         const int wl = int(waterLevel / VOXEL_M);
         if (h <= wl) return (wl - h <= 8) ? mat::SAND : mat::SILT;
         if (h <= wl + 8) return mat::SAND;  // the shore band

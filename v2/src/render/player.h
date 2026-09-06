@@ -124,6 +124,20 @@ class Player {
     static constexpr float kBounceGain = 1.35f;
     static constexpr float kBounceMax = 3.0f;
 
+    // EVERY mushroom, 25% higher -- and 25% higher is not 25% faster.
+    //
+    // Height goes as v^2/2g, so a quarter more altitude is sqrt(1.25) on the
+    // launch speed, exactly as the 50% jump raise above took sqrt(1.5). Taking
+    // the naive 1.25 would have been a 56% raise in height and a cap worth
+    // fourteen jumps rather than eleven.
+    //
+    // Applied to the LAUNCH SPEED rather than folded into kBounceGain, because
+    // the gain compounds: a factor in there would be 25% on the first bounce,
+    // 56% on the second and away. This lifts the whole ladder by the same
+    // quarter, capped rung included -- the ceiling is still 3x the jump SPEED
+    // in the chain, now landing at 3.354x and 11.25 jump heights.
+    static constexpr float kBounceBoost = 1.1180340f;  // sqrt(1.25)
+
     // How fast the eye catches up after a step, per second. 18 is about a
     // 55 ms tail: long enough to remove the jolt, short enough that the view
     // never feels like it is trailing the body.
@@ -215,7 +229,7 @@ class Player {
                         // a trampoline, it is an escape from the atmosphere in
                         // about a dozen hops.
                         bounceMul_ = minf(bounceMul_ * kBounceGain, kBounceMax);
-                        vy = jumpVel * bounceMul_;
+                        vy = jumpVel * bounceMul_ * kBounceBoost;
                         onGround = false;
                     } else {
                         vy = 0.0f;

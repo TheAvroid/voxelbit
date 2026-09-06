@@ -142,6 +142,10 @@ void usage() {
         "  --ground-stats            print what the ground is made of, region by region,\n"
         "                            and what it is lit by -- sun against sky -- then exit\n"
         "  --fly                     start in fly mode -- no collision, so a scripted\n"
+        "  --birch                   pin the world to the birch wood: low rounded\n"
+        "                            hills, one light green, beehives in 1%% of trees\n"
+        "  --pine                    pin the world to the pine wood. Without either flag\n"
+        "                            the two are BANDS you walk between -- T, /locate birch\n"
         "                            walk cannot park itself against a trunk\n"
         "  --shot-dt F               simulated seconds per frame  (default 1/60), so\n"
         "                            two captures cover the same ground\n"
@@ -276,6 +280,8 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--menu") o->menuAtStart = true;
         else if (a == "--ground-stats") o->groundStats = true;
         else if (a == "--fly") o->startFly = true;
+        else if (a == "--birch") o->birch = true;
+        else if (a == "--pine") o->pineOnly = true;
         else if (a == "--shot-dt") argFloat(argc, argv, i, &o->shotDt);
         else if (a == "--stats") o->stats = true;
         else if (a == "--profile") o->profile = true;

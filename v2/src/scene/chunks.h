@@ -175,8 +175,19 @@ class ChunkMesher {
     int bigRockFlatVox = 12;
     float maxBuryFrac = 0.55f;
     std::vector<Footprint> pineFoot, rockFoot, flowerFoot, mushroomFoot, pineconeFoot;
+    // The beehive's footprint. Empty in the pine wood, which is what turns the
+    // hive pass off there -- no flag needed.
+    std::vector<Footprint> hiveFoot;
     // Per pine model, every crown voxel resting on wood -- see collectPerches.
     std::vector<std::vector<Perch>> pinePerch;
+    // Where the birches begin in pineFoot / pinePerch. Pines are [0, birchBase)
+    // and birches [birchBase, size) -- see loadPines. 0 means every model is a
+    // birch, size means every one is a pine, and both are what --birch / --pine
+    // produce.
+    int birchBase = 0;
+    // The subset of those wide enough to hang a beehive from -- empty in the
+    // pine wood, which is one of the two things that turns the hive pass off.
+    std::vector<std::vector<Perch>> pineHivePerch;
     int pineconesPerTree = 14;
     // mushroomFoot holds the small models first and the doubled ones after it.
     // Everything at or past this index is a big one.
@@ -195,6 +206,11 @@ class ChunkMesher {
     // a thing you come across on its own, so this is a flat low probability
     // over any grass the wood will grow.
     float mushroomDensity = 0.015f;
+    // HALF AS MANY MUSHROOMS UNDER THE BIRCHES. A fungus in a conifer wood
+    // lives on the needle litter, and the birch floor has none -- so this is
+    // the pine's density scaled per position rather than a second constant, and
+    // retuning the pine wood still moves both together.
+    float birchMushroomScale = 0.5f;
     // Multiplies the stand-density gate. The old engine capped the wood at a
     // fixed number of trees over a fixed patch; an endless world has no total
     // to cap, so the control has to be a DENSITY -- 1.0 is every site the
@@ -208,6 +224,92 @@ class ChunkMesher {
     // and the exact figure depends on how thick the stand was to begin with.
     float treeDensity = 0.2325f;  // 0.55, less a quarter, three times over
     float treeStride = 2.4f;
+
+    // ---- the birch wood ----------------------------------------------------
+    //
+    // 4.4 m between candidates against the pine's 2.4, carried over from the
+    // browser engine's BKCELL = 44. A birch crown is wider than a pine's and
+    // the wood is meant to read as open rather than dense, so the same tree
+    // density on a coarser grid gives a stand you can see through.
+    //
+    // THE CLUMPING IS THE PINE'S, UNCHANGED. Both woods run the same
+    // standDensity gate, which is a sixty-metre field -- so both get the same
+    // behaviour of thick stands with clearings between them rather than trees
+    // spread evenly. Only the grid under it changes.
+    float birchStride = 4.4f;
+    // DOUBLED, 0.42 -> 0.84. The opening value came from treating the browser
+    // engine's coarser 4.4 m grid as "an open wood", and it read as too open --
+    // a birch stand is dense, it is the TRUNKS being pale and bare that make it
+    // feel light rather than the gaps between them.
+    //
+    // It is a probability per candidate cell, and the gate above it tops out at
+    // 0.97, so 0.84 still leaves headroom -- at 1.0 every cell the stand-density
+    // field admits would take a tree and the clumping would flatten out into an
+    // even field, which is the thing that gate exists to prevent.
+    float birchDensity = 0.84f;
+
+    // TWICE AS MANY BIRCHES, AS AN EXTRA SWEEP RATHER THAN A BIGGER NUMBER.
+    //
+    // Asked for directly. Neither of the two obvious knobs can pay it:
+    // birchDensity is a probability per cell and the gate above it tops out
+    // at 0.97, so 0.84 has less than a fifth left in it; and the STRIDE is
+    // shared with the pines by construction (see the note in the scatter),
+    // so halving it would double the pine wood too and re-roll every tree in
+    // the world on a lattice that no longer lines up with the old one.
+    //
+    // So the birch gets a second pass over the SAME lattice instead: one
+    // more candidate per cell, jittered from a different hash, kept only
+    // where the ground is birch. Three properties follow, and they are the
+    // whole reason it is shaped this way:
+    //
+    //   * THE EXISTING WOOD DOES NOT MOVE. Pass 0 runs first and unchanged,
+    //     so every pine and every birch that stood before still stands, in
+    //     the same place. The new trees fill gaps.
+    //   * THE PINES ARE UNTOUCHED. A later candidate that lands on pine
+    //     ground is dropped rather than planted. A pinned pine wood comes
+    //     back bit for bit: 6786 trees before and after.
+    //   * SPACING IS STILL SHARED. Both passes push into the same `placed`
+    //     list, so a new birch cannot grow through an old one -- which is
+    //     exactly what a second LATTICE could not have promised, and is why
+    //     the one-lattice rule survives this.
+    //
+    // MEASURED, on a pinned birch wood at three places, ring against ring:
+    //
+    //     400, 0        7055 -> 13967    1.98x
+    //     2000, 1500    6884 -> 13583    1.97x
+    //     400, -3000    7496 -> 14792    1.97x
+    //
+    // AND ZERO IS THE OLD WOOD, EXACTLY, which is the check worth keeping:
+    // birchExtra = 0 gives one pass and reproduced the pre-change build to
+    // the tree -- 7055 trees, 1089 rocks, 74 hives at 400, 0. Anything that
+    // disturbs pass 0 shows up there as a number that no longer matches.
+    //
+    // The hives ride along, 74 -> 157, because one birch in a hundred
+    // carries one and there are twice as many birches to roll. The rocks
+    // fall, 1089 -> 1000, and that is collectTrees working: a rock defers
+    // to a trunk, and there are more trunks to defer to.
+    // Extra candidates per cell, and FRACTIONAL because whole ones cannot
+    // land on the number that was asked for. One whole extra pass offers
+    // twice the birch and delivers 1.70x -- the spacing test takes the rest,
+    // since twice the candidates on the same ground clash more often than
+    // once. The part beyond the last whole pass is spent as a per-cell
+    // probability, and that is what lets this be tuned to the figure measured
+    // below rather than to whatever a whole number happens to land on.
+    float birchExtra = 1.5f;
+    // Mixed into the cell hash on the later passes, stepped by the pass so
+    // that a third candidate is not a copy of the second. One rehash gives
+    // the jitter, the species roll, the density gate, the model, the yaw,
+    // the sink and the hive roll all their own streams -- one place to get
+    // right instead of seven.
+    static constexpr uint32_t kBirchPassSalt = 0x5B17u;
+
+    // ONE BIRCH IN A HUNDRED CARRIES A BEEHIVE.
+    //
+    // The browser engine's BKHIVE, and its note records how it got there:
+    // 0.10 -> 0.05 -> 0.02, then "make birch 1%". A hive is a landmark you come
+    // across, not furniture -- at a tenth you meet one every few strides and it
+    // stops being either.
+    float birchHiveRate = 0.01f;
     uint32_t seed = 20260904u;
 
   private:
@@ -291,82 +393,136 @@ class ChunkMesher {
 
         // ---- trees ---------------------------------------------------------
         if (!pineFoot.empty()) {
-            const int steps = int(CHUNK_M / treeStride);
-            for (int j = 0; j <= steps; ++j) {
-                for (int i = 0; i <= steps; ++i) {
-                    const float bx = float(I0) * VOXEL_M + float(i) * treeStride;
-                    const float bz = float(J0) * VOXEL_M + float(j) * treeStride;
-                    const uint32_t cell = hashU32(uint32_t(int(bx * 16.0f)),
-                                                  uint32_t(int(bz * 16.0f)) ^ 0x9E37u);
-
-                    const float x = bx + (hashUnit(seed + 11u, cell) - 0.5f) * treeStride * 1.8f;
-                    const float z = bz + (hashUnit(seed + 12u, cell) - 0.5f) * treeStride * 1.8f;
-
-                    const int ci = int(floorf(x / VOXEL_M));
-                    const int cj = int(floorf(z / VOXEL_M));
-                    if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
-                        continue;  // it belongs to a neighbour
-
-                    const int h = terrain_.heightVox(ci, cj, memo);
-                    if (h <= wl + 8) continue;
-
-                    const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
-                                                terrain_.heightVox(ci - 1, cj, memo)),
-                                           absi(terrain_.heightVox(ci, cj + 1, memo) -
-                                                terrain_.heightVox(ci, cj - 1, memo)));
-                    if (slope >= VoxelTerrain::kTreeSlope) continue;
-
-                    const float dens = terrain_.standDensity(x, z, memo.stand);
-                    if (hashUnit(seed + 13u, cell) >
-                        (saturate((dens - 0.30f) / 0.32f) * 0.92f + 0.05f) * treeDensity)
-                        continue;
-
-                    const int k = int(hashUnit(seed + 15u, cell) * float(pineFoot.size())) %
-                                  int(pineFoot.size());
-                    const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
-                    const Footprint &f = pineFoot[size_t(k)];
-                    const float footX = float((yaw & 1) ? f.sz : f.sx) * VOXEL_M;
-                    const float footZ = float((yaw & 1) ? f.sx : f.sz) * VOXEL_M;
-                    const float keep = maxf(1.5f, 0.30f * maxf(footX, footZ));
-
-                    bool clash = false;
-                    for (const Placed &q : placed) {
-                        const float dx = q.x - x, dz = q.z - z;
-                        if (dx * dx + dz * dz < maxf(keep, q.r) * maxf(keep, q.r)) {
-                            clash = true;
-                            break;
+            // Whichever wood this is, the SHAPE of the scatter is identical --
+            // same jitter, same stand-density gate, same spacing rejection.
+            // Only the grid pitch and how much of it fills changes.
+            // THE GRID IS THE COARSER OF THE TWO, WORLD-WIDE. A scatter grid
+            // has to be one lattice or trees would be generated twice over near
+            // a seam -- once on each pitch -- and neither pass would know about
+            // the other's spacing rejections. So the birch's 4.4 m is the grid
+            // and each band fills its own share of it -- the birch 0.84, the
+            // pine 0.2325 -- which is what lets one lattice serve both.
+            const bool anyBirch = birchBase < int(pineFoot.size());
+            const float tStride = anyBirch ? birchStride : treeStride;
+            const int steps = int(CHUNK_M / tStride);
+            // PASS 0 IS THE WOOD AS IT WAS. Every later pass is birch-only,
+            // and runs after it so that nothing it adds can displace a tree
+            // that was already there -- the spacing test rejects the newcomer,
+            // never the incumbent. See birchPasses.
+            const int passes = anyBirch ? 1 + int(ceilf(birchExtra)) : 1;
+            for (int pass = 0; pass < passes; ++pass)
+                for (int j = 0; j <= steps; ++j) {
+                    for (int i = 0; i <= steps; ++i) {
+                        const float bx = float(I0) * VOXEL_M + float(i) * tStride;
+                        const float bz = float(J0) * VOXEL_M + float(j) * tStride;
+                        const uint32_t cellBase = hashU32(uint32_t(int(bx * 16.0f)),
+                                                          uint32_t(int(bz * 16.0f)) ^ 0x9E37u);
+                        const uint32_t cell =
+                            pass ? hashU32(cellBase, kBirchPassSalt + uint32_t(pass)) : cellBase;
+                        // The fraction, spent on the LAST pass only: the whole
+                        // passes under it offer a candidate in every cell, and
+                        // this one offers it in that share of them. Tested here,
+                        // before the jitter, because it is the cheapest of the
+                        // three rejections a later pass can fail.
+                        if (pass != 0) {
+                            const float want = birchExtra - float(pass - 1);
+                            if (want < 1.0f && hashUnit(seed + 0x71u, cell) >= want)
+                                continue;
                         }
-                    }
-                    if (clash) continue;
 
-                    // SIT IT FLUSH. The slope test above is a gradient at the
-                    // trunk and rejects the steep sites; this measures the
-                    // ground under the whole base and sinks the trunk until
-                    // nothing of it is standing clear. A pine passes the slope
-                    // test on ground that still falls a few voxels across two
-                    // metres of trunk, and that was enough to show daylight
-                    // under the uphill side.
-                    //
-                    // The tree's own footprint, not the crown's: f.baseX/baseZ
-                    // is where the model MEETS the ground -- a trunk -- and
-                    // sinking a pine to clear the lowest ground under its
-                    // twelve-metre canopy would put it underground.
-                    int extraSink = 0;
-                    {
-                        const int bX = (yaw & 1) ? f.baseZ : f.baseX;
-                        const int bZ = (yaw & 1) ? f.baseX : f.baseZ;
-                        if (bX > 0 && bZ > 0) {
-                            const int base = decorSink(0, k, f.sy, seed, cell);
-                            const int drop = groundDrop(ci, cj, h, bX, bZ, memo);
-                            extraSink = maxi(0, drop - base);
+                        const float x = bx + (hashUnit(seed + 11u, cell) - 0.5f) * tStride * 1.8f;
+                        const float z = bz + (hashUnit(seed + 12u, cell) - 0.5f) * tStride * 1.8f;
+
+                        // The birch-only test, cheap half. birchMix is a pure
+                        // function of x with no noise and no memo behind it,
+                        // so a pine band leaves here rather than paying for
+                        // the height and slope lookups below.
+                        if (pass != 0 && terrain_.birchMix(x) <= 0.0f) continue;
+
+                        const int ci = int(floorf(x / VOXEL_M));
+                        const int cj = int(floorf(z / VOXEL_M));
+                        if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
+                            continue;  // it belongs to a neighbour
+
+                        const int h = terrain_.heightVox(ci, cj, memo);
+                        if (h <= wl + 8) continue;
+
+                        const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
+                                                    terrain_.heightVox(ci - 1, cj, memo)),
+                                               absi(terrain_.heightVox(ci, cj + 1, memo) -
+                                                    terrain_.heightVox(ci, cj - 1, memo)));
+                        if (slope >= VoxelTerrain::kTreeSlope) continue;
+
+                        // WHICH WOOD IS THIS COLUMN IN. Asked at the tree's own
+                        // jittered position rather than at the cell base, so a tree
+                        // that jitters across the seam is the species of where it
+                        // actually stands.
+                        const float bmix = terrain_.birchMix(x);
+                        const bool isBirch =
+                            birchBase < int(pineFoot.size()) &&
+                            (birchBase == 0 || bmix > hashUnit(seed + 0x2C1Du, cell));
+                        // And the exact half. Inside the ninety-metre seam
+                        // the species roll can still come up pine, and a pine
+                        // planted by the birch's own sweep is a pine the wood
+                        // did not ask for.
+                        if (pass != 0 && !isBirch) continue;
+                        const float tDensity = isBirch ? birchDensity : treeDensity;
+
+                        const float dens = terrain_.standDensity(x, z, memo.stand);
+                        if (hashUnit(seed + 13u, cell) >
+                            (saturate((dens - 0.30f) / 0.32f) * 0.92f + 0.05f) * tDensity)
+                            continue;
+
+                        // The model comes from that species' own range.
+                        const int lo = isBirch ? birchBase : 0;
+                        const int hi = isBirch ? int(pineFoot.size()) : birchBase;
+                        const int span = maxi(1, hi - lo);
+                        const int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
+                        const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
+                        const Footprint &f = pineFoot[size_t(k)];
+                        const float footX = float((yaw & 1) ? f.sz : f.sx) * VOXEL_M;
+                        const float footZ = float((yaw & 1) ? f.sx : f.sz) * VOXEL_M;
+                        const float keep = maxf(1.5f, 0.30f * maxf(footX, footZ));
+
+                        bool clash = false;
+                        for (const Placed &q : placed) {
+                            const float dx = q.x - x, dz = q.z - z;
+                            if (dx * dx + dz * dz < maxf(keep, q.r) * maxf(keep, q.r)) {
+                                clash = true;
+                                break;
+                            }
                         }
-                    }
+                        if (clash) continue;
 
-                    placed.push_back({x, z, keep});
-                    b->decor.push_back({0, k, ci, cj, h, yaw, cell, 0, extraSink});
-                    hangPinecones(b, k, ci, cj, h, yaw, cell, extraSink);
+                        // SIT IT FLUSH. The slope test above is a gradient at the
+                        // trunk and rejects the steep sites; this measures the
+                        // ground under the whole base and sinks the trunk until
+                        // nothing of it is standing clear. A pine passes the slope
+                        // test on ground that still falls a few voxels across two
+                        // metres of trunk, and that was enough to show daylight
+                        // under the uphill side.
+                        //
+                        // The tree's own footprint, not the crown's: f.baseX/baseZ
+                        // is where the model MEETS the ground -- a trunk -- and
+                        // sinking a pine to clear the lowest ground under its
+                        // twelve-metre canopy would put it underground.
+                        int extraSink = 0;
+                        {
+                            const int bX = (yaw & 1) ? f.baseZ : f.baseX;
+                            const int bZ = (yaw & 1) ? f.baseX : f.baseZ;
+                            if (bX > 0 && bZ > 0) {
+                                const int base = decorSink(0, k, f.sy, seed, cell);
+                                const int drop = groundDrop(ci, cj, h, bX, bZ, memo);
+                                extraSink = maxi(0, drop - base);
+                            }
+                        }
+
+                        placed.push_back({x, z, keep});
+                        b->decor.push_back({0, k, ci, cj, h, yaw, cell, 0, extraSink});
+                        hangPinecones(b, k, ci, cj, h, yaw, cell, extraSink);
+                        hangHive(b, k, ci, cj, h, yaw, cell, extraSink);
+                    }
                 }
-            }
         }
 
         // ---- rocks and flowers --------------------------------------------
@@ -548,55 +704,83 @@ class ChunkMesher {
     // a trunk, which is the thing being fixed.
     // -----------------------------------------------------------------------
     void collectTrees(ChunkBuild *b, std::vector<Disc> *out, TerrainMemo &memo) const {
-        if (pineFoot.empty() || treeDensity <= 0.0f) return;
+        // THE SAME GRID THE TREE PASS USED, biome and all. If these two ever
+        // disagree the rocks avoid trees that are not there and stand in ones
+        // that are -- which is exactly the bug this function exists to fix,
+        // reintroduced silently in the other wood.
+        const bool anyBirch = birchBase < int(pineFoot.size());
+        const float tStride = anyBirch ? birchStride : treeStride;
+        if (pineFoot.empty()) return;
         const int wl = int(terrain_.waterLevel / VOXEL_M);
-        const int steps = int(CHUNK_M / treeStride);
+        const int steps = int(CHUNK_M / tStride);
+        const int passes = anyBirch ? 1 + int(ceilf(birchExtra)) : 1;
         for (int nz = -1; nz <= 1; ++nz)
             for (int nx = -1; nx <= 1; ++nx) {
                 const int I0 = (b->cx + nx) * CHUNK_VOX, J0 = (b->cz + nz) * CHUNK_VOX;
-                for (int j = 0; j <= steps; ++j)
-                    for (int i = 0; i <= steps; ++i) {
-                        const float bx = float(I0) * VOXEL_M + float(i) * treeStride;
-                        const float bz = float(J0) * VOXEL_M + float(j) * treeStride;
-                        const uint32_t cell = hashU32(uint32_t(int(bx * 16.0f)),
-                                                      uint32_t(int(bz * 16.0f)) ^ 0x9E37u);
-                        const float x =
-                            bx + (hashUnit(seed + 11u, cell) - 0.5f) * treeStride * 1.8f;
-                        const float z =
-                            bz + (hashUnit(seed + 12u, cell) - 0.5f) * treeStride * 1.8f;
-                        const int ci = int(floorf(x / VOXEL_M));
-                        const int cj = int(floorf(z / VOXEL_M));
-                        // A tree belongs to the chunk holding its own column --
-                        // the same test the placing pass makes, so a tree is
-                        // counted once and by the chunk that will actually
-                        // place it.
-                        if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
-                            continue;
-                        const int h = terrain_.heightVox(ci, cj, memo);
-                        if (h <= wl + 8) continue;
-                        const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
-                                                    terrain_.heightVox(ci - 1, cj, memo)),
-                                               absi(terrain_.heightVox(ci, cj + 1, memo) -
-                                                    terrain_.heightVox(ci, cj - 1, memo)));
-                        if (slope >= VoxelTerrain::kTreeSlope) continue;
-                        const float dens = terrain_.standDensity(x, z, memo.stand);
-                        if (hashUnit(seed + 13u, cell) >
-                            (saturate((dens - 0.30f) / 0.32f) * 0.92f + 0.05f) * treeDensity)
-                            continue;
-                        const int k = int(hashUnit(seed + 15u, cell) * float(pineFoot.size())) %
-                                      int(pineFoot.size());
-                        const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
-                        const Footprint &f = pineFoot[size_t(k)];
-                        // THE TRUNK, not the crown. baseX/baseZ is what meets
-                        // the ground; measuring the canopy would push rocks a
-                        // full twelve metres from every pine and empty the wood
-                        // of them. A boulder under branches is still fine -- it
-                        // is a boulder through a TRUNK that is not.
-                        const int bxv = (yaw & 1) ? f.baseZ : f.baseX;
-                        const int bzv = (yaw & 1) ? f.baseX : f.baseZ;
-                        if (bxv <= 0 || bzv <= 0) continue;
-                        out->push_back({x, z, 0.25f * float(bxv + bzv) * VOXEL_M});
-                    }
+                // THE SECOND BIRCH SWEEP TOO. If this walk and the placing
+                // one ever disagree about how many candidates a cell offers,
+                // the rocks avoid birches that are not there and grow through
+                // the ones that are.
+                for (int pass = 0; pass < passes; ++pass)
+                    for (int j = 0; j <= steps; ++j)
+                        for (int i = 0; i <= steps; ++i) {
+                            const float bx = float(I0) * VOXEL_M + float(i) * tStride;
+                            const float bz = float(J0) * VOXEL_M + float(j) * tStride;
+                            const uint32_t cellBase = hashU32(uint32_t(int(bx * 16.0f)),
+                                                              uint32_t(int(bz * 16.0f)) ^ 0x9E37u);
+                            const uint32_t cell =
+                                pass ? hashU32(cellBase, kBirchPassSalt + uint32_t(pass)) : cellBase;
+                            if (pass != 0) {
+                                const float want = birchExtra - float(pass - 1);
+                                if (want < 1.0f && hashUnit(seed + 0x71u, cell) >= want)
+                                    continue;
+                            }
+                            const float x =
+                                bx + (hashUnit(seed + 11u, cell) - 0.5f) * tStride * 1.8f;
+                            const float z =
+                                bz + (hashUnit(seed + 12u, cell) - 0.5f) * tStride * 1.8f;
+                            if (pass != 0 && terrain_.birchMix(x) <= 0.0f) continue;
+                            const int ci = int(floorf(x / VOXEL_M));
+                            const int cj = int(floorf(z / VOXEL_M));
+                            // A tree belongs to the chunk holding its own column --
+                            // the same test the placing pass makes, so a tree is
+                            // counted once and by the chunk that will actually
+                            // place it.
+                            if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
+                                continue;
+                            const int h = terrain_.heightVox(ci, cj, memo);
+                            if (h <= wl + 8) continue;
+                            const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
+                                                        terrain_.heightVox(ci - 1, cj, memo)),
+                                                   absi(terrain_.heightVox(ci, cj + 1, memo) -
+                                                        terrain_.heightVox(ci, cj - 1, memo)));
+                            if (slope >= VoxelTerrain::kTreeSlope) continue;
+                            const float bmix = terrain_.birchMix(x);
+                            const bool isBirch =
+                                anyBirch && (birchBase == 0 ||
+                                             bmix > hashUnit(seed + 0x2C1Du, cell));
+                            if (pass != 0 && !isBirch) continue;
+                            const float tDensity = isBirch ? birchDensity : treeDensity;
+                            const float dens = terrain_.standDensity(x, z, memo.stand);
+                            if (hashUnit(seed + 13u, cell) >
+                                (saturate((dens - 0.30f) / 0.32f) * 0.92f + 0.05f) * tDensity)
+                                continue;
+                            const int lo = isBirch ? birchBase : 0;
+                            const int hi = isBirch ? int(pineFoot.size()) : birchBase;
+                            const int span = maxi(1, hi - lo);
+                            const int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
+                            const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
+                            const Footprint &f = pineFoot[size_t(k)];
+                            // THE TRUNK, not the crown. baseX/baseZ is what meets
+                            // the ground; measuring the canopy would push rocks a
+                            // full twelve metres from every pine and empty the wood
+                            // of them. A boulder under branches is still fine -- it
+                            // is a boulder through a TRUNK that is not.
+                            const int bxv = (yaw & 1) ? f.baseZ : f.baseX;
+                            const int bzv = (yaw & 1) ? f.baseX : f.baseZ;
+                            if (bxv <= 0 || bzv <= 0) continue;
+                            out->push_back({x, z, 0.25f * float(bxv + bzv) * VOXEL_M});
+                        }
             }
     }
 
@@ -690,6 +874,11 @@ class ChunkMesher {
     // without a second rule about pinecones anywhere.
     void hangPinecones(ChunkBuild *b, int pineIndex, int ci, int cj, int h, int yaw,
                        uint32_t cell, int treeExtraSink) {
+        // A BIRCH DROPS NO CONES, and now that both species stand in one world
+        // that is a question about THIS TREE rather than about the world. The
+        // first version asked the world and hung fifty-five thousand pine cones
+        // through the birch wood.
+        if (pineIndex >= birchBase && birchBase < int(pineFoot.size())) return;
         if (pineconeFoot.empty() || pineconesPerTree <= 0) return;
         if (pineIndex < 0 || size_t(pineIndex) >= pinePerch.size()) return;
         const std::vector<Perch> &pp = pinePerch[size_t(pineIndex)];
@@ -728,6 +917,82 @@ class ChunkMesher {
             b->decor.push_back({4, k, ci + rx, cj + rz, h, cyaw, cell, coneBase - treeSink,
                                 treeExtraSink});
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // A BEEHIVE IN ONE BIRCH IN A HUNDRED.
+    //
+    // The same geometry as a pinecone and for the same reason: both hang in a
+    // crown, both are placed from a perch collectPerches already found, and
+    // both must ride the tree's quarter turn and its extra sink or they drift
+    // out of it. So this is hangPinecones with three differences, and they are
+    // all "a hive is not a cone":
+    //
+    //   * ONE, not fourteen. A hive is a landmark; the rate is per TREE rather
+    //     than a count per tree.
+    //   * ITS OWN HASH STREAM. Sharing the cone's would tie "does this tree get
+    //     a hive" to "where does its first cone go", so the two would move
+    //     together whenever either was retuned.
+    //   * THE HIGHEST PERCH OF A FEW, not a uniform draw. A hive low in the
+    //     trunk reads as a growth on the bark; hung out at height it reads as a
+    //     hive. Four candidates and the highest wins -- cheap, and enough to
+    //     push it into the crown without needing the browser engine's full
+    //     clear-box test.
+    //
+    // The pine wood plants none of these: hiveFoot is empty there, so the first
+    // line returns and there is no biome test to keep in step.
+    // -----------------------------------------------------------------------
+    void hangHive(ChunkBuild *b, int treeIndex, int ci, int cj, int h, int yaw, uint32_t cell,
+                  int treeExtraSink) {
+        if (hiveFoot.empty() || birchHiveRate <= 0.0f) return;
+        if (treeIndex < 0 || size_t(treeIndex) >= pineHivePerch.size()) return;
+        if (treeIndex < birchBase) return;  // a pine carries no hive
+
+        // THE ELIGIBILITY TEST COMES BEFORE THE DRAW, and the order is the
+        // difference between 1% and 0.76%.
+        //
+        // Drawn first, the rate is 1% of ALL birches -- and then every tree
+        // whose crown offers nowhere to hang anything silently drops out
+        // afterwards, so what actually reaches the wood is 1% times whatever
+        // fraction of the sixteen models can carry a hive at all. Measured:
+        // 0.76%. Asking "could this tree hold one" first makes the rate mean
+        // what it says.
+        // THE WIDE ANCHORS, not the cone ones -- a hive hung on a one-voxel
+        // clear column has its four sides in the leaves.
+        const std::vector<Perch> &pp = pineHivePerch[size_t(treeIndex)];
+        if (pp.empty()) return;
+        if (hashUnit(seed + 0xB33Fu, cell) >= birchHiveRate) return;
+
+        const Footprint &pf = pineFoot[size_t(treeIndex)];
+        const int treeSink = decorSink(0, treeIndex, pf.sy, seed, cell);
+
+        // Four draws, keep the highest.
+        const Perch *best = nullptr;
+        for (int n = 0; n < 4; ++n) {
+            const Perch &q = pp[hashU32(seed + 0x51EEu + uint32_t(n), cell) % pp.size()];
+            if (!best || q.y > best->y) best = &q;
+        }
+
+        const int dx = int(best->x) - pf.sx / 2;
+        const int dz = int(best->z) - pf.sz / 2;
+        int rx = dx, rz = dz;
+        switch (yaw & 3) {
+            case 1: rx = dz;  rz = -dx; break;
+            case 2: rx = -dx; rz = -dz; break;
+            case 3: rx = -dz; rz = dx;  break;
+            default: break;
+        }
+
+        const int k = int(hashU32(seed + 0x77A1u, cell) % hiveFoot.size());
+        const int hyaw = int(hashU32(seed + 0x1D0Bu, cell) & 3u);
+        // The perch is where the hive's TOP goes; makeInstance places by the
+        // base, so drop it by the model's own height less one -- the same
+        // arithmetic the cones use.
+        const int top = int(best->y);
+        const int base = top - (hiveFoot[size_t(k)].sy - 1);
+        if (base < 0) return;
+        b->decor.push_back({5, k, ci + rx, cj + rz, h, hyaw, cell, base - treeSink,
+                            treeExtraSink});
     }
 
     // `avoid`, when given, is ground already taken by something of another
@@ -817,7 +1082,18 @@ class ChunkMesher {
                     col = colonyAt(bx, bz, int(foot.size()), wobMemo);
                     if (col.w <= 0.0f) continue;
                 }
-                const float w = (kind == 2) ? col.w : 1.0f;
+                float w = (kind == 2) ? col.w : 1.0f;
+                // SCALED WHERE IT STANDS, not per chunk. A chunk near a seam
+                // holds both woods, so a single factor for the whole chunk
+                // would draw a straight edge in the mushrooms that the trees
+                // and the ground around them do not have. birchMix is the same
+                // 0..1 the terrain and the species selection read, so all three
+                // cross the seam together.
+                //
+                // The CELL BASE rather than the jittered position: the jitter is
+                // 1.3 m and a band is 800, so the difference cannot change the
+                // answer, and asking here keeps it before the gate it feeds.
+                if (kind == 3) w *= lerpf(1.0f, birchMushroomScale, terrain_.birchMix(bx));
                 if (hashUnit(seed + 41u, cell) >= density * w) continue;
 
                 const float x = bx + (hashUnit(seed + 42u, cell) - 0.5f) * stride;

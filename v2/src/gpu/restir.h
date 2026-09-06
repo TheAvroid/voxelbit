@@ -154,9 +154,14 @@ class Restir {
     // ---------------------------------------------------------------------
     // Temporal, then spatial. Run after the trace has filled `candidate`.
     // ---------------------------------------------------------------------
+    // `jitter` is the sub-pixel offset the tracer built THIS frame's rays
+    // with. The motion vectors it wrote have it divided out -- DLSS demands
+    // jitter-free vectors -- so reprojection here has to add it back, or every
+    // rejection test below is run against a pixel up to half a pixel away.
     void run(Falcor::RenderContext *ctx, const Falcor::ref<Falcor::Texture> &normRough,
              const Falcor::ref<Falcor::Texture> &depth,
-             const Falcor::ref<Falcor::Texture> &motion, uint32_t frame) {
+             const Falcor::ref<Falcor::Texture> &motion, uint32_t frame,
+             Falcor::float2 jitter) {
         if (!ready_ || !candidate_) return;
         const uint32_t prev = cur_ ^ 1u;
 
@@ -177,6 +182,7 @@ class Restir {
             var["RestirCB"]["gDepthTol"] = depthTol;
             var["RestirCB"]["gNormalTol"] = normalTol;
             var["RestirCB"]["gEnabled"] = (enabled && temporal && historyValid_) ? 1u : 0u;
+            var["RestirCB"]["gJitter"] = jitter;
             temporalPass_->execute(ctx, w_, h_);
         }
         {

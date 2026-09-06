@@ -270,6 +270,12 @@ struct Options {
     // camera in a fully resident ring. Flying passes through, so the ring
     // genuinely moves and the streamer is genuinely exercised.
     bool startFly = false;
+    // PIN THE WHOLE WORLD TO ONE WOOD. Without either of these the biomes are
+    // bands you walk between and /locate takes you to one; with one of them the
+    // world is that wood everywhere, which is what a reproducible screenshot or
+    // a profile run wants. See Biome and birchWeight in scene/voxelworld.h.
+    bool birch = false;
+    bool pineOnly = false;
     // Simulated seconds per frame during a capture, INSTEAD of the wall clock.
     //
     // Without this a capture is not reproducible and two of them are not
@@ -491,6 +497,13 @@ class ForestApp : public SampleApp {
         if (!opt_.background) restoreWindowPlacement();
 
         world_.seed = opt_.r.seed;
+        // THE BIOME IS SET BEFORE ANYTHING READS THE TERRAIN, and that
+        // ordering is load-bearing: loadPines() asks terrain.birch() to decide
+        // which species to load, and the chunk mesher is handed a COPY of the
+        // terrain when it starts its workers. Set it late and half the engine
+        // has already been told it is a pine wood.
+        world_.terrain.forced = opt_.birch || opt_.pineOnly;
+        world_.terrain.biome = opt_.birch ? Biome::Birch : Biome::Pine;
         world_.terrain.grassDensity = clampf(opt_.grass, 0.0f, 1.0f);
         world_.flowerDensity = clampf(opt_.flowers, 0.0f, 1.0f);
         world_.rockDensity = clampf(opt_.rocks, 0.0f, 1.0f);
@@ -554,10 +567,21 @@ class ForestApp : public SampleApp {
         // AFTER the ring is resident, because a collider only exists once the
         // chunk that owns it has been adopted.
         if (opt_.collideProbe) { collideProbe(); shutdown(0); return; }
-        std::printf("           %zu pines, %zu rocks, %zu flowers, %zu mushrooms,"
-                    " %zu pinecones standing in them\n",
+        // The hive count is only interesting in the birch wood, and printing
+        // "0 hives" in the pine one would read as a fault rather than as a
+        // species that does not have them.
+        // TREES, not pines -- the ring can hold both species at once now, and
+        // near a seam it usually does.
+        std::printf("           %zu trees, %zu rocks, %zu flowers, %zu mushrooms,"
+                    " %zu pinecones, %zu beehives\n",
                     world_.decorCount(0), world_.decorCount(1), world_.decorCount(2),
-                    world_.decorCount(3), world_.decorCount(4));
+                    world_.decorCount(3), world_.decorCount(4), world_.decorCount(5));
+        // THE RING'S CENTRE, not pos_ -- the player is placed further down and
+        // pos_ is still the origin here, which printed "0, 0" from wherever you
+        // actually were. opt_ is what the world was built around.
+        std::printf("           the %s wood at %.0f, %.0f%s\n",
+                    world_.terrain.birchAt(opt_.camX) ? "birch" : "pine", opt_.camX,
+                    opt_.camZ, world_.terrain.forced ? " (pinned)" : " -- T, /locate");
         std::printf("           %.0f ms of that was structure building, %.0f MB of tri pool\n",
                     world_.buildMs(), double(world_.poolBytes()) / (1024.0 * 1024.0));
 
@@ -1502,6 +1526,68 @@ class ForestApp : public SampleApp {
             }
         }
 
+        // ---- the console --------------------------------------------------
+        // Drawn before the settings panel and independently of it: T and Y are
+        // separate surfaces and either may be up without the other.
+        if (consoleOpen_) {
+            const float cw = fbW > 0 ? float(fbW) : 1280.0f;
+            const float boxW = minf(cw - 40.0f, 720.0f);
+            ImGui::SetNextWindowPos(ImVec2((cw - boxW) * 0.5f, 40.0f), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(boxW, 0.0f), ImGuiCond_Always);
+            ImGui::Begin("##v2console", nullptr,
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings);
+            // The caret has to be taken on the frame the box appears, or the
+            // first keystroke is eaten deciding what is focused.
+            if (consoleFocus_) {
+                ImGui::SetKeyboardFocusHere();
+                consoleFocus_ = false;
+            }
+            ImGui::TextUnformatted(">");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::InputText("##cmd", consoleBuf_, sizeof(consoleBuf_),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                consoleMsg_ = runCommand(std::string(consoleBuf_));
+                consoleBuf_[0] = 0;
+                // STAYS OPEN after a command. /locate is usually run twice --
+                // go there, look, come back -- and closing on Enter would make
+                // the second one four keystrokes instead of one.
+                consoleFocus_ = true;
+            }
+            if (!consoleMsg_.empty()) ImGui::TextUnformatted(consoleMsg_.c_str());
+
+            // ---- ESC CLOSES IT, AND IT HAS TO BE ASKED HERE ----------------
+            //
+            // Not in onKeyEvent, which never sees the key. Falcor dispatches
+            // keyboard as
+            //
+            //     if (mShowUI && mpGui->onKeyboardEvent(e)) return;   // eaten
+            //     ... onKeyEvent(e);                                  // skipped
+            //
+            // and Gui::onKeyboardEvent returns io.WantCaptureKeyboard, which is
+            // TRUE for every key while a text field is active. So the whole app
+            // is deaf while you are typing -- by design, or typing "f" would
+            // toggle fly mode.
+            //
+            // ImGui's own InputText does handle Escape, but only by reverting
+            // the edit and dropping focus. That left the box open and unfocused
+            // and took a second Escape to actually shut, which is what this is
+            // fixing.
+            //
+            // IsKeyPressed rather than reading io.KeysDown: it is edge
+            // triggered, so holding Escape does not close this and then arm the
+            // quit on the next frame. ImGuiKey_Escape resolves because Falcor
+            // populates io.KeyMap (Gui.cpp), which is worth knowing -- most of
+            // its KeysDown indices are Falcor's own key codes, not ImGui's.
+            const bool escaped = ImGui::IsKeyPressed(ImGuiKey_Escape);
+            ImGui::End();
+            // Closed AFTER End(), because setConsoleOpen may hand the mouse
+            // back and the window still has to be finished either way.
+            if (escaped) setConsoleOpen(false);
+        }
+
         if (!menuOpen_) return;
 
         styleV2 style(pGui, 1.0f, fbH);
@@ -2062,9 +2148,20 @@ class ForestApp : public SampleApp {
             quitArmed_ = false;
             return true;
         }
+        // T OPENS THE CONSOLE, and only when it is shut -- while it is open the
+        // key belongs to whatever is being typed, and ImGui has the keyboard.
+        if (e.key == Input::Key::T && !consoleOpen_ && !menuOpen_) {
+            setConsoleOpen(true);
+            quitArmed_ = false;
+            return true;
+        }
         if (e.key == Input::Key::Escape) {
             // ESC closes the menu before it starts arming the quit -- otherwise
             // dismissing a panel would leave the window one press from closing.
+            if (consoleOpen_) {
+                setConsoleOpen(false);
+                return true;
+            }
             if (menuOpen_) {
                 setMenuOpen(false);
                 return true;
@@ -2333,6 +2430,15 @@ class ForestApp : public SampleApp {
     bool quitArmed_ = false;
     bool moving_ = false;
     bool menuOpen_ = false;
+    // ---- the console (T) ---------------------------------------------------
+    // A command line, the way the browser engine has one. It exists for
+    // /locate: the biomes are bands now (see birchWeight in
+    // scene/voxelworld.h), so "the birch forest" is somewhere you can be sent.
+    bool consoleOpen_ = false;
+    bool consoleFocus_ = false;          // grab the caret on the frame it opens
+    bool consoleCapture_ = false;        // was the mouse captured before it opened
+    char consoleBuf_[160] = {0};
+    std::string consoleMsg_;             // the last reply, shown under the input
     // False until the panel has been centred for this opening; see onGuiRender.
     bool menuPlaced_ = false;
     // Where the player last dragged the settings panel, in framebuffer pixels.
@@ -2584,6 +2690,121 @@ class ForestApp : public SampleApp {
     void onTakeSaved(const vb::Take &take, double nowSec) {
         savedTake_ = take;
         savedAt_ = nowSec;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE CONSOLE, AND WHAT /locate DOES.
+    //
+    // The biomes are bands running north-south and repeating forever, so every
+    // one of them is somewhere specific and "take me there" is a well-posed
+    // request: walk east from the pine band's centre and you reach the birch
+    // band's. /locate finds the NEAREST band of the named kind rather than a
+    // fixed coordinate, so it is a short hop from wherever you are standing
+    // instead of a trip back to the origin.
+    //
+    // ADDING A BIOME IS ONE ROW IN THIS TABLE. That is the point of writing it
+    // as a table at all -- the parser, the completion in the error message and
+    // the teleport all read it, so a new wood cannot be half-registered.
+    // -----------------------------------------------------------------------
+    struct BiomeName { const char *name; const char *alias; Biome biome; };
+    static const std::vector<BiomeName> &biomeNames() {
+        static const std::vector<BiomeName> t = {
+            {"pine", "pine_forest", Biome::Pine},
+            {"birch", "birch_forest", Biome::Birch},
+        };
+        return t;
+    }
+
+    void setConsoleOpen(bool on) {
+        if (on == consoleOpen_) return;
+        if (on) {
+            consoleCapture_ = looking_;
+            if (looking_) setCapture(false);
+            holdLook_ = false;
+            consoleBuf_[0] = 0;
+            consoleFocus_ = true;
+        } else if (consoleCapture_) {
+            setCapture(true);
+            consoleCapture_ = false;
+        }
+        consoleOpen_ = on;
+    }
+
+    // The centre of the nearest band of `b` to the player, in world x. The
+    // bands repeat with period 2 * kBandW, so this is the band centre plus
+    // whichever whole period lands closest.
+    float nearestBandX(Biome b) const {
+        const float period = 2.0f * VoxelTerrain::kBandW;
+        const float c = VoxelTerrain::bandCentre(b);
+        const float k = floorf((pos_.x - c) / period + 0.5f);
+        return c + k * period;
+    }
+
+    void teleportTo(float x, float z) {
+        player_.placeOnGround(walkWorld(), x, z);
+        pos_ = player_.eyePosition();
+        // EVERYTHING TEMPORAL HAS TO BE TOLD. The film, the fog's history and
+        // the reconstruction all carry state about somewhere else entirely, and
+        // blending out of it drags the old wood across the new one for a
+        // second. The streamer re-rings itself from the new position on its own.
+        moving_ = true;
+        tracer_.resetAccumulation();
+        volfog_.invalidate();
+    }
+
+    // Returns the reply to show. Never throws; an unknown command is a message,
+    // not a failure.
+    std::string runCommand(std::string line) {
+        while (!line.empty() && (line.front() == ' ' || line.front() == '/')) line.erase(line.begin());
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        if (line.empty()) return std::string();
+
+        std::string verb = line, arg;
+        const size_t sp = line.find(' ');
+        if (sp != std::string::npos) {
+            verb = line.substr(0, sp);
+            arg = line.substr(sp + 1);
+            while (!arg.empty() && arg.front() == ' ') arg.erase(arg.begin());
+        }
+        for (char &c : verb) c = char(tolower((unsigned char)c));
+        for (char &c : arg) c = char(tolower((unsigned char)c));
+
+        if (verb == "locate") {
+            if (arg.empty()) {
+                std::string m = "locate what? try: ";
+                for (size_t i = 0; i < biomeNames().size(); ++i)
+                    m += (i ? ", " : "") + std::string(biomeNames()[i].name);
+                return m;
+            }
+            for (const BiomeName &bn : biomeNames()) {
+                if (arg != bn.name && arg != bn.alias) continue;
+                // --birch and --pine pin the world to one wood, so there is no
+                // other band to travel to. Say so rather than teleporting to a
+                // place that is the same as this one.
+                if (world_.terrain.forced) {
+                    return std::string("the world is pinned to one wood (--birch / --pine) -- "
+                                       "restart without it to walk between them");
+                }
+                const float tx = nearestBandX(bn.biome);
+                teleportTo(tx, pos_.z);
+                char buf[160];
+                std::snprintf(buf, sizeof(buf), "%s forest -- %.0f, %.0f", bn.name, tx, pos_.z);
+                return std::string(buf);
+            }
+            std::string m = "no biome called '" + arg + "'. try: ";
+            for (size_t i = 0; i < biomeNames().size(); ++i)
+                m += (i ? ", " : "") + std::string(biomeNames()[i].name);
+            return m;
+        }
+        if (verb == "where") {
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), "%.0f, %.0f, %.0f -- the %s wood", pos_.x, pos_.y,
+                          pos_.z,
+                          world_.terrain.birchAt(pos_.x) ? "birch" : "pine");
+            return std::string(buf);
+        }
+        if (verb == "help") return std::string("/locate <biome>   /where   ESC closes");
+        return std::string("unknown command '" + verb + "' -- try /help");
     }
 
     void setMenuOpen(bool on) {

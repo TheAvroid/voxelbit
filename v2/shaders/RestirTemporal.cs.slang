@@ -57,6 +57,12 @@ cbuffer RestirCB {
     float gNormalTol;  // cosine floor for the same
     uint gEnabled;
     uint gPad;
+    // This frame's sub-pixel offset, in pixels. The motion vector is stored
+    // jitter-free because that is what DLSS requires of it, so the pixel it
+    // is measured FROM has to be reconstructed here: the surface this thread
+    // is holding was found down a ray through tid + 0.5 + jitter, and adding
+    // the vector to anything else lands up to half a pixel off the history.
+    float2 gJitter;
 };
 
 [shader("compute")]
@@ -81,7 +87,7 @@ void main(uint3 tid: SV_DispatchThreadID)
     rng.init(uint64_t(idx) + 1ull, uint64_t(gFrame) * 0x9E3779B97F4A7C15ull);
 
     const float2 mv = gMotion[tid.xy];
-    const int2 prev = int2(floor(float2(tid.xy) + 0.5f + mv));
+    const int2 prev = int2(floor(float2(tid.xy) + 0.5f + gJitter + mv));
 
     if (all(prev >= int2(0)) && all(prev < int2(gDim)))
     {

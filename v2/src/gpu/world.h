@@ -240,6 +240,10 @@ struct ModelTemplate {
     ModelCollider col;
     // Only filled for pines: every voxel in the crown a cone could rest on.
     std::vector<Perch> perches;
+    // Anchors wide enough for a beehive -- see the clearW note on
+    // collectPerches. Only filled for the birch wood; a pine has no use for
+    // them and computing them is a 5x5 sweep per candidate voxel.
+    std::vector<Perch> hivePerches;
     // The top of every column, for the collider. See columnTops.
     std::vector<int16_t> colTop;
 };
@@ -373,7 +377,7 @@ struct Chunk {
     std::vector<Solid> solids;
     // Placements by kind -- pine, rock, flower. Held per chunk so eviction
     // keeps the totals honest without anything having to be searched.
-    int decorKind[5] = {0, 0, 0, 0, 0};
+    int decorKind[6] = {0, 0, 0, 0, 0, 0};  // pine, rock, flower, mushroom, cone, hive
 };
 
 inline long long chunkKey(int cx, int cz) {
@@ -391,6 +395,8 @@ class World {
 
     std::string pineDir = "C:/voxelbit/game/assets/foilage/pine9";
     std::string decorDir = "C:/voxelbit/game/assets/decoration";
+    // The birch wood's sixteen trees. Same 10 cm grid as the pines.
+    std::string birchDir = "C:/voxelbit/game/assets/foilage/birch_trees";
     int viewChunks = 12;  // ring radius, in chunks
     float treeDensity = 0.2325f;
     float rockDensity = 0.010f;
@@ -487,6 +493,7 @@ class World {
         loadFlowers();
         loadMushrooms();
         loadPinecones();
+        loadHives();
         palette.deriveGroundFromTrees();
         buildWater();
 
@@ -524,7 +531,10 @@ class World {
             mesher_.mushroomFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
         for (const ModelTemplate &t : pinecones_)
             mesher_.pineconeFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+        for (const ModelTemplate &t : hives_)
+            mesher_.hiveFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
         for (const ModelTemplate &t : pines_) mesher_.pinePerch.push_back(t.perches);
+        for (const ModelTemplate &t : pines_) mesher_.pineHivePerch.push_back(t.hivePerches);
         mesher_.pineconesPerTree = pineconesPerTree;
         mesher_.mushroomBig0 = mushroomBig0;
 
@@ -740,6 +750,9 @@ class World {
     TriPool pool_;
 
     std::vector<ModelTemplate> pines_, rocks_, flowers_, mushrooms_, pinecones_;
+    // The beehives. One model, and only the birch wood plants it -- see
+    // loadHives and the hive pass in scene/chunks.h.
+    std::vector<ModelTemplate> hives_;
     Blas waterBlas_;
     uint32_t waterTriOffset_ = TriPool::kInvalid;
 
@@ -1174,7 +1187,15 @@ class World {
                 if (mesh.triCount() == 0) continue;
 
                 ModelTemplate t;
-                if (perches) t.perches = collectPerches(a, idOfEntry);
+                if (perches) {
+                    t.perches = collectPerches(a, idOfEntry);
+                    // 5 for the 5 x 5 x 5 beehive. Only the birches carry them,
+                    // and they are the models loaded at or past birchBase --
+                    // out_ is being appended to, so its CURRENT size is the
+                    // index this model is about to take.
+                    if (int(out->size()) >= mesher_.birchBase && &pines_ == out)
+                        t.hivePerches = collectPerches(a, idOfEntry, 5);
+                }
                 t.colTop = columnTops(a, idOfEntry);
                 t.sx = a.sx;
                 t.sy = a.sy;
@@ -1191,10 +1212,44 @@ class World {
         }
     }
 
+    // ------------------------------------------------------------------------
+    // THE TREES, WHICHEVER WOOD THIS IS.
+    //
+    // Birches load into pines_ and that is not a shortcut -- it is the point.
+    // Everything downstream of this vector is model agnostic: the scatter picks
+    // an index, the collider is measured off the asset, the perch finder walks
+    // the voxels looking for somewhere a thing could hang. None of it knows
+    // what species it is holding, so a second vector would need a second copy
+    // of all of it to say the same thing twice.
+    //
+    // perches=true for both. In a pine those anchors carry cones; in a birch
+    // they carry the beehives -- same question asked of the crown ("a solid
+    // voxel with air under it"), different thing hung from the answer.
+    // ------------------------------------------------------------------------
     bool loadPines() {
+        // ONE VECTOR, TWO RANGES. Pines occupy [0, birchBase) and birches
+        // [birchBase, size) -- so the scatter picks a SPECIES by choosing which
+        // range to index, and everything downstream stays exactly as it was.
+        // templateFor, the footprints, the colliders and the perch lists are
+        // all positional into this one array and none of them needs to know a
+        // species exists.
+        //
+        // Both are loaded whenever the bands are live, because a chunk near a
+        // seam contains both. --birch and --pine pin the world to one, and then
+        // only that one is worth the load time and the triangles.
         std::vector<std::string> paths;
-        for (int i = 1; i <= 9; ++i)
-            paths.push_back(pineDir + "/pine_" + std::to_string(i) + ".vox");
+        const bool wantPine = !terrain.forced || terrain.biome == Biome::Pine;
+        const bool wantBirch = !terrain.forced || terrain.biome == Biome::Birch;
+        if (wantPine)
+            for (int i = 1; i <= 9; ++i)
+                paths.push_back(pineDir + "/pine_" + std::to_string(i) + ".vox");
+        mesher_.birchBase = wantPine ? 9 : 0;
+        if (wantBirch)
+            // 1.vox .. 16.vox, authored at 10 cm like everything else -- 14.4 m
+            // to 24.1 m, so a birch stands with the tallest pines rather than
+            // under them.
+            for (int i = 1; i <= 16; ++i)
+                paths.push_back(birchDir + "/" + std::to_string(i) + ".vox");
         loadModelSet(paths, &pines_, false, false, 0u, /*perches=*/true);
         if (pines_.empty()) {
             std::fprintf(stderr, "v2: no pine models loaded from %s -- pass --pines\n",
@@ -1281,6 +1336,13 @@ class World {
         loadedMushrooms = int(mushrooms_.size());
     }
 
+    // The beehive. Birch only -- see the hive pass in scene/chunks.h, which
+    // hangs one in a hundredth of the trees.
+    void loadHives() {
+        if (!terrain.birch()) return;
+        loadModelSet({decorDir + "/beehive.vox"}, &hives_, false, true);
+    }
+
     void loadPinecones() {
         loadModelSet({decorDir + "/pinecone.vox"}, &pinecones_, true, false);
         loadedPinecones = int(pinecones_.size());
@@ -1360,8 +1422,11 @@ class World {
                 // drawn and not collided with. Trees and rocks are both.
                 Solid s;
                 V6Instance info{};
-                if (p.kind >= 0 && p.kind < 5) ++c.decorKind[p.kind];
-                const bool walkThrough = (p.kind == 2 || p.kind == 4);
+                if (p.kind >= 0 && p.kind < 6) ++c.decorKind[p.kind];
+                // A HIVE IS NOT WALKED INTO EITHER. It hangs several metres up
+                // in a crown, so a ground collider for it would be an invisible
+                // wall under the tree.
+                const bool walkThrough = (p.kind == 2 || p.kind == 4 || p.kind == 5);
                 c.decorDesc.push_back(makeInstance(p, &info, walkThrough ? nullptr : &s));
                 c.decorInfo.push_back(info);
                 if (!walkThrough && s.hx > 0.0f) c.solids.push_back(s);
@@ -1388,6 +1453,7 @@ class World {
             : (kind == 1) ? rocks_
             : (kind == 2) ? flowers_
             : (kind == 3) ? mushrooms_
+            : (kind == 5) ? hives_
                           : pinecones_;
         return v[size_t(index) % v.size()];
     }

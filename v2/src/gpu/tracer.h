@@ -732,8 +732,36 @@ class Tracer {
         trace_->execute(ctx, uint32_t(w_), uint32_t(h_));
         ++frame_;
         ++tick_;
-        prevCam_ = cam;
-        havePrev_ = true;
+
+        // -- advance the history, ONCE A FRAME AND NOT ONCE A SAMPLE --------
+        //
+        // frame_ and tick_ are per SAMPLE and belong here: frame_ counts what
+        // is in the film, and tick_ has to move or the samples within a frame
+        // would all redraw the same one. prevCam_ is a different kind of
+        // quantity. It is the camera the PREVIOUS FRAME was drawn from, and
+        // that is the only thing a motion vector can be measured against.
+        //
+        // Setting it every sample was silent at --spf 1 and catastrophic above
+        // it. The second sample of a frame found prevCam_ already holding THIS
+        // frame's camera, so it wrote a screen of zero motion -- and the guides
+        // are overwritten by each sample, so the zeroes are what DLSS got. A
+        // reconstruction handed zero motion while the camera walks does not
+        // reproject its history at all: it lays the last frame straight over
+        // this one, which is ghosting in its most literal form, and it is
+        // worst where the two frames disagree most -- a canopy of needles.
+        //
+        // The Y menu has a Samples / frame slider that runs to 64, so this was
+        // one drag away from anyone.
+        //
+        // The counter comes from cfg, which already carries the count for the
+        // film, so the tracer needs no new call from the app to know where a
+        // frame ends. >= rather than == so that lowering the slider mid-run
+        // cannot strand the counter above the new total.
+        if (++sampleInFrame_ >= (cfg.samplesPerFrame > 0 ? cfg.samplesPerFrame : 1)) {
+            sampleInFrame_ = 0;
+            prevCam_ = cam;
+            havePrev_ = true;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -939,7 +967,8 @@ class Tracer {
     void runRestir(Falcor::RenderContext *ctx, uint32_t frame) {
         if (!restir_ || !restir_->active()) return;
         restir_->resize(uint32_t(w_), uint32_t(h_));
-        restir_->run(ctx, guideNormRough_, guideDepth_, guideMotion_, frame);
+        restir_->run(ctx, guideNormRough_, guideDepth_, guideMotion_, frame,
+                     Falcor::float2(lastJitter_.x, lastJitter_.y));
         // From the next frame there is a resampled result worth shading from.
         restirWarm_ = true;
     }
@@ -1113,6 +1142,9 @@ class Tracer {
     bool resetHistory_ = true;
     bool havePrev_ = false;
     V6Camera prevCam_{};
+    // How many samples of the current frame have gone in. See the note where
+    // it is stepped: it is what keeps prevCam_ a per-FRAME quantity.
+    int sampleInFrame_ = 0;
     Vec2 lastJitter_{0.0f, 0.0f};
     DlssQuality quality_ = DlssQuality::Quality;
 

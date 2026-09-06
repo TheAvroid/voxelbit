@@ -1433,11 +1433,37 @@ void main(uint3 tid: SV_DispatchThreadID)
     // error in it at all. A rasteriser has to carry a previous transform per
     // object to get the same thing approximately.
     //
-    // Both ends are taken UNJITTERED: the previous camera never had a jitter
-    // applied, so the current pixel is its own centre rather than where this
-    // frame's sub-pixel offset actually landed. That is what DLSS expects
-    // unless it is told the vectors are jittered, and it is why the flag is not
-    // set on the host.
+    // BOTH ENDS ARE UNJITTERED, AND GETTING THAT WRONG IS WHAT GHOSTED.
+    //
+    // The previous end is unjittered for free: prevCam is a camera basis and
+    // carries no sub-pixel offset, so projecting through it lands where a
+    // jitter-free renderer would have drawn the surface. The current end is
+    // NOT the pixel centre. This tracer builds the camera ray through
+    // pix + 0.5 + jitter, so the surface's unjittered screen position IS
+    // pix + 0.5 + jitter -- the jitter is already baked into which surface the
+    // pixel found, and subtracting a bare centre leaves it in the vector.
+    //
+    // THE TEST THAT SETTLES IT: stand still. With the camera not moving,
+    // prevCam == cam, so prevPix comes back as pix + 0.5 + jitter and the
+    // motion vector must be exactly zero. Against a bare centre it came back
+    // as the frame's jitter instead -- up to half a pixel of whole-screen
+    // wobble, re-rolled from the Halton sequence every frame, handed to a
+    // reconstruction that was standing perfectly still.
+    //
+    // WHY THE CANOPY WORE IT AND THE GROUND DID NOT. Half a pixel of history
+    // offset costs nothing where the neighbouring pixel looks the same -- bark,
+    // moss, a fogged ridge. A pine needle is one voxel wide against the sky, so
+    // half a pixel is a FULL-CONTRAST error, and Ray Reconstruction cannot tell
+    // a misregistered needle from a moving one: it blends, and the blend is the
+    // trail. Worse, the error IS the jitter, which is the very quantity DLSS
+    // uses to place the incoming sample -- so the sub-pixel accumulation that
+    // makes reconstruction work was being fed offsets it had already been told.
+    //
+    // DLSS is told the vectors are jitter-free (the MVJittered flag is not set,
+    // and Streamline is given motionVectorsJittered = eFalse); this is what
+    // makes that claim true. The jitter still reaches DLSS on its own, with the
+    // sign flip that converts this tracer's convention to a rasteriser's -- see
+    // in.jitterX in tracer.h.
     // -----------------------------------------------------------------------
     // -- hand the cache what this path actually found ------------------------
     //
@@ -1553,7 +1579,14 @@ void main(uint3 tid: SV_DispatchThreadID)
                                   ? (c.pos + primaryDir * primaryDist)
                                   : (c.pos + primaryDir * 1e4f);
 
-        const float2 curPix = float2(float(pix.x) + 0.5f, float(pix.y) + 0.5f);
+        // THE JITTER BELONGS IN curPix, and leaving it out was the ghost. The
+        // ray for this pixel was built through pix + 0.5 + jitter, so that --
+        // not the pixel centre -- is where this surface sits in the camera's
+        // own unjittered screen space. projectToPixel is the exact inverse of
+        // that construction, so putting the jitter back makes both ends of the
+        // subtraction the same kind of quantity.
+        const float2 curPix =
+            float2(float(pix.x) + 0.5f, float(pix.y) + 0.5f) + gParams.jitter;
         float2 prevPix;
         const bool ok = projectToPixel(gParams.prevCam, worldP, gParams.dim, prevPix);
         gGuideMotion[pix] = ok ? (prevPix - curPix) : float2(0.0f, 0.0f);
