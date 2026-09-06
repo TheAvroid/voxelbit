@@ -223,8 +223,6 @@ class Viewer {
         mt.clock = &clock_;
         mt.samplesPerFrame = &opt_.samplesPerFrame;
         mt.constantGrain = &opt_.constantGrain;
-        mt.skyNee = &base_.skyNee;
-        mt.gi = &base_.gi;
         mt.liveMaxAccum = &lastMaxAccum_;
         menu_.bind(mt);
 
@@ -847,10 +845,6 @@ class Viewer {
         // camera moves. Moving already did this -- it is what made a walking
         // frame noisy -- so doing it always is what makes the two identical.
         if (opt_.constantGrain) rend_.resetAccumulation();
-        // Once, before the samples. The probes describe the world, not the
-        // film, so running them per sample would cost `spf` times as much and
-        // change nothing about the answer.
-        rend_.updateProbes(gcam, cfg);
         for (int i = 0; i < spf; ++i) rend_.renderSample(gcam, cfg);
 
         // Resolving means a tone map and an 8 MB read back, so it is skipped

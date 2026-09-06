@@ -68,12 +68,6 @@ class Pipeline {
     OptixPipeline pipeline() const { return pipeline_; }
     const OptixShaderBindingTable &sbt() const { return sbt_; }
 
-    // The same table with a different raygen record. Everything else -- miss
-    // programs, hitgroups -- is shared, because the probe pass shoots exactly
-    // the same rays at exactly the same geometry; only the entry point that
-    // decides where they start is different.
-    const OptixShaderBindingTable &probeSbt() const { return probeSbt_; }
-
     // -----------------------------------------------------------------------
     // A CUDA context on device 0, and an OptiX context on top of it.
     // -----------------------------------------------------------------------
@@ -148,9 +142,6 @@ class Pipeline {
         rgDesc.raygen.entryFunctionName = "__raygen__pinhole";
         makeGroup(rgDesc, pgo, &raygenPg_);
 
-        rgDesc.raygen.entryFunctionName = "__raygen__probes";
-        makeGroup(rgDesc, pgo, &raygenProbePg_);
-
         OptixProgramGroupDesc msDesc = {};
         msDesc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
         msDesc.miss.module = module_;
@@ -167,20 +158,19 @@ class Pipeline {
         makeGroup(hgDesc, pgo, &hitPg_);
 
         // -- link -------------------------------------------------------------
-        OptixProgramGroup groups[] = {raygenPg_, raygenProbePg_, missPg_, missShadowPg_,
-                                      hitPg_};
+        OptixProgramGroup groups[] = {raygenPg_, missPg_, missShadowPg_, hitPg_};
 
         OptixPipelineLinkOptions plo = {};
         plo.maxTraceDepth = 1;  // see the header note: the path loop is in raygen
 
         logSize = sizeof(log);
-        r = optixPipelineCreate(ctx_, &pco_, &plo, groups, 5, log, &logSize, &pipeline_);
+        r = optixPipelineCreate(ctx_, &pco_, &plo, groups, 4, log, &logSize, &pipeline_);
         if (r != OPTIX_SUCCESS) {
             std::fprintf(stderr, "v2: link log: %s\n", log);
             OPTIX_CHECK(r);
         }
 
-        setStackSizes(groups, 5);
+        setStackSizes(groups, 4);
         (void)maxDepthHint;
     }
 
@@ -195,10 +185,6 @@ class Pipeline {
         RaygenRecord rg = {};
         OPTIX_CHECK(optixSbtRecordPackHeader(raygenPg_, &rg));
         raygenBuf_.upload(&rg, 1);
-
-        RaygenRecord probeRg = {};
-        OPTIX_CHECK(optixSbtRecordPackHeader(raygenProbePg_, &probeRg));
-        raygenProbeBuf_.upload(&probeRg, 1);
 
         MissRecord miss[2] = {};
         OPTIX_CHECK(optixSbtRecordPackHeader(missPg_, &miss[RAY_RADIANCE]));
@@ -220,9 +206,6 @@ class Pipeline {
         sbt_.hitgroupRecordBase = hitBuf_.ptr();
         sbt_.hitgroupRecordStrideInBytes = sizeof(HitRecord);
         sbt_.hitgroupRecordCount = unsigned(hits.size());
-
-        probeSbt_ = sbt_;
-        probeSbt_.raygenRecord = raygenProbeBuf_.ptr();
     }
 
     // -----------------------------------------------------------------------
@@ -247,7 +230,6 @@ class Pipeline {
         if (hitPg_) { optixProgramGroupDestroy(hitPg_); hitPg_ = nullptr; }
         if (missShadowPg_) { optixProgramGroupDestroy(missShadowPg_); missShadowPg_ = nullptr; }
         if (missPg_) { optixProgramGroupDestroy(missPg_); missPg_ = nullptr; }
-        if (raygenProbePg_) { optixProgramGroupDestroy(raygenProbePg_); raygenProbePg_ = nullptr; }
         if (raygenPg_) { optixProgramGroupDestroy(raygenPg_); raygenPg_ = nullptr; }
         if (module_) { optixModuleDestroy(module_); module_ = nullptr; }
         if (ctx_) { optixDeviceContextDestroy(ctx_); ctx_ = nullptr; }
@@ -262,11 +244,11 @@ class Pipeline {
     OptixDeviceContext ctx_ = nullptr;
     OptixModule module_ = nullptr;
     OptixPipelineCompileOptions pco_ = {};
-    OptixProgramGroup raygenPg_ = nullptr, raygenProbePg_ = nullptr, missPg_ = nullptr,
-                      missShadowPg_ = nullptr, hitPg_ = nullptr;
+    OptixProgramGroup raygenPg_ = nullptr, missPg_ = nullptr, missShadowPg_ = nullptr,
+                      hitPg_ = nullptr;
     OptixPipeline pipeline_ = nullptr;
-    OptixShaderBindingTable sbt_ = {}, probeSbt_ = {};
-    DeviceBuffer raygenBuf_, raygenProbeBuf_, missBuf_, hitBuf_;
+    OptixShaderBindingTable sbt_ = {};
+    DeviceBuffer raygenBuf_, missBuf_, hitBuf_;
 
     void makeGroup(const OptixProgramGroupDesc &desc, const OptixProgramGroupOptions &opts,
                    OptixProgramGroup *out) {

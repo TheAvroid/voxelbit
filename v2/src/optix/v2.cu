@@ -98,105 +98,58 @@ static __forceinline__ __device__ bool traceOccluded(Vec3 o, Vec3 d, float tmax)
 // ---------------------------------------------------------------------------
 // Next event estimation: the sun.
 // ---------------------------------------------------------------------------
-//
-// `mis` is false when the path is about to STOP at this vertex. Multiple
-// importance sampling splits a light's contribution between two strategies and
-// relies on both being collected; a path that terminates never fires the second
-// one, so weighting the first would silently throw away whatever share the
-// heuristic assigned to a BSDF bounce that is never going to happen. That is a
-// systematic loss, not noise -- it turned up as a fifteen per cent deficit in
-// the blue channel the first time the probe grid was measured against a
-// reference, blue being where the sky lives.
 static __forceinline__ __device__ Vec3 sampleSun(const PathVertex &h, const Frame &fr, Vec3 wo,
-                                                 Rng &rng, int depth, bool mis = true) {
+                                                 Rng &rng, int depth) {
     const Vec3 Lsun = params.sky.sunRadiance;
     if (isBlack(Lsun)) return Vec3(0.0f);
 
+    // MORE THAN ONE RAY AT THE SAME LIGHT. The extra samples are spent only on
+    // the vertices that can pay for them: by the second bounce the throughput
+    // is small, roulette is already killing paths, and what those vertices
+    // contribute is too dim for their variance to show.
+    const int n = (depth < params.shadowRayDepth) ? maxi(1, params.shadowRays) : 1;
+
     const Frame sf(params.sky.sunDir);
-    const Vec3 wWorld = sf.toWorld(sampleUniformCone(rng.next2D(), SUN_COS_THETA_MAX));
-    const Vec3 wi = fr.toLocal(wWorld);
-
-    // A needle transmits, so a direction on the far side is still a valid light
-    // path; an opaque surface below its own horizon is not.
-    if (wi.z <= 0.0f && h.mat.translucency <= 0.0f) return Vec3(0.0f);
-
-    float pdf = 0.0f;
-    const Vec3 f = evalOpaque(h.mat, wo, wi, &pdf);
-    if (isBlack(f) || pdf <= 0.0f) return Vec3(0.0f);
-
-    if (traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, INF)) return Vec3(0.0f);
-
     const float lightPdf = uniformConePdf(SUN_COS_THETA_MAX);
-    const float w = mis ? powerHeuristic(1.0f, lightPdf, 1.0f, pdf) : 1.0f;
-    Vec3 c = f * Lsun * (fabsf(wi.z) * w / lightPdf);
 
-    // Fireflies: a grazing specular lobe against a 10^5 sun radiance can
-    // produce a single sample worth more than the rest of the pixel. Only the
-    // indirect bounces are clamped -- clamping the first would visibly dim
-    // every sunlit surface in the frame.
-    if (depth > 0 && params.clampIndirect > 0.0f) {
-        const float m = maxComp(c);
-        if (m > params.clampIndirect) c *= params.clampIndirect / m;
+    Vec3 sum(0.0f);
+    for (int i = 0; i < n; ++i) {
+        const Vec3 wWorld = sf.toWorld(sampleUniformCone(rng.next2D(), SUN_COS_THETA_MAX));
+        const Vec3 wi = fr.toLocal(wWorld);
+
+        // A needle transmits, so a direction on the far side is still a valid
+        // light path; an opaque surface below its own horizon is not.
+        if (wi.z <= 0.0f && h.mat.translucency <= 0.0f) continue;
+
+        float pdf = 0.0f;
+        const Vec3 f = evalOpaque(h.mat, wo, wi, &pdf);
+        if (isBlack(f) || pdf <= 0.0f) continue;
+
+        if (traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, INF)) continue;
+
+        const float w = powerHeuristic(1.0f, lightPdf, 1.0f, pdf);
+        Vec3 c = f * Lsun * (fabsf(wi.z) * w / lightPdf);
+
+        // Fireflies: a grazing specular lobe against a 10^5 sun radiance can
+        // produce a single sample worth more than the rest of the pixel. Only
+        // the indirect bounces are clamped -- clamping the first would visibly
+        // dim every sunlit surface in the frame.
+        //
+        // Applied per sample rather than to the mean, which is what it did when
+        // there was only ever one: the ceiling is on what a single estimate may
+        // be worth, and averaging first would let one spike drag the mean up to
+        // the limit and hold it there.
+        if (depth > 0 && params.clampIndirect > 0.0f) {
+            const float m = maxComp(c);
+            if (m > params.clampIndirect) c *= params.clampIndirect / m;
+        }
+        sum = sum + c;
     }
-    return c;
-}
 
-// Next-event estimation against the sky DOME.
-//
-// The mirror of sampleSun, for the other light in the scene. It aims at the
-// bright parts of the sky rather than wherever the surface happened to scatter,
-// which is the whole reason it helps: a second strategy is only worth having if
-// it differs from the first, and a cosine-weighted guess is what the BSDF was
-// already doing.
-//
-// Split in two: the estimator itself, and the gate in front of it. The probe
-// pass needs the estimator whatever the user has set the toggle to -- a probe
-// that skipped the dome would bake a wood lit by the sun alone.
-static __forceinline__ __device__ Vec3 domeNee(const PathVertex &h, const Frame &fr, Vec3 wo,
-                                               Rng &rng, int depth, bool mis = true) {
-    if (!params.skyCdf) return Vec3(0.0f);
-    // ONLY THE BOUNCES THAT PAY FOR THEMSELVES. A shadow ray through a dense
-    // canopy is not cheap, and doing one at every vertex of a six-bounce path
-    // costs more than the variance it removes -- measured, not assumed. The
-    // first bounces carry almost all of the visible ambient, so the ray budget
-    // goes there and the deep ones keep relying on the BSDF sample.
-
-    float lightPdf = 0.0f;
-    const Vec3 wWorld = params.skyCdf->sample(rng.nextFloat(), rng.nextFloat(), &lightPdf);
-    if (lightPdf <= 0.0f) return Vec3(0.0f);
-
-    const Vec3 wi = fr.toLocal(wWorld);
-    // A needle transmits, so the far side is still a valid path; an opaque
-    // surface below its own horizon is not.
-    if (wi.z <= 0.0f && h.mat.translucency <= 0.0f) return Vec3(0.0f);
-
-    float bsdfPdf = 0.0f;
-    const Vec3 f = evalOpaque(h.mat, wo, wi, &bsdfPdf);
-    if (isBlack(f) || bsdfPdf <= 0.0f) return Vec3(0.0f);
-
-    if (traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, INF)) return Vec3(0.0f);
-
-    // See the note on sampleSun: no MIS when the path stops here.
-    const float w = mis ? powerHeuristic(1.0f, lightPdf, 1.0f, bsdfPdf) : 1.0f;
-    Vec3 c = f * params.sky.domeRadiance(wWorld) * (fabsf(wi.z) * w / lightPdf);
-
-    // Same firefly ceiling the sun estimator uses, and for the same reason:
-    // the primary bounce is left alone so nothing visibly dims.
-    if (depth > 0 && params.clampIndirect > 0.0f) {
-        const float m = maxComp(c);
-        if (m > params.clampIndirect) c *= params.clampIndirect / m;
-    }
-    return c;
-}
-
-// The gate. Kept separate so the estimator above can be called unconditionally
-// by the probe pass, which has no business consulting a user preference.
-static __forceinline__ __device__ Vec3 sampleSkyDome(const PathVertex &h, const Frame &fr,
-                                                     Vec3 wo, Rng &rng, int depth,
-                                                     bool mis = true) {
-    if (!params.skyNee) return Vec3(0.0f);
-    if (depth >= params.skyNeeDepth) return Vec3(0.0f);
-    return domeNee(h, fr, wo, rng, depth, mis);
+    // Rays that returned nothing -- below the horizon, occluded, black BSDF --
+    // are zeros in the average, not skipped. Dividing by the number that got
+    // through instead would turn a half-shadowed vertex into a fully lit one.
+    return sum * (1.0f / float(n));
 }
 
 // ---------------------------------------------------------------------------
@@ -295,16 +248,6 @@ extern "C" __global__ void __raygen__pinhole() {
             // arrives at full weight; the disk may have been, so it is weighted
             // against the cone pdf that could have found it.
             Vec3 sky = params.sky.domeRadiance(d);
-            // The dome is now sampled from BOTH ends, so this end has to be
-            // weighted or it would be counted twice. specularBounce means the
-            // last vertex was a delta lobe -- nothing could have aimed a light
-            // sample through it -- so that case keeps the full contribution,
-            // and so does the camera ray, which is what makes directly-visible
-            // sky look exactly as it did.
-            if (params.skyNee && params.skyCdf && !specularBounce) {
-                const float domePdf = params.skyCdf->pdf(d);
-                if (domePdf > 0.0f) sky = sky * powerHeuristic(1.0f, bsdfPdf, 1.0f, domePdf);
-            }
             const Vec3 disk = params.sky.diskRadiance(d);
             if (!isBlack(disk)) {
                 const float lightPdf = uniformConePdf(SUN_COS_THETA_MAX);
@@ -336,52 +279,9 @@ extern "C" __global__ void __raygen__pinhole() {
             continue;
         }
 
-        // Does the path stop here? It changes how the light samples below are
-        // weighted, so it has to be settled before they are taken -- which
-        // means asking the grid FIRST. Outside the volume, or in a pocket where
-        // every surrounding probe is buried, the grid has no answer and the
-        // path simply carries on as it always did. A boundary that degrades
-        // into ordinary path tracing is invisible; one that drops the indirect
-        // term is a dark ring around the player.
-        Vec3 giE(0.0f);
-        const bool terminal = params.giOn && depth + 1 >= params.giDepth &&
-                              params.gi.lookup(h.p, h.ns, &giE);
-
         const Frame fr(h.ns);
         const Vec3 wo = fr.toLocal(-d);
-        if (wo.z > 0.0f) {
-            // The sun stays a traced light even at a terminal vertex, because
-            // its shadow is the one hard edge in the frame and no grid at any
-            // spacing would keep it. Its MIS weight is within a fraction of a
-            // per cent of one anyway -- the cone it subtends is tiny, so light
-            // sampling wins the heuristic outright -- which is why dropping the
-            // partner here costs nothing measurable.
-            L += beta * sampleSun(h, fr, wo, rng, depth, !terminal);
-
-            // The DOME is not traced at a terminal vertex: the grid already
-            // holds it. Tried the other way first -- keep the dome as a shadow
-            // ray and store only bounced light -- and it was measurably worse
-            // than no grid at all. Without a BSDF sample to share the estimate
-            // with, a single ray at a whole hemisphere of sky is a noisy way to
-            // measure a smooth quantity, and MIS is not available to a path
-            // that stops. Sky in a wood is soft and low-frequency, which is
-            // precisely what a probe grid is good at.
-            if (!terminal) L += beta * sampleSkyDome(h, fr, wo, rng, depth);
-        }
-
-        // -- stop here and read the grid --------------------------------------
-        // Everything past this vertex is INDIRECT, and the grid is a table of
-        // exactly that. The direct lighting above is still traced, so shadow
-        // edges stay as sharp as they ever were; only the bounced light is
-        // approximated, and bounced light in a wood has no sharp edges in it.
-        //
-        // Diffuse only. These materials are F0 = 0.04 with a roughness near 1,
-        // so the specular lobe carries very little indirect, and handing it the
-        // same irradiance would be a worse lie than dropping it.
-        if (terminal) {
-            L += beta * h.mat.albedo * giE;
-            break;
-        }
+        if (wo.z > 0.0f) L += beta * sampleSun(h, fr, wo, rng, depth);
 
         const BsdfSample bs = sampleOpaque(h.mat, wo, rng);
         if (bs.pdf <= 0.0f || isBlack(bs.f)) break;
@@ -434,122 +334,6 @@ extern "C" __global__ void __raygen__pinhole() {
 
     const float inv = 1.0f / maxf(1.0f, acc.w);
     params.color[pix] = make_float4(acc.x * inv, acc.y * inv, acc.z * inv, 1.0f);
-}
-
-// ---------------------------------------------------------------------------
-// Probe pass: refill the irradiance grid.
-//
-// One thread per probe, a handful of rays each, blended into what was there
-// last frame rather than replacing it. That is what makes it cheap AND smooth:
-// 32 rays is a noisy estimate on its own, but 32 rays a frame at 0.94
-// hysteresis is an exponential average over several hundred, and the average
-// is what gets read.
-//
-// THE GRID HOLDS EVERYTHING EXCEPT THE SUN. Sky, bounced light, bounced sky --
-// all of it. Only the sun disk is left out, because it is light-sampled at
-// shading time and would otherwise be counted twice, and because its shadow is
-// the one edge in the frame sharp enough that a grid could not hold it.
-//
-// The first version of this stored bounced light only and kept the sky as a
-// shadow ray at the shading vertex. It measured WORSE than no grid: a path that
-// stops has no BSDF sample to share the sky estimate with, and one ray aimed at
-// a whole hemisphere is a noisy way to measure something smooth. Putting the
-// sky in the grid removes that ray and the noise with it.
-// ---------------------------------------------------------------------------
-extern "C" __global__ void __raygen__probes() {
-    const unsigned int pi = optixGetLaunchIndex().x;
-    if (pi >= unsigned(kProbeCount) || !params.gi.data) return;
-
-    const int ix = int(pi % unsigned(kProbeX));
-    const int iy = int((pi / unsigned(kProbeX)) % unsigned(kProbeY));
-    const int iz = int(pi / unsigned(kProbeX * kProbeY));
-    const Vec3 p = params.gi.probePos(ix, iy, iz);
-
-    // A different stream per probe, advanced by the tick, so the directions
-    // rotate every frame and the exponential average sees the whole sphere
-    // instead of re-measuring the same 32 directions for ever.
-    Rng rng(static_cast<unsigned long long>(pi) + 1ull,
-            static_cast<unsigned long long>(params.tick) * 0x9E3779B97F4A7C15ull +
-                static_cast<unsigned long long>(params.seed) + 0xD1B54A32D192ED03ull);
-
-    const int rays = maxi(1, params.probeRays);
-    float acc[3][4] = {};
-    int insideVotes = 0;
-
-    // A hit this close that faces away means the probe is inside something.
-    // Probes do end up buried -- the grid is a box dropped on a landscape, not
-    // a fitted cage -- and a buried probe reads black, so it has to be found
-    // and dropped rather than interpolated into the surface above it.
-    const float nearHit = 0.12f * params.gi.spacing;
-
-    for (int s = 0; s < rays; ++s) {
-        const Vec3 d = sampleUniformSphere(rng.next2D());
-
-        PathVertex h;
-        h.hit = false;
-        traceRadiance(p, d, &h);
-
-        Vec3 L(0.0f);
-        if (!h.hit) {
-            // Escaped: the sky itself, and this is where it enters the grid.
-            // The DISK is excluded -- the sun is light-sampled at shading time
-            // and counting it here as well would double it.
-            L = params.sky.domeRadiance(d);
-            shAccumulate(L, d, 1.0f, acc);
-            continue;
-        }
-
-        if (h.t < nearHit && dot(d, h.ng) > 0.0f) ++insideVotes;
-
-        const Frame fr(h.ns);
-        const Vec3 wo = fr.toLocal(-d);
-        // Full weight, no MIS: a probe ray stops at the surface it hit.
-        if (wo.z > 0.0f) L = L + sampleSun(h, fr, wo, rng, 0, false);
-
-        // Everything that is not the sun -- sky and further bounces alike --
-        // for the price of a lookup: whatever light this surface was told it
-        // had LAST frame. It forms a geometric series in the albedo, so with
-        // feedback below 1 it settles instead of running away.
-        Vec3 E;
-        if (params.probeFeedback > 0.0f && params.giPrev.data &&
-            params.giPrev.lookup(h.p, h.ns, &E))
-            L = L + h.mat.albedo * E * params.probeFeedback;
-
-        if (allFinite(L)) shAccumulate(L, d, 1.0f, acc);
-    }
-
-    // Uniform sphere sampling, so the estimator is (4*pi / N) * sum.
-    const float norm = 4.0f * PI / float(rays);
-    for (int ch = 0; ch < 3; ++ch)
-        for (int k = 0; k < 4; ++k) acc[ch][k] *= norm;
-
-    // Validity is a geometric fact, not a lighting one, so it is measured
-    // fresh each frame rather than smoothed -- a probe that has just scrolled
-    // out from under a hill should be trusted immediately.
-    ProbeSH out = {};
-    out.valid = (float(insideVotes) > 0.55f * float(rays)) ? 0.0f : 1.0f;
-
-    // History by world position. Both grids share a spacing and their origins
-    // differ by a whole number of cells, so this is an integer offset: the
-    // probe that stood here last frame, exactly, with no interpolation to blur.
-    float hyst = 0.0f;
-    const ProbeSH *hist = nullptr;
-    if (params.giPrev.data && params.giPrev.spacing > 0.0f) {
-        const Vec3 rel = (p - params.giPrev.origin) * (1.0f / params.giPrev.spacing);
-        const int hx = int(floorf(rel.x + 0.5f));
-        const int hy = int(floorf(rel.y + 0.5f));
-        const int hz = int(floorf(rel.z + 0.5f));
-        if (hx >= 0 && hx < kProbeX && hy >= 0 && hy < kProbeY && hz >= 0 && hz < kProbeZ) {
-            const ProbeSH &q = params.giPrev.data[IrradianceGridGPU::index(hx, hy, hz)];
-            if (q.valid > 0.0f) { hist = &q; hyst = params.probeHysteresis; }
-        }
-    }
-
-    for (int ch = 0; ch < 3; ++ch)
-        for (int k = 0; k < 4; ++k)
-            out.c[ch][k] = hist ? lerpf(acc[ch][k], hist->c[ch][k], hyst) : acc[ch][k];
-
-    params.gi.data[IrradianceGridGPU::index(ix, iy, iz)] = out;
 }
 
 // ---------------------------------------------------------------------------

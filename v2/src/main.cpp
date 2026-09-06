@@ -106,13 +106,9 @@ void usage() {
         "\n"
         "  --width N --height N      image / window size    (default 1280x720)\n"
         "  --spp N                   samples per pixel      (default 64, offline only)\n"
-        "  --sky-nee                 sample the sky dome as a light too\n"
-        "  --sky-nee-depth N         bounces that get a dome ray      (default 1)\n"
-        "  --gi                      indirect light from a baked probe grid\n"
-        "  --gi-depth N              bounce the path stops at         (default 1)\n"
-        "  --probe-rays N            probe rays per frame             (default 8)\n"
-        "  --probe-spacing M         metres between probes            (default 2)\n"
         "  --spf N                   samples traced per displayed frame (viewer)\n"
+        "  --shadow-rays N           sun samples per vertex           (default 1)\n"
+        "  --shadow-ray-depth N      bounces that get them            (default 1)\n"
         "  --settle                  let a still camera converge; default holds the grain\n"
         "  --background              open minimised, never take focus or the mouse\n"
         "  --walk F                  offline: advance F m/frame, film resets as it "
@@ -168,12 +164,8 @@ bool parse(int argc, char **argv, Options *o) {
         else if (a == "--spp") argInt(argc, argv, i, &o->r.spp);
         else if (a == "--walk") argFloat(argc, argv, i, &o->walk);
         else if (a == "--spf") argInt(argc, argv, i, &o->v.samplesPerFrame);
-        else if (a == "--sky-nee") o->r.skyNee = true;
-        else if (a == "--gi") o->r.gi = true;
-        else if (a == "--gi-depth") argInt(argc, argv, i, &o->r.giDepth);
-        else if (a == "--probe-rays") argInt(argc, argv, i, &o->r.probeRays);
-        else if (a == "--probe-spacing") argFloat(argc, argv, i, &o->r.probeSpacing);
-        else if (a == "--sky-nee-depth") argInt(argc, argv, i, &o->r.skyNeeDepth);
+        else if (a == "--shadow-rays") argInt(argc, argv, i, &o->r.shadowRays);
+        else if (a == "--shadow-ray-depth") argInt(argc, argv, i, &o->r.shadowRayDepth);
         else if (a == "--settle") o->v.constantGrain = false;
         else if (a == "--background") o->v.background = true;
         else if (a == "--depth") argInt(argc, argv, i, &o->r.maxDepth);
@@ -378,10 +370,6 @@ int run(int argc, char **argv) {
             // a still image converges, a moving one is back to one sample.
             renderer.resetAccumulation();
         }
-        // The grid has to be refilled every frame offline as well: it is
-        // seeded from the previous frame, so a single fill would be one noisy
-        // pass with no history behind it.
-        renderer.updateProbes(g, o.r);
         renderer.renderSample(g, o.r);
         if ((s % 16) == 15 || s + 1 == o.r.spp) {
             renderer.sync();

@@ -45,8 +45,6 @@ struct MenuTarget {
     DayNight *clock = nullptr;
     int *samplesPerFrame = nullptr;
     bool *constantGrain = nullptr;
-    bool *skyNee = nullptr;
-    bool *gi = nullptr;
     const unsigned *liveMaxAccum = nullptr;  // read-only, for the readout
 };
 
@@ -112,10 +110,6 @@ class SettingsMenu {
     void close() { open = false; }
 
     void bind(const MenuTarget &t) { t_ = t; }
-
-    // Public so a test can walk every row without writing the count down
-    // in a second place, where it would go stale the next time one is added.
-    static int rowCount() { return 14; }
 
     // ------------------------------------------------------------------ input
     // Returns true if the key was consumed, so the viewer's own bindings do not
@@ -270,6 +264,8 @@ class SettingsMenu {
         return -1;
     }
 
+    static int rowCount() { return 12; }
+
     // The y of the first row, from the header block draw() lays out above it.
     static int rowsTop(int lh) { return layout::kPad + (lh + 2) + 2 * lh + 8; }
 
@@ -306,8 +302,6 @@ class SettingsMenu {
             case 8: return "Cycle speed";
             case 9: return "Samples / frame";
             case 10: return "Constant grain";
-            case 11: return "Sky sampling";
-            case 12: return "Baked GI";
             default: return "Bake as default";
         }
     }
@@ -361,22 +355,6 @@ class SettingsMenu {
                     std::snprintf(b, sizeof(b), "%-9s converges to %u samples when still", "off", n);
                 break;
             }
-            case 11:
-                if (t_.skyNee && *t_.skyNee)
-                    std::snprintf(b, sizeof(b), "%-9s %s", "on",
-                                  "the dome is a light -- less noise in shadow");
-                else
-                    std::snprintf(b, sizeof(b), "%-9s %s", "off",
-                                  "sun only; the dome is found by chance");
-                break;
-            case 12:
-                if (t_.gi && *t_.gi)
-                    std::snprintf(b, sizeof(b), "%-9s %s", "on",
-                                  "bounced light from a probe grid, not from paths");
-                else
-                    std::snprintf(b, sizeof(b), "%-9s %s", "off",
-                                  "every bounce traced per pixel");
-                break;
             default:
                 std::snprintf(b, sizeof(b), "%s",
                               bakeStatus.empty() ? "click > to save, then rebuild.bat"
@@ -449,18 +427,6 @@ class SettingsMenu {
             case 10:
                 if (t_.constantGrain) {
                     *t_.constantGrain = !*t_.constantGrain;
-                    invalidated = true;
-                }
-                return;
-            case 11:
-                if (t_.skyNee) {
-                    *t_.skyNee = !*t_.skyNee;
-                    invalidated = true;
-                }
-                return;
-            case 12:
-                if (t_.gi) {
-                    *t_.gi = !*t_.gi;
                     invalidated = true;
                 }
                 return;

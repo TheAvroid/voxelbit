@@ -54,38 +54,11 @@ struct RenderSettings {
     // so the film tracks the moving sun instead of being reset by it.
     unsigned int maxAccum = 0u;
 
-    // Importance-sample the sky dome as a light, instead of only ever reaching
-    // it by a BSDF bounce that happens to escape. Pure variance reduction -- the
-    // image it converges to is identical, verified, so it cannot blur anything.
-    //
-    // OFF by default because it is a WASH on time. It removes about 12% of the
-    // error at four samples and costs about 24% of the frame rate, which nets
-    // out to nothing: efficiency 3.40e-5 without against 3.34e-5 with. It is
-    // here as a switch rather than a decision, because a global error metric is
-    // not what anyone looks at.
-    bool skyNee = false;
-    // Bounces that get a dome shadow ray; 1 is the primary hit only.
-    int skyNeeDepth = 1;
-
-    // -- baked indirect --------------------------------------------------------
-    // A probe grid carrying the bounced light, so the path can stop after its
-    // direct lighting instead of walking six bounces per sample to estimate a
-    // quantity that varies over metres. See irradiance.h for the shape of it.
-    //
-    // This one is an APPROXIMATION, not a variance reduction: indirect detail
-    // ends up at the probe spacing. Off by default for that reason alone.
-    bool gi = false;
-    int giDepth = 1;        // the bounce at which the path stops and reads it
-    int probeRays = 8;      // per probe per frame, blended not replaced
-    float probeSpacing = 2.0f;
-    float probeHysteresis = 0.94f;
-    float probeFeedback = 0.85f;
-    // Passes run the moment the grid is switched on. An exponential average
-    // needs a while to mean anything, and without this the first second after
-    // pressing the key is visibly wrong -- dark, then brightening. Also what
-    // makes an offline render fair: one pass of 8 rays is not what the viewer
-    // is reading, so measuring against it would flatter the alternative.
-    int probeWarmup = 40;
+    // Sun samples per vertex, and how many bounces get more than one. Costs a
+    // shadow ray each rather than a whole extra sample, so it buys down the
+    // direct-lighting noise far more cheaply than raising samples per frame.
+    int shadowRays = 1;
+    int shadowRayDepth = 1;
 };
 
 class Renderer {
@@ -102,7 +75,6 @@ class Renderer {
         CU_CHECK(cuModuleGetFunction(&tonemapFn_, module_, "tonemapKernel"));
 
         paramsBuf_.alloc(sizeof(LaunchParams));
-        probeParams_.alloc(sizeof(LaunchParams));
 
         // GPU timing, via events rather than a host clock.
         //
@@ -181,107 +153,6 @@ class Renderer {
         collectTimings();
         CU_CHECK(cuEventRecord(evTrace0_, pipe_->stream()));
 
-        const LaunchParams p = fillParams(cam, cfg);
-        CU_CHECK(cuMemcpyHtoDAsync(paramsBuf_.ptr(), &p, sizeof(p), pipe_->stream()));
-        OPTIX_CHECK(optixLaunch(pipe_->pipeline(), pipe_->stream(), paramsBuf_.ptr(),
-                                sizeof(LaunchParams), &pipe_->sbt(), unsigned(rw_), unsigned(rh_),
-                                1));
-
-        CU_CHECK(cuEventRecord(evTrace1_, pipe_->stream()));
-        tracePending_ = true;
-
-        ++frame_;
-        ++tick_;  // never reset: see the note on resetAccumulation
-    }
-
-    // -----------------------------------------------------------------------
-    // Refill the irradiance grid. ONCE A FRAME, not once a sample: the probes
-    // are a property of the world and the sun, not of how many samples the film
-    // is taking, and running them per sample would multiply their cost by the
-    // sample count for no gain at all.
-    //
-    // Must run BEFORE the frame's samples, because they read what it writes.
-    // -----------------------------------------------------------------------
-    void updateProbes(const CameraGPU &cam, const RenderSettings &cfg) {
-        if (!cfg.gi) {
-            // Remember that it is off, so switching it back on starts from a
-            // cold grid rather than from wherever the world was standing the
-            // last time it was on.
-            giActive_ = false;
-            return;
-        }
-        if (!probeGrid_[0].ptr()) {
-            probeGrid_[0].alloc(size_t(kProbeCount) * sizeof(ProbeSH));
-            probeGrid_[1].alloc(size_t(kProbeCount) * sizeof(ProbeSH));
-        }
-
-        const float sp = maxf(0.25f, cfg.probeSpacing);
-        // Snap the centre to the grid's own spacing. Unsnapped, every step the
-        // camera took would shift the probes by a fraction of a cell, and the
-        // history lookup -- which is an integer offset by construction -- would
-        // be reading a probe that is no longer in the same place.
-        const Vec3 c(floorf(cam.pos.x / sp) * sp, floorf(cam.pos.y / sp) * sp,
-                     floorf(cam.pos.z / sp) * sp);
-        const Vec3 origin = c - Vec3(float(kProbeX / 2), float(kProbeY / 2), float(kProbeZ / 2)) * sp;
-
-        const int dst = 1 - probeCur_;
-        if (!giActive_) {
-            CU_CHECK(cuMemsetD8Async(probeGrid_[0].ptr(), 0,
-                                     size_t(kProbeCount) * sizeof(ProbeSH), pipe_->stream()));
-            CU_CHECK(cuMemsetD8Async(probeGrid_[1].ptr(), 0,
-                                     size_t(kProbeCount) * sizeof(ProbeSH), pipe_->stream()));
-            probeSpacing_ = sp;
-        }
-
-        // A cold grid is filled in one go rather than fading in over the next
-        // second. Each pass feeds the one after it, so the light also gets its
-        // second and third bounces here instead of arriving late.
-        const int passes = giActive_ ? 1 : maxi(1, cfg.probeWarmup);
-        for (int i = 0; i < passes; ++i) probePass(cam, cfg, origin, sp);
-
-        probeSpacing_ = sp;
-        giActive_ = true;
-    }
-
-  private:
-    // One fill of the grid: write the far buffer, read the near one for history.
-    void probePass(const CameraGPU &cam, const RenderSettings &cfg, Vec3 origin, float sp) {
-        const int dst = 1 - probeCur_;
-
-        LaunchParams p = fillParams(cam, cfg);
-        p.gi.data = reinterpret_cast<ProbeSH *>(probeGrid_[dst].ptr());
-        p.gi.origin = origin;
-        p.gi.spacing = sp;
-
-        // A spacing change invalidates every history probe -- the integer
-        // offset the lookup assumes only holds while the two grids share one.
-        if (giActive_ && probeSpacing_ == sp) {
-            p.giPrev.data = reinterpret_cast<ProbeSH *>(probeGrid_[probeCur_].ptr());
-            p.giPrev.origin = probeOrigin_[probeCur_];
-            p.giPrev.spacing = sp;
-        } else {
-            p.giPrev = IrradianceGridGPU{};
-        }
-
-        CU_CHECK(cuMemcpyHtoDAsync(probeParams_.ptr(), &p, sizeof(p), pipe_->stream()));
-        OPTIX_CHECK(optixLaunch(pipe_->pipeline(), pipe_->stream(), probeParams_.ptr(),
-                                sizeof(LaunchParams), &pipe_->probeSbt(), unsigned(kProbeCount), 1,
-                                1));
-
-        probeOrigin_[dst] = origin;
-        probeCur_ = dst;
-        // Set here rather than by the caller: from the second warm-up pass on,
-        // the previous pass IS the history, and without this every pass would
-        // start from nothing and the warm-up would be forty copies of the same
-        // cold frame.
-        probeSpacing_ = sp;
-        giActive_ = true;
-    }
-
-    // Everything both launches need. Factored so the probe pass cannot drift
-    // out of step with the shading pass over which sky, which materials, or
-    // which acceleration structure it is looking at.
-    LaunchParams fillParams(const CameraGPU &cam, const RenderSettings &cfg) {
         LaunchParams p = {};
         p.accum = accum_.as<float4>();
         p.color = color_.as<float4>();
@@ -303,56 +174,27 @@ class Renderer {
         p.maxDepth = cfg.maxDepth;
         p.rrStart = cfg.rrStart;
         p.clampIndirect = cfg.clampIndirect;
+        p.shadowRays = maxi(1, cfg.shadowRays);
+        p.shadowRayDepth = maxi(0, cfg.shadowRayDepth);
         p.fogDensity = cfg.fogDensity;
         p.fogHeight = cfg.fogHeight;
 
-        // The dome distribution is rebuilt whenever the sun has actually moved,
-        // not every frame: it is 2048 evaluations plus two prefix sums, and the
-        // sun is in the same place for most consecutive frames.
-        const SkyGPU skyNow = scene_->sky.gpu();
-        if (cfg.skyNee) {
-            if (!skyCdfValid_ || !sameSun(skyNow, skyCdfSun_)) {
-                SkyCdfGPU cdf = {};
-                buildSkyCdf(skyNow, &cdf);
-                skyCdf_.upload(&cdf, 1);
-                skyCdfSun_ = skyNow;
-                skyCdfValid_ = true;
-            }
-            p.skyNee = cfg.skyNee ? 1 : 0;
-            p.skyNeeDepth = maxi(1, cfg.skyNeeDepth);
-            p.skyCdf = skyCdf_.as<SkyCdfGPU>();
-        }
-
-        // -- baked indirect ---------------------------------------------------
-        // The grid carries the sky as well as the bounces, so it needs no help
-        // from the sky row and does not override it. The two are independent:
-        // sky sampling still applies at every vertex the path actually bounces
-        // through, which is all of them below giDepth.
-        if (cfg.gi && giActive_) {
-            p.giOn = 1;
-            p.giDepth = maxi(1, cfg.giDepth);
-            p.probeRays = maxi(1, cfg.probeRays);
-            p.probeHysteresis = clampf(cfg.probeHysteresis, 0.0f, 0.99f);
-            p.probeFeedback = clampf(cfg.probeFeedback, 0.0f, 0.95f);
-            p.gi.data = reinterpret_cast<ProbeSH *>(probeGrid_[probeCur_].ptr());
-            p.gi.origin = probeOrigin_[probeCur_];
-            p.gi.spacing = probeSpacing_;
-        } else if (cfg.gi) {
-            // First frame after switching on: the grid has not been filled yet,
-            // so the path must not stop into it.
-            p.probeRays = maxi(1, cfg.probeRays);
-            p.probeHysteresis = clampf(cfg.probeHysteresis, 0.0f, 0.99f);
-            p.probeFeedback = clampf(cfg.probeFeedback, 0.0f, 0.95f);
-        }
-
-        p.sky = skyNow;
+        p.sky = scene_->sky.gpu();
         p.materials = reinterpret_cast<const MaterialLook *>(scene_->materialsPtr());
         p.instances = reinterpret_cast<const InstanceData *>(scene_->instancesPtr());
         p.handle = scene_->handle();
-        return p;
-    }
 
-  public:
+        CU_CHECK(cuMemcpyHtoDAsync(paramsBuf_.ptr(), &p, sizeof(p), pipe_->stream()));
+        OPTIX_CHECK(optixLaunch(pipe_->pipeline(), pipe_->stream(), paramsBuf_.ptr(),
+                                sizeof(LaunchParams), &pipe_->sbt(), unsigned(rw_), unsigned(rh_),
+                                1));
+
+        CU_CHECK(cuEventRecord(evTrace1_, pipe_->stream()));
+        tracePending_ = true;
+
+        ++frame_;
+        ++tick_;  // never reset: see the note on resetAccumulation
+    }
 
     // -----------------------------------------------------------------------
     // Tone map the resolved mean into the 8-bit display buffer.
@@ -403,29 +245,6 @@ class Renderer {
     DeviceBuffer accum_;
     DeviceBuffer color_;
     DeviceBuffer display_, paramsBuf_;
-
-    // -- sky importance sampling ---------------------------------------------
-    // -- irradiance probes ----------------------------------------------------
-    // Two grids, alternating: one being written while the other is read for
-    // history and by the shading pass. A megabyte each.
-    DeviceBuffer probeGrid_[2], probeParams_;
-    Vec3 probeOrigin_[2] = {Vec3(0.0f), Vec3(0.0f)};
-    float probeSpacing_ = 0.0f;
-    int probeCur_ = 0;
-    bool giActive_ = false;
-
-    DeviceBuffer skyCdf_;
-    SkyGPU skyCdfSun_{};
-    bool skyCdfValid_ = false;
-
-    // The distribution only depends on where the sun is and how bright it is.
-    // Comparing the direction and radiance is enough, and far cheaper than
-    // rebuilding a table that has not changed.
-    static bool sameSun(const SkyGPU &a, const SkyGPU &b) {
-        const Vec3 dd = a.sunDir - b.sunDir;
-        const Vec3 dr = a.sunRadiance - b.sunRadiance;
-        return dot(dd, dd) < 1e-8f && dot(dr, dr) < 1e-6f;
-    }
 
     int rw_ = 0, rh_ = 0;
     unsigned frame_ = 0;  // samples in the film for this camera

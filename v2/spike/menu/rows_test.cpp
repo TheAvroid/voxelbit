@@ -16,7 +16,7 @@ int main() {
     v2::SettingsMenu m;
     float scale = 0.70f, exposure = 1.25f, speed = 9.2f, fov = 50.0f;
     int depth = 10, movingDepth = 4, spf = 1;
-    bool grain = true, skyNee = false, gi = false;
+    bool grain = true;
     unsigned live = 2;
     v2::DayNight clock;
 
@@ -24,7 +24,7 @@ int main() {
     t.scale = &scale;  t.depth = &depth;  t.movingDepth = &movingDepth;
     t.exposure = &exposure;  t.speed = &speed;  t.fov = &fov;  t.clock = &clock;
     t.samplesPerFrame = &spf;  t.constantGrain = &grain;
-    t.liveMaxAccum = &live;  t.skyNee = &skyNee;  t.gi = &gi;
+    t.liveMaxAccum = &live;
     m.bind(t);
     m.open = true;
 
@@ -34,10 +34,7 @@ int main() {
     // the row count, which is exactly the sort of thing that makes a working
     // menu look broken.
     int cur = 0;
-    // Asked of the menu rather than written down here. A hardcoded count is a
-    // test that breaks every time a row is added, which trains you to edit the
-    // number instead of reading the failure.
-    const int rows = v2::SettingsMenu::rowCount();
+    const int rows = 12;
     auto go = [&](int row) {
         while (cur != row) {
             m.key(GLFW_KEY_DOWN);
@@ -67,32 +64,16 @@ int main() {
     m.key(GLFW_KEY_LEFT);
     if (!grain) { std::printf("FAIL: grain row did not toggle back on\n"); ++fails; }
 
-    // Sky sampling is row 11 and is a toggle, defaulting off.
-    go(11);
-    m.key(GLFW_KEY_RIGHT);
-    if (!skyNee) { std::printf("FAIL: sky row did not toggle on\n"); ++fails; }
-    m.key(GLFW_KEY_LEFT);
-    if (skyNee) { std::printf("FAIL: sky row did not toggle back off\n"); ++fails; }
-    if (spf != 1 || !grain) { std::printf("FAIL: the sky row moved a neighbour\n"); ++fails; }
-
-    // Baked GI is row 12 and is a toggle, defaulting off.
-    go(12);
-    m.key(GLFW_KEY_RIGHT);
-    if (!gi) { std::printf("FAIL: gi row did not toggle on\n"); ++fails; }
-    m.key(GLFW_KEY_LEFT);
-    if (gi) { std::printf("FAIL: gi row did not toggle back off\n"); ++fails; }
-    if (skyNee || spf != 1) { std::printf("FAIL: the gi row moved a neighbour\n"); ++fails; }
-
     // And the bake action must still be the LAST row, not one of these --
     // firing a bake by accident rewrites defaults.h behind the user's back.
-    go(rows - 1);
+    go(11);
     m.bakeRequested = false;
     m.key(GLFW_KEY_RIGHT);
-    if (!m.bakeRequested) { std::printf("FAIL: row %d is not the bake action\n", rows - 1); ++fails; }
+    if (!m.bakeRequested) { std::printf("FAIL: row 12 is not the bake action\n"); ++fails; }
     if (spf != 1 || !grain) { std::printf("FAIL: the bake moved a render setting\n"); ++fails; }
 
     std::printf("%s\n", fails ? "settings rows: FAILED"
-                              : "settings rows: OK -- samples steps and clamps, the three toggles toggle, "
+                              : "settings rows: OK -- samples steps and clamps, grain toggles, "
                                 "bake is still last and touches nothing else");
     return fails ? 1 : 0;
 }

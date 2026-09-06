@@ -37,8 +37,6 @@ struct alignas(4) uchar4 { unsigned char x, y, z, w; };
 
 #include "../core/vecmath.h"
 #include "../scene/sky.h"
-#include "../scene/irradiance.h"
-#include "../scene/skycdf.h"
 #include "../scene/voxelworld.h"
 
 namespace v2 {
@@ -144,47 +142,19 @@ struct LaunchParams {
     float fogDensity;  // extinction per metre at y = 0
     float fogHeight;   // e-folding height of the haze, metres
 
-    // -- sky importance sampling ----------------------------------------------
-    // The sun is light-sampled and the dome never was: it only arrived when a
-    // BSDF bounce happened to escape the canopy. On a shadowed surface that is
-    // most of the light, estimated by bouncing at random -- which is why the
-    // darkest parts of the frame are the noisiest.
+    // -- shadow rays -----------------------------------------------------------
+    // How many sun samples one path vertex takes, and how far down the path the
+    // extra ones are spent.
     //
-    // With this on, the dome is sampled in proportion to its own radiance and
-    // combined with the BSDF sample by multiple importance sampling. It changes
-    // no pixel's expected value, only how fast it gets there, so it cannot blur.
-    int skyNee;
-    // How many bounces get a dome shadow ray. 1 is the primary hit only.
-    int skyNeeDepth;
-    const SkyCdfGPU *skyCdf;
-
-    // -- baked indirect --------------------------------------------------------
-    // The path stops at giDepth and reads the probe grid instead of bouncing
-    // again. At 1 that means the primary hit gets its direct lighting traced
-    // and everything after it looked up, which is the whole point: indirect
-    // light in a wood varies over metres, so a grid is a fair description of it
-    // and a per-pixel random walk is an expensive way to guess the same number.
-    //
-    // NOT a variance reduction, unlike the sky sampler above -- this converges
-    // to a DIFFERENT image, one where indirect detail is limited by the probe
-    // spacing. That is the trade being offered, not a bug in it.
-    int giOn;
-    int giDepth;
-    // Rays each probe casts per frame. They are blended into the grid rather
-    // than replacing it, so this is a refresh rate, not a sample budget: 32 a
-    // frame at 0.9 hysteresis is a few hundred effective samples per probe.
-    int probeRays;
-    float probeHysteresis;
-    // Feedback gain for the previous grid, which is what gives more than one
-    // bounce. Below 1 so the geometric series it forms cannot run away.
-    float probeFeedback;
-
-    // gi is what the shading reads and what the probe pass fills this frame;
-    // giPrev is last frame's, which the probe pass reads for history and for
-    // the second-and-later bounces. Same spacing, origins a whole number of
-    // cells apart, so history is an integer offset and never interpolated.
-    IrradianceGridGPU gi;
-    IrradianceGridGPU giPrev;
+    // These were welded to the path count: four samples per pixel meant four sun
+    // rays, and there was no way to buy shadow accuracy without also paying for
+    // four more primary rays, four more BSDF evaluations and four more bounces.
+    // The sun is a cone the width of a thumbnail seen through a canopy, so its
+    // visibility is very nearly a coin flip per pixel and it is where a large
+    // part of the noise comes from. Sampling it N times costs N shadow rays and
+    // nothing else, which is much less than N times the frame.
+    int shadowRays;
+    int shadowRayDepth;
 
     // -- world ---------------------------------------------------------------
     SkyGPU sky;
