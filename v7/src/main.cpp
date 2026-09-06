@@ -71,6 +71,7 @@ void usage() {
         "                            NOT the window size -- the frame is MADE this big\n"
         "                            and stretched up to fill the window. Under DLSS it\n"
         "                            is what gets produced; the mode picks what is traced.\n"
+        "  --flare F                 sun glare and lens flare, 0 = off             (1.0)\n"
         "  --rec SECONDS             record a take this long from startup, then exit\n"
         "  --rec-fps N               recorder capture rate, frames/s                 (60)\n"
         "  --rec-width N             cap the recording width; H.264 stops at 4096  (3840)\n"
@@ -284,6 +285,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--debug") *debugLayer = true;
         else if (a == "--seed") { int s = 0; argInt(argc, argv, i, &s); o->r.seed = uint32_t(s); }
         else if (a == "--scale") argFloat(argc, argv, i, &o->scale);
+        else if (a == "--flare") { argFloat(argc, argv, i, &o->flare); o->flareGiven = true; }
         else if (a == "--rec") argFloat(argc, argv, i, &o->recSeconds);
         else if (a == "--rec-fps") argInt(argc, argv, i, &o->recFps);
         else if (a == "--rec-width") argInt(argc, argv, i, &o->recMaxWidth);

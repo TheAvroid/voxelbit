@@ -92,21 +92,30 @@ class VolFog {
     // Forward scattering. Water droplets and dust are strongly forward, which
     // is what makes the air near the sun glow instead of the whole volume
     // lifting uniformly. Zero would be isotropic and would look like milk.
-    float anisotropy = 0.7f;
+    // Halfway, rather than the 0.7 this opened with: the tighter lobe put a
+    // hard bright core around the sun and left the rest of the wood flat, and
+    // 0.5 spreads the same light further into the trees without going milky.
+    float anisotropy = 0.5f;
 
     // How much of the sky dome reaches a cell that can see it. Applied at march
     // time now, against the visibility the volume stores.
-    float ambient = 0.25f;
+    //
+    // FULL, which is the top of the slider. A quarter was a conservative
+    // opening value chosen before the visibility term existed to hold it back;
+    // now that a cell only gets this where it can actually see the dome, the
+    // honest coefficient is the whole of it, and anything less is the sky being
+    // dimmed twice.
+    float ambient = 1.00f;
 
     // How much sky light still reaches a cell the up ray found covered.
     //
     // NOT ZERO, AND NOT A QUARTER EITHER. One ray straight up is a proxy for a
     // hemisphere and the paths it misses are real. Measured on the wood: at
     // 0.25 the sky came out DARKER than the ground under it, which is fog
-    // absorbing sky light without scattering any back. 0.65 keeps the sky above
+    // absorbing sky light without scattering any back. 0.60 keeps the sky above
     // the ground where it belongs and still takes the glare off. 1.0 is the old
     // unshadowed term, sun blur and all.
-    float skyShadow = 0.65f;
+    float skyShadow = 0.60f;
 
     // How much of each new frame survives the temporal blend, standing still
     // and moving.

@@ -256,10 +256,15 @@ class Tracer {
     // and decor paths use.
     std::string moonPath = "C:/voxelbit/game/assets/moon.png";
 
-    // The vignette, 0..1. OFF by default: it is a look, not a correction, and
+    // The vignette, 0..1.
+    //
+    // ON, at a quarter, because the person whose renderer it is asked for it.
+    // The note this replaces said a vignette is "a look, not a correction, and
     // turning one on for someone who did not ask is how a renderer acquires a
-    // signature nobody chose.
-    float vignette = 0.0f;
+    // signature nobody chose" -- which is right, and is exactly why the value
+    // is stated here rather than buried in the tone map: it is a choice, it is
+    // one line, and the slider in the menu undoes it.
+    float vignette = 0.25f;
 
     // THE FLARE HAS ITS OWN SUN, AND IT MUST.
     //

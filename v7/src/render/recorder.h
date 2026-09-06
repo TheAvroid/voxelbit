@@ -66,8 +66,7 @@
 // Media Foundation does the encoding and the muxing. That is a deliberate
 // choice over binding NVENC directly: MF ships with Windows so there is no SDK
 // to vendor, it picks up the NVIDIA hardware encoder MFT on its own, it writes
-// the mp4 container, it gives the editor a matching decoder for free (see
-// videoedit.h) -- and, the part that actually decides it, an
+// the mp4 container -- and, the part that actually decides it, an
 // IMFSample carries an explicit presentation time that the sink writer honours
 // verbatim. Rule 1 above needs precisely that and nothing more.
 //
@@ -100,8 +99,8 @@ using Falcor::ResourceFormat;
 using Falcor::Texture;
 using Falcor::uint2;
 
-// A finished take, and everything the editor needs to open it without asking
-// the file what it is.
+// A finished take: everything a caller needs to describe the file that was
+// just written without opening it again.
 struct Take {
     std::string path;
     int width = 0;
@@ -294,16 +293,16 @@ class Recorder {
         // The bitrate follows the picture, at ~0.2 bits per pixel -- the same
         // rule and the same constant the WebGPU game settled on for its master
         // recording, which is generous on purpose: this file is the thing the
-        // editor re-encodes, so it wants to be near-transparent rather than
-        // small. ~25 Mbps at 1080p60, ~44 at 1440p60.
+        // file is the deliverable, so it wants to be near-transparent rather
+        // than small. ~25 Mbps at 1080p60, ~44 at 1440p60.
         const double bpp = 0.2;
         const uint32_t rate = uint32_t(std::clamp(
             double(outW_) * double(outH_) * captureFps() * bpp, 8.0e6, 200.0e6));
 
-        // A KEYFRAME EVERY SECOND, not every two. This file exists to be
-        // scrubbed in the editor a moment after it is written, and seek
-        // granularity is the GOP: at 2 s the timeline feels sticky. The export
-        // uses the longer GOP, where nobody is scrubbing and the bits matter.
+        // A KEYFRAME EVERY SECOND, not every two. Seek granularity in any
+        // player is the GOP, and a take that is about to be scrubbed through
+        // in an editor feels sticky at 2 s. A second costs a few percent of
+        // bitrate and is worth it for footage meant to be cut.
         VideoWriter::Config cfg;
         cfg.width = outW_;
         cfg.height = outH_;

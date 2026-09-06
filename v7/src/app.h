@@ -68,7 +68,6 @@
 #include "render/camera.h"
 #include "render/player.h"
 #include "render/recorder.h"
-#include "render/videoedit.h"
 #include "scene/daynight.h"
 
 namespace v7 {
@@ -234,6 +233,10 @@ struct Options {
     // below what this engine sustains, and a rate that is not a property of
     // whichever monitor the window happened to be on is a rate two takes can
     // be cut together at.
+    // The sun glare and lens flare, 0 = off. Given rather than defaulted so the
+    // slider and a bake stay the source of truth when the flag is absent.
+    float flare = 1.0f;
+    bool flareGiven = false;
     int recFps = 60;
     // A SCRIPTED TAKE. Record this many seconds from startup, then exit --
     // exactly what --shot is for a still, and for the same reason: the only
@@ -657,6 +660,7 @@ class ForestApp : public SampleApp {
         if (opt_.fogAnisoGiven) volfog_.anisotropy = opt_.fogAniso;
         if (opt_.fogAmbientGiven) volfog_.ambient = opt_.fogAmbient;
         if (opt_.fogSkyUnderGiven) volfog_.skyShadow = opt_.fogSkyUnder;
+        if (opt_.flareGiven) tracer_.flare = opt_.flare;
         if (volfog_.init(getDevice())) {
             tracer_.setVolFog(&volfog_);
             std::printf("  fog      volumetric, %s\n", volfog_.status().c_str());
@@ -801,7 +805,6 @@ class ForestApp : public SampleApp {
         // first R: a first take that spent 300 ms in the shader compiler would
         // start by recording a hitch.
         recorder_.init(getDevice());
-        editor_.init(getDevice(), &recorder_.converter());
 
         printHelp();
         lastTime_ = std::chrono::steady_clock::now();
@@ -1029,15 +1032,7 @@ class ForestApp : public SampleApp {
         // Constant grain: start from nothing EVERY frame, not just when the
         // camera moves. Moving already did this -- it is what made a walking
         // frame noisy -- so doing it always is what makes the two identical.
-        // AN EXPORT TAKES THE FRAME. It is decoding, converting and encoding
-        // as fast as the machine allows behind a progress bar, and the forest
-        // it would be sharing the GPU with is entirely hidden by the panel. One
-        // sample keeps the pipeline alive -- the display texture, the guides
-        // and the accumulator all stay valid, so closing the panel resumes
-        // rather than restarts -- and costs a fraction of what the export is
-        // spending. (The WebGPU game did the same thing with its `exporting`
-        // flag, for the same reason.)
-        const int spf = editor_.exporting() ? 1 : maxi(1, opt_.samplesPerFrame);
+        const int spf = maxi(1, opt_.samplesPerFrame);
         cfg.samplesPerFrame = spf;
         // GPU TIMESTAMPS, and only under --profile. The whole point is to be
         // able to say "the denoiser is two thirds of the frame" as a
@@ -1229,8 +1224,7 @@ class ForestApp : public SampleApp {
             recorder_.tick(ctx, tracer_.display(), tracer_.displayWidth(),
                            tracer_.displayHeight(), nowSec);
             vb::Take take;
-            if (recorder_.poll(take)) openEditorOn(take);
-            editor_.tick(ctx, nowSec);
+            if (recorder_.poll(take)) onTakeSaved(take, nowSec);
         }
 
         // -- the scripted take ------------------------------------------------
@@ -1441,24 +1435,31 @@ class ForestApp : public SampleApp {
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(255, 214, 120));
                 ImGui::TextUnformatted("encoding...");
                 ImGui::PopStyleColor();
-            }
-        }
-
-        // THE PANEL, BEFORE THE EARLY RETURN BELOW. The settings menu is not
-        // open while the editor is, but the readout above and this both have to
-        // be drawn every frame regardless of that menu's state, and putting
-        // this after `if (!menuOpen_) return;` is how it would silently only
-        // appear when the settings panel happened to be up too.
-        if (editor_.open()) {
-            styleV2 vstyle(pGui, 1.0f, fbH);
-            editor_.draw(fbW, fbH, vstyle.scale);
-            // The panel has a close box of its own, so it can shut without
-            // going through closeEditor() -- and the mouse would then stay
-            // handed back for good. Checked after the draw rather than wired
-            // into the panel, which has no business knowing about the camera.
-            if (!editor_.open() && captureBeforeEditor_) {
-                setCapture(true);
-                captureBeforeEditor_ = false;
+            } else if (savedTake_.valid()) {
+                // WHERE THE PERSON WHO PRESSED R IS ACTUALLY LOOKING. The take
+                // is written and the recorder names it on stdout, but stdout is
+                // behind the window -- and with nothing opening any more, a
+                // silent stop is indistinguishable from a stop that failed.
+                //
+                // It FADES rather than waiting to be dismissed. An
+                // acknowledgement is not a dialog: the thing wanted after a
+                // take is the wood back, not another key to press.
+                const double age = nowSeconds() - savedAt_;
+                if (age >= kSavedNotice) {
+                    savedTake_ = vb::Take{};
+                } else {
+                    const double f = (kSavedNotice - age) / 1.2;
+                    const float a = float(f > 1.0 ? 1.0 : f);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(150, 220, 160, a));
+                    ImGui::TextUnformatted(fmt("saved  %s", savedTake_.path.c_str()).c_str());
+                    ImGui::PopStyleColor();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(150, 158, 170, a));
+                    ImGui::TextUnformatted(fmt("  %lld frames  %s",
+                                               (long long)savedTake_.frames,
+                                               clockLabel(savedTake_.seconds()).c_str())
+                                               .c_str());
+                    ImGui::PopStyleColor();
+                }
             }
         }
 
@@ -1558,81 +1559,18 @@ class ForestApp : public SampleApp {
         ImGui::PopStyleColor();
         w.separator();
 
-        // THE PRESETS ARE MEASURED, and each one says what it cost. v6 had
-        // been carrying the notes in the table and throwing them away at the
-        // point of use, which left five buttons whose only difference was a
-        // name -- exactly the thing the command line was bad at, reproduced in
-        // a menu.
-        for (size_t i = 0; i < presets().size(); ++i) {
-            const Preset &p = presets()[i];
-            const bool active = fabsf(opt_.scale - p.scale) < 0.005f;
-            ImGui::PushStyleColor(ImGuiCol_Text, active ? ui::kHot() : ui::kText());
-            if (w.button(p.name)) {
-                opt_.scale = p.scale;
-                opt_.r.maxDepth = p.depth;
-                invalidate();
-            }
-            ImGui::PopStyleColor();
-            ImGui::SameLine(140.0f);
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted(fmt("%d%%  %d bounces%s%s", int(p.scale * 100.0f + 0.5f),
-                                       p.depth, *p.note ? "   " : "", p.note)
-                                       .c_str());
-            ImGui::PopStyleColor();
-        }
-        w.separator();
-
-        // ---- the game's resolution ------------------------------------------
+        // ── NO PRESETS AND NO RESOLUTION ROW ──────────────────────────────
         //
-        // NOT the window's, and the line underneath says so in pixels so there
-        // is no need to take the label's word for it. A percentage rather than a
-        // list of sizes because the window is resizable and any fixed list would
-        // be the wrong SHAPE for most of the shapes a window can take -- a
-        // fraction is always the right aspect ratio, and the resolution it comes
-        // to is printed anyway.
+        // Removed at the user's asking, along with the five preset buttons
+        // (Max FPS / Fast / Balanced / Sharp / Native) that set the same two
+        // numbers between them. The engine renders at 100 % of the window and
+        // that is now simply what it does -- defaults::kScale is 1.00 and
+        // nothing in the menu moves it.
         //
-        // This row used to be hidden whenever Ray Reconstruction was on, on the
-        // grounds that the quality mode already owned the traced size and a
-        // second control over one number is a control that sometimes does
-        // nothing. That was true, and it left the setting missing in exactly the
-        // configuration it ships in. It now sizes what the renderer PRODUCES
-        // while the quality mode sizes what is traced into that -- two different
-        // numbers, both live, neither of them ever inert.
-        int pct = int(opt_.scale * 100.0f + 0.5f);
-        // CAPPED AT 100, which is native. Above it the renderer is
-        // supersampling -- tracing more pixels than the window can show and
-        // throwing the difference away in the blit -- and there is no row in
-        // the preset table above that goes there either. The command line can
-        // still ask for more; this is the control, not the limit.
-        if (w.slider("Resolution", pct, 10, 100, false, "%d%%")) {
-            // TEN PERCENT NOTCHES. Not a technical limit -- a judgement about
-            // what is worth offering: a step you can see the frame rate answer.
-            // At one percent the neighbouring values are indistinguishable and
-            // the slider becomes a thing to fiddle with rather than decide with.
-            //
-            // APPLIED IMMEDIATELY, and an attempt at deferring it is why this
-            // comment exists. Committing only on drag-release looks like the
-            // better design -- every distinct value reallocates the film and
-            // recreates the DLSS feature, and that call WAITS on the device, so
-            // applying continuously stutters while the mouse is down.
-            //
-            // It does not work here. `pct` is recomputed from opt_.scale at the
-            // top of every frame, so with the commit deferred the slider was
-            // handed the OLD value again on the very next frame and snapped
-            // back under the cursor -- the control could not be moved at all.
-            // Deferring properly needs the in-progress value to live across
-            // frames, which is a piece of state for a stutter that the ten
-            // percent notch already keeps rare.
-            pct = maxi(10, mini(100, ((pct + 5) / 10) * 10));
-            opt_.scale = clampf(float(pct) / 100.0f, 0.10f, 1.00f);
-            invalidate();
-        }
-        w.text(fmt("   %d x %d  in a %d x %d window", tracer_.outWidth(), tracer_.outHeight(),
-                   int(getTargetFbo()->getWidth()), int(getTargetFbo()->getHeight())));
-        if (tracer_.denoising())
-            w.text(fmt("   %d x %d traced into it by DLSS %s", tracer_.width(), tracer_.height(),
-                       dlssQualityName(opt_.dlssQuality)));
-        w.separator();
+        // --scale still exists and still works, because an offline render or
+        // a benchmark has a real reason to ask for a different size and no
+        // menu to ask it through. What is gone is the in-game control, not
+        // the capability behind it.
 
         // ---- the denoiser ---------------------------------------------------
         if (dlss_.available()) {
@@ -1923,6 +1861,12 @@ class ForestApp : public SampleApp {
         // How far the corners fall off. 0 is off, which is where it starts --
         // the tone map runs it last, after the flare, so it darkens the
         // finished image rather than having the ghosts scatter back over it.
+        // THE SUN GLARE HAD NO CONTROL AT ALL, which is how "I can see the sun
+        // through the tree" ended up with no way to answer it from inside the
+        // game. It is a look, and every other look in this menu is a slider.
+        // 0 removes the glare and the ghosts entirely and costs nothing else --
+        // the sun disc itself is drawn by the sky, not by this.
+        w.slider("Sun glare", tracer_.flare, 0.0f, 2.0f, false, "%.2f");
         w.slider("Vignette", tracer_.vignette, 0.0f, 1.0f, false, "%.2f");
         w.slider("  reaches up to", opt_.r.deepRange, 0.10f, 0.60f, false, "%.2f luma");
         w.slider("Walk speed", player_.walk, 0.2f, 200.0f);
@@ -2034,10 +1978,11 @@ class ForestApp : public SampleApp {
             applySun(true);
             invalidate();
         }
-        // Aperture is the depth of field. Zero is a pinhole -- everything
-        // sharp, and what an offline reference wants.
-        if (w.slider("Aperture", opt_.aperture, 0.0f, 0.4f, false, "%.3f m")) invalidate();
-        if (w.slider("Focus distance", opt_.focus, 0.0f, 400.0f, false, "%.0f m")) invalidate();
+        // NO APERTURE OR FOCUS ROW HERE, deliberately. Depth of field is not
+        // something this game does: the lens model still exists for the
+        // OFFLINE paths (--aperture / --focus, and the thin lens in
+        // Trace.cs.slang they drive), because a still frame is where it earns
+        // its keep, but the viewer is a pinhole and has no control for it.
         w.separator();
 
         float hours = clock_.tday * 24.0f;
@@ -2091,15 +2036,6 @@ class ForestApp : public SampleApp {
         if (e.key == Input::Key::Escape) {
             // ESC closes the menu before it starts arming the quit -- otherwise
             // dismissing a panel would leave the window one press from closing.
-            // The video panel comes FIRST because it is the one drawn over
-            // everything else, so it is what ESC is being aimed at. An export
-            // in progress is left alone: it has its own cancel button, and
-            // losing four minutes of transcode to a stray ESC is not a thing a
-            // panel should let happen.
-            if (editor_.open() && !editor_.exporting()) {
-                closeEditor();
-                return true;
-            }
             if (menuOpen_) {
                 setMenuOpen(false);
                 return true;
@@ -2143,13 +2079,6 @@ class ForestApp : public SampleApp {
     // -----------------------------------------------------------------------
     bool onMouseEvent(const MouseEvent &e) override {
         if (e.type == MouseEvent::Type::ButtonDown) quitArmed_ = false;
-
-        // Clicks that land ON the panel never get here -- Falcor hands those to
-        // ImGui first. This is for the ones that miss it: with the editor up,
-        // a click on the wood beside the panel would capture the mouse, hide
-        // the cursor and leave the person dragging a timeline they can no
-        // longer see a pointer on.
-        if (editor_.open()) return true;
 
         if (e.type == MouseEvent::Type::Wheel) {
             // X IS A HELD MODIFIER, and it is POLLED rather than tracked from
@@ -2347,7 +2276,6 @@ class ForestApp : public SampleApp {
         // A take still finalising owns a thread and a sink writer. Abandoning
         // it drops the file rather than waiting on an encoder while the device
         // is being torn down underneath it.
-        editor_.close();
         recorder_.abandon();
         saveWindowPlacement();
     }
@@ -2383,12 +2311,15 @@ class ForestApp : public SampleApp {
     int shotIndex_ = 0;
     int shotFrames_ = 0;
 
-    // -- the recorder and the panel it opens ------------------------------
+    // -- the recorder -----------------------------------------------------
     vb::Recorder recorder_;
-    vb::VideoEditor editor_;
     int takeIndex_ = 0;
-    bool captureBeforeEditor_ = false;
     bool recStarted_ = false;  // --rec has fired; see the scripted take
+    // The take that finished most recently, and when, for the on-screen
+    // acknowledgement in onGuiRender. Cleared once it has faded.
+    vb::Take savedTake_;
+    double savedAt_ = 0.0;
+    static constexpr double kSavedNotice = 6.0;  // seconds the notice lives
 
     // One entry per displayed frame, in milliseconds. Kept whole rather than
     // reduced online because the interesting statistics are the tail ones, and
@@ -2431,6 +2362,14 @@ class ForestApp : public SampleApp {
 
     static double secondsSince(std::chrono::steady_clock::time_point t0) {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+
+    // The same clock the recorder is driven on, read from the GUI pass, which
+    // is not handed the frame's `now`.
+    static double nowSeconds() {
+        return std::chrono::duration<double>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     }
 
     template <typename... A>
@@ -2530,7 +2469,7 @@ class ForestApp : public SampleApp {
     }
 
     // -----------------------------------------------------------------------
-    // R. One key, two states, and the panel that follows the second one.
+    // R. One key, two states: the second press stops, and the file is written.
     // -----------------------------------------------------------------------
     void toggleRecording() {
         if (recorder_.recording()) {
@@ -2547,10 +2486,6 @@ class ForestApp : public SampleApp {
             std::fflush(stdout);
             return;
         }
-        // R with the panel up means "record again", which is the only reading
-        // that keeps R meaning one thing. The take on disk is left alone -- it
-        // is a file, and the next panel can be pointed back at it.
-        if (editor_.open()) closeEditor();
 
         if (tracer_.displayWidth() <= 0) return;
 
@@ -2569,25 +2504,19 @@ class ForestApp : public SampleApp {
         std::fflush(stdout);
     }
 
-    void openEditorOn(const vb::Take &take) {
-        // A scripted run has nobody to show a panel to, and opening one would
-        // hold the process open past the take it was asked for.
-        if (opt_.recSeconds > 0.0f || opt_.background) return;
-        if (!editor_.load(take)) return;
-        // Same hand-back the settings menu does: the panel needs the cursor,
-        // and whoever was looking around wants it back when the panel closes.
-        captureBeforeEditor_ = looking_;
-        if (looking_) setCapture(false);
-        holdLook_ = false;
-        if (menuOpen_) setMenuOpen(false);
-    }
-
-    void closeEditor() {
-        editor_.close();
-        if (captureBeforeEditor_) {
-            setCapture(true);
-            captureBeforeEditor_ = false;
-        }
+    // -----------------------------------------------------------------------
+    // A take that has finished encoding.
+    //
+    // THE FILE IS THE WHOLE PRODUCT. It is already written, already named on
+    // stdout by the recorder, and sitting next to v7.bat where anything else
+    // can pick it up -- so there is nothing for an editor to be the gateway
+    // to. Stopping a take costs one keystroke and takes nothing away: no
+    // panel to dismiss, no cursor handed back and forth, no camera parked
+    // while a modal window is up. All that is left is to say it happened.
+    // -----------------------------------------------------------------------
+    void onTakeSaved(const vb::Take &take, double nowSec) {
+        savedTake_ = take;
+        savedAt_ = nowSec;
     }
 
     void setMenuOpen(bool on) {
@@ -2679,14 +2608,6 @@ class ForestApp : public SampleApp {
 
     // -----------------------------------------------------------------------
     bool processInput(float dt) {
-        // THE PANEL IS MODAL TO THE WORLD. Not because it must be, but because
-        // WASD under an open editor walks the camera behind it while somebody
-        // is dragging a trim handle -- and the world it walks into is a world
-        // the accumulator then has to converge again. Returning false rather
-        // than early-exiting past the mouse look also parks the camera: nothing
-        // this function would have changed is changed.
-        if (editor_.open()) return false;
-
         const Falcor::InputState &in = getInputState();
         bool turned = applyMouseLook();
 
@@ -3487,7 +3408,7 @@ class ForestApp : public SampleApp {
             "  arrow keys            scrub time (up/down = fast)\n"
             "  X + scroll wheel      day/night speed -- scroll down past 0.25x to REWIND\n"
             "  Y                     SETTINGS MENU\n"
-            "  R                     RECORD -- press again to stop and edit\n"
+            "  R                     RECORD -- press again to stop and save\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
             "  P                     screenshot            F1   this help\n"
@@ -3560,7 +3481,14 @@ class ForestApp : public SampleApp {
             "}  // namespace v7\n",
             opt_.scale, opt_.r.maxDepth, opt_.movingDepth, opt_.r.exposure, opt_.r.shadowLift,
             player_.walk,
-            opt_.sensitivity, player_.eye, fov_, sunAz_, sunEl_,
+            opt_.sensitivity, player_.eye, fov_,
+            // THE BASE, NOT THE DERIVED AZIMUTH. kSunAz is loaded straight
+            // into clock_.azimuthBase, but this used to bake sunAz_, which is
+            // what azimuthDeg() computed for the CURRENT hour -- so every bake
+            // folded that hour's offset into the base and the sun walked east
+            // a little further each time. Baking at 23:50 on 2026-09-06 moved
+            // it from 6.9 to 95.7 in one go.
+            clock_.azimuthBase, sunEl_,
             int(getTargetFbo()->getWidth()),
             int(getTargetFbo()->getHeight()), defaults::kTrees, clock_.tday, clockText,
             clock_.cycleSpeed, atmo_.enabled ? "true" : "false");

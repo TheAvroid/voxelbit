@@ -4,18 +4,20 @@
 //
 // Two classes, and they are two halves of the same choice:
 //
-//   VideoWriter   NV12 frames in, a faststart mp4 out. Used by the live
+//   VideoWriter   NV12 frames in, an mp4 out. Used by the live
 //                 recorder and, at a different bitrate and GOP, by the export.
 //   VideoReader   an mp4 in, decoded BGRA frames out, seekable by frame index.
-//                 Used by the editor for preview and scrubbing, and by the
-//                 export for the source it re-encodes.
+//                 Nothing in the engine reads takes back today -- this is kept
+//                 because the writer's constant-rate guarantee is only worth
+//                 anything if something can verify it, and because it is the
+//                 half any future editing or transcode step would need.
 //
 // WHY MEDIA FOUNDATION AND NOT NVENC. NVENC would be faster and would let the
 // display texture reach the encoder without ever touching system memory, and
 // v7 already has the CUDA interop that would make that work (src/gpu/cuda.h).
 // It was still the wrong call here: it needs the Video Codec SDK headers
 // vendored, it needs a hand-written mp4 muxer, and it needs a separate decoder
-// binding for the editor. MF ships with Windows, picks up the same NVIDIA
+// binding of its own. MF ships with Windows, picks up the same NVIDIA
 // hardware encoder MFT underneath on its own, writes the container, and hands
 // back a matching decoder -- and it honours an explicitly stamped presentation
 // time on every sample, which is the one property the recorder's whole design

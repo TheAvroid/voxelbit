@@ -486,6 +486,61 @@ class ChunkMesher {
                               : (kind == 3) ? 0x9E3779B1u
                                             : 0x27D4EB2Fu;
 
+        // ── NOTHING GROWS THROUGH ANYTHING ELSE OF ITS OWN KIND ────────────
+        //
+        // The scatter grid is FINER THAN THE THINGS ON IT. Rocks sit on a 1.6 m
+        // grid and jitter by half of it, so two neighbouring cells can put
+        // their centres under a metre apart -- and a boulder is four or five
+        // metres across. Adjacent cells therefore produced stones standing
+        // inside one another as a matter of course, and the same for the big
+        // mushrooms on their 1.3 m grid.
+        //
+        // Fixed by rejection rather than by widening the grid, because widening
+        // it would thin the wood out everywhere to fix the few places two
+        // neighbours happened to collide. A candidate looks at the cells around
+        // it, and where two would overlap the one with the higher cell hash
+        // survives. That rule is symmetric -- both cells reach the same verdict
+        // about the pair without either knowing the other was considered -- and
+        // it depends only on world position, so it is identical either side of
+        // a chunk boundary. Two chunks meshed in different orders, or one
+        // meshed alone, all agree.
+        //
+        // The neighbour test is deliberately HASH-ONLY: it re-derives where a
+        // neighbour would go and how big it would be, but not whether the
+        // terrain under it would have accepted it. Re-running the height,
+        // material and slope tests per neighbour would cost far more than the
+        // scatter itself, and being wrong in this direction only ever drops a
+        // stone that a rejected neighbour would have left room for.
+        const bool spaced = (kind == 1 || kind == 3);
+        float maxRad = 0.0f;
+        if (spaced)
+            for (const Footprint &f : foot)
+                maxRad = maxf(maxRad, 0.25f * float(f.sx + f.sz) * VOXEL_M);
+        // Far enough that nothing outside it could reach this candidate.
+        const int look = spaced ? int(ceilf(2.0f * maxRad / stride)) : 0;
+
+        // Where the cell based at (bx, bz) would put its model, and how wide.
+        // Returns false when that cell places nothing.
+        auto candidate = [&](float bx, float bz, float *ox, float *oz, float *orad,
+                             uint32_t *oprio) -> bool {
+            const uint32_t c = hashU32(uint32_t(int(bx * 16.0f)) ^ salt,
+                                       uint32_t(int(bz * 16.0f)));
+            if (hashUnit(seed + 41u, c) >= density) return false;
+            *ox = bx + (hashUnit(seed + 42u, c) - 0.5f) * stride;
+            *oz = bz + (hashUnit(seed + 43u, c) - 0.5f) * stride;
+            int kk = int(hashUnit(seed + 44u, c) * float(foot.size())) % int(foot.size());
+            if (kind == 3 && mushroomBig0 > 0 && mushroomBig0 < int(foot.size())) {
+                const bool big = hashUnit(seed + 0x8B1Du, c) < 0.25f;
+                const int lo = big ? mushroomBig0 : 0;
+                const int hi = big ? int(foot.size()) : mushroomBig0;
+                kk = lo + (int(hashUnit(seed + 0x3C7Fu, c) * float(hi - lo)) % (hi - lo));
+            }
+            const Footprint &f = foot[size_t(kk)];
+            *orad = 0.25f * float(f.sx + f.sz) * VOXEL_M;
+            *oprio = c;
+            return true;
+        };
+
         for (int j = 0; j <= steps; ++j) {
             for (int i = 0; i <= steps; ++i) {
                 const float bx = float(I0) * VOXEL_M + float(i) * stride;
@@ -559,6 +614,36 @@ class ChunkMesher {
                     if (footX > 0 && footZ > 0 && !groundHolds(ci, cj, h, footX, footZ,
                                                          decorSink(1, k, f.sy, seed, cell), memo))
                         continue;
+                }
+
+                // The overlap rejection described above. Last, so it only
+                // runs for a placement everything else has already accepted.
+                if (spaced) {
+                    float mx = 0.0f, mz = 0.0f, mr = 0.0f;
+                    uint32_t mp = 0u;
+                    bool clear = true;
+                    if (candidate(bx, bz, &mx, &mz, &mr, &mp)) {
+                        for (int dj = -look; dj <= look && clear; ++dj)
+                            for (int di = -look; di <= look; ++di) {
+                                if (di == 0 && dj == 0) continue;
+                                float nx = 0.0f, nz = 0.0f, nr = 0.0f;
+                                uint32_t np = 0u;
+                                if (!candidate(bx + float(di) * stride,
+                                               bz + float(dj) * stride, &nx, &nz, &nr, &np))
+                                    continue;
+                                // Ties broken on the hash, so the pair agrees.
+                                if (np <= mp) continue;
+                                const float ddx = nx - mx, ddz = nz - mz;
+                                // 0.9, not 1.0: two stones may touch. It is
+                                // standing INSIDE one another that looks wrong.
+                                const float reach = (mr + nr) * 0.9f;
+                                if (ddx * ddx + ddz * ddz < reach * reach) {
+                                    clear = false;
+                                    break;
+                                }
+                            }
+                    }
+                    if (!clear) continue;
                 }
 
                 b->decor.push_back({kind, k, ci, cj, h, yaw, cell});

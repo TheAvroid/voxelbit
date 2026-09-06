@@ -34,7 +34,6 @@ target_sources(v7 PRIVATE
     src/render/player.h
     src/render/recorder.h
     src/render/mfvideo.h
-    src/render/videoedit.h
 
     src/gpu/tracer.h
     src/gpu/world.h

@@ -259,7 +259,12 @@ class Player {
             // `top` is the model's highest voxel, so it still works as a cheap
             // rejection: nothing in this model can be above it.
             if (!s.standable || s.top <= g.y) continue;
-            if (!touches(s, x, z, hw)) continue;
+            // THE MODEL'S FOOTPRINT, NOT THE WALL ELLIPSE -- see overModel.
+            // `touches` is measured over the bottom two metres, so it rejected
+            // a body standing on the wide middle of a big boulder and dropped
+            // it through the stone. Anything without a column heightfield has
+            // no better answer available and keeps the old test.
+            if (s.col ? !overModel(s, x, z, VOXEL_M, hw) : !touches(s, x, z, hw)) continue;
 
             float hit = -1e9f;
             bool any = false;

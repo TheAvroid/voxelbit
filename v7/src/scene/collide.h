@@ -179,8 +179,10 @@ struct Solid {
 // `voxel` is passed in rather than reached for, the same way measureCollider
 // takes it: this header is deliberately independent of voxelworld.h, and one
 // include to save one argument is not worth giving that up.
-inline bool solidColumnTop(const Solid &s, float wx, float wz, float voxel, float *outY) {
-    if (!s.col) return false;
+// A world point in the model's own frame, in metres from its (0,0) voxel
+// corner. Shared by the two tests below so they cannot disagree about where
+// the model is.
+inline void solidModelSpace(const Solid &s, float wx, float wz, float *px, float *pz) {
     // m0, m2, m6, m8 of kRot, in makeInstance.
     static const float R[4][4] = {
         { 1.0f,  0.0f,  0.0f,  1.0f},
@@ -191,8 +193,41 @@ inline bool solidColumnTop(const Solid &s, float wx, float wz, float voxel, floa
     const float *r = R[s.yaw & 3];
     const float dx = wx - s.tx, dz = wz - s.tz;
     // Transposed: px uses m0 and m6, pz uses m2 and m8.
-    const float px = r[0] * dx + r[2] * dz;
-    const float pz = r[1] * dx + r[3] * dz;
+    *px = r[0] * dx + r[2] * dz;
+    *pz = r[1] * dx + r[3] * dz;
+}
+
+// ---------------------------------------------------------------------------
+// IS THE BODY OVER THIS MODEL AT ALL -- the WHOLE model, seen from above.
+//
+// This exists because `touches` below cannot answer that question and was
+// being asked it. Its ellipse comes from measureCollider, which measures the
+// widest extent in the first kBodyHeightM (two metres) ABOVE THE BASE. That is
+// the right footprint for a WALL -- a trunk stops you where your body is -- and
+// the wrong one for a FLOOR, because, as measureCollider's own note says, "a
+// boulder is usually widest around its middle".
+//
+// So a big domed rock is wider on top than in its bottom two metres, and the
+// ground query rejected the body before it ever looked up the column: you
+// walked onto the wide part of the stone and dropped straight through it. The
+// bigger the boulder the worse it was, which is why it was always the big ones.
+//
+// The model's own extent has no such problem, and the per-column lookup that
+// follows is exact anyway -- this only has to be a cheap conservative gate that
+// never rejects a point the column test would have accepted.
+// ---------------------------------------------------------------------------
+inline bool overModel(const Solid &s, float wx, float wz, float voxel, float w) {
+    if (!s.col) return false;
+    float px = 0.0f, pz = 0.0f;
+    solidModelSpace(s, wx, wz, &px, &pz);
+    return px >= -w && pz >= -w && px <= float(s.msx) * voxel + w &&
+           pz <= float(s.msz) * voxel + w;
+}
+
+inline bool solidColumnTop(const Solid &s, float wx, float wz, float voxel, float *outY) {
+    if (!s.col) return false;
+    float px = 0.0f, pz = 0.0f;
+    solidModelSpace(s, wx, wz, &px, &pz);
     const int mx = int(floorf(px / voxel));
     const int mz = int(floorf(pz / voxel));
     if (mx < 0 || mz < 0 || mx >= int(s.msx) || mz >= int(s.msz)) return false;
