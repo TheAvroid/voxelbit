@@ -161,7 +161,12 @@ struct Options {
     // --no-dlss turns it off and hands the frame back to the accumulator, which
     // is also what happens automatically if the driver or GPU cannot do it.
     bool dlss = true;
-    DlssQuality dlssQuality = DlssQuality::Quality;
+    // BALANCED, and it is no longer selectable in the menu -- so this is not a
+    // starting point, it is the mode. Quality upscales from more pixels than a
+    // canopy needs at this frame rate; Balanced is where the samples the saving
+    // buys are worth more than the resolution they cost. --dlss <mode> still
+    // names all five, for an offline render or a benchmark.
+    DlssQuality dlssQuality = DlssQuality::Balanced;
 
     // proven thing in the engine, it only exists on a device with cooperative
     // vectors, and a renderer whose default configuration depends on a network
@@ -348,6 +353,28 @@ struct Options {
     // setting, so --no-atmosphere is the override rather than --atmosphere
     // being the opt-in.
     bool atmosphere = defaults::kAtmosphere;
+
+    // Airglow and starlight, which the scattering model has no term for -- at 0
+    // a deep night is physically honest and visually useless. Only reachable
+    // here now that the sky group has left the menu; the default lives on
+    // Atmosphere itself, so an unset flag changes nothing.
+    float nightFloor = 0.0f;
+    bool nightFloorGiven = false;
+
+    // -- the sampler's pattern, and the two passes before the curve ---------
+    //
+    // GATED, AND OFF BY DEFAULT. All three change what a given seed puts on the
+    // screen -- the mask by moving where the error lands, the other two by
+    // moving the whole picture's level -- so defaulting them on would silently
+    // invalidate every reference image this engine has ever been compared
+    // against. Each is one flag away.
+    bool blueNoise = defaults::kBlueNoise;
+    bool autoExposure = defaults::kAutoExposure;
+    float bloom = defaults::kBloom;
+    float bloomThreshold = 1.0f;
+    bool bloomThresholdGiven = false;
+    float expKey = 0.14f;
+    bool expKeyGiven = false;
     float moonScale = 1.0f;
     bool moonScaleGiven = false;
     // Pins the phase, 0 full .. 0.5 new. Without it the phase runs off the day
@@ -661,6 +688,11 @@ class ForestApp : public SampleApp {
         if (opt_.fogAmbientGiven) volfog_.ambient = opt_.fogAmbient;
         if (opt_.fogSkyUnderGiven) volfog_.skyShadow = opt_.fogSkyUnder;
         if (opt_.flareGiven) tracer_.flare = opt_.flare;
+        tracer_.blueNoise = opt_.blueNoise;
+        tracer_.post().autoExposure = opt_.autoExposure;
+        tracer_.post().bloom = opt_.bloom;
+        if (opt_.bloomThresholdGiven) tracer_.post().bloomThreshold = opt_.bloomThreshold;
+        if (opt_.expKeyGiven) tracer_.post().expKey = opt_.expKey;
         if (volfog_.init(getDevice())) {
             tracer_.setVolFog(&volfog_);
             std::printf("  fog      volumetric, %s\n", volfog_.status().c_str());
@@ -693,12 +725,13 @@ class ForestApp : public SampleApp {
         // in tracer.h can be unconditional and cannot itself be what breaks.
         const bool atmoOk = atmo_.init(getDevice());
         atmo_.enabled = opt_.atmosphere && atmoOk;
+        if (opt_.nightFloorGiven) atmo_.nightFloor = opt_.nightFloor;
         tracer_.setAtmosphere(&atmo_);
         std::printf("  sky      %s\n",
                     !atmoOk ? atmo_.status().c_str()
                             : (atmo_.enabled
-                                   ? "Hillaire scattering -- Rayleigh, Mie, ozone (Y switches back)"
-                                   : "Preetham fit; Hillaire tables ready (Y to switch)"));
+                                   ? "Hillaire scattering -- Rayleigh, Mie, ozone"
+                                   : "Preetham fit (--no-atmosphere); Hillaire tables ready"));
         std::fflush(stdout);
 
         // THE RADIANCE CACHE, only where the hardware can actually run it.
@@ -1135,7 +1168,13 @@ class ForestApp : public SampleApp {
                 FALCOR_PROFILE(ctx, "fog");
                 tracer_.renderVolFog(ctx, gcam, opt_.r.fogDensity, opt_.r.fogHeight, moving_);
             }
-            tracer_.resolve(ctx, cfg, reconstructed);
+            // dt, and it is the SHOT clock rather than the wall clock when one
+            // is running -- the same dt the player and the day cycle step by.
+            // An adaptation driven by wall time inside a --shot-walk sequence
+            // would settle at a rate that depended on how fast the machine
+            // happened to render, which is exactly what those flags exist to
+            // take out of the picture.
+            tracer_.resolve(ctx, cfg, reconstructed, dt);
 
             // -- teach the cache what this frame found -----------------------
             //
@@ -1597,95 +1636,62 @@ class ForestApp : public SampleApp {
         // the capability behind it.
 
         // ---- the denoiser ---------------------------------------------------
-        if (dlss_.available()) {
-            if (w.checkbox("DLSS Ray Reconstruction", opt_.dlss)) {
-                tracer_.resetHistory();
-                invalidate();
+        //
+        // NO ON/OFF ROW. Ray Reconstruction is always on -- at one sample a
+        // pixel it is not an enhancement, it is the thing that makes the image
+        // an image, and offering to switch it off is offering to break the
+        // renderer. --no-dlss still exists for a reference render, which is the
+        // only context where the accumulating film is the right answer.
+        //
+        // THREE MODES, NOT FIVE. Ultra performance and Performance are not
+        // offered: below Balanced, Ray Reconstruction is upscaling from so few
+        // pixels that a conifer canopy -- thin, high-frequency geometry with
+        // bright sky behind it -- comes back as mush that no amount of
+        // denoising recovers. The ENUM still has them and --dlss names them, so
+        // a benchmark keeps a capability the in-game menu does not offer; the
+        // same split --scale got.
+        if (dlss_.available() && opt_.dlss) {
+            Falcor::Gui::DropdownList modes = {
+                {uint32_t(DlssQuality::Balanced), "Balanced"},
+                {uint32_t(DlssQuality::Quality), "Quality"},
+                {uint32_t(DlssQuality::Dlaa), "DLAA (no upscale)"},
+            };
+
+            // AND IF WE ARE IN A MODE THE LIST DOES NOT OFFER, SHOW IT ANYWAY.
+            // This is not tidiness. Falcor's addDropdown scans the list for the
+            // live value and leaves its index at -1 when it is not found, then
+            // unconditionally does `values[curItem]` (Gui.cpp:668) -- so a value
+            // outside the list is not a blank combo, it is an out-of-bounds read
+            // on a std::vector. Reachable from the command line today with
+            // `--dlss performance`.
+            const uint32_t live = uint32_t(opt_.dlssQuality);
+            bool listed = false;
+            for (const auto &e : modes) listed = listed || e.value == live;
+            if (!listed)
+                modes.insert(modes.begin(), {live, dlssQualityName(opt_.dlssQuality)});
+
+            uint32_t m = live;
+            if (w.dropdown("Mode", modes, m)) {
+                opt_.dlssQuality = DlssQuality(m);
+                tracer_.setQuality(opt_.dlssQuality);
             }
-            if (opt_.dlss) {
-                static const Falcor::Gui::DropdownList kModes = {
-                    {uint32_t(DlssQuality::UltraPerformance), "Ultra performance"},
-                    {uint32_t(DlssQuality::Performance), "Performance"},
-                    {uint32_t(DlssQuality::Balanced), "Balanced"},
-                    {uint32_t(DlssQuality::Quality), "Quality"},
-                    {uint32_t(DlssQuality::Dlaa), "DLAA (no upscale)"},
-                };
-                uint32_t m = uint32_t(opt_.dlssQuality);
-                if (w.dropdown("Mode", kModes, m)) {
-                    opt_.dlssQuality = DlssQuality(m);
-                    tracer_.setQuality(opt_.dlssQuality);
-                }
-            }
+        } else if (dlss_.available()) {
+            // --no-dlss: the film is accumulating instead, and a reconstruction
+            // mode is not a thing that has a meaning here.
+            w.text("Ray Reconstruction off (--no-dlss) -- accumulating");
         } else {
             w.text(fmt("DLSS unavailable: %s", dlss_.status().c_str()));
         }
+
+        // FRAME GENERATION IS NOT IN THIS MENU. It is on at 2x and stays there;
+        // --fg 2x|3x|4x|off still works and the capability probes in
+        // streamline.h still run, so a card that cannot do it still declines
+        // quietly. Its diagnostics -- what DLSS-G says about itself, the
+        // generated-frame counts, whether the device reached Streamline before
+        // the swapchain -- are printed at start-up and under --stats, which is
+        // where a diagnostic belongs.
         w.separator();
 
-        // ---- frame generation -----------------------------------------------
-        //
-        // Offered only where the adapter said yes. Frame generation is 40-series
-        // and up, and it also requires Reflex -- streamline.h withdraws it if
-        // Reflex is missing rather than letting DLSS-G fail at runtime, so a row
-        // that is present here is a row that will work.
-        if (sl_.hasFrameGeneration()) {
-            // ONLY THE MODES THIS CARD CAN ACTUALLY DO. 3x and 4x are DLSS 4
-            // multi-frame generation and need an RTX 50-series; on Ada, DLSS-G
-            // silently clamps them to 2x, so offering all four would give three
-            // settings that behave identically and no clue as to why.
-            const int maxGen = sl_.maxGeneratedFrames();
-            Falcor::Gui::DropdownList kFg = {
-                {uint32_t(FrameGen::Off), "Off"},
-                {uint32_t(FrameGen::On2x), "2x"},
-            };
-            if (maxGen >= 2) kFg.push_back({uint32_t(FrameGen::On3x), "3x"});
-            if (maxGen >= 3) kFg.push_back({uint32_t(FrameGen::On4x), "4x"});
-            uint32_t g = uint32_t(opt_.frameGen);
-            if (w.dropdown("Frame generation", kFg, g)) {
-                opt_.frameGen = FrameGen(g);
-                const uint2 ren{uint32_t(tracer_.width()), uint32_t(tracer_.height())};
-                const uint2 out{uint32_t(tracer_.outWidth()), uint32_t(tracer_.outHeight())};
-                sl_.setFrameGeneration(opt_.frameGen, ren, out);
-                slReset_ = true;
-            }
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            // DLSS-G'S OWN ACCOUNT OF ITSELF, not this engine's opinion of it.
-            // It declines quietly -- a size it dislikes, a missing tag, Reflex
-            // not running -- while every other indicator still says "on".
-            if (opt_.frameGen != FrameGen::Off) {
-                ImGui::TextUnformatted(fmt("   %s", sl_.frameGenStatus().c_str()).c_str());
-                ImGui::TextUnformatted(
-                    fmt("   %d presented per rendered frame", sl_.framesPresented()).c_str());
-                ImGui::TextUnformatted(fmt("   %llu frames generated so far, %.0f/s",
-                                           (unsigned long long)generatedTotal_, genFps_)
-                                           .c_str());
-                ImGui::TextUnformatted(
-                    fmt("   %.0f rendered/s -> %.0f shown/s", fps_, fps_ + genFps_).c_str());
-            }
-            // THE ONE PRECONDITION THAT DECIDES WHETHER ANY OF IT CAN WORK.
-            // DLSS-G wraps the swapchain from a hook on its CREATION, so it has
-            // to have been given the device before Falcor built one. If this
-            // ever reads "late", frame generation is inert no matter how
-            // healthy everything above looks.
-            ImGui::TextUnformatted(fmt("   device handed to Streamline: %s",
-                                       sl_.earlyDeviceHandover()
-                                           ? "at creation (correct)"
-                                           : "late -- DLSS-G missed the swapchain")
-                                       .c_str());
-            if (maxGen < 3)
-                ImGui::TextUnformatted(
-                    fmt("   this GPU generates up to %dx (3x/4x need RTX 50-series)", maxGen + 1)
-                        .c_str());
-            ImGui::PopStyleColor();
-            w.separator();
-        } else if (sl_.gpuSupportsFrameGeneration()) {
-            // The card can do it and this BUILD cannot, which is a different
-            // sentence from "unsupported" and worth saying out loud.
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted("Frame generation: the GPU supports it, but the swapchain");
-            ImGui::TextUnformatted("   is not a Streamline proxy -- see patch_gfx_interposer.py");
-            ImGui::PopStyleColor();
-            w.separator();
-        }
 
         // =====================================================================
         // GLOBAL ILLUMINATION
@@ -1752,6 +1758,16 @@ class ForestApp : public SampleApp {
         // is a white speck that accumulation takes a very long time to average
         // out. Clamping is a bias, deliberately taken.
         if (w.slider("Firefly clamp", opt_.r.clampIndirect, 1.0f, 200.0f)) invalidate();
+
+        // THE SAME NUMBER OF SAMPLES, ARRANGED DIFFERENTLY. This does not
+        // reduce variance -- it moves it up the spatial frequencies, where the
+        // eye and Ray Reconstruction both discard far more of it. Costs one
+        // texture fetch on the shallow dimensions and nothing else.
+        //
+        // Invalidates, because the film already holds samples drawn the other
+        // way and mixing the two would converge to the same image through a
+        // visibly worse middle.
+        if (w.checkbox("Blue-noise sampling", tracer_.blueNoise)) invalidate();
         w.separator();
 
         // ---- the neural radiance cache --------------------------------------
@@ -1892,7 +1908,12 @@ class ForestApp : public SampleApp {
         // the sun disc itself is drawn by the sky, not by this.
         w.slider("Sun glare", tracer_.flare, 0.0f, 2.0f, false, "%.2f");
         w.slider("Vignette", tracer_.vignette, 0.0f, 1.0f, false, "%.2f");
-        w.slider("  reaches up to", opt_.r.deepRange, 0.10f, 0.60f, false, "%.2f luma");
+
+        // AUTO-EXPOSURE, BLOOM AND THE DEEP-LIFT'S REACH ARE NOT IN THIS MENU,
+        // deliberately. All three are reachable from the command line
+        // (--auto-exposure, --exposure-key, --bloom, --bloom-threshold,
+        // --deep-range) and the first three bake, so nothing about them is
+        // gone -- they are simply not worth the rows they cost here.
         w.slider("Walk speed", player_.walk, 0.2f, 200.0f);
         // No invalidate: it changes nothing that has already been traced, only
         // how far the next mouse movement will turn the view -- exactly like
@@ -1964,40 +1985,24 @@ class ForestApp : public SampleApp {
                 w.text("  160x90x64 froxels, one shadow ray each");
             }
         }
-        // ---- WHICH SKY ------------------------------------------------------
-        if (atmo_.available()) {
-            if (w.checkbox("Atmospheric scattering (Hillaire)", atmo_.enabled)) {
-                // Rebuild the SUN as well as the dome. Its colour is baked into
-                // the fit's output rather than read from a per-frame uniform, so
-                // without this the sky would change model and the key light
-                // would not -- until the next time the clock happened to move it.
-                applySun(true);
-                invalidate();
-            }
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted(
-                atmo_.enabled
-                    ? "   Rayleigh, Mie and ozone, integrated. Twilight is a wedge\n"
-                      "   over where the sun set, and it goes out."
-                    : "   Preetham fit. Cheaper, and its sunset FREEZES once the sun\n"
-                      "   is under the horizon -- the hue cannot change, only dim.");
-            if (atmo_.enabled)
-                ImGui::TextUnformatted(
-                    "   turbidity below is a Preetham parameter; this path carries\n"
-                    "   its own fixed aerosol profile and ignores it");
-            ImGui::PopStyleColor();
-            if (atmo_.enabled) {
-                // WHAT THE PHYSICS CANNOT SUPPLY. The model knows about sunlight
-                // and nothing else, so at 0 a deep night is honestly -- and
-                // uselessly -- black. This stands in for airglow and starlight.
-                if (w.slider("  night floor", atmo_.nightFloor, 0.0f, 0.02f, false, "%.4f")) {
-                    atmo_.invalidate();
-                    invalidate();
-                }
-            }
-        } else {
-            w.text(fmt("Atmosphere: %s", atmo_.status().c_str()));
-        }
+        // ---- WHICH SKY IS NOT A QUESTION THIS MENU ASKS ---------------------
+        //
+        // Atmospheric scattering is ON and stays on. The Preetham fit it
+        // replaced survives only as a fallback for a machine where the LUT
+        // shaders will not compile, and as --no-atmosphere for anyone comparing
+        // against an image taken before 2026-09-06. Neither is worth a row, and
+        // the wrong answer to it silently freezes every sunset.
+        //
+        // The night floor came out with it and is now --night-floor, because a
+        // setting whose only access was a sub-row of a checkbox that no longer
+        // exists is a setting nobody can reach. It stands in for airglow and
+        // starlight: the model knows about sunlight and nothing else, so at 0 a
+        // deep night is honestly -- and uselessly -- black.
+        //
+        // AND NOTE THE TURBIDITY ROW BELOW. It is a PREETHAM parameter, and the
+        // scattering path carries its own fixed aerosol profile and ignores it,
+        // so with the atmosphere always on that slider moves nothing anybody
+        // can see. It is left alone because --no-atmosphere still reads it.
         if (w.slider("Sky turbidity", opt_.turbidity, 1.8f, 8.0f)) {
             applySun(true);
             invalidate();
@@ -3538,6 +3543,9 @@ class ForestApp : public SampleApp {
             "constexpr float kTimeOfDay = %.4ff;  // %s\n"
             "constexpr float kCycleSpeed = %.2ff;\n"
             "constexpr bool kAtmosphere = %s;\n"
+            "constexpr bool kBlueNoise = %s;\n"
+            "constexpr bool kAutoExposure = %s;\n"
+            "constexpr float kBloom = %.2ff;\n"
             "\n"
             "}  // namespace defaults\n"
             "}  // namespace v7\n",
@@ -3553,7 +3561,13 @@ class ForestApp : public SampleApp {
             clock_.azimuthBase, sunEl_,
             int(getTargetFbo()->getWidth()),
             int(getTargetFbo()->getHeight()), defaults::kTrees, clock_.tday, clockText,
-            clock_.cycleSpeed, atmo_.enabled ? "true" : "false");
+            clock_.cycleSpeed, atmo_.enabled ? "true" : "false",
+            // BAKED FROM THE LIVE OBJECTS, not from opt_. The menu writes
+            // straight to tracer_ and post(), so opt_ still holds whatever the
+            // command line said at start-up -- baking that would quietly
+            // discard the thing just tuned, which is the one job this has.
+            tracer_.blueNoise ? "true" : "false",
+            tracer_.post().autoExposure ? "true" : "false", tracer_.post().bloom);
         std::fclose(f);
         // The FULL PATH, not just the file name. "run rebuild.bat" is only
         // useful if you already know which of the engine trees it lives in,

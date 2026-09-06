@@ -179,7 +179,12 @@ float3 evalOpaque(Surface m, float3 wo, float3 wi, out float pdf)
     return fDiff + fSpec;
 }
 
-BsdfSample sampleOpaque(Surface m, float3 wo, inout Rng rng)
+// THE SAMPLE NUMBERS ARE ARGUMENTS, not draws, and that split is what lets the
+// primary bounce take its direction from the blue-noise mask while every deeper
+// one keeps the pixel's PCG stream. `u` picks the lobe and `u2` picks the
+// direction within it; all three branches consume exactly one 2D sample, so the
+// caller's draw count is the same whichever lobe wins.
+BsdfSample sampleOpaqueU(Surface m, float3 wo, float u, float2 u2)
 {
     BsdfSample s = emptySample();
     if (wo.z <= 0.0f)
@@ -189,30 +194,39 @@ BsdfSample sampleOpaque(Surface m, float3 wo, inout Rng rng)
     const float pSpec = clamp(m.specular * 4.0f, 0.06f, 0.5f);
     const float pTrans = (1.0f - pSpec) * kt;
 
-    const float u = rng.nextFloat();
     if (u < pSpec)
     {
         const float a = max(1e-3f, m.roughness * m.roughness);
-        const float3 h = sampleGgxVndf(wo, a, rng.next2D());
+        const float3 h = sampleGgxVndf(wo, a, u2);
         s.wi = reflect3(wo, h);
         if (s.wi.z <= 0.0f)
             return emptySample();
     }
     else if (u < pSpec + pTrans)
     {
-        const float3 d = sampleCosineHemisphere(rng.next2D());
+        const float3 d = sampleCosineHemisphere(u2);
         s.wi = float3(d.x, d.y, -d.z);
         s.transmitted = true;
     }
     else
     {
-        s.wi = sampleCosineHemisphere(rng.next2D());
+        s.wi = sampleCosineHemisphere(u2);
     }
 
     s.f = evalOpaque(m, wo, s.wi, s.pdf);
     if (s.pdf <= 0.0f)
         return emptySample();
     return s;
+}
+
+// The rng-drawing form, which is what every vertex past the first still uses.
+// The order of the two draws is the order the old single-function version used,
+// so a path that goes through here consumes the stream exactly as before.
+BsdfSample sampleOpaque(Surface m, float3 wo, inout Rng rng)
+{
+    const float u = rng.nextFloat();
+    const float2 u2 = rng.next2D();
+    return sampleOpaqueU(m, wo, u, u2);
 }
 
 // ---------------------------------------------------------------------------

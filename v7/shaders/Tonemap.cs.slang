@@ -24,6 +24,21 @@ RWTexture2D<float4> gDst;
 Texture2D<float> gFlareDepth;
 SamplerState gFlareSamp;
 
+// -- what post.h computed, a moment before this dispatch ---------------------
+//
+// The bloom chain's level 0, at half this pass's resolution, already exposure
+// scaled and already thresholded. Sampled with the flare's own sampler: it is
+// linear and clamped, which is exactly what a half-resolution lookup wants, and
+// a second identical sampler would only be another thing to bind.
+//
+// BOUND EVEN WHEN THERE IS NO BLOOM -- at a 1x1 placeholder -- because a
+// declared resource must be bound whether or not the branch that reads it runs.
+Texture2D<float4> gBloom;
+
+// [1] is the auto-exposure multiplier. Read only when gUseAuto says the
+// measuring pass actually ran this frame; stale otherwise, by design.
+StructuredBuffer<float> gExposureState;
+
 cbuffer gTonemapCB
 {
     uint2 gDim;
@@ -53,8 +68,12 @@ cbuffer gTonemapCB
 
     // The vignette. 0 is off, which is the default -- it is a look, not a fix.
     float gVignette;
-    float gVigPad0;
-    float gVigPad1;
+
+    // The bloom's master strength; 0 skips the lookup entirely. Took two of the
+    // three padding words this buffer was already carrying, so its size is
+    // unchanged.
+    float gBloomStrength;
+    uint gUseAuto;
     float gVigPad2;
 };
 
@@ -285,7 +304,29 @@ void main(uint3 tid: SV_DispatchThreadID)
 {
     if (tid.x >= gDim.x || tid.y >= gDim.y)
         return;
-    const float3 c = gSrc[tid.xy].rgb * gExposure;
+    // -- THE STOP, and where the auto one multiplies rather than replaces ----
+    //
+    // gExposure stays the setting it always was and the measured value scales
+    // it. Replacing it would make the control inert the moment adaptation came
+    // on, and the thing people reach for first is precisely "the same, but a
+    // bit brighter".
+    const float exposure = gExposure * (gUseAuto != 0u ? gExposureState[1] : 1.0f);
+
+    float3 c = gSrc[tid.xy].rgb * exposure;
+
+    // -- BLOOM, BEFORE THE CURVE AND NOT AFTER ------------------------------
+    //
+    // It is light that reached the sensor, so it has to be tone mapped with the
+    // rest of the light. Adding it to the LDR image afterwards -- which is what
+    // the lens flare below does, correctly, because a flare is an artefact of
+    // the glass rather than a measurement -- would let it blow past white and
+    // clip flat instead of rolling into the shoulder.
+    if (gBloomStrength > 0.0f)
+    {
+        const float2 buv = (float2(tid.xy) + 0.5f) / float2(gDim);
+        c += gBloom.SampleLevel(gFlareSamp, buv, 0.0f).rgb * gBloomStrength;
+    }
+
     const float3 ldr =
         float3(acesFilmic(c.r, gToe), acesFilmic(c.g, gToe), acesFilmic(c.b, gToe));
     float3 outc = deepShadowLift(ldr, gDeepLift, gDeepRange);

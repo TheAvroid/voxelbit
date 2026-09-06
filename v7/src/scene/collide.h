@@ -101,27 +101,29 @@ inline int decorSink(int kind, int model, int sy, uint32_t seed, uint32_t cell) 
     // is the number.
     if (kind == 0) return 5;
     if (kind == 1) {
-        // BIG AND MID GO DEEPER THAN THE REST, and the two are not the same.
+        // THE SINK SCALES WITH THE STONE, so the three classes are three
+        // numbers rather than one.
         //
-        // The big boulders are loaded at DOUBLE SCALE (see loadRocks in
-        // gpu/world.h), so they stand up to 114 voxels -- eleven metres -- and
-        // a sink that reads as "set into the ground" on a three-metre rock is
-        // a rounding error on one that size. Twenty voxels, two metres, is
-        // what buries the flat underside the .vox models are modelled with.
+        // A sink is how much of the flat underside the .vox models are
+        // modelled with has to disappear into the ground before the rock reads
+        // as sitting in the terrain instead of on it. That is a FRACTION of the
+        // model, so it has to move when the model does -- and both large
+        // classes were rescaled in loadRocks (big 4x, mid 2x on a side).
         //
-        // Mid keeps fifteen: at 28 to 38 voxels tall, twenty would start
-        // swallowing the shorter ones.
+        //     big   128-228 voxels tall   sink 40  (4.0 m)
+        //     mid    56- 76               sink 20  (2.0 m)
+        //     rest    8- 24               sink  5  (0.5 m)
         //
-        // NOTHING IS BURIED BY EITHER. The shortest Mid is Mid_4 at 28 voxels
-        // and still stands 13 out of the ground; the shortest Big is Big_5,
-        // 32 voxels as authored and 64 at double scale, which keeps 44.
+        // Nothing is swallowed by any of them: the shortest big is 128 and
+        // keeps 88 above ground, the shortest mid is 56 and keeps 36.
         //
-        // Deeper is also the SAFE direction for what the slope test used to
-        // catch. A rock is hung on one column and spans many, so the failure
-        // was always a boulder on a fall-away showing daylight under its far
-        // side; burying it further can only hide more of that, never less.
-        if (model >= 0 && model < kRockBigEnd) return 20;
-        if (model < kRockBigMidEnd) return 15;
+        // THIS IS ONLY THE FLOOR. What actually decides how deep a given stone
+        // sits is groundDrop in scene/chunks.h, which measures the ground under
+        // that particular footprint and deepens this number until no part of
+        // the base is above the terrain. This is what a rock on FLAT ground
+        // gets, and the minimum anything gets.
+        if (model >= 0 && model < kRockBigEnd) return 40;
+        if (model < kRockBigMidEnd) return 20;
         return 5;
     }
     // Mushrooms grow out of the ground rather than sitting on it.

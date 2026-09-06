@@ -52,6 +52,7 @@ target_sources(v7 PRIVATE
 
     shaders/Shared.slang
     shaders/Vecmath.slang
+    shaders/BlueNoise.slang
     shaders/Material.slang
     shaders/Sky.slang
     shaders/Atmosphere.slang
@@ -77,6 +78,8 @@ target_sources(v7 PRIVATE
     shaders/NrcTrain.cs.slang
     shaders/NrcUpdate.cs.slang
     shaders/Tonemap.cs.slang
+    shaders/Bloom.cs.slang
+    shaders/Exposure.cs.slang
     shaders/Crosshair.ps.slang
     shaders/CaptureNv12.cs.slang
 )

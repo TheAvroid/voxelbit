@@ -44,6 +44,7 @@
 
 #include "Shared.slang"
 #include "Vecmath.slang"
+#include "BlueNoise.slang"
 #include "Material.slang"
 #include "Sky.slang"
 #include "Restir.slang"
@@ -505,8 +506,8 @@ bool traceOccluded(float3 o, float3 d, float tmax)
 // ---------------------------------------------------------------------------
 // Next event estimation: the sun.
 // ---------------------------------------------------------------------------
-void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out float3 sumDiff,
-                    out float3 sumSpec)
+void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, BlueNoise bn, int depth,
+                    out float3 sumDiff, out float3 sumSpec)
 {
     sumDiff = float3(0.0f);
     sumSpec = float3(0.0f);
@@ -526,7 +527,12 @@ void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out fl
 
     for (int i = 0; i < n; ++i)
     {
-        const float3 wWorld = sf.toWorld(sampleUniformCone(rng.next2D(), keyCosR(gParams.sky)));
+        // THE SHADOW RAY IS THE DIMENSION THAT MATTERS MOST HERE. This scene
+        // is sun-dominated and its noise is overwhelmingly the sun's own
+        // penumbra through a canopy, so if only one sample in the whole path
+        // were to get the mask it would be this one.
+        const float2 uSun = bn.next2DIf(i < 8, kBnDimSun + uint(i), rng);
+        const float3 wWorld = sf.toWorld(sampleUniformCone(uSun, keyCosR(gParams.sky)));
         const float3 wi = fr.toLocal(wWorld);
 
         // A needle transmits, so a direction on the far side is still a valid
@@ -584,10 +590,15 @@ void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out fl
 
 // The composited form, for every vertex whose lobe split nobody downstream
 // asks about. One implementation, so the two cannot disagree.
+// PASSES A SWITCHED-OFF SAMPLER, and that is the whole reason this wrapper did
+// not simply gain a parameter. It is called only from depth > 0, where a
+// screen-space pattern describes nothing -- the paths reaching those vertices
+// left the pixel long ago. Making that explicit here means the depth test lives
+// in one place rather than being re-derived at each call site.
 float3 sampleSun(Hit h, Frame fr, float3 wo, inout Rng rng, int depth)
 {
     float3 dif, spc;
-    sampleSunSplit(h, fr, wo, rng, depth, dif, spc);
+    sampleSunSplit(h, fr, wo, rng, BlueNoise.make(uint2(0u, 0u), 0u, 0u), depth, dif, spc);
     return dif + spc;
 }
 
@@ -644,8 +655,8 @@ float skyDomePdf(float3 ns, float3 wWorld)
     return max(0.0f, dot(ns, wWorld)) * INV_PI;
 }
 
-void sampleSkySplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out float3 sumDiff,
-                    out float3 sumSpec)
+void sampleSkySplit(Hit h, Frame fr, float3 wo, inout Rng rng, BlueNoise bn, int depth,
+                    out float3 sumDiff, out float3 sumSpec)
 {
     sumDiff = float3(0.0f);
     sumSpec = float3(0.0f);
@@ -661,7 +672,7 @@ void sampleSkySplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out fl
     {
         // Drawn in the local frame, so the sample is already the direction the
         // diffuse lobe cares about and no rotation is needed to get its pdf.
-        const float3 wi = sampleCosineHemisphere(rng.next2D());
+        const float3 wi = sampleCosineHemisphere(bn.next2DIf(i < 8, kBnDimSky + uint(i), rng));
         const float lightPdf = wi.z * INV_PI;
         if (lightPdf <= 1e-6f)
             continue;
@@ -715,7 +726,7 @@ void sampleSkySplit(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, out fl
 float3 sampleSky(Hit h, Frame fr, float3 wo, inout Rng rng, int depth)
 {
     float3 dif, spc;
-    sampleSkySplit(h, fr, wo, rng, depth, dif, spc);
+    sampleSkySplit(h, fr, wo, rng, BlueNoise.make(uint2(0u, 0u), 0u, 0u), depth, dif, spc);
     return dif + spc;
 }
 
@@ -893,6 +904,15 @@ void main(uint3 tid: SV_DispatchThreadID)
         uint64_t(gParams.tick) * 0x9E3779B97F4A7C15ull + uint64_t(gParams.seed)
     );
 
+    // The blue-noise mask, keyed on the PIXEL and the TICK.
+    //
+    // The tick and not the accumulation index, for exactly the reason the rng
+    // seed above uses it: while the camera moves the film restarts every frame,
+    // and an index that keeps returning to zero would freeze the mask into a
+    // fixed dither -- the one failure mode a blue-noise pattern has, and a far
+    // uglier one than the white noise it replaced.
+    const BlueNoise bn = BlueNoise.make(pix, gParams.tick, uint(gParams.blueNoise));
+
     // The jitter is a whole-frame offset from a Halton sequence, not a per-pixel
     // random one. It is what antialiases the image as samples accumulate: a
     // low-discrepancy sequence covers the pixel evenly in a few dozen frames,
@@ -911,7 +931,13 @@ void main(uint3 tid: SV_DispatchThreadID)
         // Everything on the focal plane stays put; only the origin moves, which
         // is what puts the plane in focus and blurs by distance from it.
         const float3 focal = o + d * (c.focusDist / dot(d, c.w));
-        const float2 l = sampleConcentricDisk(rng.next2D());
+        // THE JITTER ABOVE IS DELIBERATELY LEFT ALONE. It is one offset for the
+        // whole frame, which is what DLSS is told it is; making it per-pixel
+        // would be a blue-noise pattern the upscaler is actively compensating
+        // for in the wrong direction. The lens is a different matter -- it is a
+        // genuine per-pixel 2D sample and bokeh noise is exactly the kind the
+        // mask disperses well.
+        const float2 l = sampleConcentricDisk(bn.next2D(kBnDimLens, rng));
         o = o + c.u * (l.x * c.aperture * 0.5f) + c.v * (l.y * c.aperture * 0.5f);
         d = normalize(focal - o);
     }
@@ -1284,13 +1310,13 @@ void main(uint3 tid: SV_DispatchThreadID)
             if (depth == 0)
             {
                 float3 neeD, neeS, skyD, skyS;
-                sampleSunSplit(h, fr, wo, rng, depth, neeD, neeS);
+                sampleSunSplit(h, fr, wo, rng, bn, depth, neeD, neeS);
                 // The dome, sampled as its own light. Summed into the sun's
                 // channels rather than kept apart: they are the same two lobes
                 // of the same surface, and everything downstream -- the
                 // demodulated split, ReSTIR, the denoiser guides -- asks about
                 // the lobe, not about which light it came from.
-                sampleSkySplit(h, fr, wo, rng, depth, skyD, skyS);
+                sampleSkySplit(h, fr, wo, rng, bn, depth, skyD, skyS);
                 neeD += skyD;
                 neeS += skyS;
                 L += beta * (neeD + neeS);
@@ -1307,7 +1333,22 @@ void main(uint3 tid: SV_DispatchThreadID)
             }
         }
 
-        const BsdfSample bs = sampleOpaque(h.mat, wo, rng);
+        // THE TWO DRAWS ARE SEQUENCED BY HAND, not left as two arguments to one
+        // call. Argument evaluation order is unspecified, and these two are not
+        // interchangeable: the first picks the lobe and the second the direction
+        // within it, so a compiler free to swap them would silently produce a
+        // different image on a different driver.
+        BsdfSample bs;
+        if (depth == 0)
+        {
+            const float uLobe = rng.nextFloat();
+            const float2 uDir = bn.next2D(kBnDimBsdf, rng);
+            bs = sampleOpaqueU(h.mat, wo, uLobe, uDir);
+        }
+        else
+        {
+            bs = sampleOpaque(h.mat, wo, rng);
+        }
         if (bs.pdf <= 0.0f || isBlack(bs.f))
             break;
 

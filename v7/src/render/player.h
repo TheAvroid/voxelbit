@@ -8,7 +8,9 @@
 // the exception, and knowingly so -- see kBobRate.
 //
 //     WALK 46 vox/s   -> 4.6 m/s        JUMP 66 vox/s -> 6.6 m/s
-//     (both since raised -- see walk and jumpVel)
+//     (jump since raised -- see jumpVel; the walk went up to 9.2 and has
+//      since come back to 4.97, which is within a rounding error of the
+//      original 4.6 -- see the note on walk)
 //     SPRINT x1.85                      GRAVITY 200   -> 20 m/s^2
 //     EYE 20 vox      -> 2.00 m         (was 18; see below)
 //
@@ -78,7 +80,25 @@ class Player {
     bool onGround = false;
     bool fly = false;
 
-    float walk = 9.2f;        // m/s -- the JS engine's 4.6, doubled
+    // THE WHOLE GAIT MOVED DOWN ONE STEP: what used to be a walk is now a run.
+    //
+    // 9.2 m/s on foot was a sprinter's pace held indefinitely, and sprinting
+    // from it reached 17 -- fast enough that the chunk streamer, not the
+    // terrain, was setting how far you could see. The anchor for the new
+    // numbers is that OLD WALK, kept exactly, as the new top speed:
+    //
+    //     run  = walk * sprintMul = 4.97 * 1.85 = 9.19  (the old 9.2 walk)
+    //     walk = 4.97                                    (a brisk walk)
+    //
+    // So this is 9.2 / 1.85 rather than a round number, and it is written that
+    // way round on purpose: the thing being preserved is the sprint, and the
+    // walk is whatever falls out of it. Change sprintMul and this has to move
+    // with it or the old walk stops being the new run.
+    //
+    // Nothing else needed touching. The head bob is expressed as a fraction of
+    // `walk` (see updateBob), so the gait rescales itself, and fly mode is
+    // walk * 3 and comes down with it.
+    float walk = 4.97f;       // m/s -- old walk / sprintMul, so sprint == old walk
     float sprintMul = 1.85f;
     // The port's was 6.6 (JUMP 66 vox/s), which apexes at 1.09 m. Raised 50%
     // in HEIGHT on the user's ask -- and height goes as v^2/2g, so that is

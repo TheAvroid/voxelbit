@@ -344,7 +344,10 @@ class Dlss {
     NVSDK_NGX_Handle *handle_ = nullptr;
     bool ngxReady_ = false, rrSupported_ = false;
     uint2 renderSize_{0, 0}, outputSize_{0, 0};
-    DlssQuality quality_ = DlssQuality::Quality;
+    // Matches Options::dlssQuality. It is only the value in force before
+    // setQuality() is first called, but two different answers to "what mode is
+    // this" is exactly the kind of disagreement nobody goes looking for.
+    DlssQuality quality_ = DlssQuality::Balanced;
     std::string status_ = "not initialised";
 
     static ID3D12Resource *native(Falcor::Texture *t) {

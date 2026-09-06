@@ -75,7 +75,7 @@ void usage() {
         "  --rec SECONDS             record a take this long from startup, then exit\n"
         "  --rec-fps N               recorder capture rate, frames/s                 (60)\n"
         "  --rec-width N             cap the recording width; H.264 stops at 4096  (3840)\n"
-        "  --speed F                 walk speed, m/s                                (9.2)\n"
+        "  --speed F                 walk speed, m/s; sprint is 1.85x it           (4.97)\n"
         "  --sensitivity F           mouse look, degrees of turn per pixel         (0.12)\n"
         "  --eye F                   eye height, metres -- 20 voxels               (2.00)\n"
         "  --seed N                  world seed            (default 20260904)\n"
@@ -84,13 +84,20 @@ void usage() {
         "  --grass F                 fraction of grass columns with a strand      (0.105)\n"
         "  --grass-rows MIN MAX      strand height in voxels                        (3 6)\n"
         "  --flowers F               how thick a flower bed is, 0..1               (0.45)\n"
-        "  --rocks F                 rock density                                 (0.010)\n"
+        "  --rocks F                 rock density                                (0.0075)\n"
         "  --pines DIR               folder with pine_1..9.vox\n"
         "  --decor DIR               folder with rocks/ and flowers.vox\n"
         "  --sun-az DEG --sun-el DEG sun position, offline\n"
         "  --no-atmosphere           the OLD Preetham fit instead of Hillaire\n"
         "                            scattering -- cheaper, and its sunset freezes\n"
         "                            once the sun is under the horizon\n"
+        "  --night-floor V           airglow/starlight the sky never goes below\n"
+        "  --blue-noise              void-and-cluster sampling on the shallow\n"
+        "                            dimensions -- same variance, less of it visible\n"
+        "  --auto-exposure           a trimmed histogram sets the stop, and adapts\n"
+        "  --exposure-key V          what the middle of the frame is aimed at\n"
+        "  --bloom V                 lens bloom strength, 0 off\n"
+        "  --bloom-threshold V       where highlights start to bloom, exposed units\n"
         "  --time H                  viewer start hour, 0-24\n"
         "  --cycle N                 day/night speed, negative rewinds (default 1)\n"
         "                            a day is 20 minutes at 1x; X + wheel changes it\n"
@@ -225,6 +232,23 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--cloud-sun") { argFloat(argc, argv, i, &o->cloudSun); o->cloudSunGiven = true; }
         else if (a == "--atmosphere") o->atmosphere = true;
         else if (a == "--no-atmosphere") o->atmosphere = false;
+        else if (a == "--night-floor") {
+            argFloat(argc, argv, i, &o->nightFloor);
+            o->nightFloorGiven = true;
+        }
+        else if (a == "--blue-noise") o->blueNoise = true;
+        else if (a == "--no-blue-noise") o->blueNoise = false;
+        else if (a == "--auto-exposure") o->autoExposure = true;
+        else if (a == "--no-auto-exposure") o->autoExposure = false;
+        else if (a == "--bloom") argFloat(argc, argv, i, &o->bloom);
+        else if (a == "--bloom-threshold") {
+            argFloat(argc, argv, i, &o->bloomThreshold);
+            o->bloomThresholdGiven = true;
+        }
+        else if (a == "--exposure-key") {
+            argFloat(argc, argv, i, &o->expKey);
+            o->expKeyGiven = true;
+        }
         else if (a == "--cloud-moon-key") { argFloat(argc, argv, i, &o->cloudMoonKey); o->cloudMoonKeyGiven = true; }
         else if (a == "--moon") { argFloat(argc, argv, i, &o->moonScale); o->moonScaleGiven = true; }
         else if (a == "--moon-key") { argFloat(argc, argv, i, &o->moonKey); o->moonKeyGiven = true; }

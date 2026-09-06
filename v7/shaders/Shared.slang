@@ -422,7 +422,19 @@ struct V6Params
     int giMode;
     int giDepth;       // first bounce a cache may answer for
     float giStrength;  // scale on what it returns, 1 = as measured
-    int giPad0, giPad1;
+
+    // -- the blue-noise sampler ----------------------------------------------
+    //
+    // Non-zero when the shallow sample dimensions come from the void-and-cluster
+    // mask instead of the pixel's PCG stream. It does not change the estimator
+    // and it does not change how many numbers the path draws -- see the note on
+    // BlueNoise::next2DIf for why the rng is advanced either way -- so this is a
+    // toggle whose two states are directly comparable.
+    //
+    // TOOK giPad0, so the struct is the same 528 bytes and the assert below is
+    // unchanged.
+    int blueNoise;
+    int giPad1;
 };
 
 #ifdef HOST_CODE

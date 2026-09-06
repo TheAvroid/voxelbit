@@ -89,6 +89,35 @@ REM than hardcoded. Override it by setting V7_HOME first.
 REM ---------------------------------------------------------------------------
 setlocal
 
+REM ---------------------------------------------------------------------------
+REM KEEP THE CONSOLE OUT OF THE WAY.
+REM
+REM Double-clicking a .bat ALWAYS creates a console -- Windows makes the window
+REM before cmd has read a single line of this file -- so it cannot be prevented,
+REM only put somewhere. This relaunches the script once, minimised, and lets the
+REM original window exit: what is left is one minimised console holding the
+REM engine's log, sitting in the taskbar instead of on top of the game.
+REM
+REM START, AND NOT A BARE CALL. A child process that inherits this console is
+REM killed when the console closes, which is exactly what the next line does.
+REM
+REM Set V7_CONSOLE=1 before running to keep the old visible window. The
+REM relaunched copy sets it for itself, and that is what stops this recursing.
+REM
+REM ON FAILURE THE WINDOW IS STILL THERE -- minimised, holding the pause at the
+REM bottom of this file. A launch that dies is a taskbar button to click, not a
+REM window that vanished.
+REM
+REM KEEP THIS FILE ASCII AND LF. cmd re-seeks a batch file by BYTE offset
+REM between commands, so a non-ASCII character anywhere above desynchronises the
+REM parser and it starts executing fragments of these comments as commands.
+REM ---------------------------------------------------------------------------
+if "%V7_CONSOLE%"=="" (
+  set "V7_CONSOLE=1"
+  start "v7" /min cmd /c ""%~f0" %*"
+  exit /b 0
+)
+
 if "%V7_HOME%"=="" set "V7_HOME=%~dp0v7"
 set "EXE=%V7_HOME%\build\bin\Release\v7.exe"
 

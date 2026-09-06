@@ -1128,7 +1128,7 @@ class World {
     // ------------------------------------------------------------ templates
     void loadModelSet(const std::vector<std::string> &paths, std::vector<ModelTemplate> *out,
                       bool multiModel, bool quiet, uint32_t mossSeed = 0,
-                      bool perches = false, bool doubleSize = false) {
+                      bool perches = false, int upscale = 0) {
         for (const std::string &path : paths) {
             std::vector<VoxModel> models;
             std::string err;
@@ -1149,7 +1149,12 @@ class World {
             for (const VoxModel &mo : models) {
                 VoxAsset a = toWorld(mo, 0, mo.sx);
                 if (a.sx <= 0) continue;
-                if (doubleSize) a = upscale2x(a);
+                // A COUNT, NOT A FLAG. Each pass is 2x on a side, so 8x the
+                // voxels and about 4x the surface a mesher has to emit. One
+                // pass is the large mushrooms and the mid stones; two is the
+                // big five, which are meant to read as landmarks rather than
+                // as rocks you walk past.
+                for (int u = 0; u < upscale; ++u) a = upscale2x(a);
 
                 // ONLY THE ENTRIES THE MODEL USES. Registering all 255 of a
                 // file's palette floods the shared table, and past 255
@@ -1211,30 +1216,51 @@ class World {
         // two calls in this order give exactly that.
         static const char *kBigNames[] = {
             "BIG_1_BiG_0", "Big_2_BiG_0", "Big_3_BiG_0", "Big_4_BiG_0", "Big_5_BiG_0"};
+        // THE MID SIX ARE THEIR OWN LIST NOW, purely so they can be loaded at a
+        // different scale from the ones after them. The ORDER and the POSITION
+        // are unchanged and must stay that way: decorSink reads the index, so
+        // mid still has to occupy 5..10 with Runic_1 landing at 11.
+        static const char *kMidNames[] = {"Mid_1_MID_0",     "Mid_2_MID_0", "Mid_3_MID_0",
+                                          "Mid_4_MID_0",     "Mid_4_MID_0_001", "Mid_5_MID_0"};
         static const char *kRestNames[] = {
-            "Mid_1_MID_0",     "Mid_2_MID_0",     "Mid_3_MID_0",     "Mid_4_MID_0",
-            "Mid_4_MID_0_001", "Mid_5_MID_0",     "Runic_1_Runic_0", "Runic_2_Runic_0",
+            "Runic_1_Runic_0", "Runic_2_Runic_0",
             "Runic_3_Runic_0", "Runic_4_Runic_0", "Runic_5_Runic_0", "Runic_6_Runic_0",
             "Runic_7_Runic_0", "Small_1_SMall_0", "Small_2_SMall_0", "Small_3_SMall_0",
             "Small_4_SMall_0", "Small_5_SMall_0", "Small_6_SMall_0", "Small_7_SMall_0",
             "Small_8_SMall_0"};
 
-        std::vector<std::string> big, rest;
+        std::vector<std::string> big, mid, rest;
         for (const char *n : kBigNames) big.push_back(decorDir + "/rocks/" + n + ".vox");
+        for (const char *n : kMidNames) mid.push_back(decorDir + "/rocks/" + n + ".vox");
         for (const char *n : kRestNames) rest.push_back(decorDir + "/rocks/" + n + ".vox");
 
-        // THE BIG FIVE ARE REVOXELISED AT 2x, the same doubling the large
-        // mushrooms use. It is a real 8x in voxels and they are already the
-        // heaviest models in the set, but there are only five of them and the
-        // scatter puts one on a hundredth of the columns.
+        // NOTHING IS UPSCALED HERE ANY MORE, and that is the point.
         //
-        // Doubling here rather than in the .vox files keeps ONE copy of each
-        // asset on disk, and keeps the footprint, the collider and the moss
-        // consistent -- all three are measured off the template after loading,
-        // so they scale with it instead of needing to be told.
+        // Big and mid used to be grown with upscale2x -- 4x and 2x on a side --
+        // which is not the same thing as making them bigger, however much it
+        // looks like it. That call replaces each voxel with a block of copies
+        // of itself: the mesh stays at 10 cm, but the SHAPE still only has the
+        // detail the source had, so at 4x every surface feature was 40 cm and
+        // the boulders were visibly built from blocks four times the size of
+        // the terrain they stood on.
+        //
+        // They are now revoxelised from the sculpt instead, by
+        // tools/revoxel_rocks_scaled.py, which samples the SAME mesh on a
+        // finer grid and ships the result. The detail was always in the .glb;
+        // it was the .vox that was too coarse to carry it.
+        //
+        //     big  122-228 voxels tall  (12.2-22.8 m)  from a 4x sampling
+        //     mid   57- 77              ( 5.7- 7.7 m)  from a 2x sampling
+        //     rest   7- 23              ( 0.7- 2.3 m)  untouched
+        //
+        // Two of the big five are sampled slightly under 4x -- Big_2 at 3.42
+        // and Big_5 at 3.78 -- because a .vox XYZI record packs each coordinate
+        // in a single byte and no axis may exceed 255. That is a limit of the
+        // file format, and the tool clamps to it rather than silently wrapping.
         //
         // The only model set that grows moss -- see mossFace in voxelworld.h.
-        loadModelSet(big, &rocks_, false, false, 0x4D055EEDu, false, /*doubleSize=*/true);
+        loadModelSet(big, &rocks_, false, false, 0x4D055EEDu);
+        loadModelSet(mid, &rocks_, false, false, 0x4D055EEDu);
         loadModelSet(rest, &rocks_, false, false, 0x4D055EEDu);
         loadedRocks = int(rocks_.size());
     }
@@ -1251,7 +1277,7 @@ class World {
         loadModelSet({decorDir + "/mushroom.vox"}, &mushrooms_, true, false);
         mushroomBig0 = int(mushrooms_.size());
         loadModelSet({decorDir + "/mushroom.vox"}, &mushrooms_, true, false, 0u, false,
-                     /*doubleSize=*/true);
+                     /*upscale=*/1);
         loadedMushrooms = int(mushrooms_.size());
     }
 
@@ -1397,7 +1423,15 @@ class World {
         // whole story for a pinecone, which does not: it is the height of the
         // branch the cone was perched on, measured from the tree's own base, so
         // the cone rides the tree rather than the terrain under it.
-        const float ty = float(p.h + 1 - sink + p.yOff) * VOXEL_M;
+        // extraSink is what the SCATTER measured for this particular site --
+        // how much further down this model has to go before its underside stops
+        // showing daylight over the ground it spans. Zero on flat ground, and
+        // zero for a pinecone, which is hung on a branch and never touches the
+        // terrain at all. See Placement in scene/chunks.h for why it is carried
+        // here rather than recomputed: this function has no height field, and
+        // the collider below is derived from this same transform, so measuring
+        // it once is also what stops the two disagreeing.
+        const float ty = float(p.h + 1 - sink - p.extraSink + p.yOff) * VOXEL_M;
 
         const float cx = float(t.sx) * VOXEL_M * 0.5f, cz = float(t.sz) * VOXEL_M * 0.5f;
         RtInstanceDesc inst = {};

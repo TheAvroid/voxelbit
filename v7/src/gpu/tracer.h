@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "../../shaders/Shared.slang"
+#include "../core/bluenoise.h"
 #include "../core/vecmath.h"
 #include "ddgi.h"
 #include "sharc.h"
@@ -48,6 +49,7 @@
 #include "nrc.h"
 #include "restir.h"
 #include "atmosphere.h"
+#include "post.h"
 #include "volfog.h"
 #include "clouds.h"
 #include "world.h"
@@ -192,6 +194,27 @@ class Tracer {
                                                     nullptr,
                                                     Falcor::ResourceBindFlags::ShaderResource);
         ddgiPlaceholder_->setName("v7::ddgiPlaceholder");
+
+        // -- the blue-noise mask ------------------------------------------
+        //
+        // GENERATED UNCONDITIONALLY, even with the sampler switched off. It is
+        // 32 KB and 22 ms of void-and-cluster, and the alternative -- building
+        // it the first time the toggle is used -- puts an allocation and a CPU
+        // loop inside a frame, which is a hitch at the exact moment somebody is
+        // looking for a difference in the picture.
+        {
+            const std::vector<float> mask = bluenoise::generateRG();
+            blueNoiseTex_ = device_->createTexture2D(
+                uint32_t(bluenoise::kDim), uint32_t(bluenoise::kDim), ResourceFormat::RG32Float, 1,
+                1, mask.data(), Falcor::ResourceBindFlags::ShaderResource);
+            blueNoiseTex_->setName("v7::blueNoise");
+        }
+
+        // Auto-exposure and bloom. Failing to come up is not fatal: post.h
+        // reports it and both features stay off, which is exactly what they are
+        // by default anyway.
+        if (!post_.init(device_))
+            std::fprintf(stderr, "v7: post: %s\n", post_.status().c_str());
         Falcor::Sampler::Desc sd;
         sd.setFilterMode(Falcor::TextureFilteringMode::Linear,
                          Falcor::TextureFilteringMode::Linear,
@@ -247,6 +270,18 @@ class Tracer {
     void setVolFog(VolFog *f) { volfog_ = f; }
     void setClouds(Clouds *c) { clouds_ = c; }
     void setAtmosphere(Atmosphere *a) { atmo_ = a; }
+
+    // THE SAMPLER'S PATTERN, not its rate. Non-zero routes the shallow sample
+    // dimensions -- the shadow ray, the dome ray, the primary bounce, the lens
+    // -- through the void-and-cluster mask instead of the pixel's PCG stream.
+    // Costs nothing measurable and changes no estimator; see BlueNoise.slang.
+    bool blueNoise = false;
+
+    // Auto-exposure and bloom live in their own module because they share a
+    // resolution and a number; this is how the command line reaches their
+    // knobs. See post.h.
+    Post &post() { return post_; }
+    const Post &post() const { return post_; }
 
     // The sun glare and lens flare, drawn in the tone-map pass. 0 disables it.
     float flare = 1.0f;
@@ -416,7 +451,14 @@ class Tracer {
     // which is exactly what the motion vectors are for; resetting on that would
     // throw away the history on every frame you walked, which is the whole
     // thing Ray Reconstruction is here to keep.
-    void resetHistory() { resetHistory_ = true; }
+    void resetHistory() {
+        resetHistory_ = true;
+        // The eye does not ease into a new place either. A teleport or a resize
+        // makes the previous measurement a description of somewhere else, and
+        // adapting away from it would be a second of the wrong exposure over
+        // the exact frames a jump makes most noticeable.
+        post_.reset();
+    }
 
     // -----------------------------------------------------------------------
     // One sample per pixel.
@@ -471,6 +513,7 @@ class Tracer {
         p.giMode = cfg.giMode;
         p.giDepth = cfg.giDepth;
         p.giStrength = cfg.giStrength;
+        p.blueNoise = blueNoise ? 1 : 0;
         // THE GUIDES ARE NOT ONLY FOR THE DENOISER any more. Demodulation
         // divides the specular channel by gGuideSpecular, and NRD reads the
         // normal, depth and motion guides directly -- so the guide block has to
@@ -564,6 +607,7 @@ class Tracer {
         var["gGuideNormRough"] = guideNormRough_;
         var["gGuideDepth"] = guideDepth_;
         var["gGuideMotion"] = guideMotion_;
+        var["gBlueNoise"] = blueNoiseTex_;
         // Bound every frame even when demodulation is off. Slang reflects the
         // bindings from the SHADER, not from what the host happens to use, and
         // an unbound UAV on a declared resource is a validation error on the
@@ -670,6 +714,7 @@ class Tracer {
             uv["gTriPool"] = world_->triPool();
             uv["gInstances"] = world_->instanceBuffer();
             uv["gMaterials"] = world_->materialBuffer();
+            uv["gBlueNoise"] = blueNoiseTex_;
             sharc_->bind(uv, camPos);
             uv["gParamsCB"]["gParams"].setBlob(&p, sizeof(p));
 
@@ -899,11 +944,28 @@ class Tracer {
         restirWarm_ = true;
     }
 
-    void resolve(Falcor::RenderContext *ctx, const RenderSettings &cfg, bool fromDenoiser) {
+    // `dt` is wall-clock seconds since the last resolve, and it is only ever
+    // read by the exposure adaptation. It defaults to zero so the offline path
+    // -- which has no previous frame and wants the measurement taken as the
+    // answer rather than eased toward -- needs no argument at all.
+    void resolve(Falcor::RenderContext *ctx, const RenderSettings &cfg, bool fromDenoiser,
+                 float dt = 0.0f) {
         if (!display_) return;
         const Falcor::ref<Texture> &src = fromDenoiser ? dlssOut_ : color_;
         const uint2 dim = fromDenoiser ? uint2(uint32_t(ow_), uint32_t(oh_))
                                        : uint2(uint32_t(w_), uint32_t(h_));
+
+        // -- measure, then bloom, then map --------------------------------
+        //
+        // SIZED FROM `dim` RATHER THAN FROM ow_/oh_, because those two are not
+        // the same thing on the route that does not upscale: without Ray
+        // Reconstruction the tone map reads the RENDER-resolution image out of
+        // a display-resolution texture, and a bloom chain built for the larger
+        // of the two would sample a rectangle of it that was never written.
+        // resize() no-ops when nothing changed, so this costs a comparison.
+        post_.resize(int(dim.x), int(dim.y));
+        post_.run(ctx, src, dim.x, dim.y, cfg.exposure, dt);
+
         auto var = tonemap_->getRootVar();
         var["gSrc"] = src;
         var["gDst"] = display_;
@@ -926,6 +988,18 @@ class Tracer {
         var["gTonemapCB"]["gCamFwd"] = flareCam_.w;
         var["gTonemapCB"]["gSunCosR"] = flareSunCosR;
         var["gTonemapCB"]["gVignette"] = vignette;
+
+        // The bloom, and the stop. Both resources are bound every frame whether
+        // or not they are read -- the placeholder stands in for the chain when
+        // there is no bloom -- for the reason spelled out over the demodulation
+        // bindings above: reflection comes from the shader, not from the host's
+        // intentions.
+        const bool bloomOn = post_.bloomActive();
+        var["gBloom"] = bloomOn ? post_.bloomTexture() : ddgiPlaceholder_;
+        var["gExposureState"] = post_.exposureState();
+        var["gTonemapCB"]["gBloomStrength"] = bloomOn ? post_.bloom : 0.0f;
+        var["gTonemapCB"]["gUseAuto"] = post_.exposureActive() ? 1u : 0u;
+
         tonemap_->execute(ctx, dim.x, dim.y);
         displayW_ = int(dim.x);
         displayH_ = int(dim.y);
@@ -1003,6 +1077,8 @@ class Tracer {
     Falcor::ref<Falcor::Device> device_;
     World *world_ = nullptr;
     Falcor::ref<ComputePass> trace_, tonemap_, demodulate_, remodulate_;
+    Falcor::ref<Texture> blueNoiseTex_;
+    Post post_;
     Falcor::ref<Texture> accum_, color_, display_, dlssOut_;
     Falcor::ref<Texture> guideAlbedo_, guideSpecular_, guideNormRough_, guideDepth_, guideMotion_;
     Falcor::ref<Texture> diffRadiance_, specRadiance_, emission_, demodAlbedo_;

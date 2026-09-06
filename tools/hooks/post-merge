@@ -52,4 +52,21 @@ if ! "$PY" tools/lint-vb.py; then
   echo "            fix src/, then:  git add -A && git commit --amend --no-edit" >&2
   echo ""
 fi
+
+# ---------------------------------------------------------------------------
+# THE NATIVE ENGINES, which everything above this line has never covered.
+#
+# game/index.html is rebuilt and staged because it is a tracked artifact and a
+# stale one is a black screen. v2, v4, v5, v6 and v7 have exactly the same
+# problem and none of the protection: their artifact is an exe that is NOT in
+# the repo, so a merge changes the source underneath it and git reports a clean
+# tree. The engine still launches, and runs a mixture of the C++ you had and the
+# shaders you just pulled.
+#
+# Separate script rather than more of this file, because it is also worth
+# running by hand -- after a rebase, after a stash pop, or for the one engine
+# you just closed. See tools/rebuild-engines.sh.
+# ---------------------------------------------------------------------------
+sh tools/rebuild-engines.sh
+
 exit 0
