@@ -124,7 +124,20 @@ class Palette {
   public:
     Palette() { buildGround(); }
 
-    uint8_t forModelColor(const std::array<uint8_t, 4> &c) {
+    // `conifer` is whether the green-dominant rule below applies to this model
+    // at all, and it is true for everything the WOOD is made of -- which is
+    // everything that calls this, bar one.
+    //
+    // A BUTTERFLY'S WING IS NOT A NEEDLE, and the lime one is the reason this
+    // argument exists. The rule reads a green as foliage and gives it a
+    // needle's translucency and a needle's 1.7x lift, and both are wrong twice
+    // over on a wing: the JS engine was told in as many words to stop making
+    // these translucent ("in the pine forest the butterflys wings seem to be
+    // transparent, revert that change, they should be solid", 2026-08-16), and
+    // the lift is calibrated for an authored olive that is nearly black once
+    // linearised -- applied to a saturated lime it puts the albedo past one,
+    // which is a surface that returns more light than reaches it.
+    uint8_t forModelColor(const std::array<uint8_t, 4> &c, bool conifer = true) {
         const uint32_t key = (uint32_t(c[0]) << 16) | (uint32_t(c[1]) << 8) | uint32_t(c[2]);
         auto it = index_.find(key);
         if (it != index_.end()) return it->second;
@@ -139,7 +152,7 @@ class Palette {
                         srgbToLinearF(float(c[2]) / 255.0f));
 
         // Green-dominant is foliage; anything else on a conifer is wood.
-        const bool foliage = (c[1] > c[0] && c[1] > c[2]);
+        const bool foliage = conifer && (c[1] > c[0] && c[1] > c[2]);
         if (foliage) {
             // Needles are waxy and thin enough to pass light. That translucency
             // is what stops a backlit canopy from reading as a black cut-out --

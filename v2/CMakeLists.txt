@@ -31,6 +31,8 @@ target_sources(v2 PRIVATE
     src/scene/voxelworld.h
 
     src/render/camera.h
+    src/render/arrows.h
+    src/render/bow.h
     src/render/helditem.h
     src/render/player.h
     src/render/recorder.h
@@ -69,7 +71,9 @@ target_sources(v2 PRIVATE
     shaders/Remodulate.cs.slang
     shaders/NeuralProbe.cs.slang
     shaders/Nrc.slang
+    shaders/VoxelKey.slang
     shaders/Restir.slang
+    shaders/RestirWorld.slang
     shaders/Clouds.slang
     shaders/CloudFill.cs.slang
     shaders/VolFog.slang

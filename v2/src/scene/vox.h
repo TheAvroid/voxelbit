@@ -224,7 +224,55 @@ inline bool voxParseNode(const std::vector<uint8_t> &raw, const uint8_t *id, siz
 // mushroom.vox; both go through voxLoadAll, so nothing in the engine reads them
 // through here. A caller that wanted just the first model of a row wants
 // voxLoadAll and an index.
-inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string *err) {
+// ---------------------------------------------------------------------------
+// A FILE BEFORE ANYTHING IS COMPOSED: every shape the scene graph places, with
+// the corner it places it at, and the palette they share.
+//
+// voxParse below flattens all of this into one grid, which is what a tree or a
+// rock wants -- the stamper has no use for knowing a pine was authored in two
+// pieces. The BOW does: its file is one arrow and six bow frames sharing a
+// node, and composing them into a single grid would lay all seven on top of
+// each other. It needs the pieces and their placements, which is exactly what
+// voxParse computes on its way past and used to throw away.
+//
+// ONE WALK, TWO CONSUMERS. voxParse is a thin composer over this now rather
+// than a second copy of the chunk reader: a .vox file is parsed in exactly one
+// place, so a fix to the graph traversal cannot reach the trees and miss the
+// bow.
+// ---------------------------------------------------------------------------
+struct VoxScene {
+    struct Piece {
+        int sx = 0, sy = 0, sz = 0;        // the model's own extent
+        long long ox = 0, oy = 0, oz = 0;  // its MINIMUM corner in file space
+        const uint8_t *voxels = nullptr;   // x, y, z, colour index quads
+        size_t voxelBytes = 0;
+        // WHICH nSHP NODE PUT IT THERE, and it is not decoration. MagicaVoxel
+        // lets one shape carry SEVERAL models -- that is how the bow's seven
+        // draw frames are authored, all on one node and all centred on the same
+        // translation -- so "which piece belongs with which" is a question only
+        // the shape can answer. Composing a file ignores it; the bow's strip is
+        // built out of it. See parseBowStrip in render/bow.h.
+        int shape = 0;
+    };
+    // In scene-graph order, which is the order MagicaVoxel lists the shapes and
+    // therefore the order an artist thinks of them in.
+    std::vector<Piece> pieces;
+    std::array<std::array<uint8_t, 4>, 255> pal{};
+
+    // The colour index at (x, y, z) of one piece, in that piece's own frame.
+    uint8_t at(size_t i, int x, int y, int z) const {
+        const Piece &p = pieces[i];
+        if (x < 0 || y < 0 || z < 0 || x >= p.sx || y >= p.sy || z >= p.sz) return 0;
+        for (size_t q = 0; q + 4 <= p.voxelBytes; q += 4)
+            if (p.voxels[q] == x && p.voxels[q + 1] == y && p.voxels[q + 2] == z)
+                return p.voxels[q + 3];
+        return 0;
+    }
+};
+
+// The pieces of a file, still pointing into `raw` -- which must outlive the
+// scene, exactly as VoxChunkModel does.
+inline bool voxParseScene(const std::vector<uint8_t> &raw, VoxScene *out, std::string *err) {
     auto fail = [&](const char *why) {
         if (err) *err = why;
         return false;
@@ -235,7 +283,8 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
     std::vector<VoxNode> nodes;
     bool haveSize = false;
     int sx = 0, sy = 0, sz = 0;
-    auto pal = defaultPalette();
+    out->pal = defaultPalette();
+    out->pieces.clear();
 
     size_t o = 8;
     while (o + 12 <= raw.size()) {
@@ -268,8 +317,8 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
             haveSize = false;  // one XYZI per SIZE
         } else if (std::memcmp(id, "RGBA", 4) == 0 && content >= 1024) {
             for (int i = 0; i < 255; ++i) {
-                const size_t p = body + size_t(i) * 4;
-                pal[i] = {raw[p], raw[p + 1], raw[p + 2], raw[p + 3]};
+                const size_t q = body + size_t(i) * 4;
+                out->pal[size_t(i)] = {raw[q], raw[q + 1], raw[q + 2], raw[q + 3]};
             }
         } else if (std::memcmp(id, "nTRN", 4) == 0 || std::memcmp(id, "nGRP", 4) == 0 ||
                    std::memcmp(id, "nSHP", 4) == 0) {
@@ -281,15 +330,12 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
 
     if (models.empty()) return fail("no SIZE/XYZI pair");
 
-    // WHERE EACH PIECE SITS. One model needs no graph and is given none, so
-    // every file that predates this -- which is all of them but the tall trees
-    // -- takes the identical path it always did.
     struct Placed {
-        int model, x, y, z;
+        int model, x, y, z, shape;
     };
     std::vector<Placed> placed;
     if (models.size() == 1) {
-        placed.push_back({0, 0, 0, 0});
+        placed.push_back({0, 0, 0, 0, 0});
     } else {
         // Depth-first from node 0, MagicaVoxel's root, summing translations on
         // the way down. An explicit stack rather than recursion, and a visited
@@ -313,7 +359,8 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
             const int tx = cur[1] + n.tx, ty = cur[2] + n.ty, tz = cur[3] + n.tz;
             if (n.kind == VoxNode::Shp) {
                 for (int m : n.kids)
-                    if (m >= 0 && m < int(models.size())) placed.push_back({m, tx, ty, tz});
+                    if (m >= 0 && m < int(models.size()))
+                        placed.push_back({m, tx, ty, tz, n.id});
             } else {
                 for (int k : n.kids) stack.push_back({k, tx, ty, tz});
             }
@@ -321,57 +368,72 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
         // Several models but no graph we could follow: fall back to the first
         // one alone, which is what this function returned before it could
         // compose. A short tree beats no tree.
-        if (placed.empty()) placed.push_back({0, 0, 0, 0});
+        if (placed.empty()) placed.push_back({0, 0, 0, 0, 0});
     }
 
     // nTRN gives a piece's CENTRE, so its minimum corner is that translation
     // less half its size, truncated -- the same integer halving MagicaVoxel
-    // does on the way in. The composed model is then shifted to start at zero.
+    // does on the way in.
+    for (const Placed &p : placed) {
+        const VoxChunkModel &m = models[size_t(p.model)];
+        VoxScene::Piece pc;
+        pc.sx = m.sx;
+        pc.sy = m.sy;
+        pc.sz = m.sz;
+        pc.ox = p.x - m.sx / 2;
+        pc.oy = p.y - m.sy / 2;
+        pc.oz = p.z - m.sz / 2;
+        pc.voxels = m.voxels;
+        pc.voxelBytes = m.voxelBytes;
+        pc.shape = p.shape;
+        out->pieces.push_back(pc);
+    }
+    return true;
+}
+
+// One file, every piece composed into a single grid. What a tree or a rock
+// wants; see VoxScene for the case that wants the pieces kept apart.
+inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string *err) {
+    VoxScene sc;
+    if (!voxParseScene(raw, &sc, err)) return false;
+
     long long minX = 0, minY = 0, minZ = 0, maxX = 0, maxY = 0, maxZ = 0;
-    for (size_t i = 0; i < placed.size(); ++i) {
-        const VoxChunkModel &m = models[size_t(placed[i].model)];
-        const long long x0 = placed[i].x - m.sx / 2;
-        const long long y0 = placed[i].y - m.sy / 2;
-        const long long z0 = placed[i].z - m.sz / 2;
+    for (size_t i = 0; i < sc.pieces.size(); ++i) {
+        const VoxScene::Piece &p = sc.pieces[i];
         if (i == 0) {
-            minX = x0;
-            minY = y0;
-            minZ = z0;
-            maxX = x0 + m.sx;
-            maxY = y0 + m.sy;
-            maxZ = z0 + m.sz;
+            minX = p.ox; minY = p.oy; minZ = p.oz;
+            maxX = p.ox + p.sx; maxY = p.oy + p.sy; maxZ = p.oz + p.sz;
             continue;
         }
-        minX = std::min(minX, x0);
-        minY = std::min(minY, y0);
-        minZ = std::min(minZ, z0);
-        maxX = std::max(maxX, x0 + m.sx);
-        maxY = std::max(maxY, y0 + m.sy);
-        maxZ = std::max(maxZ, z0 + m.sz);
+        minX = std::min(minX, p.ox);
+        minY = std::min(minY, p.oy);
+        minZ = std::min(minZ, p.oz);
+        maxX = std::max(maxX, p.ox + p.sx);
+        maxY = std::max(maxY, p.oy + p.sy);
+        maxZ = std::max(maxZ, p.oz + p.sz);
     }
 
     const long long w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
     if (w <= 0 || h <= 0 || d <= 0 ||
-        double(w) * double(h) * double(d) > 64.0 * double(1 << 20))
-        return fail("implausible model dimensions");
+        double(w) * double(h) * double(d) > 64.0 * double(1 << 20)) {
+        if (err) *err = "implausible model dimensions";
+        return false;
+    }
 
     out->sx = int(w);
     out->sy = int(h);
     out->sz = int(d);
-    out->pal = pal;
+    out->pal = sc.pal;
     out->m.assign(size_t(w) * size_t(h) * size_t(d), 0);
-    for (const Placed &p : placed) {
-        const VoxChunkModel &m = models[size_t(p.model)];
-        const long long ox = (p.x - m.sx / 2) - minX;
-        const long long oy = (p.y - m.sy / 2) - minY;
-        const long long oz = (p.z - m.sz / 2) - minZ;
-        for (size_t q = 0; q + 4 <= m.voxelBytes; q += 4) {
-            const int x = m.voxels[q], y = m.voxels[q + 1], z = m.voxels[q + 2];
-            const uint8_t c = m.voxels[q + 3];
+    for (const VoxScene::Piece &p : sc.pieces) {
+        const long long ox = p.ox - minX, oy = p.oy - minY, oz = p.oz - minZ;
+        for (size_t q = 0; q + 4 <= p.voxelBytes; q += 4) {
+            const int x = p.voxels[q], y = p.voxels[q + 1], z = p.voxels[q + 2];
+            const uint8_t c = p.voxels[q + 3];
             // Out-of-range voxels are dropped rather than fatal: a hand-edited
             // file occasionally carries one past its own SIZE, and losing it
             // beats refusing the tree.
-            if (x >= m.sx || y >= m.sy || z >= m.sz) continue;
+            if (x >= p.sx || y >= p.sy || z >= p.sz) continue;
             const long long wx = ox + x, wy = oy + y, wz = oz + z;
             if (wx < 0 || wy < 0 || wz < 0 || wx >= w || wy >= h || wz >= d) continue;
             out->m[size_t(wx) + size_t(wy) * size_t(w) + size_t(wz) * size_t(w) * size_t(h)] = c;
@@ -380,16 +442,6 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Every model in the file, not just the first.
-//
-// A .vox may carry many SIZE/XYZI pairs -- flowers.vox has six, one per flower
-// -- and voxParse deliberately stops at the first because that is what a single
-// -model asset wants. This walks the whole chunk list instead, pairing each
-// SIZE with the XYZI that follows it. The RGBA chunk is shared: it appears once,
-// usually AFTER the models, so the palette is applied to all of them at the end
-// rather than as it is found.
-// ---------------------------------------------------------------------------
 inline bool voxParseAll(const std::vector<uint8_t> &raw, std::vector<VoxModel> *out,
                         std::string *err) {
     if (raw.size() <= 8 || std::memcmp(raw.data(), "VOX ", 4) != 0) {
@@ -469,6 +521,25 @@ inline bool voxLoadAll(const std::string &path, std::vector<VoxModel> *out, std:
     return voxParseAll(raw, out, err);
 }
 
+// The pieces of a file, uncomposed. `raw` is kept by the caller because the
+// scene points into it -- see VoxScene.
+inline bool voxLoadScene(const std::string &path, std::vector<uint8_t> *raw, VoxScene *out,
+                         std::string *err) {
+    FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        if (err) *err = "cannot open " + path;
+        return false;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long n = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    raw->assign(size_t(n > 0 ? n : 0), 0);
+    const size_t got = raw->empty() ? 0 : std::fread(raw->data(), 1, raw->size(), f);
+    std::fclose(f);
+    raw->resize(got);
+    return voxParseScene(*raw, out, err);
+}
+
 inline bool voxLoad(const std::string &path, VoxModel *out, std::string *err) {
     FILE *f = std::fopen(path.c_str(), "rb");
     if (!f) {
@@ -517,6 +588,40 @@ inline VoxAsset toWorld(const VoxModel &mo, int x0, int x1) {
                 if (!v) continue;
                 const int wx = x - minX, wz = y - minY, wy = z - minZ;
                 out.a[size_t(wx) + size_t(wz) * out.sx + size_t(wy) * out.sx * out.sz] = v;
+            }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// The same conversion, WITHOUT the trim.
+//
+// toWorld() shrinks a model to its own occupied bounds, which is right for
+// anything the scatter places -- a rock's collider and its footprint are
+// measured off the asset, and padding an artist happened to leave would become
+// invisible clearance around it.
+//
+// It is exactly wrong for a STRIP. The bow's seven draw frames are composed
+// into one shared grid precisely so that swapping between them cannot shift the
+// bow (see render/bow.h), and every held pose is measured from that grid's
+// centre. Trim them and each frame gets its own box and its own centre: the
+// bow lurches as it draws, and the arrow leaving on release moves it again.
+// Measured, the seven came out 2x9x9, 2x9x10, 3x9x11 and so on -- seven
+// different bows.
+// ---------------------------------------------------------------------------
+inline VoxAsset toWorldWhole(const VoxModel &mo) {
+    VoxAsset out;
+    out.sx = mo.sx;
+    out.sz = mo.sy;  // model y is world z
+    out.sy = mo.sz;  // model z is world y (the height)
+    if (out.sx <= 0 || out.sy <= 0 || out.sz <= 0) return VoxAsset{};
+    out.a.assign(size_t(out.sx) * size_t(out.sy) * size_t(out.sz), 0);
+    for (int z = 0; z < mo.sz; ++z)
+        for (int y = 0; y < mo.sy; ++y)
+            for (int x = 0; x < mo.sx; ++x) {
+                const uint8_t v = mo.at(x, y, z);
+                if (!v) continue;
+                out.a[size_t(x) + size_t(y) * size_t(out.sx) +
+                      size_t(z) * size_t(out.sx) * size_t(out.sz)] = v;
             }
     return out;
 }

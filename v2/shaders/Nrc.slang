@@ -60,6 +60,12 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+// voxelFaceIndex and kVoxelM. The SAME definition the radiance cache and the
+// world-space reservoirs file under, because a network trained on "face 3 of
+// a bark voxel" and a cache keyed on a different numbering of the faces would
+// disagree about the world without either of them being wrong.
+#include "VoxelKey.slang"
+
 // Layer widths. Shared with the C++ side through Shared.slang's NrcLayout,
 // because a disagreement here is a network that reads its own weights at the
 // wrong offsets and produces plausible-looking nonsense.
@@ -85,6 +91,12 @@ static const uint kNrcBytes = kNrcB2 + kNrcOut * 2;
 // NrcTrain.cs.slang. MUST MATCH NrcSampleCpu in gpu/nrc.h.
 struct NrcSample {
     float3 pos;
+    // The same point in METRES. Not reconstructed from pos at training time:
+    // pos is relative to a cache extent that follows the camera, and a record
+    // written in one frame is trained in the next, by which time the origin it
+    // was normalised against has moved.
+    float3 world;
+    uint mtl;
     float3 dir;
     float3 normal;
     float3 albedo;
@@ -93,6 +105,32 @@ struct NrcSample {
     uint valid;
 };
 
+// ---------------------------------------------------------------------------
+// IS THIS FLOAT NaN OR INFINITE -- TESTED ON THE BITS, AND THAT IS THE POINT.
+//
+// The obvious spellings are isfinite(x) and !(abs(x) < 1e30f), and both were
+// tried here. Both are correct as written and both can be compiled away: a
+// shader compiler is entitled to assume finite arithmetic, and under that
+// assumption every NaN test is provably false and the guard disappears. What
+// that looked like in practice was a network that still filled with NaN
+// through guards that read as airtight, and weight files whose corruption
+// was bit-identical across two entirely different optimisers -- which is the
+// tell, because two optimisers cannot agree on garbage unless neither of
+// them is what produced it.
+//
+// An exponent of all ones is inf or NaN by definition of IEEE 754, and
+// asuint is an integer reinterpretation that no float fast-math rule reaches.
+// ---------------------------------------------------------------------------
+bool nrcNotFinite(float x)
+{
+    return (asuint(x) & 0x7F800000u) == 0x7F800000u;
+}
+
+bool nrcNotFinite3(float3 v)
+{
+    return nrcNotFinite(v.x) || nrcNotFinite(v.y) || nrcNotFinite(v.z);
+}
+
 // What the cache is asked about. Assembled at a path vertex.
 struct NrcQuery {
     float3 pos;     // world position, already divided by the cache's extent
@@ -100,6 +138,13 @@ struct NrcQuery {
     float3 normal;  // shading normal, unit
     float3 albedo;
     float roughness;
+    // ---- the voxel-native half -------------------------------------------
+    float3 world;   // the SAME point in METRES, undivided. The normalised
+                    // position above is relative to a cache extent that follows
+                    // the camera, so it cannot name a voxel; this can.
+    float3 sun;     // direction to the sun, so the network conditions on the
+                    // time of day instead of baking one into its weights
+    uint mtl;       // which material this face wears, after groundShade
 };
 
 // -------------------------------------------------------------------------
@@ -113,6 +158,107 @@ CoopVec<float16_t, kNrcIn> nrcEncode(NrcQuery q)
 {
     float f[kNrcIn];
 
+#if V2_NRC_VOXEL_FEATURES
+    // =====================================================================
+    // THE VOXEL-NATIVE ENCODING.
+    //
+    // Same 32 inputs, same network, entirely different question asked of it.
+    //
+    // WHAT THE FREQUENCY ENCODING IS FOR, AND WHY THIS WORLD DOES NOT NEED IT.
+    // An MLP cannot represent anything that varies faster than its first layer,
+    // and radiance in a wood varies fast -- it changes completely from one
+    // voxel to the next. The standard answer is to encode position at several
+    // octaves so the network can localise, and it works, but it makes the
+    // network learn WHERE it is before it can learn what anything looks like.
+    // That is why an NRC is slow to converge and blurry when it does: most of
+    // its capacity goes on memorising a coordinate system.
+    //
+    // In this world the fast-varying part is not continuous at all. It is
+    // WHICH BLOCK AND WHICH FACE -- a discrete identity the geometry already
+    // carries exactly. Hand that to the network directly and the remaining
+    // function is smooth: how does bark on a north face look, with the sun
+    // there. A small network is good at smooth.
+    //
+    // AND THE PAYOFF IS NOT ONLY CONVERGENCE SPEED. Every input below except
+    // the coarse position is a property of the MATERIAL AND ITS ORIENTATION,
+    // not of a place. A wood generated from a different seed is made of the
+    // same hundred materials on the same six faces under the same sun, so a
+    // network trained here is not specific to here. That is what makes the
+    // weights worth saving to disk, and it is not available to a renderer
+    // whose scenes are unique triangle meshes.
+    //
+    //    6  material identity code    -- discrete, hashed, world-independent
+    //    6  face, one-hot             -- the six axis-aligned planes
+    //    2  position WITHIN the face  -- smooth, bounded, world-independent
+    //   12  coarse position, 2 octaves -- large-scale variation only
+    //    3  outgoing direction
+    //    3  direction to the sun
+    //   --
+    //   32
+    // =====================================================================
+    int i = 0;
+
+    // A FIXED RANDOM CODE PER MATERIAL, NOT A LEARNED EMBEDDING. A learned
+    // table would need its own gradients and its own slice of the weight
+    // buffer; a hash gives well-separated, repeatable codes for nothing, and
+    // separation is all the first layer actually wants. The codes are the same
+    // in every world, which is the property that lets weights transfer.
+    {
+        uint h = q.mtl * 2654435761u;
+        [ForceUnroll]
+        for (int k = 0; k < 6; ++k) {
+            h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+            // Signed and unit-scaled: an input the network sees as centred.
+            f[i++] = float(h & 0xFFFFu) * (2.0f / 65535.0f) - 1.0f;
+        }
+    }
+
+    // ONE-HOT AND NOT THE NORMAL VECTOR. Three floats can express the six axis
+    // directions, but they express a continuum the geometry does not have, so
+    // the first layer has to carve six points out of a sphere before it can use
+    // them. Six inputs, one of them set, hands it the answer.
+    {
+        const uint face = voxelFaceIndex(q.normal);
+        [ForceUnroll]
+        for (uint k = 0; k < 6u; ++k) f[i++] = (k == face) ? 1.0f : 0.0f;
+    }
+
+    // WHERE ON THE FACE, in 0..1 across the two axes the face spans. This is
+    // the only sub-voxel term and it is deliberately world-independent: the
+    // corner of a voxel looks like the corner of a voxel wherever it is.
+    {
+        // frac() and no bias term. frac is x - floor(x) here, so it already
+        // returns 0..1 for negative coordinates -- and this world runs to
+        // kilometres in both directions, so any additive bias large enough to
+        // matter would also be large enough to lose the fraction it was added
+        // to protect.
+        const float3 inVox = frac(q.world / kVoxelM);
+        const uint face = voxelFaceIndex(q.normal);
+        // Skip the axis the face points along -- it is constant across a face.
+        const float2 uv = (face < 2u) ? inVox.xz : ((face < 4u) ? inVox.yz : inVox.xy);
+        f[i++] = uv.x * 2.0f - 1.0f;
+        f[i++] = uv.y * 2.0f - 1.0f;
+    }
+
+    // TWO OCTAVES, NOT THREE. What is left for position to explain is the slow
+    // part -- which side of the hill, how deep into the wood -- because
+    // everything that varies per voxel is already above. The octave that used
+    // to resolve individual voxels is the one dropped.
+    [ForceUnroll]
+    for (int axis = 0; axis < 3; ++axis) {
+        const float p = q.pos[axis];
+        [ForceUnroll]
+        for (int oct = 0; oct < 2; ++oct) {
+            const float w = float(1 << oct) * 3.14159265f;
+            f[i++] = sin(p * w);
+            f[i++] = cos(p * w);
+        }
+    }
+
+    f[i++] = q.dir.x; f[i++] = q.dir.y; f[i++] = q.dir.z;
+    f[i++] = q.sun.x; f[i++] = q.sun.y; f[i++] = q.sun.z;
+    // 6 + 6 + 2 + 12 + 3 + 3 = 32 exactly. Nothing spare, and nothing to pad.
+#else
     // 18: three axes, three octaves, sin and cos. The octaves are 1, 2 and 4 --
     // one more than that and the highest frequency is finer than the 10 cm
     // voxels the world is made of, which is detail the cache cannot be asked
@@ -139,6 +285,7 @@ CoopVec<float16_t, kNrcIn> nrcEncode(NrcQuery q)
     // constant, and [ForceUnroll] on a bound it cannot evaluate is a hard
     // error rather than a missed optimisation.
     f[28] = 0.0f; f[29] = 0.0f; f[30] = 0.0f; f[31] = 0.0f;
+#endif
 
     CoopVec<float16_t, kNrcIn> v;
     [ForceUnroll]
@@ -186,5 +333,10 @@ float3 nrcEval(ByteAddressBuffer W, NrcQuery q)
         CoopVecMatrixLayout::RowMajor, false, kNrcHidden * 2);
 
     const float3 logL = float3(float(o[0]), float(o[1]), float(o[2]));
+    // A NaN here is not a bad pixel, it is a dead FRAME: the film accumulates,
+    // so one NaN sample turns the whole image black and keeps it black. The
+    // clamp below does not stop it -- clamp(NaN) is NaN on this hardware.
+    if (nrcNotFinite3(logL))
+        return float3(0.0f);
     return exp(clamp(logL, -20.0f, 8.0f));
 }

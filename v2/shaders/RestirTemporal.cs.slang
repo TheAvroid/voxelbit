@@ -38,6 +38,7 @@
 // ---------------------------------------------------------------------------
 #include "Restir.slang"
 #include "Shared.slang"
+#include "RestirWorld.slang"
 
 StructuredBuffer<Reservoir> gCandidate;  // what this frame traced
 StructuredBuffer<Reservoir> gHistory;    // what last frame ended up with
@@ -48,6 +49,10 @@ Texture2D<float> gDepth;           // this frame's primary view depth
 Texture2D<float2> gMotion;         // render pixels, this frame -> last
 Texture2D<float4> gPrevNormRough;  // last frame's, for the rejections
 Texture2D<float> gPrevDepth;
+// Where the primary ray landed, which is what names the voxel face this pixel
+// is standing on. The spatial pass already takes this; the world map needs it
+// for the same reason.
+Texture2D<float4> gPrimaryPos;
 
 cbuffer RestirCB {
     uint2 gDim;
@@ -89,6 +94,11 @@ void main(uint3 tid: SV_DispatchThreadID)
     const float2 mv = gMotion[tid.xy];
     const int2 prev = int2(floor(float2(tid.xy) + 0.5f + gJitter + mv));
 
+    // Did this pixel keep its own history this frame? The world map is consulted
+    // only when the answer is no -- see the long note in RestirWorld.slang for
+    // why that restriction is what keeps the estimator unbiased.
+    bool reused = false;
+
     if (all(prev >= int2(0)) && all(prev < int2(gDim)))
     {
         const float dNow = gDepth[tid.xy];
@@ -112,9 +122,59 @@ void main(uint3 tid: SV_DispatchThreadID)
             // reused from where it was found. Only SPATIAL reuse moves the
             // point of view, and only that needs the correction.
             restirMerge(r, h, 1.0f, rng);
+            reused = true;
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // THE DISOCCLUSION PATH. The pixel is looking at something it was not
+    // looking at last frame, so its own history is gone -- but the SURFACE has
+    // been here all along, and other pixels have been learning about it.
+    //
+    // Jacobian 1, and that is not an approximation. The world reservoir was
+    // filed by a pixel standing on this same voxel face, so the sample is being
+    // reused from a point at most a voxel away along a shared plane; the change
+    // of variables restirJacobian corrects for is the one that appears when the
+    // point of view moves, and by construction it has barely moved. This is the
+    // same argument the temporal merge above makes for reusing a reprojected
+    // pixel, and it holds here for a stronger reason: the face is exact.
+    // -----------------------------------------------------------------------
+    const float4 hitPos = gPrimaryPos[tid.xy];
+    const float3 hitP = hitPos.xyz;
+    const float3 hitN = gNormRough[tid.xy].xyz;
+    // w == 0 marks a pixel whose primary ray hit nothing -- sky. There is no
+    // face to file against and none to read from. Same test the spatial pass
+    // makes, and for the same reason.
+    const bool onSurface = hitPos.w != 0.0f;
+
+    if (!reused && onSurface) {
+        Reservoir w = worldRead(hitP, hitN);
+        restirMerge(r, w, 1.0f, rng);
     }
 
     restirFinalise(r);
     gOut[idx] = r;
+
+    // -----------------------------------------------------------------------
+    // ONLY PIXELS THAT KEPT THEIR OWN HISTORY MAY FILE ONE, AND THIS IS THE
+    // WHOLE REASON THE ESTIMATOR SURVIVES.
+    //
+    // The pixels that just read from the map are excluded. Letting one write
+    // back would close the loop the map exists to avoid: its reservoir now
+    // CONTAINS the map's sample, so filing it would return that sample to the
+    // face it came from with its M added on, and the next pixel to disocclude
+    // there would draw it again with more confidence than the evidence
+    // supports. Every read would inflate what the next read finds.
+    //
+    // That is the same defect restir.h records costing this engine 2.4x the
+    // light it should have had, when the SPATIAL result was fed back as
+    // history. The fix there was to feed back only the pixel's own past; the
+    // fix here is the same rule, one level out -- a face only ever learns from
+    // pixels that learnt it themselves.
+    //
+    // Filed AFTER finalising, because W is what a reader multiplies by and a
+    // reservoir stored before restirFinalise carries a stale one.
+    // -----------------------------------------------------------------------
+    if (onSurface && reused)
+        worldWrite(hitP, hitN, r);
 }

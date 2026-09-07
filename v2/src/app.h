@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -67,6 +68,8 @@
 #include "gpu/world.h"
 #include "render/audio.h"
 #include "render/camera.h"
+#include "render/arrows.h"
+#include "render/butterflies.h"
 #include "render/helditem.h"
 #include "render/player.h"
 #include "render/recorder.h"
@@ -199,6 +202,39 @@ struct Options {
 
 
     bool nrc = false;
+
+    // THE OLD SHaRC KEY, KEPT FOR COMPARISON ONLY. v2 files cache entries under
+    // an exact voxel face; this puts the SDK's distance-quantised hash grid
+    // back. It is a startup flag rather than a menu toggle because the key is a
+    // shader define -- the two builds of Trace.cs.slang cannot both be live.
+    // See the long note at the top of the voxel-key section in Sharc.slang.
+    bool sharcHashGrid = false;
+    // Count what the cache is actually doing, and how long it remembers.
+    bool sharcStats = false;
+    int sharcStale = 0;   // 0 leaves gpu/sharc.h's own default alone
+    int sharcEntries = 0; // cache entries; 0 leaves the default 2^21
+
+    // ReSTIR GI. Off by default: it trades a path tracer's white noise for
+    // correlated, lower-variance noise, which is better under a denoiser and
+    // worse in a still accumulating frame, so it is asked for rather than
+    // assumed.
+    bool restir = false;
+    // The NRC's OLD frequency encoding, for comparison against the voxel-native
+    // one. See the encoding note in shaders/Nrc.slang.
+    bool nrcFreqEncoding = false;
+    // Stop training: the network answers from the weights it was given.
+    bool nrcFrozen = false;
+    // 0 leaves gpu/nrc.h's own default alone.
+    float nrcLr = 0.0f;
+    // Weights in and out. The whole point of the voxel encoding is that these
+    // are worth keeping between runs and between worlds.
+    std::string nrcLoad, nrcSave;
+    // ...and the world-space reservoirs inside it, on whenever ReSTIR is, with
+    // this to take them away for comparison. See shaders/RestirWorld.slang.
+    bool noRestirWorld = false;
+    // How much confidence a world reservoir may bring into a disoccluded
+    // pixel -- restir.h worldMaxM. Exposed to sweep it.
+    int restirWorldM = 16;
 
 
     // Run the viewer for a fixed number of frames, write the result and quit.
@@ -381,7 +417,25 @@ struct Options {
     // A path rather than a flag, so a second tool is a command line away
     // without anything here changing. --no-axe opens with an empty hand.
     std::string axe = "C:/voxelbit/game/assets/stone_tools/stone_axe.vox";
+    std::string pick = "C:/voxelbit/game/assets/stone_tools/stone_pick.vox";
+    std::string bow = "C:/voxelbit/game/assets/stone_tools/bow_arrow/bow/base.vox";
+    std::string arrow = "C:/voxelbit/game/assets/stone_tools/bow_arrow/arrow.vox";
     bool axeOn = true;
+
+    // ---- what is flying through it (render/butterflies.h) ----------------
+    //
+    // In the game's asset tree with everything else, and a COUNT rather than a
+    // switch: nought is the empty wood, and the ceiling is kFlyerInstances --
+    // how many slots the acceleration structure reserves. Twenty-four over the
+    // eighty-metre disc the flock lives in works out at one butterfly per
+    // twenty-odd metres of wood, which is a few in view at a time in the open
+    // and one at a time under a canopy.
+    std::string butterflyDir = "C:/voxelbit/game/assets/life/butterfly";
+    int butterflies = 24;
+    // Which tool the hand opens with, as an index into the kit. Exists for the
+    // same reason --swing-hold does: a tool you can only reach by scrolling
+    // cannot be photographed, measured or regression tested.
+    int tool = 0;
     // Print what every swing ran into. Off by default -- it is a line per blow
     // and the blows repeat while the button is held -- but it is the only way
     // to see the reach and the aim without a bite to look at.
@@ -392,6 +446,12 @@ struct Options {
     // tested, and picking a --shot-frame off the 570 ms curve is how you look
     // at one phase of it. 34 frames is a whole swing at the default 1/60 dt.
     bool swingHold = false;
+    // Hold the DRAW from the first frame, as --swing-hold holds the swing and
+    // --shot-walk holds W. Releasing it is what looses an arrow, so a scripted
+    // shot draws for --shot-frame frames and never fires; use --shot-loose N to
+    // let go on frame N.
+    bool drawHold = false;
+    int shotLoose = -1;
 
     float sunAz = defaults::kSunAz;
     float sunEl = defaults::kSunEl;
@@ -697,7 +757,12 @@ class ForestApp : public SampleApp {
 
         std::fflush(stdout);
 
-        tracer_.init(getDevice(), &world_, neural_.available());
+        sharc_.voxelKey = !opt_.sharcHashGrid;
+        sharc_.statsOn = opt_.sharcStats;
+        if (opt_.sharcStale > 0) sharc_.staleFrames = uint32_t(opt_.sharcStale);
+        sharc_.setCapacity(uint32_t(maxi(0, opt_.sharcEntries)));
+        tracer_.init(getDevice(), &world_, neural_.available(), !opt_.sharcHashGrid,
+                     !opt_.nrcFreqEncoding);
         makeCrosshair();
 
         // A denoiser that takes the program down when a driver is old is worse
@@ -837,14 +902,45 @@ class ForestApp : public SampleApp {
         // just move the failure later.
         if (neural_.available()) {
             nrc_.enabled = opt_.nrc;
-            if (nrc_.init(getDevice(), kNrcMaxSamples))
-                { std::printf("  cache    neural radiance cache ready (%u weights)\n",
-                              NrcLayout::kElems);
+            nrc_.training = !opt_.nrcFrozen;
+            if (opt_.nrcLr > 0.0f) nrc_.learningRate = opt_.nrcLr;
+            if (nrc_.init(getDevice(), kNrcMaxSamples, !opt_.nrcFreqEncoding))
+                { std::printf("  cache    neural radiance cache ready (%u weights, %s)\n",
+                              NrcLayout::kElems,
+                              opt_.nrcFreqEncoding ? "frequency encoding"
+                                                   : "voxel features");
+                  if (!opt_.nrcLoad.empty()) {
+                      std::string why;
+                      if (nrc_.loadWeights(opt_.nrcLoad, &why))
+                          std::printf("  cache    loaded %s -- %u batches already trained\n",
+                                      opt_.nrcLoad.c_str(), nrc_.batches());
+                      else
+                          std::printf("  cache    could NOT load %s: %s\n",
+                                      opt_.nrcLoad.c_str(), why.c_str());
+                  }
                   tracer_.setNrc(&nrc_); }
             else
                 std::printf("  cache    unavailable: %s\n", nrc_.status().c_str());
             std::fflush(stdout);
         }
+
+        // RESAMPLED INDIRECT. The reservoirs and both resampling passes have
+        // been in the tree since Phase C, and until now nothing constructed
+        // one: tracer_.setRestir() was never called, so restir_ stayed null,
+        // restirMode was always 0 and the passes never ran. Off unless asked
+        // for, because it is a different noise character rather than a strict
+        // improvement -- see --restir.
+        restir_.enabled = opt_.restir;
+        restir_.world = !opt_.noRestirWorld;
+        restir_.worldMaxM = opt_.restirWorldM;
+        if (restir_.init(getDevice())) {
+            std::printf("  restir   %s%s\n", opt_.restir ? "on" : "available (--restir)",
+                        restir_.world ? ", world-space reservoirs" : "");
+            tracer_.setRestir(&restir_);
+        } else {
+            std::printf("  restir   unavailable: %s\n", restir_.status().c_str());
+        }
+        std::fflush(stdout);
 
         // THE IRRADIANCE PROBES. On by default wherever they can run, because
         // what they fix is not a nicety: under a canopy the indirect term is
@@ -882,6 +978,27 @@ class ForestApp : public SampleApp {
         std::fflush(stdout);
 
         tracer_.setQuality(opt_.dlssQuality);
+
+        // -- and what is in the air (render/butterflies.h) -------------------
+        //
+        // AFTER the world, and it has to be: the models go into the same
+        // palette, the same triangle pool and the same structures every rock
+        // does, and none of those exist until the world has built them. It is
+        // also after deriveGroundFromTrees for a subtler reason -- that samples
+        // the entries the TREES minted to decide what a hillside is made of,
+        // and a butterfly registered ahead of it would be a candidate for soil.
+        //
+        // AND BEFORE THE OFFLINE BRANCH, which is where this differs from the
+        // axe below it. A viewmodel has no business in a landscape render and
+        // is deliberately never loaded for one; a butterfly is part of the
+        // wood, and an --out picture of this place without them would be a
+        // picture of a different place. renderOffline ticks the flock itself,
+        // because it runs none of the per-frame systems that would otherwise.
+        if (opt_.butterflies > 0) {
+            flock_.wanted = mini(opt_.butterflies, kFlyerInstances);
+            flock_.init(world_, opt_.butterflyDir);
+            std::fflush(stdout);
+        }
 
         // THE OFFLINE PATH NEVER STARTS THE CLOCK, and the order here is the
         // whole reason why.
@@ -955,7 +1072,29 @@ class ForestApp : public SampleApp {
         // every rock does, and none of those exist until the world has built
         // them. World::loadHeldModel does all of it and re-uploads the material
         // table for the handful of entries the tool adds.
-        if (opt_.axeOn) held_.init(world_, opt_.axe);
+        if (opt_.axeOn) {
+            // THE STARTING KIT, IN HOTBAR ORDER. The JS engine's giveStartKit
+            // for 2026-08-31 is "spawn me with an axe and a pick", axe first --
+            // and first is what the hand opens with. The wheel cycles them.
+            //
+            // THE PICK STARTS ON THE AXE'S BAKE, which is that engine's own
+            // note on the row: same haft, same swing, so the pose that was
+            // tuned for one is the right place to begin the other. Tune it live
+            // and use the menu's copy row to bring the numbers back here.
+            held_.add(world_, "stone axe", opt_.axe, HeldPose{});
+            held_.add(world_, "stone pick", opt_.pick, HeldPose{});
+            // THE BOW'S OWN BAKE, from the JS engine's PICK_DEFS for
+            // 2026-08-04. It is not the tool family's pose: a bow is held
+            // upright across the hand, further out and turned a quarter turn
+            // (pitch 1.57) so the limbs stand across the frame rather than
+            // along it, and its art is much longer than a hand tool, which is
+            // what the larger scale is for.
+            held_.addBow(world_, "bow", opt_.bow,
+                         HeldPose{1.09f, -0.14f, 1.02f, 0.01f, 1.57f, -0.06f, 0.106f});
+            held_.select(opt_.tool);
+            arrows_.init(world_, opt_.arrow);
+            arrows_.log = opt_.swingLog;
+        }
 
         printHelp();
         lastTime_ = std::chrono::steady_clock::now();
@@ -1078,6 +1217,17 @@ class ForestApp : public SampleApp {
             streamMs_.push_back(updateMs);
         }
         if (processInput(dt)) tracer_.resetAccumulation();
+
+        // The shafts in the air. AFTER processInput, so one loosed this frame
+        // starts moving on the frame it left rather than the next.
+        arrows_.update(dt, walkWorld());
+
+        // ...and the flock. It gathers its OWN colliders rather than taking the
+        // six metres around the player that walkWorld carries: a butterfly is
+        // up to eighty metres away and the trunks it has to miss are the ones
+        // around IT. See Butterflies::decide for the clock that keeps that
+        // affordable.
+        flock_.update(dt, world_, player_.pos);
 
         // The bed follows the canopy. Fed the same dt as the walk and the day
         // cycle -- the shot clock when one is running -- so a scripted move
@@ -1208,7 +1358,10 @@ class ForestApp : public SampleApp {
         // every --out image.
         {
             const HeldXform hx = held_.xform(gcam, player_.bobPhase, player_.bobAmp);
-            world_.setHeldInstance(hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+            world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+            arrows_.publish(world_);
+            flock_.publish(world_);
+            world_.refitTlas();
         }
 
         // Constant grain: start from nothing EVERY frame, not just when the
@@ -1337,7 +1490,9 @@ class ForestApp : public SampleApp {
             if (nrc_.shouldTrain()) {
                 const uint32_t traced = uint32_t(tracer_.width()) * uint32_t(tracer_.height());
                 const uint32_t n = traced / uint32_t(maxi(1, nrc_.trainEvery));
-                nrc_.trainBatch(ctx, mini(n, kNrcMaxSamples));
+                const Vec3 sd = world_.sky.sunDir();
+                nrc_.trainBatch(ctx, mini(n, kNrcMaxSamples),
+                                Falcor::float3(sd.x, sd.y, sd.z));
             }
         }
 
@@ -1856,6 +2011,10 @@ class ForestApp : public SampleApp {
                                    world_.chunkCount(), world_.residentTris() / 1e6,
                                    world_.instanceCount())
                                    .c_str());
+        if (flock_.ready())
+            ImGui::TextUnformatted(fmt("%d butterflies   %d colours", flock_.flying(),
+                                       flock_.colourCount())
+                                       .c_str());
         ImGui::PopStyleColor();
         w.separator();
 
@@ -2084,15 +2243,18 @@ class ForestApp : public SampleApp {
         // and vice versa. See the note on HeldPose.
         if (held_.ready()) {
             w.separator();
-            w.checkbox("Axe in hand  (H)", held_.shown);
+            w.checkbox(fmt("%s in hand  (H)", held_.name()).c_str(), held_.shown);
             if (held_.shown) {
-                w.slider("  right", held_.pose.x, -2.0f, 2.0f, false, "%.3f");
-                w.slider("  up", held_.pose.y, -2.0f, 2.0f, false, "%.3f");
-                w.slider("  forward", held_.pose.z, 0.1f, 3.0f, false, "%.3f");
-                w.slider("  yaw", held_.pose.yaw, -PI, PI, false, "%.3f");
-                w.slider("  pitch", held_.pose.pitch, -PI, PI, false, "%.3f");
-                w.slider("  roll", held_.pose.roll, -PI, PI, false, "%.3f");
-                w.slider("  size", held_.pose.scale, 0.01f, 0.30f, false, "%.3f");
+                if (held_.count() > 1)
+                    w.text(fmt("  %d of %d -- the wheel changes tools", held_.selected() + 1,
+                               held_.count()));
+                w.slider("  right", held_.pose().x, -2.0f, 2.0f, false, "%.3f");
+                w.slider("  up", held_.pose().y, -2.0f, 2.0f, false, "%.3f");
+                w.slider("  forward", held_.pose().z, 0.1f, 3.0f, false, "%.3f");
+                w.slider("  yaw", held_.pose().yaw, -PI, PI, false, "%.3f");
+                w.slider("  pitch", held_.pose().pitch, -PI, PI, false, "%.3f");
+                w.slider("  roll", held_.pose().roll, -PI, PI, false, "%.3f");
+                w.slider("  size", held_.pose().scale, 0.01f, 0.30f, false, "%.3f");
                 // COPY, NOT SAVE. The bake writes defaults.h and this pose is
                 // not in it -- deliberately, because a viewmodel pose belongs
                 // beside the model it poses rather than in a file of renderer
@@ -2101,8 +2263,9 @@ class ForestApp : public SampleApp {
                 // does with the same seven numbers.
                 if (w.button("copy pose")) {
                     poseCopied_ = fmt("{ %.3ff, %.3ff, %.3ff, %.3ff, %.3ff, %.3ff, %.3ff }",
-                                      held_.pose.x, held_.pose.y, held_.pose.z, held_.pose.yaw,
-                                      held_.pose.pitch, held_.pose.roll, held_.pose.scale);
+                                      held_.pose().x, held_.pose().y, held_.pose().z, held_.pose().yaw,
+                                      held_.pose().pitch, held_.pose().roll, held_.pose().scale);
+                    poseCopied_ = std::string(held_.name()) + "  " + poseCopied_;
                     std::printf("v2: held pose %s\n", poseCopied_.c_str());
                     std::fflush(stdout);
                     ImGui::SetClipboardText(poseCopied_.c_str());
@@ -2322,7 +2485,7 @@ class ForestApp : public SampleApp {
             // happens next, because comparing a shot with the tool and without
             // it is the first thing anyone does after adding one.
             held_.shown = !held_.shown;
-            std::printf("v2: hand %s\n", held_.shown ? "axe" : "empty");
+            std::printf("v2: hand %s\n", held_.shown ? held_.name() : "empty");
             std::fflush(stdout);
         }
         if (e.key == Input::Key::R) toggleRecording();
@@ -2350,11 +2513,19 @@ class ForestApp : public SampleApp {
                 std::fflush(stdout);
                 return true;
             }
-            // THE BARE WHEEL DOES NOTHING. It used to zoom, and every stray
-            // scroll threw the accumulated film away and left the view at some
-            // field of view nobody chose. The slider in the settings menu is
-            // the deliberate way to set it, which is the only way it wants
-            // setting.
+            // THE BARE WHEEL CHANGES TOOLS, which is what it does in the
+            // engine this hand was ported from. It used to ZOOM, and every
+            // stray scroll threw the accumulated film away and left the view at
+            // some field of view nobody chose -- the note that said "the bare
+            // wheel does nothing" was the fix for that, and the field of view
+            // still belongs to the slider in the settings menu. This is not a
+            // return to the zoom: it is the hotbar, and with nothing in the
+            // hand it still does nothing.
+            if (held_.ready() && !menuOpen_) {
+                held_.cycle(e.wheelDelta.y > 0.0f ? 1 : -1);
+                std::printf("v2: hand %s\n", held_.name());
+                std::fflush(stdout);
+            }
             return true;
         }
 
@@ -2375,10 +2546,18 @@ class ForestApp : public SampleApp {
             return true;
         }
         if (e.button == Input::MouseButton::Right) {
-            // Hold-to-look, kept from the earlier engines so the habit carries.
+            // Hold-to-look, kept from the earlier engines so the habit carries
+            // -- but ONLY as a way of taking the pointer in the first place.
+            // Once it is ours the right button belongs to the hand: it is what
+            // draws the bow, and a bow that let go of the mouse every time you
+            // loosed an arrow would be unusable. The habit is untouched for
+            // anyone who uses it, since it was always about grabbing the view
+            // from a loose cursor.
             if (e.type == MouseEvent::Type::ButtonDown) {
-                holdLook_ = true;
-                if (!looking_) setCapture(true);
+                if (!looking_) {
+                    holdLook_ = true;
+                    setCapture(true);
+                }
             } else if (e.type == MouseEvent::Type::ButtonUp && holdLook_) {
                 holdLook_ = false;
                 setCapture(false);
@@ -2542,6 +2721,17 @@ class ForestApp : public SampleApp {
         // it drops the file rather than waiting on an encoder while the device
         // is being torn down underneath it.
         recorder_.abandon();
+        // THE TRAINED NETWORK, IF ANYONE ASKED FOR IT. Written here rather
+        // than on a timer because a run is the unit of training: whatever the
+        // cache learnt walking around is what gets kept.
+        if (!opt_.nrcSave.empty() && nrc_.available()) {
+            if (nrc_.saveWeights(opt_.nrcSave))
+                std::printf("v2: wrote %s (%u batches trained)\n",
+                            opt_.nrcSave.c_str(), nrc_.batches());
+            else
+                std::printf("v2: could not write %s\n", opt_.nrcSave.c_str());
+            std::fflush(stdout);
+        }
         // Before the window goes: an audio device held open past it is the
         // one kind of leak you can hear.
         ambience_.stop();
@@ -2561,6 +2751,10 @@ class ForestApp : public SampleApp {
     // use, because a swing is armed on a press and repeats while it is held --
     // two different questions, and only the event knows the first one.
     HeldItem held_;
+    // What the bow looses. A fixed pool of instances the world reserves -- see
+    // render/arrows.h for why it is fixed.
+    Arrows arrows_;
+    Butterflies flock_;
     // False until the left button has been seen UP once -- see onMouseEvent.
     bool swingArmed_ = false;
     // The last pose the menu's copy row printed, kept so the row can show it
@@ -2641,6 +2835,7 @@ class ForestApp : public SampleApp {
     Atmosphere atmo_;
     Ddgi ddgi_;
     Sharc sharc_;
+    Restir restir_;
     Cuda cuda_;
     Clusters clusters_;
     Physics physics_;
@@ -3074,6 +3269,40 @@ class ForestApp : public SampleApp {
     }
 
     // -----------------------------------------------------------------------
+    // AN ARROW LEAVES THE BOW.
+    //
+    // The velocity is the JS engine's: ARROW_V is twice its thrown profile --
+    // "a bow beats an arm, and the flatter arc is the point of it" -- and the
+    // up-kick with it, both scaled by how far the bow was pulled. In its units
+    // those are 480 and 18 voxels a second; here they are metres, which is the
+    // same numbers over ten.
+    //
+    // WHERE IT STARTS is not the eye. The viewmodel sits a hand's breadth from
+    // the lens, far too close to spawn a full-size shaft, so the launch point
+    // is carried out along the view to where an arrow can be drawn -- and then
+    // AIMED at a point far down the sight line rather than straight along the
+    // view, so a shaft that leaves six voxels to the side still converges on
+    // the crosshair the way a real bow sight does.
+    // -----------------------------------------------------------------------
+    void loose(float draw) {
+        const float k = clampf(draw, 0.0f, 1.0f);
+        if (k <= 0.0f) return;
+        const Vec3 dir = forward();
+        const Vec3 from = pos_ + dir * kArrowLaunchM;
+        const Vec3 aim = pos_ + dir * kArrowAimM;
+        Vec3 v = aim - from;
+        const float l = sqrtf(maxf(1e-8f, lengthSq(v)));
+        v = v * (kArrowSpeed * k / l);
+        v.y += kArrowUp * k;
+        arrows_.launch(from, v);
+        if (true) {
+            std::printf("v2: arrow away  draw %.2f  %.1f m/s\n", double(k),
+                        double(kArrowSpeed * k));
+            std::fflush(stdout);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     bool processInput(float dt) {
         const Falcor::InputState &in = getInputState();
         bool turned = applyMouseLook();
@@ -3135,7 +3364,22 @@ class ForestApp : public SampleApp {
             if (!lmb) swingArmed_ = true;
             const bool swinging =
                 opt_.swingHold || (lmb && swingArmed_ && looking_ && !menuOpen_);
-            if (held_.update(dt, swinging, player_.bobAmp)) {
+            // THE RIGHT BUTTON DRAWS, and only while the pointer is ours --
+            // the same gate the swing has, and the JS engine's `locked`.
+            // A SCRIPTED DRAW LETS GO ON A NAMED FRAME. --draw-hold alone pulls
+            // and never fires, which photographs the draw; --shot-loose N is
+            // what fires it, so a still of an arrow leaving is reproducible.
+            const bool scripted =
+                opt_.drawHold && (opt_.shotLoose < 0 || shotFrames_ < opt_.shotLoose);
+            const bool drawing = scripted || (in.isMouseButtonDown(Input::MouseButton::Right) &&
+                                              looking_ && !menuOpen_ && !holdLook_);
+            float draw = 0.0f;
+            if (held_.update(dt, swinging, player_.bobAmp, drawing, &draw)) {
+                // AN ARROW IS AWAY. What it is worth is how far the bow was
+                // pulled, which is what `draw` carries.
+                loose(draw);
+            }
+            if (held_.struck()) {
                 // THE IMPACT FRAME. What a bite would be spent on; for now it
                 // is the verdict and nothing else -- see the header of
                 // render/helditem.h for why there is nothing to carve.
@@ -3161,7 +3405,7 @@ class ForestApp : public SampleApp {
         // the axe rather than converging it. It is bounded -- animating() goes
         // false a moment after the swing ends and the hand settles -- so a
         // still player still gets a converged frame.
-        return camMoved || turned || held_.animating();
+        return camMoved || turned || held_.animating() || arrows_.inFlight() > 0;
     }
 
     // -----------------------------------------------------------------------
@@ -3288,6 +3532,39 @@ class ForestApp : public SampleApp {
 
         const Vec3 walkDir = normalize(cam.target - cam.origin);
 
+        // -- AND THE FLOCK, which nothing else here would place --------------
+        //
+        // renderOffline runs none of the per-frame systems, which is why the
+        // fog grid, the cloud cache and the sky table all have to be built by
+        // hand below. The butterflies are the same case: without this, the one
+        // picture of this wood that gets kept is the only one with nothing
+        // flying through it.
+        //
+        // A SECOND OF THEM, not one tick. The slots fill on the first, but the
+        // fade each butterfly materialises through is 0.7 s and the altitude
+        // servo needs about as long to lift one off its spawn height onto the
+        // glide line -- so a single tick would render a flock of small ones
+        // sitting slightly too low.
+        //
+        // A --walk render moves the camera per sample and the flock does not
+        // follow it; over the few metres a walk covers that only means the
+        // butterflies are placed for the start of it.
+        if (flock_.ready()) {
+            for (int i = 0; i < 60; ++i) flock_.update(1.0f / 60.0f, world_, cam.origin);
+            flock_.publish(world_);
+            world_.refitTlas();
+            Vec3 at{0, 0, 0};
+            float d = 0.0f, lo = 0.0f, hi = 0.0f;
+            flock_.band(&lo, &hi);
+            if (flock_.nearest(cam.origin, &at, &d))
+                std::printf("  flock    %d butterflies, %.1f to %.1f m up, nearest %.1f m at "
+                            "(%.1f, %.1f, %.1f)\n",
+                            flock_.flying(), double(lo), double(hi), double(d), double(at.x),
+                            double(at.y), double(at.z));
+            else
+                std::printf("  flock    %d butterflies\n", flock_.flying());
+        }
+
         // -- LIGHT THE FOG GRID, WHICH OFFLINE NEVER DID --------------------
         //
         // A fog-enabled --out render came out SOLID BLACK, and had done since
@@ -3360,7 +3637,9 @@ class ForestApp : public SampleApp {
             {
                 const HeldXform hx =
                     held_.xform(c.gpu(tracer_.width(), tracer_.height()), 0.0f, 0.0f);
-                world_.setHeldInstance(hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+                world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+                arrows_.publish(world_);
+                world_.refitTlas();
             }
             tracer_.renderSample(ctx, c.gpu(tracer_.width(), tracer_.height()), opt_.r);
             if ((s % 16) == 15 || s + 1 == opt_.r.spp) {
@@ -4132,6 +4411,17 @@ class ForestApp : public SampleApp {
             w.blasCalls ? w.blasMs / double(w.blasCalls) : 0.0, w.blasCalls, w.blasMs,
             w.adopted ? w.poolMs / double(w.adopted) : 0.0, w.poolMs,
             w.tlasCalls ? w.tlasMs / double(w.tlasCalls) : 0.0, w.tlasCalls, w.tlasMs);
+        if (opt_.sharcStats && sharc_.available()) {
+            const Sharc::Stats st = sharc_.readStats();
+            const double cap = double(sharc_.capacity());
+            std::printf(
+                "  cache     %u of %u entries live (%.1f%% occupancy)\n"
+                "  cache     %u queries, %u hit (%.1f%%), %u inserts dropped (bucket full)\n",
+                st.live, sharc_.capacity(), 100.0 * double(st.live) / cap,
+                st.queries, st.hits,
+                st.queries ? 100.0 * double(st.hits) / double(st.queries) : 0.0,
+                st.insertFails);
+        }
         std::printf("  drain     %.1f ms over %zu drains (%zu forced)   take %.1f   rering %.1f\n",
                     w.drainMs, w.drains, w.forcedDrains, w.takeMs, w.reringMs);
         std::printf("  compact   %.0f MB built -> %.0f MB kept (%.0f%%), %zu still pending\n"

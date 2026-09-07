@@ -386,6 +386,14 @@ struct Hit
     // The tool in the player's hand, which the motion vector has to know about
     // and nothing else does. See the write in the guide block.
     bool held;
+    // ...and how far this surface's instance travelled since the last frame,
+    // which the motion vector is the only reader of as well. Zero for all of
+    // the wood; a butterfly is the only thing in this scene that moves through
+    // it. See KIND_FLYER in Shared.slang.
+    float3 moved;
+    // Which material this face actually wears, after groundShade. Zero when
+    // the ray hit nothing.
+    uint mtl;
     Surface mat;
 };
 
@@ -400,6 +408,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.ng = float3(0.0f, 1.0f, 0.0f);
     h.ns = float3(0.0f, 1.0f, 0.0f);
     h.held = false;
+    h.mtl = 0u;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = float3(0.0f);
     h.mat.roughness = 1.0f;
@@ -453,11 +462,17 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // millimetres a tool voxel actually measures, so its 3x3 is a rotation
     // times that scale and the transformed normal comes out the same factor
     // short of unit. Normalising only here keeps the fast path fast.
-    if (inst.kind == KIND_HELD)
+    //
+    // AND THE FLYERS, for a reason of their own: a butterfly's transform is a
+    // free turn about Y -- still orthonormal, so still no adjugate -- times the
+    // scale it fades in through, which leaves the normal short by exactly that
+    // scale.
+    if (inst.kind == KIND_HELD || inst.kind == KIND_FLYER)
         ng = normalize(ng);
     h.ng = ng;
     h.ns = ng;
     h.held = (inst.kind == KIND_HELD);
+    h.moved = (inst.kind == KIND_FLYER) ? inst.prevOffset : float3(0.0f);
 
     if (inst.kind == KIND_WATER)
     {
@@ -474,7 +489,14 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
         return h;
     }
 
-    const V6Material L = gMaterials[groundShade(packed & 0xFFu, h.p, ng)];
+    // THE RESOLVED SHADE, KEPT. groundShade turns a material FAMILY into the
+    // exact shade this voxel wears, and until now the index was consumed on
+    // the spot to look up a colour. The neural cache wants the index itself:
+    // a discrete identity is a far better network input than the three floats
+    // it decodes to -- see the encoding note in Nrc.slang.
+    const uint shade = groundShade(packed & 0xFFu, h.p, ng);
+    const V6Material L = gMaterials[shade];
+    h.mtl = shade;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = L.albedo;
     h.mat.roughness = L.roughness;
@@ -1000,6 +1022,9 @@ void main(uint3 tid: SV_DispatchThreadID)
     // Whether the primary vertex is the tool in the player's hand. Read once,
     // by the motion vector -- see the note where it is used.
     bool heldPrimary = false;
+    // ...and, for the same reader, how far the thing under this pixel moved
+    // since the last frame. Zero unless the primary ray landed on a flyer.
+    float3 primaryMoved = float3(0.0f);
 
     // Beer-Lambert extinction under water, from the per-metre transmittance the
     // material carries. Hoisted out of the loop: it is three logs of constants.
@@ -1152,6 +1177,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         {
             primaryDist = h.t;
             heldPrimary = h.held;
+            primaryMoved = h.moved;
 
             // -- the guides ---------------------------------------------------
             // Split into the two albedos the denoiser demodulates by. It is
@@ -1248,6 +1274,13 @@ void main(uint3 tid: SV_DispatchThreadID)
             nrcQ.normal = h.ns;
             nrcQ.albedo = h.mat.albedo;
             nrcQ.roughness = h.mat.roughness;
+            // The voxel half. h.ng and not h.ns: the face is a property of the
+            // geometry, and water's shading normal is a ripple that would send
+            // neighbouring queries to different faces of the same flat surface.
+            nrcQ.world = h.p;
+            nrcQ.normal = h.ng;
+            nrcQ.mtl = h.mtl;
+            nrcQ.sun = keyDir(gParams.sky);
 
             if (nrcTraining)
             {
@@ -1287,15 +1320,39 @@ void main(uint3 tid: SV_DispatchThreadID)
         // all the same answer. That is the blocky look SHaRC is blamed for, and
         // it is avoidable by simply carrying on tracing until the segment is
         // long enough to be filed honestly.
-        if (gParams.giMode == 2 && depth >= gParams.giDepth &&
-            sharcSegmentLongEnough(h.p, h.t))
+#if V2_SHARC_VOXEL_KEY
+        // BOTH GATES, AND KEEPING THE SECOND ONE WAS A MEASUREMENT RATHER THAN
+        // A GUESS. The first is the obvious one: an entry names a face of a
+        // block, so the segment has to clear the block. The expectation was
+        // that it replaced the old distance-dependent test outright, since that
+        // test existed to keep a segment longer than a hash cell and there are
+        // no hash cells any more.
+        //
+        // Dropping it made the picture WORSE -- against a 4000-frame reference,
+        // RMSE 0.00727 with the one-voxel test alone against 0.00633 with both,
+        // and nearly half again the energy bias. The old test turns out not to
+        // be about cell size at all. It is a CONFIDENCE gate: it scales with
+        // distance from the camera, and distance from the camera is exactly how
+        // few update samples a face has had. An exact key removes the
+        // uncertainty about WHERE a sample was filed; it does nothing about how
+        // many samples are in there. So the two gates answer different
+        // questions and the cache wants both.
+        const bool sharcFilable = voxelSegmentLongEnough(h.t) && sharcSegmentLongEnough(h.p, h.t);
+#else
+        const bool sharcFilable = sharcSegmentLongEnough(h.p, h.t);
+#endif
+        if (gParams.giMode == 2 && depth >= gParams.giDepth && sharcFilable)
         {
             SharcHitData hd;
             hd.positionWorld = h.p;
             hd.normalWorld = h.ng;
 
             float3 cached;
+#if V2_SHARC_VOXEL_KEY
+            if (sharcVoxelGetCachedRadiance(sharcParams(), hd, cached, false))
+#else
             if (SharcGetCachedRadiance(sharcParams(), hd, cached, false))
+#endif
             {
                 const float3 cs = beta * cached * gParams.giStrength;
                 L += cs;
@@ -1602,6 +1659,8 @@ void main(uint3 tid: SV_DispatchThreadID)
         smp.normal = nrcQ.normal;
         smp.albedo = nrcQ.albedo;
         smp.roughness = nrcQ.roughness;
+        smp.world = nrcQ.world;
+        smp.mtl = nrcQ.mtl;
         smp.target = clamp((L - nrcLBefore) / max(nrcBeta, float3(1e-3f)),
                            float3(0.0f), float3(64.0f));
         smp.valid = 1u;
@@ -1631,7 +1690,13 @@ void main(uint3 tid: SV_DispatchThreadID)
         const float2 curPix =
             float2(float(pix.x) + 0.5f, float(pix.y) + 0.5f) + gParams.jitter;
         float2 prevPix;
-        const bool ok = projectToPixel(gParams.prevCam, worldP, gParams.dim, prevPix);
+        // WHERE THIS SURFACE WAS, not where this point was. For the wood the
+        // two are the same and primaryMoved is zero. For a butterfly they are
+        // not: it flew, and reprojecting the point it is at NOW through the
+        // last camera claims it was always there -- which hands Ray
+        // Reconstruction a still animal on a moving one, and it believes it.
+        const bool ok =
+            projectToPixel(gParams.prevCam, worldP - primaryMoved, gParams.dim, prevPix);
         // ZERO FOR THE HELD ITEM, and it is the one place in this shader where
         // the reprojection above is not merely approximate but backwards. That
         // formula rests on the world being static and only the camera moving,
@@ -1828,7 +1893,11 @@ void sharcUpdateMain(uint3 tid: SV_DispatchThreadID)
 
         // Returns false when this vertex resolved from the cache and there is
         // nothing further to learn down this path.
+#if V2_SHARC_VOXEL_KEY
+        if (!sharcVoxelUpdateHit(sp, state, hd, direct, rng.nextFloat()))
+#else
         if (!SharcUpdateHit(sp, state, hd, direct, rng.nextFloat()))
+#endif
             break;
 
         const BsdfSample bs = sampleOpaque(h.mat, wo, rng);

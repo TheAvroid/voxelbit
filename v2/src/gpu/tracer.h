@@ -164,13 +164,22 @@ class Tracer {
     // asked for BEFORE the trace program is built, not after, because the answer
     // decides what source the tracer is made of -- see the note on V2_NRC in
     // Trace.cs.slang.
-    void init(const Falcor::ref<Falcor::Device> &device, World *world, bool coopVec = false) {
+    void init(const Falcor::ref<Falcor::Device> &device, World *world, bool coopVec = false,
+              bool voxelKey = true, bool nrcVoxelFeatures = true) {
         device_ = device;
         world_ = world;
         coopVec_ = coopVec;
+        voxelKey_ = voxelKey;
+        nrcVoxelFeatures_ = nrcVoxelFeatures;
 
         Falcor::DefineList defs;
         if (coopVec_) defs.add("V2_NRC", "1");
+        // THE THIRD PLACE THE ENCODING IS SET, and the one that matters most:
+        // this is the program that QUERIES the cache. gpu/nrc.h sets the same
+        // define on the two training passes, and if these three ever disagree
+        // the network is asked a different question from the one it was
+        // taught, which looks like a cache that simply does not work.
+        if (coopVec_ && nrcVoxelFeatures_) defs.add("V2_NRC_VOXEL_FEATURES", "1");
 #if V2_HAS_SHARC
         // The camera pass READS the cache; the update pass WRITES it. They are
         // the same source file compiled twice, because the update has to shade
@@ -179,6 +188,10 @@ class Tracer {
         // SDK's own headers insist the two modes are separate compilations, so
         // this is also the only shape it allows.
         defs.add("V2_SHARC_QUERY", "1");
+        // WHICH KEY THE CACHE IS FILED UNDER, and it has to be a define because
+        // both halves of the cache -- the query in the camera pass and the
+        // insert in the update pass -- must agree. Two programs, one answer.
+        if (voxelKey_) defs.add("V2_SHARC_VOXEL_KEY", "1");
 #endif
         Falcor::ProgramDesc dt;
         dt.addShaderLibrary("v2/shaders/Trace.cs.slang").csEntry("main");
@@ -190,6 +203,7 @@ class Tracer {
         Falcor::DefineList updDefs;
         if (coopVec_) updDefs.add("V2_NRC", "1");
         updDefs.add("V2_SHARC_UPDATE", "1");
+        if (voxelKey_) updDefs.add("V2_SHARC_VOXEL_KEY", "1");
         Falcor::ProgramDesc du;
         du.addShaderLibrary("v2/shaders/Trace.cs.slang").csEntry("sharcUpdateMain");
         if (coopVec_ && device_->getType() == Falcor::Device::Type::Vulkan)
@@ -731,6 +745,9 @@ class Tracer {
         // two dispatches in a fixed order would be a wider interface for
         // nothing -- the same argument runRestir makes.
         if (sharc_ && sharc_->available() && p.giMode == 2 && sharcUpdate_) {
+            // Before the update pass, which is the one that records a dropped
+            // insert. See clearStats in sharc.h for what clearing it later did.
+            sharc_->clearStats(ctx);
             const Vec3 camPos(cam.pos.x, cam.pos.y, cam.pos.z);
             if (sharc_->needsClear()) sharc_->clear(ctx);
 
@@ -755,6 +772,19 @@ class Tracer {
 #endif
 
         trace_->execute(ctx, uint32_t(w_), uint32_t(h_));
+
+        // RESAMPLE WHAT THAT SAMPLE FOUND, per SAMPLE and not per frame. The
+        // trace just filled the candidate buffer with one bounce per pixel;
+        // the two resampling passes turn it into what the NEXT trace shades
+        // from. Run it once a frame at --spf 4 and three quarters of the
+        // candidates would be overwritten before anything resampled them.
+        //
+        // AFTER the trace, never before: the reservoir the tracer reads is
+        // last frame's finished one -- see the note at the shading site in
+        // Trace.cs.slang -- and running this first would hand it a result built
+        // from a candidate buffer this frame has not written yet.
+        runRestir(ctx, uint32_t(tick_));
+
         ++frame_;
         ++tick_;
 
@@ -1162,6 +1192,8 @@ class Tracer {
     Atmosphere *atmo_ = nullptr;
     bool restirWarm_ = false;
     bool coopVec_ = false;
+    bool voxelKey_ = true;
+    bool nrcVoxelFeatures_ = true;
     bool denoise_ = false;
     bool demod_ = false;
     bool resetHistory_ = true;

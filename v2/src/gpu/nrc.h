@@ -39,6 +39,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <random>
 #include <string>
@@ -69,6 +70,8 @@ struct NrcLayout {
 // NrcTrain.cs.slang -- 17 floats, no padding games.
 struct NrcSampleCpu {
     float pos[3];
+    float world[3];
+    uint32_t mtl;
     float dir[3];
     float normal[3];
     float albedo[3];
@@ -88,8 +91,14 @@ class Nrc {
     // ---- knobs, all live from the settings menu -------------------------
     bool enabled = false;         // query the cache from the tracer
     bool training = true;         // keep learning while it is on
-    float learningRate = 0.01f;
-    float momentum = 0.9f;
+    // ADAM'S RATE, not SGD's. 1e-3 is the standard starting point and it is
+    // meaningful here in a way the old 0.01 was not: an Adam step is bounded
+    // by about this number, so it says how fast a weight may move rather than
+    // scaling a velocity that could be anything. See NrcUpdate.cs.slang.
+    float learningRate = 0.001f;
+    float beta1 = 0.9f;    // decay of the gradient mean
+    float beta2 = 0.999f;  // decay of the gradient mean square
+    float epsilon = 1e-8f;
     // Where along the path the cache takes over. Two means the camera ray and
     // one real bounce are always traced -- everything you can directly see is
     // still the path tracer, and only the tail is predicted.
@@ -102,20 +111,30 @@ class Nrc {
     // second of walking at 60 fps.
     static constexpr uint32_t kWarmupBatches = 64;
 
-    bool init(const Falcor::ref<Falcor::Device> &device, uint32_t maxSamples) {
+    bool init(const Falcor::ref<Falcor::Device> &device, uint32_t maxSamples,
+              bool voxelFeatures = true) {
         device_ = device;
         maxSamples_ = maxSamples;
+        voxelFeatures_ = voxelFeatures;
+
+        // THE ENCODING IS A DEFINE AND HAS TO REACH BOTH PASSES. The training
+        // pass and the tracer's inference both call nrcEncode, and a network
+        // trained on one set of inputs and queried with another is not a
+        // degraded cache, it is noise with confidence. See gpu/tracer.h for
+        // the third place this same define is set.
+        Falcor::DefineList nd;
+        if (voxelFeatures_) nd.add("V2_NRC_VOXEL_FEATURES", "1");
 
         try {
             Falcor::ProgramDesc dt;
             dt.addShaderLibrary("v2/shaders/NrcTrain.cs.slang").csEntry("main");
             nrcAddCapability(device_, dt);
-            train_ = Falcor::ComputePass::create(device_, dt);
+            train_ = Falcor::ComputePass::create(device_, dt, nd);
 
             Falcor::ProgramDesc du;
             du.addShaderLibrary("v2/shaders/NrcUpdate.cs.slang").csEntry("main");
             nrcAddCapability(device_, du);
-            update_ = Falcor::ComputePass::create(device_, du);
+            update_ = Falcor::ComputePass::create(device_, du, nd);
         } catch (const std::exception &e) {
             status_ = std::string("training shaders did not compile: ") + e.what();
             return false;
@@ -125,8 +144,17 @@ class Nrc {
         const auto kUav = ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource;
 
         weights_ = device_->createBuffer(NrcLayout::kBytes, kUav, Falcor::MemoryType::DeviceLocal);
-        grad_ = device_->createBuffer(NrcLayout::kBytes, kUav, Falcor::MemoryType::DeviceLocal);
-        velocity_ = device_->createBuffer(NrcLayout::kBytes, kUav, Falcor::MemoryType::DeviceLocal);
+        // TWICE THE WEIGHTS' SIZE, same element count: gradients accumulate in
+        // fp32 because they are a sum over the whole batch and fp16 overflows
+        // it. See the backward-pass note in shaders/NrcTrain.cs.slang.
+        grad_ = device_->createBuffer(NrcLayout::kElems * 4, kUav,
+                                      Falcor::MemoryType::DeviceLocal);
+        // Adam's two moments. fp32 and full width, for the same overflow
+        // reason the gradient buffer is -- they are running averages of it.
+        adamM_ = device_->createBuffer(NrcLayout::kElems * 4, kUav,
+                                      Falcor::MemoryType::DeviceLocal);
+        adamV_ = device_->createBuffer(NrcLayout::kElems * 4, kUav,
+                                      Falcor::MemoryType::DeviceLocal);
         samples_ = device_->createStructuredBuffer(sizeof(NrcSampleCpu), maxSamples_, kUav);
 
         reset();
@@ -148,6 +176,72 @@ class Nrc {
 
     const Falcor::ref<Falcor::Buffer> &weightBuffer() const { return weights_; }
     const Falcor::ref<Falcor::Buffer> &sampleBuffer() const { return samples_; }
+
+    // -----------------------------------------------------------------------
+    // WEIGHTS TO AND FROM DISK, WHICH IS THE WHOLE POINT OF THE VOXEL ENCODING.
+    //
+    // A radiance cache normally cannot be shipped. Its inputs are positions in
+    // one particular scene, so its weights mean nothing anywhere else and every
+    // run has to learn the world again from noise -- which is what the warmup
+    // counter is counting.
+    //
+    // Under the voxel encoding almost every input is a property of a MATERIAL
+    // ON A FACE UNDER A SUN rather than of a place, and this world is built
+    // from a hundred materials on six faces however far you walk. So a network
+    // trained in one wood is most of the way to being right in any wood from
+    // any seed, and 14 KB of weights can simply be loaded at startup.
+    //
+    // BATCHES ARE RESTORED WITH THE WEIGHTS, not reset to zero, because the
+    // warmup gate reads them: a loaded network that reported zero batches would
+    // be refused for its first second of use for no reason.
+    // -----------------------------------------------------------------------
+    static constexpr uint32_t kWeightsMagic = 0x3243524eu; // "NRC2"
+
+    bool saveWeights(const std::string &path) const {
+        if (!ready_ || !weights_) return false;
+        std::vector<uint8_t> blob(NrcLayout::kBytes);
+        // getBlob() is a blocking readback and that is fine here: saving is a
+        // deliberate act at the end of a run, not something a frame does.
+        weights_->getBlob(blob.data(), 0, NrcLayout::kBytes);
+        std::FILE *f = std::fopen(path.c_str(), "wb");
+        if (!f) return false;
+        const uint32_t hdr[4] = {kWeightsMagic, uint32_t(NrcLayout::kBytes),
+                                 voxelFeatures_ ? 1u : 0u, batches_};
+        std::fwrite(hdr, sizeof(hdr), 1, f);
+        std::fwrite(blob.data(), 1, blob.size(), f);
+        std::fclose(f);
+        return true;
+    }
+
+    bool loadWeights(const std::string &path, std::string *why) {
+        if (!ready_ || !weights_) { *why = "cache not initialised"; return false; }
+        std::FILE *f = std::fopen(path.c_str(), "rb");
+        if (!f) { *why = "cannot open " + path; return false; }
+        uint32_t hdr[4] = {0, 0, 0, 0};
+        std::vector<uint8_t> blob(NrcLayout::kBytes);
+        const bool okHdr = std::fread(hdr, sizeof(hdr), 1, f) == 1;
+        const bool okBlob = std::fread(blob.data(), 1, blob.size(), f) == blob.size();
+        std::fclose(f);
+        if (!okHdr || !okBlob) { *why = "short file"; return false; }
+        if (hdr[0] != kWeightsMagic || hdr[1] != NrcLayout::kBytes) {
+            *why = "not a v2 weight file, or a different network shape";
+            return false;
+        }
+        // REFUSED RATHER THAN LOADED. Weights trained under the frequency
+        // encoding are meaningless to the voxel one and the reverse -- the
+        // 32 inputs mean entirely different things -- and the failure would be
+        // a wood lit by noise rather than an error.
+        if ((hdr[2] != 0u) != voxelFeatures_) {
+            *why = "trained with the other encoding";
+            return false;
+        }
+        // Straight onto the device. setBlob is what init() uses for the He
+        // initialisation this is replacing, and load happens once at startup
+        // rather than inside a frame.
+        weights_->setBlob(blob.data(), 0, NrcLayout::kBytes);
+        batches_ = hdr[3];
+        return true;
+    }
 
     // ---------------------------------------------------------------------
     // Start again from noise. Called on init, and from the menu when the cache
@@ -174,8 +268,10 @@ class Nrc {
 
         weights_->setBlob(w.data(), 0, NrcLayout::kBytes);
         std::vector<uint16_t> zero(NrcLayout::kElems, 0);
-        grad_->setBlob(zero.data(), 0, NrcLayout::kBytes);
-        velocity_->setBlob(zero.data(), 0, NrcLayout::kBytes);
+        std::vector<float> zeroF(NrcLayout::kElems, 0.0f);
+        grad_->setBlob(zeroF.data(), 0, NrcLayout::kElems * 4);
+        adamM_->setBlob(zeroF.data(), 0, NrcLayout::kElems * 4);
+        adamV_->setBlob(zeroF.data(), 0, NrcLayout::kElems * 4);
         batches_ = 0;
     }
 
@@ -187,7 +283,8 @@ class Nrc {
     // frame on the device to learn a number the CPU could have counted itself,
     // and the tracer knows it exactly: one per pixel that was selected.
     // ---------------------------------------------------------------------
-    void trainBatch(Falcor::RenderContext *ctx, uint32_t count) {
+    void trainBatch(Falcor::RenderContext *ctx, uint32_t count,
+                    Falcor::float3 sunDir = Falcor::float3(0.0f, 1.0f, 0.0f)) {
         if (!ready_ || count == 0) return;
         count = std::min(count, maxSamples_);
 
@@ -197,6 +294,7 @@ class Nrc {
             var["gWeights"] = weights_;
             var["gGrad"] = grad_;
             var["NrcTrainCB"]["gSampleCount"] = count;
+            var["NrcTrainCB"]["gTrainSunDir"] = sunDir;
             // ONE GROUP PER SAMPLE, and the group is one subgroup wide -- see
             // the note at the top of NrcTrain.cs.slang. execute() takes a
             // thread count, so this is groups x 32.
@@ -206,11 +304,17 @@ class Nrc {
             auto var = update_->getRootVar();
             var["gWeights"] = weights_;
             var["gGrad"] = grad_;
-            var["gVelocity"] = velocity_;
+            var["gAdamM"] = adamM_;
+            var["gAdamV"] = adamV_;
             var["NrcUpdateCB"]["gLearningRate"] = learningRate;
-            var["NrcUpdateCB"]["gMomentum"] = momentum;
+            var["NrcUpdateCB"]["gBeta1"] = beta1;
+            var["NrcUpdateCB"]["gBeta2"] = beta2;
+            var["NrcUpdateCB"]["gEpsilon"] = epsilon;
             var["NrcUpdateCB"]["gBatchSize"] = count;
             var["NrcUpdateCB"]["gWeightCount"] = NrcLayout::kElems;
+            // 1-based: the bias correction divides by 1 - beta^step, and
+            // step 0 makes that zero.
+            var["NrcUpdateCB"]["gStep"] = batches_ + 1u;
             update_->execute(ctx, NrcLayout::kElems, 1, 1);
         }
         ++batches_;
@@ -233,10 +337,11 @@ class Nrc {
 
     Falcor::ref<Falcor::Device> device_;
     Falcor::ref<Falcor::ComputePass> train_, update_;
-    Falcor::ref<Falcor::Buffer> weights_, grad_, velocity_, samples_;
+    Falcor::ref<Falcor::Buffer> weights_, grad_, adamM_, adamV_, samples_;
     uint32_t maxSamples_ = 0;
     uint32_t batches_ = 0;
     bool ready_ = false;
+    bool voxelFeatures_ = true;
     std::string status_ = "not initialised";
 };
 

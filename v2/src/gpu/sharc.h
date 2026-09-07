@@ -28,6 +28,7 @@
 #include "Core/API/RenderContext.h"
 #include "Core/Pass/ComputePass.h"
 
+#include <algorithm>
 #include <string>
 
 #include "../core/vecmath.h"
@@ -43,6 +44,14 @@ namespace v2 {
 // wants to see. Raise it if the wood ever looks like it is losing cache entries
 // as you turn: that is what collisions look like.
 static constexpr uint32_t kSharcCapacity = 1u << 21;
+
+// ...AND THAT IS NOW A DEFAULT RATHER THAN THE ANSWER. Measured with
+// --sharc-stats: at the shipped 32-frame eviction window the map sits at 56%
+// occupancy, but the window is short precisely because the SDK's key goes
+// stale. Let an exact voxel key remember for 512 frames instead and the same
+// map is 100% full -- every slot taken, and inserts starting to be dropped.
+// Remembering longer is only worth anything if there is somewhere to put it.
+static constexpr uint32_t kSharcCapacityMax = 1u << 24;
 
 // The temporal window, in frames, and how long an entry survives unwritten.
 // Both are the SDK's own defaults; the second is clamped internally against
@@ -61,7 +70,11 @@ class Sharc {
   public:
     bool available() const { return ready_; }
     const std::string &status() const { return status_; }
-    uint32_t capacity() const { return kSharcCapacity; }
+    // Set by app.h from the same option that picks the shader define, so the
+    // status line cannot disagree with what the tracer was compiled to do.
+    bool voxelKey = true;
+
+    uint32_t capacity() const { return capacity_; }
 
     // -----------------------------------------------------------------------
     // Allocate, and clear.
@@ -83,18 +96,23 @@ class Sharc {
             const ResourceBindFlags uav =
                 ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
 
-            hashEntries_ = device_->createBuffer(size_t(kSharcCapacity) * 8u, uav);
-            lock_ = device_->createBuffer(size_t(kSharcCapacity) * 4u, uav);
+            hashEntries_ = device_->createBuffer(size_t(capacity_) * 8u, uav);
+            lock_ = device_->createBuffer(size_t(capacity_) * 4u, uav);
             // uint4, and a float16x4 plus two uints: both 16 bytes. Written out
             // here rather than sizeof-ed because the shader-side structs are the
             // definition and this file cannot see them.
-            accum_ = device_->createBuffer(size_t(kSharcCapacity) * 16u, uav);
-            resolved_ = device_->createBuffer(size_t(kSharcCapacity) * 16u, uav);
+            accum_ = device_->createBuffer(size_t(capacity_) * 16u, uav);
+            resolved_ = device_->createBuffer(size_t(capacity_) * 16u, uav);
 
             hashEntries_->setName("v2::sharcHashEntries");
             lock_->setName("v2::sharcLock");
             accum_->setName("v2::sharcAccum");
             resolved_->setName("v2::sharcResolved");
+            // Four counters. Tiny, and bound whether or not anyone is counting,
+            // because a declared resource with nothing behind it fails the
+            // dispatch rather than the branch.
+            stats_ = device_->createStructuredBuffer(sizeof(uint32_t), 4u, uav);
+            stats_->setName("v2::sharcStats");
 
             resolve_ =
                 Falcor::ComputePass::create(device_, "v2/shaders/SharcResolve.cs.slang", "main");
@@ -105,7 +123,10 @@ class Sharc {
 
         cleared_ = false;
         ready_ = true;
-        status_ = std::to_string(kSharcCapacity >> 20) + "M entries, hash grid";
+        // WHICH KEY, because the two behave differently enough that a run
+        // report which does not say is a report you cannot compare against.
+        status_ = std::to_string(capacity_ >> 20) + "M entries, " +
+                  (voxelKey ? "voxel face key" : "SDK hash grid");
         return true;
 #endif
     }
@@ -123,6 +144,18 @@ class Sharc {
 
     bool needsClear() const { return ready_ && !cleared_; }
 
+    // ZEROED AT THE TOP OF THE FRAME, before the update pass runs.
+    //
+    // It lived in runResolve at first, which reads correctly for occupancy and
+    // for queries and silently zeroes the one counter that matters most: the
+    // UPDATE pass is what records a dropped insert, the resolve runs after it,
+    // so dropped inserts were being cleared between being written and being
+    // read. They reported zero at 100% occupancy, which is exactly the
+    // condition under which they cannot be zero.
+    void clearStats(Falcor::RenderContext *ctx) {
+        if (ready_ && statsOn) ctx->clearUAV(stats_->getUAV().get(), Falcor::uint4(0));
+    }
+
     // For the barriers the caller has to place between the three passes.
     Falcor::Buffer *accumBuffer() const { return accum_.get(); }
     Falcor::Buffer *hashBuffer() const { return hashEntries_.get(); }
@@ -139,11 +172,56 @@ class Sharc {
         var["gSharcCB"]["gSharcSceneScale"] = kSharcSceneScale;
         var["gSharcCB"]["gSharcCameraPosPrev"] =
             Falcor::float3(prevCam_.x, prevCam_.y, prevCam_.z);
-        var["gSharcCB"]["gSharcCapacity"] = kSharcCapacity;
+        var["gSharcCB"]["gSharcCapacity"] = capacity_;
         var["gSharcCB"]["gSharcFrame"] = frame_;
         var["gSharcCB"]["gSharcAccumFrames"] = kSharcAccumFrames;
-        var["gSharcCB"]["gSharcStaleFrames"] = kSharcStaleFrames;
-        var["gSharcCB"]["gSharcPad"] = 0u;
+        var["gSharcCB"]["gSharcStaleFrames"] = staleFrames;
+        var["gSharcStats"] = stats_;
+        var["gSharcCB"]["gSharcStatsOn"] = statsOn ? 1u : 0u;
+    }
+
+    // ---- the counters -----------------------------------------------------
+    //
+    // Off by default: the query counter is an atomic on a path that runs per
+    // pixel per bounce, which is exactly where an engine cannot afford one.
+    bool statsOn = false;
+
+    // HOW LONG AN ENTRY SURVIVES WITH NOTHING WRITTEN TO IT, in frames.
+    //
+    // 32 was right for the SDK's key and is probably not right for ours. That
+    // key is a quantised position whose CELL SIZE depends on where the camera
+    // is, so an old entry is not merely stale, it is filed under a grid that no
+    // longer exists -- forgetting quickly was the correct answer. A voxel face
+    // does not move and its radiance does not depend on where anyone stands, so
+    // an old entry here is just an old measurement of something still true.
+    // Half a second of memory is throwing away durable knowledge.
+    //
+    // The SDK caps it at SHARC_STALE_FRAME_NUM_MAX (1024) internally.
+    uint32_t staleFrames = kSharcStaleFrames;
+
+    // Set before init(); clamped to kSharcCapacityMax. At 60 bytes an entry
+    // (8 key, 4 lock, 16 accumulating, 16 resolved) 2^21 is 92 MB and 2^23 is
+    // 368 MB, which is why this is a decision and not simply raised.
+    uint32_t capacity_ = kSharcCapacity;
+    void setCapacity(uint32_t n) { capacity_ = (n > 0u) ? std::min(n, kSharcCapacityMax) : kSharcCapacity; }
+
+    struct Stats {
+        uint32_t live = 0, queries = 0, hits = 0, insertFails = 0;
+    };
+
+    // A blocking readback, so this is for --profile and the console, never for
+    // a frame. Reports the LAST frame counted, which is what the per-frame
+    // clear below makes it.
+    Stats readStats() const {
+        Stats st;
+        if (!ready_ || !stats_) return st;
+        uint32_t raw[4] = {0, 0, 0, 0};
+        stats_->getBlob(raw, 0, sizeof(raw));
+        st.live = raw[0];
+        st.queries = raw[1];
+        st.hits = raw[2];
+        st.insertFails = raw[3];
+        return st;
     }
 
     // One thread per entry, after the update pass and before the render.
@@ -151,7 +229,7 @@ class Sharc {
         if (!ready_ || !resolve_) return;
         auto var = resolve_->getRootVar();
         bind(var, cameraPos);
-        resolve_->execute(ctx, kSharcCapacity, 1u);
+        resolve_->execute(ctx, capacity_, 1u);
         ctx->uavBarrier(resolved_.get());
         ctx->uavBarrier(accum_.get());
         prevCam_ = cameraPos;
@@ -169,7 +247,7 @@ class Sharc {
 
   private:
     Falcor::ref<Falcor::Device> device_;
-    Falcor::ref<Falcor::Buffer> hashEntries_, lock_, accum_, resolved_;
+    Falcor::ref<Falcor::Buffer> hashEntries_, lock_, accum_, resolved_, stats_;
     Falcor::ref<Falcor::ComputePass> resolve_;
     Vec3 prevCam_{0.0f, 0.0f, 0.0f};
     uint32_t frame_ = 0u;

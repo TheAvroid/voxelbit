@@ -66,10 +66,14 @@ void usage() {
         "                            what you hear is this times the canopy overhead\n"
         "  --sound PATH              the ambience bed; any file Media Foundation reads\n"
         "  --no-sound                open no audio device at all\n"
-        "  --axe PATH                the .vox in the hand (default the stone axe)\n"
-        "  --no-axe                  open with an empty hand; H toggles it in game\n"
+        "  --axe PATH --pick PATH    the .vox models the hand carries\n"
+        "  --no-axe                  open empty-handed; H toggles, the wheel changes tool\n"
         "  --swing-log               print what each swing ran into\n"
         "  --swing-hold              hold the swing, as --shot-walk holds W\n"
+        "  --tool N                  which tool the hand opens with (0 axe, 1 pick, 2 bow)\n"
+        "  --bow PATH --arrow PATH   the bow's draw strip, and what it looses\n"
+        "  --draw-hold               hold the draw, as --swing-hold holds the swing\n"
+        "  --shot-loose N            ...and let go on frame N, so a shot can be filmed\n"
         "  --walk F                  offline: advance F m/frame, film resets as it would\n"
         "                            when walking\n"
         "  --depth N                 max path length        (default 10)\n"
@@ -90,6 +94,7 @@ void usage() {
         "  --seed N                  world seed            (default 20260904)\n"
         "  --view N                  chunks of 25.6 m kept resident, radius          (12)\n"
         "  --density F               how thick the wood is, 0..1                 (0.2325)\n"
+        "  --butterflies N           how many are in the air at once, 0 = none       (24)\n"
         "  --grass F                 fraction of grass columns with a strand      (0.105)\n"
         "  --grass-rows MIN MAX      strand height in voxels                        (3 6)\n"
         "  --flowers F               how thick a flower bed is, 0..1               (0.45)\n"
@@ -164,6 +169,24 @@ void usage() {
         "  --profile                 measure --shot-frame frames and print where the\n"
         "                            time went -- percentiles, hitches, and how much of\n"
         "                            the main thread the streamer took. No png needed.\n"
+        "  --restir                  ReSTIR GI: resample the indirect bounce across\n"
+        "                            pixels and frames instead of tracing it fresh\n"
+        "  --no-restir-world         ...without the world-space reservoirs, which are\n"
+        "                            filed against the voxel face they were found on\n"
+        "                            so a disocclusion has something to fall back on\n"
+        "  --restir-world-m N        how much confidence one of those may carry (16)\n"
+        "  --sharc-stats             count cache occupancy and hit rate, and print\n"
+        "                            them with --profile\n"
+        "  --sharc-stale N           frames an unwritten cache entry survives (32)\n"
+        "  --sharc-hash-grid         file the radiance cache under the SDK's\n"
+        "                            distance-quantised hash instead of the exact\n"
+        "                            voxel face -- for comparing the two\n"
+        "  --nrc-freq                the neural cache's old frequency encoding\n"
+        "  --nrc-frozen              load weights and stop training\n"
+        "  --nrc-load PATH           start from weights trained earlier -- the voxel\n"
+        "                            encoding is what makes these transfer between\n"
+        "                            worlds at all\n"
+        "  --nrc-save PATH           write the trained weights out on exit\n"
         "  --vulkan                  use Vulkan instead of D3D12\n"
         "  --debug                   turn on the graphics debug layer (slow)\n"
         "  --hdr                     also write a linear .pfm\n");
@@ -185,6 +208,40 @@ bool argUint(int argc, char **argv, int &i, uint32_t *out) {
     if (i + 1 >= argc) return false;
     *out = uint32_t(std::strtoul(argv[++i], nullptr, 10));
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// The cache and resampling flags, lifted OUT of the else-if chain below.
+//
+// NOT A TIDY-UP. That chain is one nested block per option as far as the
+// compiler is concerned, and MSVC stops at 128 of them -- "compiler limit:
+// blocks nested too deeply", which is exactly what adding these seven in line
+// produced. Anything further of this kind belongs here too.
+// ---------------------------------------------------------------------------
+bool parseCacheOpt(const std::string &a, int argc, char **argv, int &i, Options *o) {
+    // The SDK's distance-quantised hash grid, in place of v2's exact voxel face
+    // key. For A/B comparison of the two -- see shaders/Sharc.slang.
+    if (a == "--sharc-hash-grid") { o->sharcHashGrid = true; return true; }
+    // Cache instrumentation, and the eviction window it exists to tune.
+    if (a == "--sharc-stats") { o->sharcStats = true; return true; }
+    if (a == "--sharc-stale") { argInt(argc, argv, i, &o->sharcStale); return true; }
+    if (a == "--sharc-entries") { argInt(argc, argv, i, &o->sharcEntries); return true; }
+    // ReSTIR GI, and the world-space reservoirs inside it.
+    if (a == "--restir") { o->restir = true; return true; }
+    if (a == "--no-restir-world") { o->noRestirWorld = true; return true; }
+    if (a == "--restir-world-m") { argInt(argc, argv, i, &o->restirWorldM); return true; }
+    // The neural cache: which encoding, and where its weights live.
+    if (a == "--nrc-freq") { o->nrcFreqEncoding = true; return true; }
+    // Load weights and DO NOT keep learning. What makes "train once, ship the
+    // weights" a measurable claim rather than an assertion.
+    if (a == "--nrc-frozen") { o->nrcFrozen = true; return true; }
+    // The step size the cache learns at. Exposed because the default it
+    // shipped with drives BOTH encodings into the weight clamp -- see the
+    // note on learningRate in gpu/nrc.h.
+    if (a == "--nrc-lr") { argFloat(argc, argv, i, &o->nrcLr); return true; }
+    if (a == "--nrc-load") { if (i + 1 < argc) o->nrcLoad = argv[++i]; return true; }
+    if (a == "--nrc-save") { if (i + 1 < argc) o->nrcSave = argv[++i]; return true; }
+    return false;
 }
 
 bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
@@ -219,7 +276,15 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--ambience") argFloat(argc, argv, i, &o->ambience);
         else if (a == "--no-sound") o->soundOn = false;
         else if (a == "--axe") { if (i + 1 < argc) o->axe = argv[++i]; }
+        else if (a == "--pick") { if (i + 1 < argc) o->pick = argv[++i]; }
+        else if (a == "--tool") argInt(argc, argv, i, &o->tool);
+        else if (a == "--bow") { if (i + 1 < argc) o->bow = argv[++i]; }
+        else if (a == "--arrow") { if (i + 1 < argc) o->arrow = argv[++i]; }
+        else if (a == "--draw-hold") o->drawHold = true;
+        else if (a == "--shot-loose") argInt(argc, argv, i, &o->shotLoose);
         else if (a == "--no-axe") o->axeOn = false;
+        else if (a == "--butterflies") argInt(argc, argv, i, &o->butterflies);
+        else if (a == "--butterfly-dir") { if (i + 1 < argc) o->butterflyDir = argv[++i]; }
         else if (a == "--swing-log") o->swingLog = true;
         else if (a == "--swing-hold") o->swingHold = true;
         else if (a == "--time") {
@@ -307,6 +372,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--hdr") o->writeHdr = true;
         else if (a == "--vulkan") *vulkan = true;
         else if (a == "--nrc") o->nrc = true;
+        else if (parseCacheOpt(a, argc, argv, i, o)) { }
         // Sky-dome next event estimation, and the irradiance cache. Both are on
         // by default; these turn them off or retune them without a rebuild,
         // which is also how a "did this change the picture" comparison is made.

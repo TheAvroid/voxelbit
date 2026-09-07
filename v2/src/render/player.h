@@ -72,6 +72,33 @@ struct WalkWorld {
     int solidCount = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Is this point inside the world?
+//
+// The same two tests the swing uses, asked of a point rather than of a ray: the
+// terrain is a height field, so one comparison; a trunk or a boulder is the
+// upright ellipse the body already walks into.
+//
+// HERE RATHER THAN WITH EITHER OF ITS CALLERS, because both of them ask exactly
+// this and a second copy would be two answers to one question. An arrow buries
+// itself in whatever it meets first (render/arrows.h) and a butterfly turns
+// away from it (render/butterflies.h) -- different verbs, one predicate, and
+// the JS engine's rule under both: ground, trunk or branch alike.
+// ---------------------------------------------------------------------------
+inline bool insideWorld(const WalkWorld &w, const Vec3 &p) {
+    if (!w.terrain) return false;
+    const int i = int(floorf(p.x / VOXEL_M)), j = int(floorf(p.z / VOXEL_M));
+    const int y = int(floorf(p.y / VOXEL_M));
+    if (y <= w.terrain->heightVox(i, j)) return true;
+    for (int k = 0; k < w.solidCount; ++k) {
+        const Solid &s = w.solids[k];
+        if (s.hx <= 0.0f || s.hz <= 0.0f || p.y > s.top) continue;
+        const float dx = (p.x - s.cx) / s.hx, dz = (p.z - s.cz) / s.hz;
+        if (dx * dx + dz * dz < 1.0f) return true;
+    }
+    return false;
+}
+
 class Player {
   public:
     // Feet, in world metres. The camera sits `eye` above this.
@@ -124,19 +151,31 @@ class Player {
     static constexpr float kBounceGain = 1.35f;
     static constexpr float kBounceMax = 3.0f;
 
-    // EVERY mushroom, 25% higher -- and 25% higher is not 25% faster.
+    // EVERY mushroom, HALF AS HIGH AGAIN -- and half again is not half again
+    // as fast.
     //
-    // Height goes as v^2/2g, so a quarter more altitude is sqrt(1.25) on the
-    // launch speed, exactly as the 50% jump raise above took sqrt(1.5). Taking
-    // the naive 1.25 would have been a 56% raise in height and a cap worth
-    // fourteen jumps rather than eleven.
+    // Height goes as v^2/2g, so this is sqrt on the launch speed every time,
+    // exactly as the 50% jump raise above took sqrt(1.5). This factor has been
+    // raised twice now and the two compound in HEIGHT, not in speed: it was
+    // sqrt(1.25) for a quarter more, and a further half again over that is
+    // 1.25 * 1.5 = 1.875, so sqrt(1.875). Taking the naive 1.5 would have been
+    // a 125% raise instead of 50%, and a cap worth twenty-five jumps.
     //
     // Applied to the LAUNCH SPEED rather than folded into kBounceGain, because
-    // the gain compounds: a factor in there would be 25% on the first bounce,
-    // 56% on the second and away. This lifts the whole ladder by the same
-    // quarter, capped rung included -- the ceiling is still 3x the jump SPEED
-    // in the chain, now landing at 3.354x and 11.25 jump heights.
-    static constexpr float kBounceBoost = 1.1180340f;  // sqrt(1.25)
+    // the gain compounds: a factor in there would be 50% on the first bounce,
+    // 125% on the second and away. This lifts the whole ladder by the same
+    // half, capped rung included -- every rung below is 1.500x what it was:
+    //
+    //     first mushroom    3.72 m -> 5.58 m
+    //     second           6.78 m -> 10.16 m
+    //     third           12.35 m -> 18.53 m
+    //     capped          18.36 m -> 27.54 m
+    //
+    // The ceiling is still 3x the jump SPEED in the chain, now landing at
+    // 4.108x and 16.875 jump heights. Worth knowing what that reaches: the
+    // trees are 30.5 m, so a capped bounce now arrives just under the canopy
+    // rather than at half its height.
+    static constexpr float kBounceBoost = 1.3693064f;  // sqrt(1.875)
 
     // How fast the eye catches up after a step, per second. 18 is about a
     // 55 ms tail: long enough to remove the jolt, short enough that the view

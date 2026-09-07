@@ -226,6 +226,25 @@ class TriPool {
 // is what stops them drifting.
 constexpr uint8_t kMaskWorld = 0x01;
 constexpr uint8_t kMaskHeld = 0x02;
+
+// HOW MANY SHAFTS CAN BE IN THE AIR, as instances the structure reserves. It
+// is here rather than in render/arrows.h because the STRUCTURE is what the
+// number is really about: an update may not change how many instances there
+// are, so the slots have to exist from the first build whether or not anything
+// has been shot. See the note over the arrow block in rebuildTlas.
+constexpr int kArrowInstances = 12;
+
+// ...AND HOW MANY BUTTERFLIES, for exactly the same reason and at exactly the
+// same cost. The flock is a fixed pool of slots that are filled and emptied as
+// their homes come into range and leave it (render/butterflies.h), so the
+// number that matters to the STRUCTURE is the ceiling, not how many are flying:
+// every slot exists from the first build, masked off until something is in it.
+//
+// SIXTY-FOUR, against a scene of about forty-two thousand instances. The whole
+// band is a rounding error in the top-level structure and its refit, and it is
+// three times the flock the viewer opens with -- so `--butterflies` can be
+// turned up on the command line without the structure having to be told.
+constexpr int kFlyerInstances = 64;
 static_assert(kMaskWorld == uint8_t(MASK_WORLD), "ray masks disagree with the shader");
 static_assert(kMaskHeld == uint8_t(MASK_HELD), "ray masks disagree with the shader");
 
@@ -448,18 +467,28 @@ class World {
     // an engine that refuses to start over a missing viewmodel would be a worse
     // bug than the missing viewmodel.
     // -----------------------------------------------------------------------
-    bool loadHeldModel(const std::string &path, int *sx, int *sy, int *sz) {
+    int addHeldModel(const std::string &path, int *sx, int *sy, int *sz) {
         VoxModel mo;
         std::string err;
         if (!voxLoad(path, &mo, &err)) {
-            std::fprintf(stderr, "v2: held item %s: %s -- empty hand\n", path.c_str(),
-                         err.c_str());
-            return false;
+            std::fprintf(stderr, "v2: held item %s: %s -- skipped\n", path.c_str(), err.c_str());
+            return -1;
         }
-        VoxAsset a = toWorld(mo, 0, mo.sx);
+        return addHeldVox(mo, path, sx, sy, sz);
+    }
+
+    // The same, for a model that was COMPOSED rather than read. The bow's draw
+    // frames are cut out of one file by render/bow.h and never exist on disk as
+    // models of their own, so there is nothing for addHeldModel to open; `what`
+    // is only ever printed.
+    int addHeldVox(const VoxModel &mo, const std::string &path, int *sx, int *sy, int *sz) {
+        // WHOLE, NOT TRIMMED. A held model's pose is measured from the middle
+        // of its grid, and a strip's frames have to share one -- see
+        // toWorldWhole for what trimming does to a bow.
+        VoxAsset a = toWorldWhole(mo);
         if (a.sx <= 0) {
-            std::fprintf(stderr, "v2: held item %s is empty -- empty hand\n", path.c_str());
-            return false;
+            std::fprintf(stderr, "v2: held item %s is empty -- skipped\n", path.c_str());
+            return -1;
         }
 
         // ONLY THE ENTRIES THE MODEL USES, exactly as loadDecor does:
@@ -482,17 +511,19 @@ class World {
 
         const VoxMesh mesh = meshAsset(a, idOfEntry, 1.0f);
         if (mesh.triCount() == 0) {
-            std::fprintf(stderr, "v2: held item %s meshed to nothing -- empty hand\n",
-                         path.c_str());
-            return false;
+            std::fprintf(stderr, "v2: held item %s meshed to nothing -- skipped\n", path.c_str());
+            return -1;
         }
-        heldTri_ = pool_.upload(ctx_, mesh.tri);
-        heldBlas_ = buildBlas(mesh);
-        if (!heldBlas_.valid()) return false;
 
-        heldSx_ = a.sx;
-        heldSy_ = a.sy;
-        heldSz_ = a.sz;
+        HeldModel hm;
+        hm.tri = pool_.upload(ctx_, mesh.tri);
+        hm.blas = buildBlas(mesh);
+        if (!hm.blas.valid()) return -1;
+        hm.sx = a.sx;
+        hm.sy = a.sy;
+        hm.sz = a.sz;
+        held_.push_back(std::move(hm));
+
         if (sx) *sx = a.sx;
         if (sy) *sy = a.sy;
         if (sz) *sz = a.sz;
@@ -501,12 +532,130 @@ class World {
         std::fflush(stdout);
         // The slot has to exist in the structure from the next rebuild on --
         // see setHeldInstance for why it is present even while nothing is held.
-        heldLoaded_ = true;
-        rebuildTlas();
-        return true;
+        // Rebuilt on the FIRST model only: the slot is one instance whatever is
+        // in it, so a second tool changes nothing about the structure's shape.
+        if (held_.size() == 1) rebuildTlas();
+        return int(held_.size()) - 1;
     }
 
-    bool heldLoaded() const { return heldLoaded_; }
+    bool heldLoaded() const { return !held_.empty(); }
+    int heldModelCount() const { return int(held_.size()); }
+
+    // -----------------------------------------------------------------------
+    // A FLYER'S FRAME, as geometry, and it is deliberately not the held path.
+    //
+    // Everything a tool loads through -- the reader, the palette, the mesher,
+    // the pool, the structure -- is the same. ONE number differs and it is the
+    // one that decides which of two worlds the model lives in:
+    //
+    //   A HELD MODEL IS MESHED AT ONE UNIT PER VOXEL and shrunk by its instance
+    //   transform, because a viewmodel's size is a slider and re-meshing on
+    //   every twitch of it is absurd.
+    //
+    //   A FLYER IS MESHED AT VOXEL_M, so its vertices are already in metres and
+    //   the instance transform is a TURN AND A TRANSLATION -- the same shape
+    //   every tree and rock in this world carries. That is what keeps it on the
+    //   terrain's own path: the tracer's note over the normal transform says
+    //   every 3x3 in this scene is orthonormal, and a butterfly's is, where a
+    //   voxel-scaled one would not have been.
+    //
+    // (The fade a flyer materialises through does put a scale back into that
+    // 3x3 -- see KIND_FLYER. It is a uniform one, so the transform stays a
+    // rotation times a number, and one normalise in the tracer covers it.)
+    //
+    // WHOLE, NOT TRIMMED, for the same reason a bow's draw frames are: the
+    // eight flap frames are one animation and have to share an origin, and
+    // trimming each to its own occupied bounds would shift the body sideways
+    // every time a wing came up.
+    // -----------------------------------------------------------------------
+    int addFlyerModel(const VoxModel &mo, const std::string &what, int *sx, int *sy, int *sz) {
+        VoxAsset a = toWorldWhole(mo);
+        if (a.sx <= 0) {
+            std::fprintf(stderr, "v2: flyer %s is empty -- skipped\n", what.c_str());
+            return -1;
+        }
+        std::vector<uint8_t> idOfEntry(256, mat::AIR);
+        std::vector<bool> used(256, false);
+        for (uint8_t v : a.a) used[v] = true;
+        for (int e = 1; e <= 255; ++e)
+            if (used[size_t(e)])
+                // NOT A CONIFER: see the note over forModelColor for what the
+                // green rule does to a lime butterfly's wing.
+                idOfEntry[size_t(e)] = palette.forModelColor(mo.pal[size_t(e) - 1], false);
+        uploadMaterials();
+
+        const VoxMesh mesh = meshAsset(a, idOfEntry, VOXEL_M);
+        if (mesh.triCount() == 0) {
+            std::fprintf(stderr, "v2: flyer %s meshed to nothing -- skipped\n", what.c_str());
+            return -1;
+        }
+        HeldModel fm;
+        fm.tri = pool_.upload(ctx_, mesh.tri);
+        fm.blas = buildBlas(mesh);
+        if (!fm.blas.valid()) return -1;
+        fm.sx = a.sx;
+        fm.sy = a.sy;
+        fm.sz = a.sz;
+        flyers_.push_back(std::move(fm));
+
+        if (sx) *sx = a.sx;
+        if (sy) *sy = a.sy;
+        if (sz) *sz = a.sz;
+        // The band has to exist in the structure from the next rebuild on --
+        // see the note over kFlyerInstances. On the FIRST model only: the band
+        // is the same size whatever is loaded into it.
+        if (flyers_.size() == 1) rebuildTlas();
+        return int(flyers_.size()) - 1;
+    }
+
+    bool flyersLoaded() const { return !flyers_.empty(); }
+    int flyerModelCount() const { return int(flyers_.size()); }
+
+    // -----------------------------------------------------------------------
+    // Where one butterfly is this frame.
+    //
+    // `m` is the 3x3 row-major, the fade scale folded in; `tx/ty/tz` the
+    // translation; `px/py/pz` how far it moved since the last frame, which the
+    // motion vector needs and nothing else reads (see KIND_FLYER).
+    //
+    // NOTHING GOES UP THE BUS HERE. Unlike the tool and the shafts, which are
+    // one instance each and upload themselves, a flock is up to sixty-four
+    // instances that ALL move on every frame -- and sixty-four ten-byte-ish
+    // writes into a mapped buffer is a hundred and twenty-eight driver calls a
+    // frame to move six kilobytes. So these write the host's own copy and
+    // flushFlyerInstances sends the whole band in one go, twice.
+    // -----------------------------------------------------------------------
+    void setFlyerInstance(int slot, int model, const float *m, float tx, float ty, float tz,
+                          float px, float py, float pz, bool show) {
+        if (flyers_.empty() || flyerBase_ < 0 || slot < 0 || slot >= kFlyerInstances) return;
+        const size_t idx = size_t(flyerBase_ + slot);
+        if (idx >= instanceDescs_.size()) return;
+        static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        const bool ok = show && m && model >= 0 && model < int(flyers_.size());
+
+        RtInstanceDesc &inst = instanceDescs_[idx];
+        writeTransform(inst, ok ? m : kI, tx, ty, tz);
+        inst.instanceMask = ok ? kMaskWorld : 0;
+        inst.instanceID = uint32_t(idx);
+        const size_t mi = size_t(ok ? model : 0);
+        inst.accelerationStructure = flyers_[mi].blas.as->getGpuAddress();
+        instanceInfos_[idx].triOffset = flyers_[mi].tri;
+        instanceInfos_[idx].prevOffset = float3(px, py, pz);
+        flyersDirty_ = true;
+    }
+
+    // The whole band, in two writes. Called once a frame, before refitTlas.
+    void flushFlyerInstances() {
+        if (!flyersDirty_ || flyerBase_ < 0 || !instanceDescBuf_ || !instanceInfo_) return;
+        flyersDirty_ = false;
+        const size_t base = size_t(flyerBase_);
+        const size_t n = std::min(size_t(kFlyerInstances), instanceDescs_.size() - base);
+        if (n == 0) return;
+        ctx_->updateBuffer(instanceDescBuf_.get(), &instanceDescs_[base],
+                           base * sizeof(RtInstanceDesc), n * sizeof(RtInstanceDesc));
+        ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[base], base * sizeof(V6Instance),
+                           n * sizeof(V6Instance));
+    }
 
     // -----------------------------------------------------------------------
     // Where the tool is this frame, and a REFIT rather than a rebuild.
@@ -530,15 +679,80 @@ class World {
     // left alone. Uploading the whole array every frame would have cost more
     // than the refit.
     // -----------------------------------------------------------------------
-    void setHeldInstance(const float *m, float tx, float ty, float tz, bool show) {
-        if (!heldLoaded_ || !tlas_ || instanceDescs_.empty()) return;
+    void setHeldInstance(int model, const float *m, float tx, float ty, float tz, bool show) {
+        if (held_.empty() || !tlas_ || instanceDescs_.empty()) return;
+        if (model < 0 || model >= int(held_.size())) show = false;
 
         RtInstanceDesc &inst = instanceDescs_[0];
         writeTransform(inst, m, tx, ty, tz);
         inst.instanceMask = show ? kMaskHeld : 0;
         inst.instanceID = 0;
-        inst.accelerationStructure = heldBlas_.as->getGpuAddress();
+        // WHICH MODEL IS IN THE SLOT, AND WHY AN UPDATE MAY CHANGE IT. A
+        // top-level update is allowed to rewrite the instance descriptors; what
+        // it may not change is how MANY there are. So swapping tools -- and the
+        // bow stepping through its draw frames -- is the same 64-byte write as
+        // moving the tool, and costs the same refit. The instance's triOffset
+        // lives in a separate buffer that the structure never reads, so it is
+        // updated alongside rather than through the build.
+        if (show && model != heldModel_) {
+            heldModel_ = model;
+            instanceInfos_[0].triOffset = held_[size_t(model)].tri;
+            ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[0], 0, sizeof(V6Instance));
+        }
+        inst.accelerationStructure =
+            held_[size_t(model >= 0 && model < int(held_.size()) ? model : 0)]
+                .blas.as->getGpuAddress();
         ctx_->updateBuffer(instanceDescBuf_.get(), &inst, 0, sizeof(RtInstanceDesc));
+    }
+
+    // -----------------------------------------------------------------------
+    // One shaft, in the slot it was given. `m` null hides it.
+    //
+    // The arrow slots follow the held one, so slot i is instance 1 + i and its
+    // descriptor is at a fixed offset like the tool's. Same 64-byte write, same
+    // refit -- see setHeldInstance for why that is what makes any of this
+    // affordable.
+    // -----------------------------------------------------------------------
+    void setArrowInstance(int slot, int model, const float *m, float tx, float ty, float tz,
+                          bool show) {
+        if (held_.empty() || !tlas_ || slot < 0 || slot >= kArrowInstances) return;
+        const size_t idx = size_t(1 + slot);
+        if (idx >= instanceDescs_.size()) return;
+        static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+
+        RtInstanceDesc &inst = instanceDescs_[idx];
+        writeTransform(inst, m ? m : kI, tx, ty, tz);
+        inst.instanceMask = (show && m) ? kMaskWorld : 0;
+        inst.instanceID = uint32_t(idx);
+        if (model >= 0 && model < int(held_.size())) {
+            inst.accelerationStructure = held_[size_t(model)].blas.as->getGpuAddress();
+            if (instanceInfos_[idx].triOffset != held_[size_t(model)].tri) {
+                instanceInfos_[idx].triOffset = held_[size_t(model)].tri;
+                ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[idx],
+                                   idx * sizeof(V6Instance), sizeof(V6Instance));
+            }
+        }
+        ctx_->updateBuffer(instanceDescBuf_.get(), &inst, idx * sizeof(RtInstanceDesc),
+                           sizeof(RtInstanceDesc));
+    }
+
+    // -----------------------------------------------------------------------
+    // Fold this frame's writes into the structure.
+    //
+    // ONE UPDATE FOR ALL OF THEM. The tool and every shaft are written first
+    // and the tree is walked once afterwards; refitting per instance would pay
+    // the traversal thirteen times for the same frame.
+    // -----------------------------------------------------------------------
+    void refitTlas() {
+        // EITHER MOVER IS ENOUGH. This used to ask only whether a tool was
+        // loaded, which was the whole truth while the tool was the only thing
+        // in this world that moved. `--noaxe` with a flock in the air is now a
+        // world with nothing in the hand and sixty-four instances that move
+        // every frame, and refusing the refit there would have left every
+        // butterfly frozen at the origin.
+        if ((held_.empty() && flyers_.empty()) || !tlas_ || instanceDescs_.empty() ||
+            !tlasUpdateScratch_)
+            return;
 
         RtAccelerationStructureBuildInputs inputs = {};
         inputs.kind = RtAccelerationStructureKind::TopLevel;
@@ -921,12 +1135,27 @@ class World {
     ref<Buffer> materials_, instanceInfo_, instanceDescBuf_, tlasBuffer_, tlasScratch_;
     ref<RtAccelerationStructure> tlas_;
     std::vector<RtInstanceDesc> instanceDescs_;
-    // The tool in the hand: one bottom-level structure, its slice of the
-    // triangle pool, and the grid it was meshed from.
-    Blas heldBlas_;
-    uint32_t heldTri_ = TriPool::kInvalid;
-    int heldSx_ = 0, heldSy_ = 0, heldSz_ = 0;
-    bool heldLoaded_ = false;
+    // EVERY tool that can be in the hand: one bottom-level structure each, its
+    // slice of the triangle pool, and the grid it was meshed from. They share a
+    // single top-level slot -- see setHeldInstance -- because only one of them
+    // is ever held at a time, and an instance count that changed with the
+    // selection would cost a full rebuild on every scroll of the wheel.
+    struct HeldModel {
+        Blas blas;
+        uint32_t tri = TriPool::kInvalid;
+        int sx = 0, sy = 0, sz = 0;
+    };
+    std::vector<HeldModel> held_;
+    int heldModel_ = -1;  // which of them the slot currently points at
+    // EVERY FRAME OF EVERY COLOUR the flock can wear: six colours of eight, so
+    // forty-eight structures of ten voxels each. They are separate structures
+    // rather than one model posed, because that is what a voxel animation IS --
+    // see render/butterflies.h on why the flap is on the grid and the turn is
+    // not. Which one a slot points at is a 64-byte write, exactly as swapping
+    // the tool in the hand is.
+    std::vector<HeldModel> flyers_;
+    int flyerBase_ = -1;        // first instance of the band, -1 while unbuilt
+    bool flyersDirty_ = false;  // anything written since the last flush
     ref<Buffer> tlasUpdateScratch_;
     std::vector<V6Instance> instanceInfos_;
 
@@ -1712,7 +1941,9 @@ class World {
         info->triOffset = t.triOffset;
         info->kind = (p.kind == 0) ? KIND_TREE : KIND_TERRAIN;
         info->tint = (p.kind == 0) ? tintFor(p.cell) : float3(1.0f, 1.0f, 1.0f);
-        info->pad0 = info->pad1 = info->pad2 = 0u;
+        // A tree does not move, so the motion vector's static-world formula is
+        // exactly right for it and there is nothing to subtract.
+        info->prevOffset = float3(0.0f, 0.0f, 0.0f);
 
         inst.instanceMask = kMaskWorld;
         inst.instanceContributionToHitGroupIndex = 0;
@@ -1769,16 +2000,73 @@ class World {
         // The transform is identity here and is overwritten before the first
         // trace that could see it. The mask is 0 so it cannot be hit in the
         // meantime.
-        if (heldLoaded_ && heldBlas_.valid()) {
+        if (!held_.empty()) {
+            const size_t m = size_t(heldModel_ >= 0 && heldModel_ < int(held_.size()) ? heldModel_
+                                                                                      : 0);
             RtInstanceDesc held = {};
             writeTransform(held, kI, 0.0f, 0.0f, 0.0f);
             held.instanceMask = 0;
-            held.accelerationStructure = heldBlas_.as->getGpuAddress();
+            held.accelerationStructure = held_[m].blas.as->getGpuAddress();
             V6Instance info{};
-            info.triOffset = heldTri_;
+            info.triOffset = held_[m].tri;
             info.kind = KIND_HELD;
             info.tint = float3(1.0f, 1.0f, 1.0f);
             push(held, info);
+
+            // -- AND THE SHAFTS, RESERVED ----------------------------------
+            //
+            // Every arrow slot, present from this build on and masked off until
+            // something is actually in it. The count is what an update is not
+            // allowed to change, so a pool that grew with the shooting would
+            // force a full rebuild on every loose and every landing -- the two
+            // moments in the frame least able to afford one.
+            //
+            // KIND_TERRAIN, not KIND_HELD: a shaft in the air is an ordinary
+            // object in the world. It is lit like one, it casts like one, and
+            // -- unlike the tool -- the motion vector formula is exactly right
+            // for it, because it really does move through a world the camera is
+            // looking at from outside.
+            for (int i = 0; i < kArrowInstances; ++i) {
+                RtInstanceDesc arrow = {};
+                writeTransform(arrow, kI, 0.0f, 0.0f, 0.0f);
+                arrow.instanceMask = 0;
+                arrow.accelerationStructure = held_[m].blas.as->getGpuAddress();
+                V6Instance ai{};
+                ai.triOffset = held_[m].tri;
+                ai.kind = KIND_TERRAIN;
+                ai.tint = float3(1.0f, 1.0f, 1.0f);
+                push(arrow, ai);
+            }
+        }
+
+        // -- AND THE FLOCK, RESERVED THE SAME WAY -------------------------
+        //
+        // AFTER the hand and its shafts and BEFORE the water, so the band is
+        // contiguous and its base is the only thing setFlyerInstance has to
+        // know. The base is recorded rather than computed because it depends on
+        // whether anything is in the hand at all -- a `--noaxe` run puts the
+        // first butterfly at instance zero -- and the two loads can happen in
+        // either order.
+        flyerBase_ = -1;
+        if (!flyers_.empty()) {
+            flyerBase_ = int(instanceDescs_.size());
+            for (int i = 0; i < kFlyerInstances; ++i) {
+                RtInstanceDesc fly = {};
+                writeTransform(fly, kI, 0.0f, 0.0f, 0.0f);
+                fly.instanceMask = 0;
+                fly.accelerationStructure = flyers_[0].blas.as->getGpuAddress();
+                V6Instance fi{};
+                fi.triOffset = flyers_[0].tri;
+                fi.kind = KIND_FLYER;
+                fi.tint = float3(1.0f, 1.0f, 1.0f);
+                push(fly, fi);
+            }
+            // Whatever the flock had written into the old band is gone with it,
+            // so the next frame's publish has to go up whether or not a
+            // butterfly moved. Without this a rebuild -- which is to say every
+            // time the ring steps -- would leave the whole flock parked at the
+            // origin, masked off, until something happened to touch it.
+            flyersDirty_ = true;
         }
 
         {
@@ -1840,7 +2128,7 @@ class World {
         // little traversal speed on a structure that would otherwise never be
         // updated, and a world with nothing in the hand should not pay it.
         inputs.flags = RtAccelerationStructureBuildFlags::PreferFastTrace;
-        if (heldLoaded_)
+        if (!held_.empty() || !flyers_.empty())
             inputs.flags = inputs.flags | RtAccelerationStructureBuildFlags::AllowUpdate;
         inputs.descCount = n;
         inputs.instanceDescs = instanceDescBuf_->getGpuAddress();
@@ -1851,7 +2139,13 @@ class World {
         // Its own buffer rather than sharing the build's: an update is issued
         // in the middle of a frame that may also have rebuilt, and the driver
         // is entitled to still be reading the build scratch.
-        if (heldLoaded_)
+        // ...and EITHER MOVER, matching the flag above it. This asked only
+        // about the hand, which was the whole truth until something else in
+        // this world moved: an --out render loads no viewmodel at all, so a
+        // flock published into a structure with no update scratch was a refit
+        // that returned at its first line and sixty-four butterflies that were
+        // never in the picture.
+        if (!held_.empty() || !flyers_.empty())
             ensureBuffer(tlasUpdateScratch_, pre.updateScratchDataSize,
                          ResourceBindFlags::UnorderedAccess, "v2::tlasUpdateScratch");
 

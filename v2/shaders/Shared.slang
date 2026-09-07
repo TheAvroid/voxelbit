@@ -106,6 +106,28 @@ static const uint KIND_TREE = 2;
 // camera.
 static const uint KIND_HELD = 3;
 
+// A BUTTERFLY, and anything else that flies its own frames through the wood.
+//
+// It is an ordinary instance in the ordinary structure: the same triangle pool,
+// the same material table, the same shadow and bounce rays as the terrain it
+// flies over. That is the whole point of it -- a flyer here is lit by the wood
+// it is in, and lights it back, which a sprite composited over the finished
+// frame can never do.
+//
+// So this kind is not a second shading path. It exists for exactly two things
+// the tracer has to do differently, both in Trace.cs.slang:
+//
+//   NORMALISE THE TRANSFORMED NORMAL, for the same reason the held item does.
+//   A flyer's 3x3 is a free turn about Y times the scale it materialises
+//   through, so a face normal comes out of it that factor short of unit.
+//
+//   REPROJECT IT AS SOMETHING THAT MOVED. The motion vector below assumes a
+//   static world and a moving camera, which is true of every other instance in
+//   this scene and false of this one. prevOffset carries how far the instance
+//   travelled since the last frame, and subtracting it is the difference
+//   between a butterfly and a smear where a butterfly was.
+static const uint KIND_FLYER = 4;
+
 // ---------------------------------------------------------------------------
 // THE TWO RAY MASKS, AND WHY A VIEWMODEL NEEDS ONE.
 //
@@ -224,8 +246,18 @@ struct V6Instance
 {
     float3 tint;
     uint triOffset;
+    // HOW FAR THIS INSTANCE MOVED SINCE THE LAST FRAME, in world metres: the
+    // point it is at now, less this, is where it was. Zero for everything that
+    // stands still, which is everything but a flyer -- so the motion vector's
+    // static-world formula is untouched for the whole of the wood.
+    //
+    // AHEAD OF `kind` AND NOT AFTER IT. A float3 wants a 16-byte boundary in a
+    // structured buffer on the Vulkan path; put here it starts one, and the
+    // record is the same 32 bytes it always was. Put after `kind` it would
+    // start at 20, and what a member that straddles a row reads is not an
+    // error -- it is the wrong numbers.
+    float3 prevOffset;
     uint kind; // one of KIND_*
-    uint pad0, pad1, pad2;
 };
 
 // ---------------------------------------------------------------------------

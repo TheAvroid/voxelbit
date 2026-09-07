@@ -99,6 +99,26 @@ class Restir {
     float depthTol = 0.05f;
     float normalTol = 0.9f;  // cosine
 
+    // ---- world-space reservoirs ------------------------------------------
+    //
+    // Reservoirs filed against the voxel FACE they were found on, so a pixel
+    // that loses its screen history to a disocclusion can pick up what other
+    // pixels already learnt about that face instead of starting from noise.
+    // See shaders/RestirWorld.slang for why this is consulted only on the
+    // disocclusion path, and what goes wrong if it is not.
+    bool world = true;
+    // HARDER THAN maxM, DELIBERATELY. A face that has been accumulating for
+    // hundreds of frames would otherwise arrive carrying enough confidence to
+    // out-vote every candidate the newly-disoccluded pixel traces, and freeze
+    // it -- the same runaway restirCapM exists to stop, arriving from a
+    // different direction. Swept against a 64-sample reference on a walking
+    // camera: 4 -> 0.09596 RMSE, 8 -> 0.09576, 16 -> 0.09546, 32 -> 0.09542,
+    // against 0.09766 with no world map at all. The curve is flat past 16, so
+    // the gain is bounded by how many pixels disocclude rather than by how much
+    // confidence they are handed, and 16 takes the whole of it while staying
+    // well under the screen history's own cap.
+    int worldMaxM = 16;
+
     bool init(const Falcor::ref<Falcor::Device> &device) {
         device_ = device;
         try {
@@ -145,11 +165,41 @@ class Restir {
         // temporal pass would read it as history, so the history is declared
         // empty for one frame instead.
         historyValid_ = false;
+
+        // THE WORLD MAP IS NOT PER PIXEL AND IS NOT REALLOCATED HERE. It is
+        // indexed by voxel face, so its size follows how much WORLD is
+        // resident, not how many pixels are being traced -- resizing the window
+        // must not throw away what the surfaces have learnt. Allocated once,
+        // on the first resize that has a device.
+        if (!worldKeys_) allocWorld();
     }
 
     const Falcor::ref<Falcor::Buffer> &candidateBuffer() const { return candidate_; }
     const Falcor::ref<Falcor::Buffer> &finalBuffer() const { return spatialOut_; }
     const Falcor::ref<Falcor::Texture> &primaryPos() const { return primaryPos_; }
+
+    // HOW MANY FACES THE MAP REMEMBERS.
+    //
+    // One entry is a key, a lock word and a 48-byte reservoir -- 60 bytes, so
+    // 2^20 entries is 63 MB. That is a quarter of what SHaRC holds and it is
+    // enough: the map only ever needs the faces that are ON SCREEN, because a
+    // face nobody is looking at is a face no pixel will disocclude onto, and at
+    // 1920x1080 that is at most two million pixels sharing far fewer faces.
+    // Entries for faces left behind are simply overwritten when their slot is
+    // next claimed; there is no eviction pass and nothing needs one.
+    static constexpr uint32_t kWorldCapacity = 1u << 20;
+
+    void allocWorld() {
+        using Falcor::ResourceBindFlags;
+        const auto kRw = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
+        worldKeys_ = device_->createStructuredBuffer(sizeof(uint64_t), kWorldCapacity, kRw);
+        worldLock_ = device_->createStructuredBuffer(sizeof(uint32_t), kWorldCapacity, kRw);
+        worldRes_ = device_->createStructuredBuffer(sizeof(ReservoirCpu), kWorldCapacity, kRw);
+        worldKeys_->setName("v2::restirWorldKeys");
+        worldLock_->setName("v2::restirWorldLock");
+        worldRes_->setName("v2::restirWorldRes");
+        worldCleared_ = false;
+    }
 
     // ---------------------------------------------------------------------
     // Temporal, then spatial. Run after the trace has filled `candidate`.
@@ -164,6 +214,19 @@ class Restir {
              Falcor::float2 jitter) {
         if (!ready_ || !candidate_) return;
         const uint32_t prev = cur_ ^ 1u;
+
+        // A KEY BUFFER OUT OF THE ALLOCATOR HOLDS WHATEVER WAS THERE, and the
+        // map reads a slot as occupied whenever its key is not zero. Left
+        // uncleared, the first frame finds a million random keys already in
+        // residence, every claim walks its whole bucket and fails, and the
+        // feature silently does nothing at all. Cleared once, not per frame:
+        // the whole point is that it accumulates.
+        if (worldKeys_ && !worldCleared_) {
+            ctx->clearUAV(worldKeys_->getUAV().get(), Falcor::uint4(0));
+            ctx->clearUAV(worldLock_->getUAV().get(), Falcor::uint4(0));
+            ctx->clearUAV(worldRes_->getUAV().get(), Falcor::uint4(0));
+            worldCleared_ = true;
+        }
 
         {
             auto var = temporalPass_->getRootVar();
@@ -183,6 +246,14 @@ class Restir {
             var["RestirCB"]["gNormalTol"] = normalTol;
             var["RestirCB"]["gEnabled"] = (enabled && temporal && historyValid_) ? 1u : 0u;
             var["RestirCB"]["gJitter"] = jitter;
+
+            var["gPrimaryPos"] = primaryPos_;
+            var["gWorldKeys"] = worldKeys_;
+            var["gWorldLock"] = worldLock_;
+            var["gWorldRes"] = worldRes_;
+            var["RestirWorldCB"]["gWorldCapacity"] = kWorldCapacity;
+            var["RestirWorldCB"]["gWorldMaxM"] = uint32_t(worldMaxM);
+            var["RestirWorldCB"]["gWorldEnabled"] = (enabled && world) ? 1u : 0u;
             temporalPass_->execute(ctx, w_, h_);
         }
         {
@@ -220,9 +291,10 @@ class Restir {
     Falcor::ref<Falcor::Device> device_;
     Falcor::ref<Falcor::ComputePass> temporalPass_, spatialPass_;
     Falcor::ref<Falcor::Buffer> candidate_, temporal_[2], spatialOut_;
+    Falcor::ref<Falcor::Buffer> worldKeys_, worldLock_, worldRes_;
     Falcor::ref<Falcor::Texture> primaryPos_, prevNormRough_, prevDepth_;
     uint32_t w_ = 0, h_ = 0, cur_ = 0;
-    bool ready_ = false, historyValid_ = false;
+    bool ready_ = false, historyValid_ = false, worldCleared_ = false;
     std::string status_ = "not initialised";
 };
 

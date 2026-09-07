@@ -41,4 +41,9 @@ void main(uint3 tid: SV_DispatchThreadID)
     rp.frameIndex = gSharcFrame;
 
     SharcResolveEntry(entry, sharcParams(), rp);
+
+    // Occupancy, counted AFTER the resolve so evicted entries are already
+    // gone from the total rather than counted one last time on their way out.
+    if (gSharcStatsOn != 0 && gSharcHashEntries[entry] != 0)
+        InterlockedAdd(gSharcStats[0], 1u);
 }

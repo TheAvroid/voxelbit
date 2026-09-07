@@ -75,6 +75,7 @@
 #include "../core/vecmath.h"
 #include "../gpu/world.h"
 #include "../scene/collide.h"
+#include "bow.h"
 #include "../scene/voxelworld.h"
 #include "player.h"
 
@@ -97,6 +98,38 @@ struct HeldPose {
     float yaw = 0.04f, pitch = -1.42f, roll = 1.58f;
     float scale = 0.08f;
 };
+
+// ---------------------------------------------------------------------------
+// ONE TOOL: a model, the pose it hangs at, and what to call it.
+//
+// The pose is PER TOOL and not shared, which is the JS engine's rule and the
+// reason its PICK_DEFS is a table rather than a constant -- tuning one item
+// there never moves the others. The pick happens to start on the axe's bake
+// because it is the same haft and the same swing, exactly as that engine's
+// own comment says of it.
+// ---------------------------------------------------------------------------
+struct Tool {
+    const char *name = "";
+    // A STRIP, not a model. Most tools are one frame and index [0] for ever;
+    // the bow is fourteen -- seven of the draw with an arrow on the string,
+    // then the same seven without it, for after the loose. They are separate
+    // bottom-level structures sharing one top-level slot, so stepping through
+    // the draw is the same refit as moving the hand.
+    std::vector<int> models;
+    HeldPose pose;
+    int sx = 0, sy = 0, sz = 0;  // the strip's shared box, in its own voxels
+    // Whether the draw clock drives which frame is shown.
+    bool bow = false;
+};
+
+// -- the bow's own timing, from the JS engine's ui/audio.js -----------------
+//
+// The right button pulls 00 -> 02 and HOLDS at 02; releasing runs 03 out to the
+// end and returns to rest. Both are STEPPED, not interpolated: a frame is
+// picked, so the bow reads as drawn art rather than as a tween.
+inline constexpr float kBowDrawMs = 260.0f;
+// The loose and the return to rest -- TWICE the speed of the pull.
+inline constexpr float kBowRelMs = 130.0f;
 
 // The field of view the poses above were tuned at, as the tangent of its half
 // angle. 72 degrees, from FOV in the JS engine's ui/hud.js.
@@ -254,24 +287,134 @@ struct HeldXform {
 
 class HeldItem {
   public:
-    // -- what the settings menu edits ---------------------------------------
-    HeldPose pose;
-    // Whether there is anything in the hand at all. H puts the axe away.
+    // Whether there is anything in the hand at all. H puts it away.
     bool shown = true;
 
     // -----------------------------------------------------------------------
-    // Load the model into the world. Everything about it as GEOMETRY -- the
-    // palette registration, the mesh, the triangle pool, the structure -- lives
-    // there, because that is where every other model's does; what stays here is
+    // Put a tool in the kit. Everything about it as GEOMETRY -- the palette
+    // registration, the mesh, the triangle pool, the structure -- lives in the
+    // world, because that is where every other model's does; what stays here is
     // the model's box, which is all a pose needs.
+    //
+    // ORDER IS THE ORDER YOU SCROLL THROUGH, and the first one added is what
+    // the hand opens with -- the JS engine's giveStartKit rule, where the axe
+    // goes in first so slot one is what the player holds when the world
+    // appears.
     // -----------------------------------------------------------------------
-    bool init(World &world, const std::string &voxPath) {
-        if (!world.loadHeldModel(voxPath, &sx_, &sy_, &sz_)) return false;
-        ready_ = true;
+    bool add(World &world, const char *name, const std::string &voxPath, const HeldPose &pose) {
+        Tool t;
+        t.name = name;
+        t.pose = pose;
+        const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz);
+        if (m < 0) return false;
+        t.models.push_back(m);
+        tools_.push_back(t);
         return true;
     }
 
-    bool ready() const { return ready_; }
+    // -----------------------------------------------------------------------
+    // The bow: one file, cut into a strip, registered as fourteen models.
+    //
+    // The two halves go in one after the other and the draw indexes them by
+    // arithmetic rather than by a second list -- nocked frame f is models[f],
+    // bare frame f is models[frames + f] -- which is the same trick the engine
+    // this came from uses with BOW_IT and BOW_NOCK being two runs of
+    // consecutive item ids.
+    // -----------------------------------------------------------------------
+    bool addBow(World &world, const char *name, const std::string &voxPath,
+                const HeldPose &pose) {
+        std::string err;
+        const BowStrip strip = parseBowStrip(voxPath, &err);
+        if (!strip.ok()) {
+            std::fprintf(stderr, "v2: bow %s: %s -- skipped\n", voxPath.c_str(),
+                         err.empty() ? "no strip" : err.c_str());
+            return false;
+        }
+
+        Tool t;
+        t.name = name;
+        t.pose = pose;
+        t.bow = true;
+        for (const VoxModel &m : strip.withArrow) {
+            const int i = world.addHeldVox(m, voxPath + " (nocked)", &t.sx, &t.sy, &t.sz);
+            if (i < 0) return false;
+            t.models.push_back(i);
+        }
+        for (const VoxModel &m : strip.bowOnly) {
+            const int i = world.addHeldVox(m, voxPath + " (bare)", &t.sx, &t.sy, &t.sz);
+            if (i < 0) return false;
+            t.models.push_back(i);
+        }
+        bowFrames_ = strip.frames;
+        tools_.push_back(t);
+        std::printf("v2: bow %s  %d frames, %dx%dx%d\n", voxPath.c_str(), strip.frames, t.sx,
+                    t.sy, t.sz);
+        std::fflush(stdout);
+        return true;
+    }
+
+    bool holdingBow() const { return ready() && tools_[size_t(sel_)].bow; }
+
+    bool ready() const { return !tools_.empty(); }
+    int count() const { return int(tools_.size()); }
+    int selected() const { return sel_; }
+    const char *name() const { return ready() ? tools_[size_t(sel_)].name : "empty"; }
+
+    // The pose of whatever is in the hand, for the menu to edit.
+    HeldPose &pose() { return tools_[size_t(sel_)].pose; }
+
+    // -----------------------------------------------------------------------
+    // Change tools. `d` is +1 or -1 and it wraps, which is what a wheel wants.
+    //
+    // THE SWAP ANIMATION IS THE POINT OF ROUTING IT THROUGH HERE: the tool
+    // drops out of frame and the next rises in, which is what makes a change of
+    // hands read as one rather than as a cut. See kSwapMs.
+    // -----------------------------------------------------------------------
+    void cycle(int d) {
+        if (tools_.size() < 2) return;
+        const int n = int(tools_.size());
+        sel_ = ((sel_ + d) % n + n) % n;
+        swapT0_ = nowMs_;
+    }
+    void select(int i) {
+        if (i < 0 || i >= int(tools_.size()) || i == sel_) return;
+        sel_ = i;
+        swapT0_ = nowMs_;
+    }
+
+    // -----------------------------------------------------------------------
+    // Which model the world should put in the held slot this frame.
+    //
+    // WHICH FRAME OF THE DRAW, for the bow, and it is the JS engine's bowFrame
+    // exactly: pull to 02 over kBowDrawMs and hold there while the button is
+    // down, then run 03 to the end over kBowRelMs and settle back to 00. The
+    // BARE strip takes over from the moment it is loosed, so the arrow is gone
+    // from the bow the instant it leaves -- and comes back when the strip
+    // returns to rest, which is the bow being nocked again.
+    // -----------------------------------------------------------------------
+    int model() const {
+        if (!ready()) return -1;
+        const Tool &t = tools_[size_t(sel_)];
+        if (t.models.empty()) return -1;
+        if (!t.bow || bowFrames_ <= 0) return t.models[0];
+
+        int f = 0;
+        if (drawing_) {
+            const float k = float((nowMs_ - bowT0_) / double(kBowDrawMs));
+            f = mini(2, int(clampf(k, 0.0f, 1.0f) * 3.0f));
+        } else {
+            const float e = float((nowMs_ - bowRel_) / double(kBowRelMs));
+            if (e >= 0.0f && e < 1.0f)
+                f = mini(bowFrames_ - 1, 3 + int(e * float(bowFrames_ - 3)));
+        }
+        const bool bare = loosed_ && f > 0;
+        const size_t i = size_t(f) + (bare ? size_t(bowFrames_) : 0);
+        return t.models[i < t.models.size() ? i : 0];
+    }
+
+    // True from the loose until the bow settles back to rest -- the frames
+    // without the arrow on them.
+    bool bowLoosed() const { return loosed_; }
 
     // -----------------------------------------------------------------------
     // One tick of the animation.
@@ -284,8 +427,33 @@ class HeldItem {
     // `bobAmp` is the player's walk bob, and it does double duty: see the note
     // below on why the idle sway is gated on it.
     // -----------------------------------------------------------------------
-    bool update(float dt, bool swingHeld, float bobAmp) {
+    // `drawHeld` is the right mouse button, and it only means anything with a
+    // bow in the hand. Returns true on the frame an arrow is loosed, with `draw`
+    // set to how far it was pulled -- 0 at the earliest release, 1 at a full
+    // pull, which is what the shot is worth.
+    bool update(float dt, bool swingHeld, float bobAmp, bool drawHeld = false,
+                float *draw = nullptr) {
         nowMs_ += double(dt) * 1000.0;
+
+        // -- the draw --------------------------------------------------------
+        bool loosedNow = false;
+        const bool wantDraw = drawHeld && shown && holdingBow();
+        if (wantDraw && !drawing_) {
+            drawing_ = true;
+            loosed_ = false;
+            bowT0_ = nowMs_;
+        } else if (!wantDraw && drawing_) {
+            drawing_ = false;
+            bowRel_ = nowMs_;
+            loosed_ = true;
+            loosedNow = true;
+            // HOW FAR IT WAS PULLED, and the shot is worth exactly that: the
+            // JS engine's dk, clamped 0..1 over the same kBowDrawMs the frames
+            // step through, so a snatched release carries less than a held one.
+            if (draw) *draw = clampf(float((nowMs_ - bowT0_) / double(kBowDrawMs)), 0.0f, 1.0f);
+        }
+        // Back at rest: the bow is nocked again and the arrow is on it.
+        if (loosed_ && !drawing_ && nowMs_ - bowRel_ >= double(kBowRelMs)) loosed_ = false;
 
         if (shown != wasShown_) {
             // A tool that has just come into the hand rises into frame rather
@@ -295,7 +463,7 @@ class HeldItem {
             if (shown) swapT0_ = nowMs_;
         }
 
-        if (swingHeld && shown && nowMs_ - swingStart_ >= double(kSwingMs)) {
+        if (swingHeld && shown && !holdingBow() && nowMs_ - swingStart_ >= double(kSwingMs)) {
             swingStart_ = nowMs_;
             impactAt_ = nowMs_ + double(kImpactMs);
         }
@@ -316,15 +484,24 @@ class HeldItem {
         // anyway -- the bob moves the eye, the swing is over in 570 ms -- so
         // the sway costs nothing that was not already being paid. Stand still
         // and the tool settles, which is exactly the state a screenshot wants.
-        const float target = maxf(bobAmp, (nowMs_ - swingStart_ < double(kSwingMs)) ? 1.0f : 0.0f);
+        const float target = maxf(bobAmp, (nowMs_ - swingStart_ < double(kSwingMs) || drawing_)
+                                              ? 1.0f
+                                              : 0.0f);
         live_ += (target - live_) * (1.0f - expf(-6.0f * dt));
 
         if (impactAt_ > 0.0 && nowMs_ >= impactAt_) {
             impactAt_ = 0.0;
-            return true;
+            swungNow_ = true;
+        } else {
+            swungNow_ = false;
         }
-        return false;
+        return loosedNow;
     }
+
+    // True on the ONE frame a swing's blow lands, 250 ms into it. Read after
+    // update(), which returns whether an ARROW was loosed instead -- the two
+    // cannot happen together, since a bow does not swing.
+    bool struck() const { return swungNow_; }
 
     // Where in the swing we are, 0..1, and >= 1 when nothing is swinging. Only
     // the menu's readout reads this; the pose below computes its own.
@@ -337,7 +514,8 @@ class HeldItem {
     // already invalidates through the eye it moves.
     bool animating() const {
         return shown && (nowMs_ - swingStart_ < double(kSwingMs) ||
-                         nowMs_ - swapT0_ < double(kSwapMs) || live_ > 0.01f);
+                         nowMs_ - swapT0_ < double(kSwapMs) || live_ > 0.01f || drawing_ ||
+                         (loosed_ && nowMs_ - bowRel_ < double(kBowRelMs)));
     }
 
     // -----------------------------------------------------------------------
@@ -351,8 +529,10 @@ class HeldItem {
     // -----------------------------------------------------------------------
     HeldXform xform(const V6Camera &cam, float bobPhase, float bobAmp) const {
         HeldXform out;
-        out.show = shown && ready_;
+        out.show = shown && ready();
         if (!out.show) return out;
+        const Tool &tool = tools_[size_t(sel_)];
+        const HeldPose &pose = tool.pose;
 
         // -- the swing ------------------------------------------------------
         //
@@ -456,8 +636,9 @@ class HeldItem {
         // model carried down its own three axes.
         const Vec3 eye(cam.pos.x, cam.pos.y, cam.pos.z);
         const Vec3 centre = eye + toWorldDir(anchor);
-        const Vec3 corner = centre - (colX * (0.5f * float(sx_)) + colY * (0.5f * float(sy_)) +
-                                      colZ * (0.5f * float(sz_)));
+        const Vec3 corner = centre - (colX * (0.5f * float(tool.sx)) +
+                                      colY * (0.5f * float(tool.sy)) +
+                                      colZ * (0.5f * float(tool.sz)));
         out.tx = corner.x;
         out.ty = corner.y;
         out.tz = corner.z;
@@ -465,8 +646,8 @@ class HeldItem {
     }
 
   private:
-    int sx_ = 0, sy_ = 0, sz_ = 0;  // the model's box, in its own voxels
-    bool ready_ = false;
+    std::vector<Tool> tools_;
+    int sel_ = 0;
 
     // Milliseconds since the item came up, on the same clock the walk uses --
     // the shot clock under --shot-walk, so a scripted take animates identically
@@ -479,6 +660,13 @@ class HeldItem {
     bool wasShown_ = true;
     // How alive the hand is, 0..1 -- eased, and the gate on the idle sway.
     float live_ = 0.0f;
+
+    // -- the bow ------------------------------------------------------------
+    int bowFrames_ = 0;
+    bool drawing_ = false;  // the right button is down on a bow
+    bool loosed_ = false;   // shot, and not yet settled back to rest
+    double bowT0_ = -1.0e9, bowRel_ = -1.0e9;
+    bool swungNow_ = false;
 };
 
 }  // namespace v2
