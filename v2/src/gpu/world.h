@@ -221,6 +221,14 @@ class TriPool {
     }
 };
 
+// THE TWO RAY MASKS, host side. Shared.slang carries the shader's copy and the
+// note on what they are for; these are the same two bits, and the assert below
+// is what stops them drifting.
+constexpr uint8_t kMaskWorld = 0x01;
+constexpr uint8_t kMaskHeld = 0x02;
+static_assert(kMaskWorld == uint8_t(MASK_WORLD), "ray masks disagree with the shader");
+static_assert(kMaskHeld == uint8_t(MASK_HELD), "ray masks disagree with the shader");
+
 // A bottom-level structure and the buffer under it.
 struct Blas {
     ref<Buffer> buffer;
@@ -418,6 +426,173 @@ class World {
     const ref<Buffer> &instanceBuffer() const { return instanceInfo_; }
     const ref<Buffer> &materialBuffer() const { return materials_; }
 
+    // -----------------------------------------------------------------------
+    // THE TOOL IN THE PLAYER'S HAND, as geometry.
+    //
+    // Loaded exactly the way a rock is -- the same .vox reader, the same
+    // Palette::forModelColor for every colour it uses, the same mesher, the
+    // same triangle pool, the same bottom-level structure. It is a decor model
+    // that happens to be placed by the camera instead of by the scatter, and
+    // everything downstream of here treats it as one.
+    //
+    // MESHED AT ONE UNIT PER VOXEL, not at VOXEL_M. A held tool's voxels are a
+    // few millimetres, the size depends on the pose and on the field of view,
+    // and both move on a slider -- so the size lives in the instance transform
+    // as a uniform scale rather than baked into vertices that would have to be
+    // re-meshed every time the slider twitched. It is the only instance in this
+    // scene carrying a scale, which is why KIND_HELD exists: the shader has to
+    // normalise the normal it transforms. See Trace.cs.slang.
+    //
+    // Returns the grid's extents so the caller can build a pose around the
+    // model's own box; false if the file will not load, which is not fatal --
+    // an engine that refuses to start over a missing viewmodel would be a worse
+    // bug than the missing viewmodel.
+    // -----------------------------------------------------------------------
+    bool loadHeldModel(const std::string &path, int *sx, int *sy, int *sz) {
+        VoxModel mo;
+        std::string err;
+        if (!voxLoad(path, &mo, &err)) {
+            std::fprintf(stderr, "v2: held item %s: %s -- empty hand\n", path.c_str(),
+                         err.c_str());
+            return false;
+        }
+        VoxAsset a = toWorld(mo, 0, mo.sx);
+        if (a.sx <= 0) {
+            std::fprintf(stderr, "v2: held item %s is empty -- empty hand\n", path.c_str());
+            return false;
+        }
+
+        // ONLY THE ENTRIES THE MODEL USES, exactly as loadDecor does:
+        // registering all 255 of a file's palette floods a table that is 255
+        // entries for the whole world, and past the end forModelColor returns
+        // AIR and real voxels stop being drawn.
+        std::vector<uint8_t> idOfEntry(256, mat::AIR);
+        std::vector<bool> used(256, false);
+        for (uint8_t v : a.a) used[v] = true;
+        int minted = 0;
+        for (int e = 1; e <= 255; ++e)
+            if (used[size_t(e)]) {
+                idOfEntry[size_t(e)] = palette.forModelColor(mo.pal[size_t(e) - 1]);
+                if (idOfEntry[size_t(e)] != mat::AIR) ++minted;
+            }
+        // The entries this just minted are not on the GPU yet: init() uploaded
+        // the table before this was called, because the world has to exist
+        // before anything can be held in front of it.
+        uploadMaterials();
+
+        const VoxMesh mesh = meshAsset(a, idOfEntry, 1.0f);
+        if (mesh.triCount() == 0) {
+            std::fprintf(stderr, "v2: held item %s meshed to nothing -- empty hand\n",
+                         path.c_str());
+            return false;
+        }
+        heldTri_ = pool_.upload(ctx_, mesh.tri);
+        heldBlas_ = buildBlas(mesh);
+        if (!heldBlas_.valid()) return false;
+
+        heldSx_ = a.sx;
+        heldSy_ = a.sy;
+        heldSz_ = a.sz;
+        if (sx) *sx = a.sx;
+        if (sy) *sy = a.sy;
+        if (sz) *sz = a.sz;
+        std::printf("v2: held item %s  %dx%dx%d, %zu tris, %d materials\n", path.c_str(), a.sx,
+                    a.sy, a.sz, mesh.triCount(), minted);
+        std::fflush(stdout);
+        // The slot has to exist in the structure from the next rebuild on --
+        // see setHeldInstance for why it is present even while nothing is held.
+        heldLoaded_ = true;
+        rebuildTlas();
+        return true;
+    }
+
+    bool heldLoaded() const { return heldLoaded_; }
+
+    // -----------------------------------------------------------------------
+    // Where the tool is this frame, and a REFIT rather than a rebuild.
+    //
+    // `m` is the 3x3 in row-major order, scale included; `tx/ty/tz` the
+    // translation. `show` false hides it by zeroing the instance mask, which is
+    // how a hidden tool costs nothing: the traversal rejects it before it looks
+    // at the geometry, and the slot stays in the structure so the refit below
+    // still has the same instance count it was built with.
+    //
+    // A REFIT, AND THAT IS THE WHOLE REASON THIS IS AFFORDABLE. Rebuilding the
+    // top-level structure costs 1.15 ms on this scene -- measured, over 31
+    // rebuilds at 42 000 instances -- against a 3.28 ms median frame, so doing
+    // it every frame to move one 19-voxel model would have been a third of the
+    // frame rate. An update reuses the tree and only moves the box that
+    // changed, which is exactly the case it is designed for: one instance
+    // moving a little, every other one standing still.
+    //
+    // AND ONLY 64 BYTES GO UP THE BUS. The held item is instance ZERO, always,
+    // so its descriptor sits at offset 0 and the other forty-two thousand are
+    // left alone. Uploading the whole array every frame would have cost more
+    // than the refit.
+    // -----------------------------------------------------------------------
+    void setHeldInstance(const float *m, float tx, float ty, float tz, bool show) {
+        if (!heldLoaded_ || !tlas_ || instanceDescs_.empty()) return;
+
+        RtInstanceDesc &inst = instanceDescs_[0];
+        writeTransform(inst, m, tx, ty, tz);
+        inst.instanceMask = show ? kMaskHeld : 0;
+        inst.instanceID = 0;
+        inst.accelerationStructure = heldBlas_.as->getGpuAddress();
+        ctx_->updateBuffer(instanceDescBuf_.get(), &inst, 0, sizeof(RtInstanceDesc));
+
+        RtAccelerationStructureBuildInputs inputs = {};
+        inputs.kind = RtAccelerationStructureKind::TopLevel;
+        inputs.flags = RtAccelerationStructureBuildFlags::PreferFastTrace |
+                       RtAccelerationStructureBuildFlags::AllowUpdate |
+                       RtAccelerationStructureBuildFlags::PerformUpdate;
+        inputs.descCount = uint32_t(instanceDescs_.size());
+        inputs.instanceDescs = instanceDescBuf_->getGpuAddress();
+
+        RtAccelerationStructure::BuildDesc bd = {};
+        bd.inputs = inputs;
+        // IN PLACE: source and destination are the same structure, which the
+        // API allows for an update and which is what makes this cost one pass
+        // over the tree rather than a copy of it.
+        bd.source = tlas_.get();
+        bd.dest = tlas_.get();
+        bd.scratchData = tlasUpdateScratch_->getGpuAddress();
+        ctx_->buildAccelerationStructure(bd, 0, nullptr);
+        ctx_->uavBarrier(tlasBuffer_.get());
+    }
+
+    // -----------------------------------------------------------------------
+    // The palette, as the shader's material table.
+    //
+    // A SEPARATE FUNCTION BECAUSE THE TABLE CAN GAIN ENTRIES AFTER init(). Every
+    // model registers its colours through Palette::forModelColor as it loads,
+    // and until the axe there was nothing that loaded outside this class -- so
+    // the upload sat inline at the end of init() and the table was final the
+    // moment it ran. render/helditem.h registers the held model's colours the
+    // same way and then asks for this, which is the whole of what it needs from
+    // the world: the tool indexes the same table as every rock, so it is shaded
+    // by the same materials rather than by a set of its own.
+    //
+    // The palette is a fixed 255 entries whose fields line up one for one with
+    // the shader's material record, but they are separate structs on purpose:
+    // MaterialLook belongs to the world builder and V6Material to the pipeline,
+    // and the day one of them gains a field the other does not need, this loop
+    // is the only thing that has to know.
+    void uploadMaterials() {
+        std::vector<V6Material> mats(palette.table().size());
+        for (size_t i = 0; i < mats.size(); ++i) {
+            const MaterialLook &m = palette.table()[i];
+            mats[i].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
+            mats[i].roughness = m.roughness;
+            mats[i].specular = m.specular;
+            mats[i].translucency = m.translucency;
+            mats[i].pad0 = mats[i].pad1 = 0.0f;
+        }
+        materials_ = device_->createStructuredBuffer(sizeof(V6Material), uint32_t(mats.size()),
+                                                     ResourceBindFlags::ShaderResource,
+                                                     Falcor::MemoryType::DeviceLocal, mats.data());
+        materials_->setName("v2::materials");
+    }
+
     size_t chunkCount() const { return chunks_.size(); }
     size_t instanceCount() const { return instanceDescs_.size(); }
     size_t decorCount(int kind) const {
@@ -497,24 +672,7 @@ class World {
         palette.deriveGroundFromTrees();
         buildWater();
 
-        // The palette is a fixed 255 entries whose fields line up one for one
-        // with the shader's material record, but they are separate structs on
-        // purpose: MaterialLook belongs to the world builder and V6Material to
-        // the pipeline, and the day one of them gains a field the other does
-        // not need, this loop is the only thing that has to know.
-        std::vector<V6Material> mats(palette.table().size());
-        for (size_t i = 0; i < mats.size(); ++i) {
-            const MaterialLook &m = palette.table()[i];
-            mats[i].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
-            mats[i].roughness = m.roughness;
-            mats[i].specular = m.specular;
-            mats[i].translucency = m.translucency;
-            mats[i].pad0 = mats[i].pad1 = 0.0f;
-        }
-        materials_ = device_->createStructuredBuffer(sizeof(V6Material), uint32_t(mats.size()),
-                                                     ResourceBindFlags::ShaderResource,
-                                                     Falcor::MemoryType::DeviceLocal, mats.data());
-        materials_->setName("v2::materials");
+        uploadMaterials();
 
         mesher_.seed = seed;
         mesher_.treeDensity = treeDensity;
@@ -763,6 +921,13 @@ class World {
     ref<Buffer> materials_, instanceInfo_, instanceDescBuf_, tlasBuffer_, tlasScratch_;
     ref<RtAccelerationStructure> tlas_;
     std::vector<RtInstanceDesc> instanceDescs_;
+    // The tool in the hand: one bottom-level structure, its slice of the
+    // triangle pool, and the grid it was meshed from.
+    Blas heldBlas_;
+    uint32_t heldTri_ = TriPool::kInvalid;
+    int heldSx_ = 0, heldSy_ = 0, heldSz_ = 0;
+    bool heldLoaded_ = false;
+    ref<Buffer> tlasUpdateScratch_;
     std::vector<V6Instance> instanceInfos_;
 
     size_t residentTris_ = 0;
@@ -1549,7 +1714,7 @@ class World {
         info->tint = (p.kind == 0) ? tintFor(p.cell) : float3(1.0f, 1.0f, 1.0f);
         info->pad0 = info->pad1 = info->pad2 = 0u;
 
-        inst.instanceMask = 0xFF;
+        inst.instanceMask = kMaskWorld;
         inst.instanceContributionToHitGroupIndex = 0;
         inst.flags = RtGeometryInstanceFlags::None;
         inst.accelerationStructure = t.blas.as->getGpuAddress();
@@ -1591,10 +1756,35 @@ class World {
             instanceInfos_.push_back(info);
         };
 
+        // -- THE HELD ITEM IS INSTANCE ZERO, ALWAYS ------------------------
+        //
+        // First, before the water, and present on every rebuild from the moment
+        // the model loads -- whether or not anything is in the hand. Two things
+        // depend on that and both are in setHeldInstance: its descriptor is at
+        // a FIXED offset, so moving it is a 64-byte write rather than a 2.7 MB
+        // one; and the instance COUNT never changes, which is what an update is
+        // allowed to assume. A slot that came and went would force a full
+        // rebuild on every draw and put away.
+        //
+        // The transform is identity here and is overwritten before the first
+        // trace that could see it. The mask is 0 so it cannot be hit in the
+        // meantime.
+        if (heldLoaded_ && heldBlas_.valid()) {
+            RtInstanceDesc held = {};
+            writeTransform(held, kI, 0.0f, 0.0f, 0.0f);
+            held.instanceMask = 0;
+            held.accelerationStructure = heldBlas_.as->getGpuAddress();
+            V6Instance info{};
+            info.triOffset = heldTri_;
+            info.kind = KIND_HELD;
+            info.tint = float3(1.0f, 1.0f, 1.0f);
+            push(held, info);
+        }
+
         {
             RtInstanceDesc water = {};
             writeTransform(water, kI, 0.0f, 0.0f, 0.0f);
-            water.instanceMask = 0xFF;
+            water.instanceMask = kMaskWorld;
             water.accelerationStructure = waterBlas_.as->getGpuAddress();
             V6Instance info{};
             info.triOffset = waterTriOffset_;
@@ -1610,7 +1800,7 @@ class World {
             // identity -- the instance exists to carry the triangle offset, not
             // to place anything.
             writeTransform(ci, kI, 0.0f, 0.0f, 0.0f);
-            ci.instanceMask = 0xFF;
+            ci.instanceMask = kMaskWorld;
             ci.accelerationStructure = c.blas.as->getGpuAddress();
             V6Instance info{};
             info.triOffset = c.triOffset;
@@ -1642,13 +1832,28 @@ class World {
         // No compaction here, unlike the bottom-level structures: this is
         // rebuilt every time the ring moves, and the compaction pass costs a
         // second flush for a structure that is a few megabytes at most.
+        //
+        // ALLOW_UPDATE, so the held item can be moved with a refit instead of a
+        // rebuild -- see setHeldInstance for the measurement that makes that
+        // the difference between affordable and not. It is asked for only when
+        // there is something to move: the flag costs a little build time and a
+        // little traversal speed on a structure that would otherwise never be
+        // updated, and a world with nothing in the hand should not pay it.
         inputs.flags = RtAccelerationStructureBuildFlags::PreferFastTrace;
+        if (heldLoaded_)
+            inputs.flags = inputs.flags | RtAccelerationStructureBuildFlags::AllowUpdate;
         inputs.descCount = n;
         inputs.instanceDescs = instanceDescBuf_->getGpuAddress();
 
         const auto pre = RtAccelerationStructure::getPrebuildInfo(device_.get(), inputs);
         ensureBuffer(tlasScratch_, pre.scratchDataSize, ResourceBindFlags::UnorderedAccess,
                      "v2::tlasScratch");
+        // Its own buffer rather than sharing the build's: an update is issued
+        // in the middle of a frame that may also have rebuilt, and the driver
+        // is entitled to still be reading the build scratch.
+        if (heldLoaded_)
+            ensureBuffer(tlasUpdateScratch_, pre.updateScratchDataSize,
+                         ResourceBindFlags::UnorderedAccess, "v2::tlasUpdateScratch");
 
         // The structure object wraps a buffer and does not own it, so a grown
         // buffer means a new object as well.

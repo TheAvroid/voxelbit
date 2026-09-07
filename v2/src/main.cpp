@@ -62,10 +62,14 @@ void usage() {
         "  --settle                  let a still camera converge; default holds the grain\n"
         "  --background              open minimised, never take focus or the mouse\n"
         "                            (and silent -- see --no-sound)\n"
-        "  --ambience F              forest ambience gain, 0 = silent   (default 1.0)\n"
+        "  --ambience F              forest ambience gain, 0 = silent   (default 0.25)\n"
         "                            what you hear is this times the canopy overhead\n"
         "  --sound PATH              the ambience bed; any file Media Foundation reads\n"
         "  --no-sound                open no audio device at all\n"
+        "  --axe PATH                the .vox in the hand (default the stone axe)\n"
+        "  --no-axe                  open with an empty hand; H toggles it in game\n"
+        "  --swing-log               print what each swing ran into\n"
+        "  --swing-hold              hold the swing, as --shot-walk holds W\n"
         "  --walk F                  offline: advance F m/frame, film resets as it would\n"
         "                            when walking\n"
         "  --depth N                 max path length        (default 10)\n"
@@ -92,6 +96,8 @@ void usage() {
         "  --rocks F                 rock density                                (0.0075)\n"
         "  --pines DIR               folder with pine_1..9.vox\n"
         "  --decor DIR               folder with rocks/ and flowers.vox\n"
+        "  --font PATH               the face all text is drawn in; \"off\" for Consolas\n"
+        "                            (default the game's own 3x3-pixel.otf)\n"
         "  --sun-az DEG --sun-el DEG sun position, offline\n"
         "  --no-atmosphere           the OLD Preetham fit instead of Hillaire\n"
         "                            scattering -- cheaper, and its sunset freezes\n"
@@ -114,11 +120,11 @@ void usage() {
         "                            you wake up. Viewer only; --out keeps its camera.\n"
         "  --yaw DEG --pitch DEG     camera direction      (default 205, 7)\n"
         "  --fov DEG                 vertical fov          (default 80)\n"
-        "  --aperture F              lens diameter, metres (default 0.055)\n"
-        "  --focus F                 focus distance        (default: auto)\n"
+        "  --aperture F              OFFLINE lens diameter, metres      (0.055)\n"
+        "  --focus F                 offline focus distance      (default: auto)\n"
         "  --exposure F              tone-map exposure\n"
         "  --shadow-lift F           tone curve toe, 0.03 crushed .. 0.20 open  (0.100)\n"
-        "  --fog F                   haze density          (default 0.0022)\n"
+        "  --fog F                   haze density         (default 0.00164)\n"
         "  --fog-sky-under F         how much sky light reaches fog under the\n"
         "                            canopy, 0-1. The sky fill used to be added\n"
         "                            unshadowed, which piled up along whichever\n"
@@ -208,9 +214,14 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         }
         else if (a == "--pines") { if (i + 1 < argc) o->pines = argv[++i]; }
         else if (a == "--decor") { if (i + 1 < argc) o->decor = argv[++i]; }
+        else if (a == "--font") { if (i + 1 < argc) o->font = argv[++i]; }
         else if (a == "--sound") { if (i + 1 < argc) o->sound = argv[++i]; }
         else if (a == "--ambience") argFloat(argc, argv, i, &o->ambience);
         else if (a == "--no-sound") o->soundOn = false;
+        else if (a == "--axe") { if (i + 1 < argc) o->axe = argv[++i]; }
+        else if (a == "--no-axe") o->axeOn = false;
+        else if (a == "--swing-log") o->swingLog = true;
+        else if (a == "--swing-hold") o->swingHold = true;
         else if (a == "--time") {
             float h = 7.0f;
             argFloat(argc, argv, i, &h);

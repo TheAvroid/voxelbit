@@ -37,6 +37,7 @@
 #include "Core/Pass/ComputePass.h"
 #include "Utils/Image/Bitmap.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -83,7 +84,11 @@ struct RenderSettings {
     float deepLift = 0.0f;
     float deepRange = 0.30f;
     float clampIndirect = 24.0f;  // firefly ceiling on non-primary contributions
-    float fogDensity = 0.0022f;   // extinction per metre at y = 0
+    // 0.00164 per metre at y = 0. Set by eye against the slider rather than
+    // derived from anything: it is the haze the wood is meant to have, and the
+    // number only means what it does because the slider now resolves it -- at
+    // the old 0..0.10 range this and the previous 0.0022 were the same pixel.
+    float fogDensity = 0.00164f;
     float fogHeight = 30.0f;      // e-folding height of the haze, metres
     uint32_t seed = 20260904u;
     // 0 = accumulate without limit. Set while the day/night clock is running,
@@ -107,10 +112,28 @@ struct RenderSettings {
 
     // -- the irradiance cache ------------------------------------------------
     //
-    // 0 none, 1 DDGI probes, 2 SHaRC. Defaults to DDGI where the device can
-    // run it; app.h drops it to SHaRC on Vulkan, where RTXGI cannot go, and to
-    // none if neither came up.
-    int giMode = 1;
+    // 0 none, 1 DDGI probes, 2 SHaRC. app.h drops 1 to SHaRC where RTXGI
+    // cannot go -- Vulkan, or a build without the SDK -- and to none if
+    // neither came up.
+    //
+    // OFF BY DEFAULT, AND THAT IS A MEASUREMENT RATHER THAN AN OPINION.
+    //
+    // This defaulted to 1 for a long time, which sounds like DDGI but has not
+    // been DDGI in any build without the RTXGI SDK: the fall-through in app.h
+    // turns 1 into 2, so what actually ran was SHaRC. A/B on a pinned spawn,
+    // and the renderer is deterministic so the control really is zero:
+    //
+    //   gi 0 against gi 0     0.0000/255 mean,    0 px differ, trace 3.36 ms
+    //   gi 0 against SHaRC    0.0450/255 mean, 1073 px differ, trace 3.61 ms
+    //
+    // A quarter of a millisecond, 7.4% of the trace, to move a fifth of one
+    // percent of the pixels by a level of 255. Nobody was ever going to see
+    // that, and everybody was paying for it every frame.
+    //
+    // THE DDGI CASE BELOW IS NOT WHAT WAS MEASURED and still stands: where
+    // RTXGI does build, probes at giDepth 2 land within 2% of a 32-bounce
+    // reference and are worth having. --gi 1 asks for them.
+    int giMode = 0;
     // TWO, AND THE NUMBER WAS MEASURED RATHER THAN CHOSEN.
     //
     // Against a 32-bounce, late-roulette reference of the same frame, the
@@ -195,6 +218,7 @@ class Tracer {
                                                     Falcor::ResourceBindFlags::ShaderResource);
         ddgiPlaceholder_->setName("v2::ddgiPlaceholder");
 
+
         // -- the blue-noise mask ------------------------------------------
         //
         // GENERATED UNCONDITIONALLY, even with the sampler switched off. It is
@@ -270,6 +294,7 @@ class Tracer {
     void setVolFog(VolFog *f) { volfog_ = f; }
     void setClouds(Clouds *c) { clouds_ = c; }
     void setAtmosphere(Atmosphere *a) { atmo_ = a; }
+
 
     // THE SAMPLER'S PATTERN, not its rate. Non-zero routes the shallow sample
     // dimensions -- the shadow ray, the dome ray, the primary bounce, the lens

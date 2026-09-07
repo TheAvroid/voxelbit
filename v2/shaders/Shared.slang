@@ -98,6 +98,35 @@ static const float kSunSolidAngle = 6.28318530717958647692f * (1.0f - kSunCosThe
 static const uint KIND_TERRAIN = 0;
 static const uint KIND_WATER = 1;
 static const uint KIND_TREE = 2;
+// The tool in the player's hand. It is an instance like any other -- see
+// World::setHeldInstance -- and the kind exists for exactly two things the
+// tracer has to do differently with it, both in Trace.cs.slang: normalise the
+// transformed normal, because this is the one instance carrying a scale; and
+// write a zero motion vector, because it is the one instance bolted to the
+// camera.
+static const uint KIND_HELD = 3;
+
+// ---------------------------------------------------------------------------
+// THE TWO RAY MASKS, AND WHY A VIEWMODEL NEEDS ONE.
+//
+// A held tool is ten centimetres from the eye and the world comes right up to
+// the lens -- grass at the camera, a trunk you can lean on. Put the tool in the
+// structure and let the primary ray take the nearest hit, and the wood wins:
+// press against a birch and the trunk swallows the axe whole, which is not
+// something a hand does.
+//
+// So the primary ray is traced TWICE, once against each mask, and the tool
+// takes the pixel whenever it was hit at all -- in front of everything, which
+// is where a hand is. Every OTHER ray uses both bits and sees both, which is
+// the whole reason the tool is in the structure: it casts a shadow, it bounces
+// light, and it shows up in what the wood around it is lit by.
+//
+// The alternative -- one trace, nearest wins -- is one ray cheaper and is what
+// the first cut did. It is in the git history as a picture of an axe inside a
+// tree.
+// ---------------------------------------------------------------------------
+static const uint MASK_WORLD = 0x01;
+static const uint MASK_HELD = 0x02;
 
 // ---------------------------------------------------------------------------
 // The camera, as the tracer wants it: a basis and two half-extents, with none
@@ -437,7 +466,55 @@ struct V6Params
     int giPad1;
 };
 
+// ---------------------------------------------------------------------------
+// THE THING IN YOUR HAND.
+//
+// A held item is a small voxel grid drawn in CAMERA space -- it hangs off the
+// eye rather than standing anywhere in the world -- so what crosses to the GPU
+// is a box centre and the three axes of the box, all expressed in the camera's
+// own frame. Held.slang walks the grid with a DDA.
+//
+// IT IS NOT SHADED SEPARATELY. The DDA runs inside the tracer, at the primary
+// vertex, and what it produces is an ordinary Hit: a position, a face normal
+// and a material id out of the SAME table every rock and trunk indexes. From
+// there the path continues exactly as it would off a boulder -- sun and sky
+// next-event estimation, indirect bounces, the radiance cache, the guide
+// buffers, the denoiser. There is no second lighting model to keep in step
+// with the first, which is the whole reason it was moved in here: an analytic
+// one, however carefully matched, is a second answer to a question the
+// renderer already answers, and it reads as a sticker over the wood.
+//
+// AXES RATHER THAN A QUATERNION OR EULER ANGLES, and it is the same choice the
+// JS engine made for the same reason: the shader needs the three axes and
+// nothing else, and building them on the host means the trigonometry happens
+// once a frame instead of once a pixel.
+//
+// THE GRID IS THE .vox FILE'S OWN LAYOUT -- x wide, y deep, z tall, indexed
+// x + y*w + z*w*d -- and NOT the y-up world layout scene/vox.h converts to.
+// The poses in render/helditem.h were tuned against that layout in the engine
+// this is ported from; running them against a converted grid lies the axe on
+// its side.
+// ---------------------------------------------------------------------------
+struct V2Held
+{
+    float3 anchor; // centre of the item's box, CAMERA space, metres
+    float voxel;   // metres along an edge of one item voxel
+
+    float3 ax;  // the item's local +x (width), in camera space
+    float show; // 0 = empty hand, and the tracer never tests it
+
+    float3 ay;    // local +y (depth)
+    float radius; // bounding sphere about `anchor`, metres -- the cheap reject
+
+    float3 az;  // local +z (height)
+    float pad0;
+
+    int3 dims;  // the grid, in voxels
+    int steps;  // DDA step ceiling -- the grid's own extent, from the host
+};
+
 #ifdef HOST_CODE
+static_assert(sizeof(V2Held) == 80, "V2Held must fill whole 16-byte rows");
 static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
 static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");

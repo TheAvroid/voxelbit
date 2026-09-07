@@ -31,6 +31,7 @@ target_sources(v2 PRIVATE
     src/scene/voxelworld.h
 
     src/render/camera.h
+    src/render/helditem.h
     src/render/player.h
     src/render/recorder.h
     src/render/mfvideo.h

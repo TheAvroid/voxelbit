@@ -383,10 +383,15 @@ struct Hit
     float3 p;
     float3 ng; // geometric, for offsetting the next ray
     float3 ns; // shading, for the BSDF frame
+    // The tool in the player's hand, which the motion vector has to know about
+    // and nothing else does. See the write in the guide block.
+    bool held;
     Surface mat;
 };
 
-Hit traceRadiance(float3 o, float3 d)
+// `mask` is which of the two worlds this ray can see -- see MASK_WORLD and
+// MASK_HELD in Shared.slang. Everything but the primary ray passes both.
+Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
 {
     Hit h;
     h.hit = false;
@@ -394,6 +399,7 @@ Hit traceRadiance(float3 o, float3 d)
     h.p = float3(0.0f);
     h.ng = float3(0.0f, 1.0f, 0.0f);
     h.ns = float3(0.0f, 1.0f, 0.0f);
+    h.held = false;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = float3(0.0f);
     h.mat.roughness = 1.0f;
@@ -415,7 +421,7 @@ Hit traceRadiance(float3 o, float3 d)
     // it would otherwise have to keep for a re-entrant traversal is gone, and
     // the registers that state machine occupied go back to the shader.
     RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
-    q.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
+    q.TraceRayInline(gScene, RAY_FLAG_FORCE_OPAQUE, mask, ray);
     q.Proceed(); // opaque by construction: nothing to run, one call is enough
 
     if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
@@ -439,9 +445,19 @@ Hit traceRadiance(float3 o, float3 d)
     // and nObj is a unit axis. The product is therefore another unit axis with
     // exactly one non-zero component of exactly +/-1, and normalising it is a
     // reciprocal square root of exactly 1.0 on every hit in the frame.
-    const float3 ng = mul((float3x3)o2w, nObj);
+    float3 ng = mul((float3x3)o2w, nObj);
+    // THE ONE INSTANCE THAT CARRIES A SCALE. Every other transform in this
+    // scene is a quarter turn about Y plus a translation, which is why the
+    // product above needs no normalise (see the note just made). The held item
+    // is a model authored at one voxel per unit and shrunk to the few
+    // millimetres a tool voxel actually measures, so its 3x3 is a rotation
+    // times that scale and the transformed normal comes out the same factor
+    // short of unit. Normalising only here keeps the fast path fast.
+    if (inst.kind == KIND_HELD)
+        ng = normalize(ng);
     h.ng = ng;
     h.ns = ng;
+    h.held = (inst.kind == KIND_HELD);
 
     if (inst.kind == KIND_WATER)
     {
@@ -943,6 +959,7 @@ void main(uint3 tid: SV_DispatchThreadID)
     }
 
     const float3 primaryDir = d;
+
     float3 L = float3(0.0f), beta = float3(1.0f);
 
     // -- PHASE B: the same radiance, kept in three parts ---------------------
@@ -980,6 +997,9 @@ void main(uint3 tid: SV_DispatchThreadID)
     float skyPdfPrev = 0.0f;
     bool inWater = false;
     float primaryDist = -1.0f;
+    // Whether the primary vertex is the tool in the player's hand. Read once,
+    // by the motion vector -- see the note where it is used.
+    bool heldPrimary = false;
 
     // Beer-Lambert extinction under water, from the per-metre transmittance the
     // material carries. Hoisted out of the loop: it is three logs of constants.
@@ -1015,7 +1035,29 @@ void main(uint3 tid: SV_DispatchThreadID)
 
     for (int depth = 0; depth < gParams.maxDepth; ++depth)
     {
-        const Hit h = traceRadiance(o, d);
+        Hit h;
+        if (depth == 0)
+        {
+            // -- THE TOOL WINS THE PIXEL, WHATEVER IS IN FRONT OF IT --------
+            //
+            // Two traces, one per mask, and the held one is taken whenever it
+            // hit at all rather than when it is nearer. See the note on the
+            // masks in Shared.slang: at ten centimetres from the lens the world
+            // is routinely closer than a hand, and letting the nearest hit win
+            // puts the axe inside every trunk you lean on.
+            //
+            // ONLY AT DEPTH 0. Every bounce past this one passes both masks, so
+            // the tool shadows, occludes and bounces light exactly as the
+            // geometry it is -- which is the entire reason it is in the
+            // structure rather than drawn over the top.
+            const Hit hw = traceRadiance(o, d, MASK_WORLD);
+            const Hit hh = traceRadiance(o, d, MASK_HELD);
+            h = hh.hit ? hh : hw;
+        }
+        else
+        {
+            h = traceRadiance(o, d);
+        }
 
         if (inWater)
             beta *= exp(waterSigma * -(h.hit ? h.t : 60.0f));
@@ -1109,6 +1151,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         if (depth == 0)
         {
             primaryDist = h.t;
+            heldPrimary = h.held;
 
             // -- the guides ---------------------------------------------------
             // Split into the two albedos the denoiser demodulates by. It is
@@ -1589,7 +1632,25 @@ void main(uint3 tid: SV_DispatchThreadID)
             float2(float(pix.x) + 0.5f, float(pix.y) + 0.5f) + gParams.jitter;
         float2 prevPix;
         const bool ok = projectToPixel(gParams.prevCam, worldP, gParams.dim, prevPix);
-        gGuideMotion[pix] = ok ? (prevPix - curPix) : float2(0.0f, 0.0f);
+        // ZERO FOR THE HELD ITEM, and it is the one place in this shader where
+        // the reprojection above is not merely approximate but backwards. That
+        // formula rests on the world being static and only the camera moving,
+        // so a surface's screen motion is its fixed world point seen through
+        // two cameras. The tool is bolted TO the camera: its world point moves
+        // with the eye, and reprojecting it hands the denoiser the largest
+        // motion in the frame for the one object that did not move on screen at
+        // all. Ray Reconstruction believes it, and the axe smears across the
+        // wood every time you turn.
+        //
+        // Zero is not an approximation here -- a camera-locked surface really
+        // does land on the same pixel it landed on last frame. What it leaves
+        // out is the tool's own animation, the bob and the swing, which move it
+        // by a few pixels a frame; that is a real motion the vector does not
+        // describe, and it is the right trade, since being a few pixels wrong
+        // on a swing costs a little softness for two hundred milliseconds and
+        // being wholly wrong on every turn costs a smeared tool for ever.
+        gGuideMotion[pix] = heldPrimary ? float2(0.0f, 0.0f)
+                                        : (ok ? (prevPix - curPix) : float2(0.0f, 0.0f));
 
         gGuideAlbedo[pix] = float4(gAlbedo, 0.0f);
         gGuideSpecular[pix] = float4(gSpecular, 0.0f);

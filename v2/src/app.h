@@ -67,6 +67,7 @@
 #include "gpu/world.h"
 #include "render/audio.h"
 #include "render/camera.h"
+#include "render/helditem.h"
 #include "render/player.h"
 #include "render/recorder.h"
 #include "scene/daynight.h"
@@ -331,6 +332,20 @@ struct Options {
     std::string pines = "C:/voxelbit/game/assets/foilage/pine9";
     std::string decor = "C:/voxelbit/game/assets/decoration";
 
+    // ---- the face every letter in the engine is drawn in -----------------
+    //
+    // THE GAME'S OWN PIXEL FONT, out of the same asset tree as the models
+    // above and for the same reason. v1 drew its readout, its hints and its
+    // title in this face (`font-family: px3`) while the engine drew everything
+    // in Consolas, and two halves of one game do not get to disagree about
+    // what text looks like.
+    //
+    // "off" -- or nothing -- gives the framework's Consolas back. A pixel font
+    // is a strong look and this is the way out of it that does not need a
+    // rebuild; a path that cannot be opened takes the same way out rather than
+    // taking the interface down with it.
+    std::string font = "C:/voxelbit/game/3x3-pixel.otf";
+
     // ---- the wood's ambience (render/audio.h) --------------------------
     //
     // IN THE GAME'S SOUND FOLDER, not one of v2's own, for the same reason
@@ -342,9 +357,41 @@ struct Options {
     // voice is this times the canopy closure at the listener's feet. 1.0 is
     // the bed at the level it was baked (peak -3 dBFS, mean -23.6), which is
     // a background at a normal system volume rather than a foreground.
+    //
+    // A QUARTER OF THE BAKED LEVEL. This was 0.75 on the argument that the
+    // birds sat too far forward at unity; a quarter is the same argument
+    // carried to where it actually lands. It is a LINEAR AMPLITUDE, so 0.25
+    // is -12 dB rather than "a quarter as loud" -- roughly half the perceived
+    // loudness of the old default, which is the difference between a bed you
+    // notice and one you only miss when it stops.
+    //
+    // The compressor in render/dynamics.h is upstream of this and unaffected:
+    // it decides the SHAPE of the bed, this decides how much of it you get.
+    // --ambience 1.0 still restores the baked level.
     std::string sound = "C:/voxelbit/game/sound/bird_ambience.mp3";
-    float ambience = 1.0f;
+    float ambience = 0.25f;
     bool soundOn = true;
+
+    // ---- what is in the player's hand (render/helditem.h) ---------------
+    //
+    // IN THE GAME'S ASSET TREE, for the same reason `pines`, `decor` and the
+    // ambience bed are: there is one set of assets for this project and two
+    // engines that read them, and v2 owns none of its own.
+    //
+    // A path rather than a flag, so a second tool is a command line away
+    // without anything here changing. --no-axe opens with an empty hand.
+    std::string axe = "C:/voxelbit/game/assets/stone_tools/stone_axe.vox";
+    bool axeOn = true;
+    // Print what every swing ran into. Off by default -- it is a line per blow
+    // and the blows repeat while the button is held -- but it is the only way
+    // to see the reach and the aim without a bite to look at.
+    bool swingLog = false;
+    // Hold the swing from the first frame, exactly as --shot-walk holds W. It
+    // exists for the same reason that one does: an animation you can only see
+    // by holding a mouse button cannot be photographed, measured or regression
+    // tested, and picking a --shot-frame off the 570 ms curve is how you look
+    // at one phase of it. 34 frames is a whole swing at the default 1/60 dt.
+    bool swingHold = false;
 
     float sunAz = defaults::kSunAz;
     float sunEl = defaults::kSunEl;
@@ -420,6 +467,16 @@ struct Options {
     float fov = defaults::kFov;
     float aperture = 0.055f;
     float focus = 0.0f;
+
+
+    // THERE IS NO POINTER ACCELERATION AND NO VIEW WEIGHT (user, 2026-09-06:
+    // "remove mouse accel, remove mouse weight from the game"). Both existed,
+    // both were sliders, and both are gone rather than defaulted to zero: a
+    // setting whose only correct value is off is a row in a menu that can only
+    // make the game worse, and the code behind them -- a speed estimate from
+    // the event clock, a buffer of owed degrees and an exponential drain --
+    // could not be left in place without still being the thing that turns the
+    // camera. `sensitivity` is now the whole of the mouse. See applyMouseLook.
     // Metres to advance the camera per frame, offline only. This exists to make
     // the noise while WALKING measurable: comparing two hand-flown screenshots
     // compares two different views as much as two settings. With --walk the
@@ -891,6 +948,15 @@ class ForestApp : public SampleApp {
         if (opt_.soundOn && !opt_.outGiven && !opt_.background)
             ambience_.open(opt_.sound, opt_.ambience);
 
+        // -- the axe ---------------------------------------------------------
+        //
+        // AFTER world_.build, and it has to be: the model goes into the same
+        // palette, the same triangle pool and the same acceleration structures
+        // every rock does, and none of those exist until the world has built
+        // them. World::loadHeldModel does all of it and re-uploads the material
+        // table for the handful of entries the tool adds.
+        if (opt_.axeOn) held_.init(world_, opt_.axe);
+
         printHelp();
         lastTime_ = std::chrono::steady_clock::now();
     }
@@ -1115,9 +1181,35 @@ class ForestApp : public SampleApp {
         cam.origin = pos_;
         cam.target = pos_ + forward() * 50.0f;
         cam.fovDeg = fov_;
-        cam.aperture = 0.0f;  // a pinhole here; depth of field is for stills
+        // A PINHOLE, AND IT WENT BACK TO BEING ONE ON PURPOSE. The viewer did
+        // briefly drive the thin lens from a "Depth of field" slider, and the
+        // lens itself was correct -- but Ray Reconstruction assumes every sample
+        // in a pixel comes from a single point, and an open lens is exactly what
+        // breaks that. The result was not shallow focus, it was a smear the
+        // denoiser could not resolve, which is what the note at the top of
+        // render/camera.h warned about before it was tried.
+        //
+        // The lens is still driven by --aperture and --focus, which are OFFLINE
+        // and accumulate with no denoiser in the way. That is where it works.
+        cam.aperture = 0.0f;
         cam.focusDist = 40.0f;
         const V6Camera gcam = cam.gpu(tracer_.width(), tracer_.height());
+
+        // -- the tool in the hand, for the tracer to hit ---------------------
+        //
+        // HERE AND NOT IN processInput, because the pose is expressed in the
+        // CAMERA'S frame and referenced to its field of view -- it cannot be
+        // built until the camera for this frame exists. The bob is read off the
+        // player so the head and the hand ride one stride.
+        //
+        // renderOffline sets it separately, in its own sample loop, for the
+        // reason it has to set the fog and the sky separately: it runs none of
+        // the per-frame systems, so anything hung off this tick is absent from
+        // every --out image.
+        {
+            const HeldXform hx = held_.xform(gcam, player_.bobPhase, player_.bobAmp);
+            world_.setHeldInstance(hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+        }
 
         // Constant grain: start from nothing EVERY frame, not just when the
         // camera moves. Moving already did this -- it is what made a walking
@@ -1472,6 +1564,11 @@ class ForestApp : public SampleApp {
         const float fbW = float(getTargetFbo()->getWidth());
         const float fbH = float(getTargetFbo()->getHeight());
 
+        // THE FACE FIRST, AND NOTHING ELSE ON THE FRAME THAT BAKES IT. The
+        // window is what decides the size, so this cannot be done at load
+        // time; see bakePx3 for why the frame is then given up.
+        if (bakePx3(pGui, fbH)) return;
+
         // NO TITLE BAR, NO MOVE, NO RESIZE GRIP on either panel. v2 drew its
         // own title and put the panel where it belonged; ImGui's chrome on top
         // of that is a second title over the first and a drag handle for a
@@ -1479,8 +1576,9 @@ class ForestApp : public SampleApp {
         const Gui::WindowFlags kBare = Gui::WindowFlags::AutoResize | Gui::WindowFlags::NoResize;
 
         {
-            styleV2 style(pGui, 0.60f, fbH);  // a lighter veil than the menu's
+            styleV2 style(pGui, px3_, 0.60f, fbH);  // a lighter veil than the menu's
             Gui::Window hud(pGui, "v2hud", {0, 0}, {12, 12}, kBare);
+            px3Font face(px3_);
             ImGui::SetWindowFontScale(style.scale);
             // Set every frame rather than on first use: ImGui remembers window
             // positions in an ini file between runs, so "where I asked for it"
@@ -1580,6 +1678,10 @@ class ForestApp : public SampleApp {
                          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                              ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoSavedSettings);
+        // PUSHED BY HAND HERE, because the console is the one surface that is
+        // not a Gui::Window inside a styleV2 -- it is a bare ImGui window with
+        // its own End() below, and the pop has to happen before that End.
+        if (px3_) ImGui::PushFont(px3_);
             // The caret has to be taken on the frame the box appears, or the
             // first keystroke is eaten deciding what is focused.
             if (consoleFocus_) {
@@ -1629,6 +1731,7 @@ class ForestApp : public SampleApp {
             // populates io.KeyMap (Gui.cpp), which is worth knowing -- most of
             // its KeysDown indices are Falcor's own key codes, not ImGui's.
             const bool escaped = ImGui::IsKeyPressed(ImGuiKey_Escape);
+            if (px3_) ImGui::PopFont();
             ImGui::End();
             // Closed AFTER End(), because setConsoleOpen may hand the mouse
             // back and the window still has to be finished either way.
@@ -1637,7 +1740,7 @@ class ForestApp : public SampleApp {
 
         if (!menuOpen_) return;
 
-        styleV2 style(pGui, 1.0f, fbH);
+        styleV2 style(pGui, px3_, 1.0f, fbH);
         // ITS OWN FLAGS, and both differences from the readout matter.
         //
         // AllowMove, because without it Falcor passes ImGuiWindowFlags_NoMove
@@ -1651,6 +1754,7 @@ class ForestApp : public SampleApp {
         // to the window turns the overflow into a scrollbar.
         const Gui::WindowFlags kPanel = Gui::WindowFlags::AllowMove | Gui::WindowFlags::NoResize;
         Gui::Window w(pGui, "settings##v2", menuOpen_, {0, 0}, {0, 0}, kPanel);
+        px3Font face(px3_);
         ImGui::SetWindowFontScale(style.scale);
 
         // WIDTH IN CHARACTERS, HEIGHT FROM THE CONTENT -- v2's rule exactly.
@@ -1825,84 +1929,6 @@ class ForestApp : public SampleApp {
         // where a diagnostic belongs.
         w.separator();
 
-
-        // =====================================================================
-        // GLOBAL ILLUMINATION
-        // =====================================================================
-        //
-        // THERE IS NO "ENABLE GI" CHECKBOX AND THERE CANNOT BE. v2 is a path
-        // tracer: every pixel is a random walk that keeps bouncing until it
-        // dies, and the light it gathers on the way IS the indirect light.
-        // Turning that off does not give a scene lit some other way, it gives a
-        // scene lit by the sun and nothing else -- so the setting that would
-        // switch GI off is "Bounces = 1", and it is a slider rather than a
-        // checkbox because 2 and 3 and 8 are all useful answers.
-        //
-        // What everything under this heading decides is HOW the indirect light
-        // is gathered and how much is spent gathering it. The three blocks are
-        // in the order they matter: how long the paths are, then two different
-        // ways of not having to trace so many of them.
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-        ImGui::TextUnformatted("GLOBAL ILLUMINATION -- path traced, always on");
-        ImGui::PopStyleColor();
-
-        // Path length. Two of them, because a moving camera cannot accumulate
-        // and so cannot afford the same walk a still one can -- the shorter
-        // number is what you actually see while walking.
-        //
-        // BOUNCES ARE NEARLY FREE AND PIXELS ARE NOT. Going 3 -> 8 costs a few
-        // percent; the profile counters have said so on every run. The instinct
-        // when the frame rate sags is always to cut bounces first, and it gives
-        // up the interreflection between the trunks -- the thing that makes the
-        // wood look lit rather than painted -- to buy almost nothing.
-        if (w.slider("Bounces", opt_.r.maxDepth, 1, 32)) invalidate();
-        if (w.slider("Bounces (moving)", opt_.movingDepth, 1, 32)) invalidate();
-
-        // RUSSIAN ROULETTE, and it is not a minor knob. It decides how long
-        // paths actually live: at 1 most of them die after two or three
-        // bounces, which is why raising "Bounces" alone changes so little --
-        // and why the radiance cache only pays once this is pushed out. The
-        // estimator stays unbiased either way; what changes is where the
-        // samples get spent.
-        if (w.slider("Roulette starts at", opt_.r.rrStart, 1, 32)) invalidate();
-
-        // Next-event estimation: how many sun samples each vertex takes, and
-        // how deep down the path it keeps taking them. Depth 0 is direct light
-        // only, and every step past that is another bounce whose own lighting
-        // is resolved rather than left to chance -- which is most of what
-        // separates a bright wood from a noisy one.
-        if (w.slider("Sun samples", opt_.r.shadowRays, 1, 16)) invalidate();
-        if (w.slider("Sun sample depth", opt_.r.shadowRayDepth, 0, 8)) invalidate();
-
-        // THE SAME THING FOR THE SKY, and under a canopy it matters more than
-        // the sun does -- the sun is occluded by definition in a shadow, so the
-        // dome is the whole of the light. At 0 the dome is left to be found by
-        // a bounce that happens to escape the needles, which is what made the
-        // shadows read as black.
-        if (w.slider("Sky samples", opt_.r.skyRays, 0, 16)) invalidate();
-        if (w.slider("Sky sample depth", opt_.r.skyRayDepth, 0, 8)) invalidate();
-
-        // Paths per pixel per frame. The only honest way to buy less noise, and
-        // the only one that costs exactly what it looks like it costs.
-        if (w.slider("Samples / frame", opt_.samplesPerFrame, 1, 64)) invalidate();
-
-        // The firefly ceiling. A single specular path through a gap in the
-        // canopy can return thousands of times the mean, and one such sample
-        // is a white speck that accumulation takes a very long time to average
-        // out. Clamping is a bias, deliberately taken.
-        if (w.slider("Firefly clamp", opt_.r.clampIndirect, 1.0f, 200.0f)) invalidate();
-
-        // THE SAME NUMBER OF SAMPLES, ARRANGED DIFFERENTLY. This does not
-        // reduce variance -- it moves it up the spatial frequencies, where the
-        // eye and Ray Reconstruction both discard far more of it. Costs one
-        // texture fetch on the shallow dimensions and nothing else.
-        //
-        // Invalidates, because the film already holds samples drawn the other
-        // way and mixing the two would converge to the same image through a
-        // visibly worse middle.
-        if (w.checkbox("Blue-noise sampling", tracer_.blueNoise)) invalidate();
-        w.separator();
-
         // ---- the neural radiance cache --------------------------------------
         //
         // The batch count is the honest indicator and it is why it is on screen:
@@ -1933,61 +1959,6 @@ class ForestApp : public SampleApp {
             }
         } else if (neural_.available()) {
             w.text(fmt("Neural radiance cache: %s", nrc_.status().c_str()));
-        }
-        w.separator();
-
-        // ---- the indirect cache ---------------------------------------------
-        //
-        // THE ONE CONTROL THAT ACTUALLY MOVES THE SHADOWS. Under a canopy the
-        // sun is occluded by definition, so nearly all the light in a shadow is
-        // indirect -- and a path tracer only finds it by surviving roulette
-        // long enough to bounce back out to the sky, which at foliage albedo
-        // 0.19 most paths do not. A cache remembers it instead.
-        //
-        // ONE RADIO GROUP, NOT TWO CHECKBOXES, because the two caches answer
-        // the same question in the same units and the tracer adds whichever it
-        // is handed. Both on would count the indirect light twice.
-        {
-            const bool haveD = ddgi_.available();
-            const bool haveS = sharc_.available();
-            if (haveD || haveS) {
-                int mode = opt_.r.giMode;
-                bool changed = false;
-                changed |= ImGui::RadioButton("Indirect cache: off", &mode, 0);
-                if (haveD) {
-                    ImGui::SameLine();
-                    changed |= ImGui::RadioButton("probes", &mode, 1);
-                }
-                if (haveS) {
-                    ImGui::SameLine();
-                    changed |= ImGui::RadioButton("hash", &mode, 2);
-                }
-                if (changed && mode != opt_.r.giMode) {
-                    opt_.r.giMode = mode;
-                    invalidate();
-                }
-
-                if (opt_.r.giMode != 0) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-                    ImGui::TextUnformatted(
-                        fmt("   %s", opt_.r.giMode == 1 ? "DDGI irradiance probes, D3D12"
-                                                        : "SHaRC hash grid, either backend")
-                            .c_str());
-                    ImGui::PopStyleColor();
-
-                    // WHERE THE CACHE TAKES OVER, and 2 is measured rather than
-                    // preferred: against a 32-bounce reference of the same
-                    // frame, 1 comes out 22 % too bright in the darkest quarter
-                    // -- a six-metre probe grid standing in for light one bounce
-                    // from the eye -- and 2 lands within about 2 %.
-                    if (w.slider("  from bounce", opt_.r.giDepth, 1, 6)) invalidate();
-                    // A cheat, and labelled as one. The transport is right at 1;
-                    // this is for when you want the wood lighter than it is.
-                    if (w.slider("  strength", opt_.r.giStrength, 0.0f, 3.0f)) invalidate();
-                }
-            } else {
-                w.text(fmt("Indirect cache: %s", ddgi_.status().c_str()));
-            }
         }
         w.separator();
 
@@ -2055,16 +2026,93 @@ class ForestApp : public SampleApp {
         // how far the next mouse movement will turn the view -- exactly like
         // exposure and walk speed above it.
         w.slider("Sensitivity", opt_.sensitivity, 0.02f, 0.50f, false, "%.3f deg/px");
+        // AND NOTHING ELSE ABOUT THE MOUSE. There were two more rows here --
+        // acceleration and weight -- and they are gone at the user's word; the
+        // note in Options says why they were removed rather than zeroed.
+        // Sensitivity is now the whole of it, which is what a raw mouse means.
         if (w.slider("Field of view", fov_, 10.0f, 100.0f)) invalidate();
         // No invalidate here either, and for a stronger reason than the two
         // above: this one changes nothing the renderer can even see. Hidden
         // rather than greyed when there is no voice -- under --no-sound or on
         // a machine with no endpoint, a slider that does nothing is worse
         // than no slider.
+        // CALLED VOLUME, BECAUSE THAT IS WHAT SOMEBODY LOOKS FOR. It was
+        // "Ambience", which is accurate -- the bed is the only sound the engine
+        // makes -- and accurate is not the same as findable.
+        //
+        // AND A REASON WHEN IT IS MISSING, which reverses the old rule here.
+        // Hiding a dead slider is right; hiding it without explanation sends
+        // somebody hunting through a menu for a row that was never going to be
+        // drawn. A line of text is not a control that does nothing, it is the
+        // answer to the question the missing control provokes.
         if (ambience_.active()) {
             float amb = ambience_.masterGain();
-            if (w.slider("Ambience", amb, 0.0f, 2.0f, false, "%.2f"))
+            if (w.slider("Volume", amb, 0.0f, 2.0f, false, "%.2f"))
                 ambience_.setMasterGain(amb);
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+            ImGui::TextUnformatted(opt_.background
+                                       ? "Volume: no audio under --background"
+                                       : "Volume: no audio (--no-sound, or no endpoint)");
+            ImGui::PopStyleColor();
+        }
+
+        // ---- THE THING IN YOUR HAND ---------------------------------------
+        //
+        // SEVEN SLIDERS, AND THEY ARE THE POINT OF THIS SECTION. The pose came
+        // over from the JS engine's held-item panel, and it came over because
+        // that panel existed: nobody arrives at { 0.91, -0.10, 0.96, 0.04,
+        // -1.42, 1.58 } by reasoning about it. A viewmodel is judged by eye and
+        // adjusted by hand, and the two conversions between that engine and
+        // this one (see render/helditem.h) mean the bake is a starting point
+        // here rather than a finished answer.
+        //
+        // THERE IS NO LIGHTING ROW, and that is the feature. The tool is traced
+        // at the primary vertex off the world's own materials, so how bright it
+        // is has exactly one answer and it is the same answer the wood gets --
+        // there is nothing here to tune, and nothing that can drift out of step
+        // with the frame behind it. An earlier cut of this composited a
+        // separately lit axe over the finished image and needed three rows to
+        // make it agree with the picture; it never quite did.
+        //
+        // THESE SEVEN DO INVALIDATE, through animating(): moving the tool makes
+        // every sample already in the film describe a tool that is somewhere
+        // else.
+        //
+        // The values are the JS engine's units, voxels and radians, so a row
+        // read here can be pasted straight back into that engine's PICK_DEFS
+        // and vice versa. See the note on HeldPose.
+        if (held_.ready()) {
+            w.separator();
+            w.checkbox("Axe in hand  (H)", held_.shown);
+            if (held_.shown) {
+                w.slider("  right", held_.pose.x, -2.0f, 2.0f, false, "%.3f");
+                w.slider("  up", held_.pose.y, -2.0f, 2.0f, false, "%.3f");
+                w.slider("  forward", held_.pose.z, 0.1f, 3.0f, false, "%.3f");
+                w.slider("  yaw", held_.pose.yaw, -PI, PI, false, "%.3f");
+                w.slider("  pitch", held_.pose.pitch, -PI, PI, false, "%.3f");
+                w.slider("  roll", held_.pose.roll, -PI, PI, false, "%.3f");
+                w.slider("  size", held_.pose.scale, 0.01f, 0.30f, false, "%.3f");
+                // COPY, NOT SAVE. The bake writes defaults.h and this pose is
+                // not in it -- deliberately, because a viewmodel pose belongs
+                // beside the model it poses rather than in a file of renderer
+                // settings. So the row hands over the literal to paste into
+                // HeldPose, which is exactly what the JS engine's own panel
+                // does with the same seven numbers.
+                if (w.button("copy pose")) {
+                    poseCopied_ = fmt("{ %.3ff, %.3ff, %.3ff, %.3ff, %.3ff, %.3ff, %.3ff }",
+                                      held_.pose.x, held_.pose.y, held_.pose.z, held_.pose.yaw,
+                                      held_.pose.pitch, held_.pose.roll, held_.pose.scale);
+                    std::printf("v2: held pose %s\n", poseCopied_.c_str());
+                    std::fflush(stdout);
+                    ImGui::SetClipboardText(poseCopied_.c_str());
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+                ImGui::TextUnformatted(poseCopied_.empty()
+                                           ? "  left mouse swings; hold it to keep swinging"
+                                           : poseCopied_.c_str());
+                ImGui::PopStyleColor();
+            }
         }
         w.separator();
 
@@ -2159,11 +2207,17 @@ class ForestApp : public SampleApp {
             applySun(true);
             invalidate();
         }
-        // NO APERTURE OR FOCUS ROW HERE, deliberately. Depth of field is not
-        // something this game does: the lens model still exists for the
-        // OFFLINE paths (--aperture / --focus, and the thin lens in
-        // Trace.cs.slang they drive), because a still frame is where it earns
-        // its keep, but the viewer is a pinhole and has no control for it.
+        // NO DEPTH-OF-FIELD ROW HERE, and this time the reason is measured
+        // rather than assumed. There was a slider, and the lens it drove was
+        // correct -- the result still looked wrong. Ray Reconstruction wants
+        // every sample in a pixel to share an origin, and a lens is precisely
+        // the thing that stops them doing so; what came out was not shallow
+        // focus but a smear the denoiser could not resolve. render/camera.h
+        // said as much before any of it was tried.
+        //
+        // --aperture and --focus still drive the same lens OFFLINE, where the
+        // film accumulates and there is no denoiser in the way. That is where
+        // it earns its keep, and it is the only place it ever did.
         w.separator();
 
         float hours = clock_.tday * 24.0f;
@@ -2261,6 +2315,16 @@ class ForestApp : public SampleApp {
             std::printf("v2: bounces = %d\n", opt_.r.maxDepth);
             tracer_.resetAccumulation();
         }
+        if (e.key == Input::Key::H && held_.ready()) {
+            // An empty hand, and back again. The JS engine reaches the same
+            // state by scrolling to an empty hotbar slot; there is no hotbar
+            // here yet, so it is a key -- and it is worth having whatever
+            // happens next, because comparing a shot with the tool and without
+            // it is the first thing anyone does after adding one.
+            held_.shown = !held_.shown;
+            std::printf("v2: hand %s\n", held_.shown ? "axe" : "empty");
+            std::fflush(stdout);
+        }
         if (e.key == Input::Key::R) toggleRecording();
         if (e.key == Input::Key::P) shotRequested_ = true;
         if (e.key == Input::Key::F1) printHelp();
@@ -2298,7 +2362,16 @@ class ForestApp : public SampleApp {
 
         if (e.type == MouseEvent::Type::ButtonDown && e.button == Input::MouseButton::Left) {
             // Click to capture, the way a game does it. ESC gives it back.
-            if (!looking_) setCapture(true);
+            //
+            // THE CLICK THAT CAPTURES IS NOT A SWING. processInput polls the
+            // button rather than latching it here (see the note there), so all
+            // this has to do is disarm: the axe waits for the button to come up
+            // once before it will swing. Swinging at the wood the instant a
+            // window is clicked into focus is not what that click means.
+            if (!looking_) {
+                setCapture(true);
+                swingArmed_ = false;
+            }
             return true;
         }
         if (e.button == Input::MouseButton::Right) {
@@ -2483,6 +2556,17 @@ class ForestApp : public SampleApp {
     Tracer tracer_;
     Dlss dlss_;
     Player player_;
+    // What is in the hand, and the state of the button that swings it. The
+    // button is POLLED into a flag rather than read from the input state at
+    // use, because a swing is armed on a press and repeats while it is held --
+    // two different questions, and only the event knows the first one.
+    HeldItem held_;
+    // False until the left button has been seen UP once -- see onMouseEvent.
+    bool swingArmed_ = false;
+    // The last pose the menu's copy row printed, kept so the row can show it
+    // back rather than the player having to find the console.
+    std::string poseCopied_;
+    Swing lastSwing_;
     vb::Ambience ambience_;
     Falcor::ref<Falcor::FullScreenPass> crosshair_;
     DayNight clock_;  // owns the sun; sunAz_/sunEl_ are its output
@@ -2934,32 +3018,57 @@ class ForestApp : public SampleApp {
     // The mouse look, polled rather than driven from the move event: warping
     // the cursor generates a move event of its own, and acting on those spins
     // the camera by exactly the amount the warp undid.
+    // POLLED ONCE A FRAME, not driven by mouse events -- so dt here is the
+    // frame time, and the drain at the bottom is frame-rate independent.
+    //
+    // It no longer returns early when the mouse has not moved: with weight on
+    // the view there is still a turn to finish after the hand has stopped, and
+    // an early return would freeze it mid-glide.
+    // -----------------------------------------------------------------------
+    // Mouse look. Pixels off the centre, times degrees per pixel, this frame.
+    //
+    // RAW, AND THAT IS THE FEATURE (user, 2026-09-06). What was here measured
+    // the pointer's SPEED off the event clock, ran it through a gain curve, put
+    // the result into a buffer of owed degrees, and drained a fixed fraction of
+    // that buffer per frame. Every part of it was defensible on its own terms
+    // and the sum of them was a camera that did not go where the hand put it:
+    // the same wrist movement turned different amounts depending on how fast it
+    // was made, and the turn carried on after the hand had stopped.
+    //
+    // WHAT IS LEFT IS THE WHOLE OF IT. Two multiplies. The pointer is warped
+    // back to the centre of the client area every time it is read, so `rx`/`ry`
+    // are the pixels moved since the last read -- there is no accumulator to
+    // spend and nothing to tune but `sensitivity`.
+    //
+    // NOT SCALED BY THE FIELD OF VIEW, deliberately, and this is the one piece
+    // of the old function worth keeping. A narrow field does make the same
+    // wrist movement cover more of the frame -- that is what a narrow field IS,
+    // and it is the reason a scope is harder to aim with than iron sights.
+    // Compensating for it would defeat the one thing the setting is good for,
+    // which is looking closely at something without also having to hold still.
+    // -----------------------------------------------------------------------
     bool applyMouseLook() {
         if (!looking_) return false;
+
+        float rx = 0.0f, ry = 0.0f;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         RECT rc{};
         POINT p{};
-        if (!::GetClientRect(hwnd, &rc) || !::GetCursorPos(&p)) return false;
-        ::ScreenToClient(hwnd, &p);
-
-        const int cx = (rc.right - rc.left) / 2, cy = (rc.bottom - rc.top) / 2;
-        // NOT scaled by the field of view, deliberately. A narrow field does
-        // make the same wrist movement cover more of the frame -- that is what
-        // a narrow field IS, and it is the reason a scope is harder to aim with
-        // than iron sights. Compensating for it would defeat the one thing the
-        // setting is good for, which is looking closely at something without
-        // also having to hold still.
-        const float dx = float(p.x - cx) * opt_.sensitivity;
-        const float dy = float(cy - p.y) * opt_.sensitivity;
-        centreCursor();
-        if (dx == 0.0f && dy == 0.0f) return false;
+        if (::GetClientRect(hwnd, &rc) && ::GetCursorPos(&p)) {
+            ::ScreenToClient(hwnd, &p);
+            const int cx = (rc.right - rc.left) / 2, cy = (rc.bottom - rc.top) / 2;
+            rx = float(p.x - cx);
+            ry = float(cy - p.y);
+            if (rx != 0.0f || ry != 0.0f) centreCursor();
+        }
+        if (rx == 0.0f && ry == 0.0f) return false;
 
         // Wrapped rather than left to grow: a long session spinning one way
         // otherwise walks yaw into the thousands, where a float's steps get
         // coarse enough to make the turn visibly notchy.
-        yaw_ = fmodf(yaw_ + dx, 360.0f);
+        yaw_ = fmodf(yaw_ + rx * opt_.sensitivity, 360.0f);
         if (yaw_ < 0.0f) yaw_ += 360.0f;
-        pitch_ = clampf(pitch_ + dy, -89.0f, 89.0f);
+        pitch_ = clampf(pitch_ + ry * opt_.sensitivity, -89.0f, 89.0f);
         moving_ = true;
         return true;
     }
@@ -3009,12 +3118,50 @@ class ForestApp : public SampleApp {
         player_.update(walkWorld(), move, sprint, jump, down, dt);
         pos_ = player_.eyePosition();
 
+        // -- the swing -------------------------------------------------------
+        //
+        // POLLED, NOT LATCHED FROM THE EVENT, for the reason the X modifier on
+        // the wheel is polled: a button-up swallowed by an alt-tab -- or by the
+        // menu, which takes the mouse and returns before this file ever sees
+        // the release -- would leave a flag set and the axe swinging by itself
+        // for the rest of the session. The input state reports the button now,
+        // and a window without focus reports it released.
+        //
+        // Holding it swings over and over. Each repeat re-arms the impact, so
+        // the blow still lands 250 ms into whichever swing is running -- see
+        // HeldItem::update.
+        {
+            const bool lmb = opt_.swingHold || in.isMouseButtonDown(Input::MouseButton::Left);
+            if (!lmb) swingArmed_ = true;
+            const bool swinging =
+                opt_.swingHold || (lmb && swingArmed_ && looking_ && !menuOpen_);
+            if (held_.update(dt, swinging, player_.bobAmp)) {
+                // THE IMPACT FRAME. What a bite would be spent on; for now it
+                // is the verdict and nothing else -- see the header of
+                // render/helditem.h for why there is nothing to carve.
+                lastSwing_ = swingRay(walkWorld(), pos_, forward());
+                if (opt_.swingLog) {
+                    static const char *kWhat[] = {"air", "ground", "trunk", "rock"};
+                    std::printf("v2: swing -> %s", kWhat[int(lastSwing_.kind)]);
+                    if (lastSwing_.hit) std::printf("  %.2f m", lastSwing_.dist);
+                    std::printf("\n");
+                    std::fflush(stdout);
+                }
+            }
+        }
+
         // The BOB counts as movement. It shifts the eye every frame while
         // walking, so the accumulated samples describe a viewpoint that no
         // longer exists -- exactly as if the camera had been flown.
         const bool camMoved = lengthSq(pos_ - before) > 1e-10f;
         moving_ = moving_ || camMoved;
-        return camMoved || turned;
+        // A MOVING TOOL COUNTS AS MOVEMENT, for exactly the reason the bob
+        // does: the samples already in the film were drawn for a viewmodel that
+        // is now somewhere else, and averaging them with the new ones smears
+        // the axe rather than converging it. It is bounded -- animating() goes
+        // false a moment after the swing ends and the hand settles -- so a
+        // still player still gets a converged frame.
+        return camMoved || turned || held_.animating();
     }
 
     // -----------------------------------------------------------------------
@@ -3195,6 +3342,25 @@ class ForestApp : public SampleApp {
             if (fogPerStep) {
                 tracer_.renderVolFog(ctx, c.gpu(tracer_.width(), tracer_.height()),
                                      opt_.r.fogDensity, opt_.r.fogHeight, true);
+            }
+            // THE TOOL IS IN AN OFFLINE RENDER TOO, and it has to be set here
+            // for the reason the fog and the sky above are: renderOffline runs
+            // none of the per-frame systems, so anything hung off the
+            // interactive tick is simply absent from every --out image. At
+            // REST, though -- update() is never called here, so the swing clock
+            // never advances and the sway never starts, which is exactly what a
+            // still frame accumulating a thousand samples wants.
+            //
+            // UNVERIFIED, and honestly so: --out segfaults before it writes,
+            // and it does so on the commit before this file gained a viewmodel
+            // as well -- measured, 2026-09-06, by stashing every change here and
+            // rebuilding. So this line is written to be right rather than
+            // observed to be, and whoever fixes that crash should look at the
+            // tool in the first image it produces.
+            {
+                const HeldXform hx =
+                    held_.xform(c.gpu(tracer_.width(), tracer_.height()), 0.0f, 0.0f);
+                world_.setHeldInstance(hx.m, hx.tx, hx.ty, hx.tz, hx.show);
             }
             tracer_.renderSample(ctx, c.gpu(tracer_.width(), tracer_.height()), opt_.r);
             if ((s % 16) == 15 || s + 1 == opt_.r.spp) {
@@ -3587,19 +3753,195 @@ class ForestApp : public SampleApp {
     // reading as a poster.
     static float v2FontPx(float fbH) { return clampf(fbH / 64.0f, 12.0f, 24.0f); }
 
+    // -----------------------------------------------------------------------
+    // THE PIXEL FONT, and the one number that decides whether it looks like one
+    // -----------------------------------------------------------------------
+    //
+    // 3x3-pixel.otf is drawn on a 128-unit grid inside a 640-unit em: five
+    // cells to a capital, four to an x-height, six to an advance, and every
+    // outline coordinate in the file a multiple of 128. So there is exactly
+    // one thing that can go wrong with it, and it is the thing that goes wrong
+    // with every pixel font -- a cell that does not land on a whole number of
+    // screen pixels is a cell rendered as a grey smear, and a face made
+    // entirely of squares has nothing else to look at.
+    //
+    // ImGui rasterises at SizePixels / (ascent - descent), and this face's
+    // ascent and descent are 1024 and -256, so the divisor is 1280 and one
+    // 128-unit cell lands at SizePixels/10 screen pixels. ONLY MULTIPLES OF
+    // TEN ARE WHOLE CELLS. This quantises to them, and nothing downstream is
+    // allowed to scale the result -- see the note on scale in styleV2.
+    static float px3Px(float fbH) {
+        // Matched to the face it replaces rather than to the line box, which
+        // this font leaves half empty: a capital here is five cells, or half
+        // the size, where Consolas at v2FontPx gives about six tenths of it.
+        const float want = 1.2f * v2FontPx(fbH);
+        // v2FontPx stops at 24, so in practice this is twenty up to about
+        // 1200 lines and thirty above it -- two screen pixels to a cell, or
+        // three.
+        return clampf(roundf(want / 10.0f) * 10.0f, 20.0f, 30.0f);
+    }
+
+    ImFont *px3_ = nullptr;    // the face at px3Size_, or null for Consolas
+    float px3Size_ = 0.0f;
+    bool px3Failed_ = false;
+
+    // Bakes the pixel font for this framebuffer and says whether it just did.
+    //
+    // WHY THIS RUNS INSIDE A FRAME, which is the one thing ImGui asks you not
+    // to do to a font atlas: Falcor keeps its Gui private to SampleApp and
+    // hands it out nowhere but onGuiRender, so this is the only place that can
+    // reach addFont at all. The atlas is marked Locked between NewFrame and
+    // Render to catch exactly this, so the lock comes off for the length of
+    // the call and goes back on -- and the caller draws NOTHING on a frame
+    // that baked, because rebuilding the atlas moves the white-pixel texel
+    // that NewFrame had already cached for every filled rectangle. A frame
+    // without a readout is invisible; a frame of panels filled with a piece of
+    // a letter is not.
+    //
+    // Falcor rebuilds and re-uploads the atlas texture inside addFont and
+    // nowhere else, which is why that call is here: it IS the upload. The copy
+    // it loads for itself is at a hardcoded 14 px -- an eighth of a cell, and
+    // unusable -- and is never drawn with. It is registered under the name
+    // anyway so that a stray setActiveFont("px3") finds something, Falcor's
+    // own dereferencing its iterator whether or not the lookup succeeded.
+    bool bakePx3(Gui *gui, float fbH) {
+        if (px3Failed_) return false;
+        if (opt_.font.empty() || opt_.font == "off") {
+            px3_ = nullptr;
+            return false;
+        }
+        const float want = px3Px(fbH);
+        if (px3_ && want == px3Size_) return false;
+
+        // Asked before the atlas is touched rather than after: addFont throws
+        // on a file it cannot read, and a throw halfway through would leave
+        // ImGui holding a font the uploaded texture does not have -- which is
+        // not a missing font, it is every glyph in the interface reading from
+        // the wrong place in the atlas.
+        if (FILE *fp = std::fopen(opt_.font.c_str(), "rb")) {
+            std::fclose(fp);
+        } else {
+            std::fprintf(stderr, "v2: cannot open font %s -- drawing in Consolas\n",
+                         opt_.font.c_str());
+            px3Failed_ = true;
+            return false;
+        }
+
+        ImGuiIO &io = ImGui::GetIO();
+        const bool locked = io.Fonts->Locked;
+        io.Fonts->Locked = false;
+
+        ImFontConfig cfg;
+        // NO OVERSAMPLING, WHICH IS NOT THE DEFAULT. stb's is a horizontal
+        // prefilter: it rasterises at three times the width and blurs back
+        // down so a glyph still reads at a fractional position. That is the
+        // right answer for an outline face and the exact wrong one for a grid
+        // of squares -- it is a blur, and here the squares are the whole
+        // picture. PixelSnapH is the other half: it keeps the text origin
+        // whole, so the cells cannot drift off the grid they were baked onto.
+        cfg.OversampleH = 1;
+        cfg.OversampleV = 1;
+        cfg.PixelSnapH = true;
+        ImFont *face = io.Fonts->AddFontFromFileTTF(opt_.font.c_str(), want, &cfg);
+        bool ok = face != nullptr;
+        if (ok) {
+            try {
+                gui->addFont("px3", opt_.font);
+            } catch (const std::exception &e) {
+                std::fprintf(stderr, "v2: font atlas upload failed (%s)\n", e.what());
+                ok = false;
+            }
+        }
+        io.Fonts->Locked = locked;
+        if (!ok) {
+            px3Failed_ = true;
+            px3_ = nullptr;
+            return false;
+        }
+        // ---- NO CAPITALS, AND IT IS DONE IN THE FACE ---------------------
+        //
+        // Asked for as a rule about the interface rather than about any one
+        // label, so it is kept somewhere no label can get past it: A to Z are
+        // pointed at the glyphs for a to z, in this font and no other.
+        //
+        // NOT BY LOWERCASING THE STRINGS, which is the obvious way and is a
+        // trap. ImGui hashes a widget's LABEL into its ID: rewriting the
+        // literals renames every control in the engine, the positions and
+        // sizes ImGui remembers between runs are filed under those names, and
+        // any two labels differing only in case would collapse onto one id and
+        // become one widget. Remapping the face leaves every string exactly as
+        // it was written -- and catches the text v2 does not own as well, the
+        // framework's own included.
+        //
+        // What is typed is also untouched: a capital in the console still
+        // reaches runCommand as a capital, it is only drawn as a lowercase.
+        //
+        // TWO TABLES, because ImGui reads case-sensitively from both.
+        // FindGlyph goes through IndexLookup and CalcTextSize takes a fast
+        // path through IndexAdvanceX; remap only the first and the capitals
+        // draw as lowercase but are still laid out at their old, wider
+        // advance -- a line of gaps.
+        if (face->IndexLookup.Size > 'z' && face->IndexAdvanceX.Size > 'z') {
+            for (int up = 'A'; up <= 'Z'; ++up) {
+                const int lo = up - 'A' + 'a';
+                face->IndexLookup[up] = face->IndexLookup[lo];
+                face->IndexAdvanceX[up] = face->IndexAdvanceX[lo];
+            }
+        }
+
+        px3_ = face;
+        px3Size_ = want;
+        const bool lower = face->FindGlyph('A') == face->FindGlyph('a');
+        std::printf("v2: text in %s at %.0f px (%.0f-pixel cells), %s\n", opt_.font.c_str(),
+                    want, want / 10.0f,
+                    lower ? "lowercase only" : "MIXED CASE -- the remap did not take");
+        return true;
+    }
+
+    // The pixel font for the length of a window's contents.
+    //
+    // DECLARED AFTER THE WINDOW IT APPLIES TO, always: Falcor pushes its own
+    // active font INSIDE Gui::Window -- pushWindow does it after Begin -- so a
+    // push made before the window is the one that loses. Being destroyed
+    // before the window is what then keeps the two pushes balanced.
+    struct px3Font {
+        bool on;
+        px3Font(ImFont *f) : on(f != nullptr) {
+            if (on) ImGui::PushFont(f);
+        }
+        ~px3Font() {
+            if (on) ImGui::PopFont();
+        }
+    };
+
     struct styleV2 {
         Gui *gui;
         // What the windows have to pass to SetWindowFontScale to land on
         // v2FontPx. Falcor loads its fonts at fourteen points times whatever
-        // the display scaling is, so the number is not knowable up front.
+        // the display scaling is, so the number is not knowable up front --
+        // unless the pixel font is on, in which case it is one and the reason
+        // is below.
         float scale = 1.0f;
 
-        styleV2(Gui *g, float veil, float fbH) : gui(g) {
-            // The same fixed-pitch face v2 asked GDI for. Falcor registers it
-            // at startup; it only has to be switched on.
-            gui->setActiveFont("monospace");
+        styleV2(Gui *g, ImFont *px, float veil, float fbH) : gui(g) {
             const float target = v2FontPx(fbH);
-            scale = target / maxf(1.0f, ImGui::GetFontSize());
+            if (px) {
+                // ONE, AND IT IS THE WHOLE POINT. The pixel font is baked at
+                // the size it is drawn at (px3Px), so there is nothing left to
+                // scale -- and scaling is precisely what would undo it, since
+                // ImGui resamples the atlas bilinearly and even an exact
+                // doubling lands every destination pixel between two texels
+                // and hands back a grey edge on every square. The window still
+                // has to be TOLD one: SetWindowFontScale is remembered per
+                // window, and these windows outlive a change of face.
+                scale = 1.0f;
+            } else {
+                // The same fixed-pitch face v2 asked GDI for. Falcor registers
+                // it at startup; it only has to be switched on.
+                gui->setActiveFont("monospace");
+                scale = target / maxf(1.0f, ImGui::GetFontSize());
+                font_ = true;
+            }
 
             ImGuiStyle &st = ImGui::GetStyle();
             saved_ = st;
@@ -3654,10 +3996,11 @@ class ForestApp : public SampleApp {
         ~styleV2() {
             ImGui::PopStyleColor(colors_);
             ImGui::GetStyle() = saved_;
-            gui->setActiveFont("");
+            if (font_) gui->setActiveFont("");
         }
         ImGuiStyle saved_;
         int colors_ = 0;
+        bool font_ = false;  // whether the ctor moved Falcor's active font
     };
 
     // -----------------------------------------------------------------------
