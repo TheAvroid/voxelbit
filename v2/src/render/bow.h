@@ -56,8 +56,46 @@ inline constexpr int kArrowRot[3] = {0, 2, 2};
 
 // ONE OFFSET PER DRAW FRAME, same bake: across one voxel, and stepping further
 // out as the string draws back. Seven, because the strip is seven.
-inline constexpr int kArrowPos[7][3] = {{1, 1, 0}, {1, 2, 0}, {1, 3, 0}, {0, 0, 0},
-                                        {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+//
+// TWO VOXELS FURTHER ALONG THE SHAFT THAN THE ORIGINAL BAKE (user 2026-09-07),
+// tuned in the settings panel and folded in here rather than left as a running
+// offset -- which is what baking one means. The middle column of every row is
+// the JS engine's number plus two; nothing else moved, and the pose the bow is
+// held at is unchanged.
+//
+// FOLDED INTO ALL SEVEN and not only the three the draw shows, because the
+// shared grid is sized over every frame's placed arrow. Baking it into a
+// subset would size a different box for the same picture, and the box is what
+// the held pose is measured from.
+inline constexpr int kArrowPos[7][3] = {{1, 3, 0}, {1, 4, 0}, {1, 5, 0}, {0, 2, 0},
+                                        {0, 2, 0}, {0, 2, 0}, {0, 2, 0}};
+
+// ---------------------------------------------------------------------------
+// AND ONE MORE, THE SAME FOR EVERY FRAME, WHICH IS THE PART YOU CAN TUNE.
+//
+// The table above is a RELATIONSHIP -- the arrow stepping back as the string
+// draws -- and it is right. What is easy to be wrong about is where the whole
+// thing sits: an arrow half a voxel off the string reads as wrong from the
+// first frame and stays wrong through all seven. So the adjustment is one
+// offset added to every frame, which moves the arrow without disturbing the
+// draw the table describes.
+//
+// IN WHOLE VOXELS, and it could not be anything else: the arrow is stamped into
+// a voxel grid, so a fractional offset has nowhere to land. At 10 cm a voxel,
+// one step is one voxel.
+//
+// THE BOW DOES NOT MOVE WITH IT, and that falls out of how the grid is sized
+// rather than from anything here. The centre c2 is fixed by the bow and the
+// UNPLACED arrow, in the first sizing pass; the placed arrow only grows the box
+// symmetrically about that centre in the second. The held pose is measured from
+// the centre, so the bow stands still however far the arrow is nudged -- which
+// is exactly what makes this tunable while you look at it.
+// ---------------------------------------------------------------------------
+struct ArrowOffset {
+    int across = 0;  // the file's x
+    int along = 0;   // its y, down the shaft -- the direction the string draws
+    int up = 0;      // its z
+};
 
 // A composed strip: the same frames with the arrow on the string and without
 // it, in one shared grid.
@@ -137,7 +175,8 @@ inline void bowPlace(const VoxScene &sc, size_t pi, const long long *sft,
 // Cut the strip. Returns an empty BowStrip if the file will not give one, which
 // the caller treats as "no bow" rather than as a failure to start.
 // ---------------------------------------------------------------------------
-inline BowStrip parseBowStrip(const std::string &path, std::string *err) {
+inline BowStrip parseBowStrip(const std::string &path, std::string *err,
+                             const ArrowOffset &nudge = ArrowOffset{}) {
     using detail::BowVox;
 
     BowStrip out;
@@ -233,7 +272,8 @@ inline BowStrip parseBowStrip(const std::string &path, std::string *err) {
     for (int f = 0; f < n; ++f) {
         const int *p = kArrowPos[size_t(f < 7 ? f : 6)];
         for (const BowVox &v : detail::bowSpin(av[size_t(f)], kArrowRot))
-            placedArrow[size_t(f)].push_back({v.x + p[0], v.y + p[1], v.z + p[2], v.c});
+            placedArrow[size_t(f)].push_back({v.x + p[0] + nudge.across, v.y + p[1] + nudge.along,
+                                              v.z + p[2] + nudge.up, v.c});
         grow(placedArrow[size_t(f)]);
     }
 

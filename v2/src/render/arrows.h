@@ -147,6 +147,12 @@ class Arrows {
     // -----------------------------------------------------------------------
     void update(float dt, const WalkWorld &w) {
         if (!ready()) return;
+        // WHERE ANYTHING LANDED THIS TICK, for the impact sound. A list rather
+        // than a flag because two shafts really can land on one frame -- that
+        // is the same reason the JS engine pools its impact voice four deep --
+        // and cleared here rather than by the reader, so a caller that forgets
+        // to drain it cannot replay last frame's thud for ever.
+        landed_.clear();
         for (Shaft &a : shafts_) {
             if (!a.live && !a.stuck) continue;
             a.age += dt;
@@ -172,6 +178,7 @@ class Arrows {
                     a.live = false;
                     a.stuck = true;
                     a.age = 0.0f;
+                    landed_.push_back(a.pos);
                     if (log) {
                         std::printf("v2: arrow stuck at %.1f %.1f %.1f\n", double(a.pos.x),
                                     double(a.pos.y), double(a.pos.z));
@@ -230,6 +237,9 @@ class Arrows {
         }
     }
 
+    // Drained by the caller each frame -- see update().
+    const std::vector<Vec3> &landedThisTick() const { return landed_; }
+
     int inFlight() const {
         int n = 0;
         for (const Shaft &a : shafts_)
@@ -241,6 +251,7 @@ class Arrows {
     int model_ = -1;
     int sx_ = 0, sy_ = 0, sz_ = 0;
     std::vector<Shaft> shafts_ = std::vector<Shaft>(size_t(kArrowSlots));
+    std::vector<Vec3> landed_;
 };
 
 }  // namespace v2

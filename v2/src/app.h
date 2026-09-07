@@ -59,6 +59,7 @@
 #include "gpu/neural.h"
 #include "gpu/streamline.h"
 #include "gpu/nrc.h"
+#include "gpu/nrcsdk.h"
 #include "gpu/atmosphere.h"
 #include "gpu/volfog.h"
 #include "gpu/cuda.h"
@@ -70,7 +71,9 @@
 #include "render/camera.h"
 #include "render/arrows.h"
 #include "render/butterflies.h"
+#include "render/drops.h"
 #include "render/helditem.h"
+#include "render/toolsound.h"
 #include "render/player.h"
 #include "render/recorder.h"
 #include "scene/daynight.h"
@@ -224,6 +227,14 @@ struct Options {
     bool nrcFreqEncoding = false;
     // Stop training: the network answers from the weights it was given.
     bool nrcFrozen = false;
+    // NVIDIA's Neural Radiance Cache (RTXGI 2.x) instead of v2's own. Runs on
+    // D3D12, where the denoiser is -- see gpu/nrcsdk.h.
+    bool nrcSdk = false;
+    // An NrcResolveMode to visualise instead of rendering. 11 = DirectCacheView.
+    int nrcSdkDebug = 0;
+    float nrcSdkRadiance = 1.0f;
+    // Use the SDK's own Resolve instead of v2's custom one.
+    bool nrcSdkBuiltin = false;
     // 0 leaves gpu/nrc.h's own default alone.
     float nrcLr = 0.0f;
     // Weights in and out. The whole point of the voxel encoding is that these
@@ -407,6 +418,17 @@ struct Options {
     std::string sound = "C:/voxelbit/game/sound/bird_ambience.mp3";
     float ambience = 0.25f;
     bool soundOn = true;
+    // ---- what the tools sound like (render/toolsound.h) ------------------
+    //
+    // The DIRECTORY, not a file: it holds a dozen cues in three subfolders and
+    // naming them one by one on a command line would be absurd. In the game's
+    // asset tree with the models and the bed, for the same reason they are.
+    //
+    // `sfx` is the JS engine's SFX BUS -- a second slider under the master, for
+    // the sounds the world makes. One number here where it has four, because
+    // v2 has two things that make sound rather than five.
+    std::string soundDir = "C:/voxelbit/game/sound";
+    float sfx = 1.0f;
 
     // ---- what is in the player's hand (render/helditem.h) ---------------
     //
@@ -432,6 +454,16 @@ struct Options {
     // and one at a time under a canopy.
     std::string butterflyDir = "C:/voxelbit/game/assets/life/butterfly";
     int butterflies = 24;
+
+    // WHERE THE NOCKED ARROW STARTS, in whole voxels -- the same three numbers
+    // the settings panel edits, and applied through the same path, so a value
+    // tuned by hand can be pinned on a command line and photographed without
+    // being baked into kArrowPos first.
+    //
+    // NOT `arrow`, which is a few lines up and is the arrow MODEL's path. Two
+    // fields called the same thing in one struct is the sort of collision that
+    // compiles the day the second one is a different type.
+    ArrowOffset arrowNudge;
     // Which tool the hand opens with, as an index into the kit. Exists for the
     // same reason --swing-hold does: a tool you can only reach by scrolling
     // cannot be photographed, measured or regression tested.
@@ -451,6 +483,10 @@ struct Options {
     // shot draws for --shot-frame frames and never fires; use --shot-loose N to
     // let go on frame N.
     bool drawHold = false;
+    // DROP THE HELD ITEM ON A NAMED FRAME, the same idea as --shot-loose above
+    // it and for the same reason: a still of an item leaving the hand, or of
+    // one lying in the wood, has to be reproducible. Negative never drops.
+    int dropFrame = -1;
     int shotLoose = -1;
 
     float sunAz = defaults::kSunAz;
@@ -761,6 +797,28 @@ class ForestApp : public SampleApp {
         sharc_.statsOn = opt_.sharcStats;
         if (opt_.sharcStale > 0) sharc_.staleFrames = uint32_t(opt_.sharcStale);
         sharc_.setCapacity(uint32_t(maxi(0, opt_.sharcEntries)));
+#if V2_HAS_NRCSDK
+        // NVIDIA'S CACHE, AND IT HAS TO COME BEFORE tracer_.init.
+        //
+        // Whether this is on decides which PROGRAMS the tracer compiles: the
+        // NRC buffers only exist in a build that defined V2_NRCSDK. Bring it up
+        // afterwards and the host binds five resources the shader never
+        // declared -- "No member named 'gNrcQueryPathInfo' found", at the first
+        // dispatch rather than at startup.
+        if (opt_.nrcSdk) {
+            nrcSdk_.enabled = true;
+            nrcSdk_.debugMode = opt_.nrcSdkDebug;
+            nrcSdk_.maxRadiance = opt_.nrcSdkRadiance;
+            if (nrcSdk_.init(getDevice()))
+                std::printf("  nrc sdk  %s\n", nrcSdk_.status().c_str());
+            else
+                std::printf("  nrc sdk  unavailable: %s\n", nrcSdk_.status().c_str());
+            std::fflush(stdout);
+            if (nrcSdk_.available()) tracer_.setNrcSdk(&nrcSdk_);
+            tracer_.nrcSdkResolveDebug = (opt_.nrcSdkDebug == 99);
+        }
+#endif
+
         tracer_.init(getDevice(), &world_, neural_.available(), !opt_.sharcHashGrid,
                      !opt_.nrcFreqEncoding);
         makeCrosshair();
@@ -1062,8 +1120,20 @@ class ForestApp : public SampleApp {
         // frame job; and a --background instance is one you are meant to be
         // able to forget is running, which a forest singing out of a
         // minimised window rather defeats.
-        if (opt_.soundOn && !opt_.outGiven && !opt_.background)
-            ambience_.open(opt_.sound, opt_.ambience);
+        // ONE DEVICE, AND THE BED AND THE TOOLS SHARE IT. See vb::AudioDevice
+        // for why two mastering voices would be two entries in the system
+        // mixer for one game.
+        //
+        // The gate is unchanged and now covers both: no audio under --out,
+        // which has no listener and would only add a decode to every frame
+        // job, and none under --background, which is an instance you are meant
+        // to be able to forget is running. A scripted --swing-hold run in the
+        // background would otherwise chop away audibly in a minimised window.
+        if (opt_.soundOn && !opt_.outGiven && !opt_.background && audio_.open()) {
+            ambience_.open(audio_, opt_.sound, opt_.ambience);
+            toolSfx_.open(audio_, opt_.soundDir);
+            toolSfx_.setGain(opt_.sfx);
+        }
 
         // -- the axe ---------------------------------------------------------
         //
@@ -1081,19 +1151,46 @@ class ForestApp : public SampleApp {
             // note on the row: same haft, same swing, so the pose that was
             // tuned for one is the right place to begin the other. Tune it live
             // and use the menu's copy row to bring the numbers back here.
-            held_.add(world_, "stone axe", opt_.axe, HeldPose{});
-            held_.add(world_, "stone pick", opt_.pick, HeldPose{});
+            //
+            // AND EACH DECLARES WHAT IT TAKES. That is the only thing left in
+            // v2 that tells an axe from a pick -- nothing can be carved here,
+            // so the material a tool is for survives purely as what it SOUNDS
+            // like against wood and against stone. See Takes in
+            // render/helditem.h, and toolsound.h for the rule it feeds.
+            //
+            // THE OFFSETS ARE THE OLD ONES CARRIED OUT TO REAL SCALE. Each is
+            // the world point the old pose actually put the tool at, times the
+            // factor its voxels grew by -- 100 mm over the 11.0 mm a tool voxel
+            // used to measure. An object N times the size at N times the
+            // distance projects to the same place, so the framing that was
+            // tuned by eye survives the change of units exactly; what changed
+            // is that the axe is now a 90 cm axe rather than a 10 cm one.
+            held_.add(world_, "stone axe", opt_.axe, HeldPose{}, Takes::Wood);
+            held_.add(world_, "stone pick", opt_.pick, HeldPose{}, Takes::Stone);
             // THE BOW'S OWN BAKE, from the JS engine's PICK_DEFS for
             // 2026-08-04. It is not the tool family's pose: a bow is held
             // upright across the hand, further out and turned a quarter turn
             // (pitch 1.57) so the limbs stand across the frame rather than
             // along it, and its art is much longer than a hand tool, which is
             // what the larger scale is for.
+            // THE BOW'S OWN, carried out by ITS factor -- 100 mm over the
+            // 14.6 mm its voxels used to measure, which is not the tools'
+            // 9.09 because its scale was not theirs. That difference is the
+            // whole bug being fixed here: two hand items on two different
+            // voxel sizes. They are on one now, and each keeps the framing it
+            // was tuned to.
             held_.addBow(world_, "bow", opt_.bow,
-                         HeldPose{1.09f, -0.14f, 1.02f, 0.01f, 1.57f, -0.06f, 0.106f});
+                         HeldPose{10.28f, -1.32f, 6.99f, 0.01f, 1.57f, -0.06f, 1.0f});
             held_.select(opt_.tool);
             arrows_.init(world_, opt_.arrow);
             arrows_.log = opt_.swingLog;
+            // WHERE THE NOCKED ARROW STARTS. Asked for rather than applied:
+            // the request is served on the first frame, beside the streamer,
+            // which is the one place in this engine a structure may be built --
+            // see the note there, and the one on the settings rows.
+            arrowWant_ = opt_.arrowNudge;
+            arrowDirty_ = (opt_.arrowNudge.across || opt_.arrowNudge.along ||
+                           opt_.arrowNudge.up);
         }
 
         printHelp();
@@ -1216,11 +1313,81 @@ class ForestApp : public SampleApp {
             frameMs_.push_back(wallDt * 1000.0f);
             streamMs_.push_back(updateMs);
         }
+        // -- THE ARROW, IF THE PANEL ASKED FOR IT -------------------------
+        //
+        // HERE AND NOT IN THE PANEL, and beside the streamer for the same
+        // reason the streamer is here: recomposing the bow's strip builds
+        // fourteen bottom-level structures, and a structure build forces a
+        // device drain and a blocking submit. This is the point in the frame
+        // where that is legal -- world_.update above does exactly the same
+        // thing whenever a chunk arrives. See the note on the rows in the
+        // settings panel for what happened when it was done from there.
+        if (arrowDirty_) {
+            arrowDirty_ = false;
+            const auto ta = std::chrono::steady_clock::now();
+            if (held_.retuneArrow(world_, arrowWant_)) {
+                std::printf("v2: arrow %+d %+d %+d voxels  (%.0f ms)\n", arrowWant_.across,
+                            arrowWant_.along, arrowWant_.up,
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - ta)
+                                .count());
+                std::fflush(stdout);
+                // Different geometry, so every sample already in the film
+                // describes a bow that is no longer there.
+                tracer_.resetAccumulation();
+            } else {
+                // It did not take -- put the rows back on the value that is
+                // actually in the hand, or they would go on showing a bow that
+                // was never built.
+                arrowWant_ = held_.arrow();
+            }
+        }
+
         if (processInput(dt)) tracer_.resetAccumulation();
+
+        // A SCRIPTED DROP, on its named frame. Runs the same three lines the
+        // Q handler does; there is no key event on this path to reach them
+        // through.
+        if (opt_.dropFrame >= 0 && shotFrames_ == opt_.dropFrame && held_.ready() &&
+            held_.carrying()) {
+            const Vec3 ddir = forward();
+            const Vec3 dfrom = pos_ + camRight() * lastHeld_.cam.x + camUp() * lastHeld_.cam.y +
+                               ddir * lastHeld_.cam.z;
+            const int dsel = held_.selected();
+            // NOT dt -- that is the frame's own delta time, a few lines up.
+            const Tool &dtool = held_.tool(dsel);
+            const int dmodel = held_.model();
+            if (held_.dropSelected() >= 0) {
+                drops_.toss(dsel, dmodel, dtool.sx, dtool.sy, dtool.sz, dfrom, ddir);
+                std::printf("v2: dropped %s  from (%.2f, %.2f, %.2f)\n", dtool.name, double(dfrom.x),
+                            double(dfrom.y), double(dfrom.z));
+                std::fflush(stdout);
+            }
+        }
+
+        // -- WHAT IS ON THE GROUND ----------------------------------------
+        //
+        // Ticked with the shafts, and for the same reason: both are thrown
+        // objects falling through terrain that streams. Walking over one picks
+        // it up, which is what stops Q being a way to lose your axe -- the JS
+        // engine's autoPickup, at its own radius.
+        {
+            const int back = drops_.update(dt, walkWorld(), player_.pos, !held_.carrying());
+            if (back >= 0) {
+                held_.give(back);
+                std::printf("v2: picked up %s\n", held_.name());
+                std::fflush(stdout);
+            }
+        }
 
         // The shafts in the air. AFTER processInput, so one loosed this frame
         // starts moving on the frame it left rather than the next.
         arrows_.update(dt, walkWorld());
+        // ...and each one that stopped this tick lands with a thud, quieter the
+        // further off it stuck. Drained here rather than inside the flight so
+        // the sound is not fired from the 5 ms integration substep loop.
+        for (const Vec3 &at : arrows_.landedThisTick())
+            toolSfx_.arrowLanded(length(at - pos_));
 
         // ...and the flock. It gathers its OWN colliders rather than taking the
         // six metres around the player that walkWorld carries: a butterfly is
@@ -1327,6 +1494,24 @@ class ForestApp : public SampleApp {
         liveMaxAccum_ = cfg.maxAccum;
         liveDepth_ = cfg.maxDepth;
 
+#if V2_HAS_NRCSDK
+        // -- NVIDIA'S NEURAL CACHE: the frame opens here ---------------------
+        //
+        // Configure() first, and it costs nothing unless the frame size or the
+        // SNAPPED scene box has actually moved -- see nrcsdk.h for why the box
+        // is a kilometre wide and why it is snapped rather than centred.
+        //
+        // BeginFrame has to precede the path tracing passes: it is what clears
+        // the record counters the tracer then appends to.
+        if (nrcSdk_.available() && nrcSdk_.enabled) {
+            // The same position the camera is built from, twenty lines below.
+            const Vec3 cp = pos_;
+            if (nrcSdk_.configure(uint32_t(tracer_.width()), uint32_t(tracer_.height()), cp,
+                                  uint32_t(maxi(2, opt_.r.maxDepth))))
+                nrcSdk_.beginFrame(ctx, 1.0f);
+        }
+#endif
+
         Camera cam;
         cam.origin = pos_;
         cam.target = pos_ + forward() * 50.0f;
@@ -1358,8 +1543,15 @@ class ForestApp : public SampleApp {
         // every --out image.
         {
             const HeldXform hx = held_.xform(gcam, player_.bobPhase, player_.bobAmp);
+            // KEPT FOR THE NEXT FRAME'S RELEASE. loose() runs in processInput,
+            // before the hand is placed, so what it can read is where the bow
+            // was last frame -- which is what the JS engine reads too, off its
+            // own prevCam. A frame of lag on a launch point that moves with the
+            // bob is not something an eye can see.
+            lastHeld_ = hx;
             world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, hx.show);
             arrows_.publish(world_);
+            drops_.publish(world_);
             flock_.publish(world_);
             world_.refitTlas();
         }
@@ -1476,6 +1668,64 @@ class ForestApp : public SampleApp {
             // would settle at a rate that depended on how fast the machine
             // happened to render, which is exactly what those flags exist to
             // take out of the picture.
+#if V2_HAS_NRCSDK
+            // -- ...and NVIDIA'S closes here ------------------------------------
+            //
+            // QueryAndTrain runs the network over the records the tracer wrote:
+            // it predicts radiance at the query points, propagates it back along
+            // the stored paths, and fits the network to the result. Resolve then
+            // folds the predictions into the image, since none of that can happen
+            // inline in the path loop.
+            //
+            // EndFrame goes LAST and takes the queue rather than the command list,
+            // because it is the submission it waits on, not the recording.
+            //
+            // AND ALL OF IT RUNS BEFORE tracer_.resolve, which is v2's tone map.
+            // That pass READS color_; a cache resolve that writes color_ after it
+            // has run is writing into a texture nothing will read again before the
+            // next trace overwrites it from the accumulator. It cost an afternoon:
+            // every SDK debug view -- DirectCacheView, QueryIndex, the lot --
+            // came out pixel-identical to the plain render, which reads exactly
+            // like a cache that has learnt nothing.
+            if (nrcSdk_.configured() && nrcSdk_.enabled) {
+                nrcSdk_.queryAndTrain(ctx);
+                // v2's OWN resolve, not the library's: the built-in one adds into
+                // the output texture, and v2's output texture is a running mean.
+                // See the note at the top of NrcSdkResolve.cs.slang.
+                if ((opt_.nrcSdkDebug > 0 && opt_.nrcSdkDebug != 99) || opt_.nrcSdkBuiltin)
+                    nrcSdk_.resolve(ctx, tracer_.color().get());
+                else
+                    tracer_.runNrcSdkResolve(ctx);
+                // Printed occasionally: a loss that never moves off zero means the
+                // library is receiving no training records at all, which looks
+                // exactly like a cache that is working badly.
+                if ((nrcSdkLogTick_++ % 120u) == 0u)
+                {
+                    uint32_t nq = 0, nt = 0;
+                    nrcSdk_.readCounters(nq, nt);
+                    std::printf("  nrc recs query %-8u training %-8u loss %.6f\n",
+                                nq, nt, nrcSdk_.trainingLoss());
+                }
+
+                // -- SUBMIT, AND ONLY THEN END THE FRAME ---------------------
+                //
+                // EndFrame takes the command QUEUE, not the command list, and the
+                // guide is explicit that it goes after the list has been
+                // submitted: it is what the library waits on to know its own work
+                // has run. Falcor owns submission and does it when onFrameRender
+                // returns, so left alone this called EndFrame on a queue that had
+                // never been given the frame's work -- and the symptom was not an
+                // error but a training loss of exactly zero, for ever.
+                //
+                // ddgi.h already flushes mid-frame for the same reason: an SDK
+                // that reaches past the abstraction needs the abstraction to have
+                // caught up first. false, not true -- the queue has to have the
+                // work, but nothing here needs to block on it finishing.
+                ctx->submit(false);
+                nrcSdk_.endFrame();
+            }
+#endif
+
             tracer_.resolve(ctx, cfg, reconstructed, dt);
 
             // -- teach the cache what this frame found -----------------------
@@ -1495,6 +1745,7 @@ class ForestApp : public SampleApp {
                                 Falcor::float3(sd.x, sd.y, sd.z));
             }
         }
+
 
         // Guarded because a background instance may have nothing on screen to
         // blit to: it goes on tracing at the size it was asked for, and simply
@@ -2208,7 +2459,15 @@ class ForestApp : public SampleApp {
             float amb = ambience_.masterGain();
             if (w.slider("Volume", amb, 0.0f, 2.0f, false, "%.2f"))
                 ambience_.setMasterGain(amb);
-        } else {
+        }
+        // ITS OWN SLIDER, which is the JS engine's split: the bed and the
+        // things the world does are two buses there, because a wood that is too
+        // loud and an axe that is too loud are different complaints.
+        if (toolSfx_.ready()) {
+            float s = toolSfx_.gain();
+            if (w.slider("Tools", s, 0.0f, 2.0f, false, "%.2f")) toolSfx_.setGain(s);
+        }
+        if (!ambience_.active()) {
             ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
             ImGui::TextUnformatted(opt_.background
                                        ? "Volume: no audio under --background"
@@ -2254,7 +2513,51 @@ class ForestApp : public SampleApp {
                 w.slider("  yaw", held_.pose().yaw, -PI, PI, false, "%.3f");
                 w.slider("  pitch", held_.pose().pitch, -PI, PI, false, "%.3f");
                 w.slider("  roll", held_.pose().roll, -PI, PI, false, "%.3f");
-                w.slider("  size", held_.pose().scale, 0.01f, 0.30f, false, "%.3f");
+                // ONE IS EXACT: one model voxel per 10 cm world voxel. The
+                // slider is still here because a viewmodel is judged by eye,
+                // but anything other than 1.000 is a hand item that no longer
+                // matches the grid the world is built on.
+                w.slider("  size", held_.pose().scale, 0.25f, 2.0f, false, "%.3f");
+
+                // ---- WHERE THE ARROW SITS ON THE STRING ------------------
+                //
+                // IN WHOLE VOXELS, because the arrow is voxels stamped into the
+                // bow's own grid and there is nowhere for half a voxel to land
+                // (see ArrowOffset in render/bow.h). One step is one voxel is
+                // ten centimetres, which is the unit the rest of this world is
+                // measured in and the unit kArrowPos is written in.
+                //
+                // THE AXES ARE THE .VOX FILE'S, not the screen's, so what is
+                // read here can be pasted back into kArrowPos without being
+                // converted: across the bow, along the shaft -- which is the
+                // way the string draws -- and up.
+                //
+                // EACH STEP RECOMPOSES THE WHOLE STRIP, fourteen frames of it,
+                // and that is the other reason this steps in whole voxels
+                // rather than sliding.
+                //
+                // THE ROWS ONLY ASK. THEY DO NOT REBUILD, and the first cut of
+                // this did -- it called retuneArrow straight from here and took
+                // the game down with it. Rebuilding a structure means
+                // World::buildBlas, which forces a compaction drain and a
+                // BLOCKING submit, and the note over drainCompactions says what
+                // is wrong with that in as many words: the forced path "is
+                // never taken while a frame is being displayed". This function
+                // runs inside the frame, after the trace has been recorded, so
+                // fourteen blocking submits land in the middle of a command
+                // list that is still being written.
+                //
+                // So the slider writes a WANT and the frame acts on it, next to
+                // world_.update, where every other structure this engine builds
+                // is built. One frame of lag on a tuning control, and no
+                // GPU work issued from the interface at all.
+                if (held_.holdingBow()) {
+                    bool moved = false;
+                    moved |= w.slider("  arrow across", arrowWant_.across, -12, 12);
+                    moved |= w.slider("  arrow along", arrowWant_.along, -12, 12);
+                    moved |= w.slider("  arrow up", arrowWant_.up, -12, 12);
+                    if (moved) arrowDirty_ = true;
+                }
                 // COPY, NOT SAVE. The bake writes defaults.h and this pose is
                 // not in it -- deliberately, because a viewmodel pose belongs
                 // beside the model it poses rather than in a file of renderer
@@ -2266,6 +2569,13 @@ class ForestApp : public SampleApp {
                                       held_.pose().x, held_.pose().y, held_.pose().z, held_.pose().yaw,
                                       held_.pose().pitch, held_.pose().roll, held_.pose().scale);
                     poseCopied_ = std::string(held_.name()) + "  " + poseCopied_;
+                    // ...and the arrow with it, in the form kArrowPos wants: a
+                    // pose row that is copied without the offset that was tuned
+                    // beside it is half an answer.
+                    if (held_.holdingBow())
+                        poseCopied_ += fmt("   arrow +{ %d, %d, %d } voxels on every frame",
+                                           held_.arrow().across, held_.arrow().along,
+                                           held_.arrow().up);
                     std::printf("v2: held pose %s\n", poseCopied_.c_str());
                     std::fflush(stdout);
                     ImGui::SetClipboardText(poseCopied_.c_str());
@@ -2477,6 +2787,33 @@ class ForestApp : public SampleApp {
             opt_.r.maxDepth = mini(32, opt_.r.maxDepth + 1);
             std::printf("v2: bounces = %d\n", opt_.r.maxDepth);
             tracer_.resetAccumulation();
+        }
+        // -- Q PUTS IT DOWN -------------------------------------------------
+        //
+        // ON THE KEY EVENT AND NOT ON THE POLLED STATE, unlike the swing: a
+        // drop is one action per press, and polling would empty the whole kit
+        // in three frames of holding the key.
+        //
+        // IT LEAVES FROM THE HAND. lastHeld_ is where the item actually was
+        // last frame -- after the swing, the bob and the sway -- so the thing
+        // that flies is the thing you were looking at, which is the JS engine's
+        // own rule for this ("launch from the held item's true world spot ...
+        // it FLIES out of the hand").
+        if (e.key == Input::Key::Q && held_.ready() && held_.shown && held_.carrying() &&
+            looking_ && !menuOpen_) {
+            const Vec3 dir = forward();
+            const Vec3 from = pos_ + camRight() * lastHeld_.cam.x + camUp() * lastHeld_.cam.y +
+                              dir * lastHeld_.cam.z;
+            const int sel = held_.selected();
+            const Tool &t = held_.tool(sel);
+            const int model = held_.model();
+            if (held_.dropSelected() >= 0) {
+                drops_.toss(sel, model, t.sx, t.sy, t.sz, from, dir);
+                std::printf("v2: dropped %s\n", t.name);
+                std::fflush(stdout);
+                tracer_.resetAccumulation();
+            }
+            return true;
         }
         if (e.key == Input::Key::H && held_.ready()) {
             // An empty hand, and back again. The JS engine reaches the same
@@ -2733,8 +3070,12 @@ class ForestApp : public SampleApp {
             std::fflush(stdout);
         }
         // Before the window goes: an audio device held open past it is the
-        // one kind of leak you can hear.
+        // one kind of leak you can hear. ORDERED -- every source voice is made
+        // from the engine and must be destroyed before it, so the two voices
+        // go first and the device last.
         ambience_.stop();
+        toolSfx_.close();
+        audio_.close();
         saveWindowPlacement();
     }
 
@@ -2754,6 +3095,7 @@ class ForestApp : public SampleApp {
     // What the bow looses. A fixed pool of instances the world reserves -- see
     // render/arrows.h for why it is fixed.
     Arrows arrows_;
+    Drops drops_;
     Butterflies flock_;
     // False until the left button has been seen UP once -- see onMouseEvent.
     bool swingArmed_ = false;
@@ -2761,7 +3103,16 @@ class ForestApp : public SampleApp {
     // back rather than the player having to find the console.
     std::string poseCopied_;
     Swing lastSwing_;
+    vb::AudioDevice audio_;
     vb::Ambience ambience_;
+    ToolSounds toolSfx_;
+    // What the settings panel has asked the arrow to be, and whether the frame
+    // still has to act on it. The rows edit this rather than the tool's own
+    // offset, so dragging stays responsive while the rebuild happens a frame
+    // later -- see the note on the rows.
+    HeldXform lastHeld_;  // where the hand was last frame -- see loose()
+    ArrowOffset arrowWant_;
+    bool arrowDirty_ = false;
     Falcor::ref<Falcor::FullScreenPass> crosshair_;
     DayNight clock_;  // owns the sun; sunAz_/sunEl_ are its output
     bool placedTwice_ = false;
@@ -2836,6 +3187,10 @@ class ForestApp : public SampleApp {
     Ddgi ddgi_;
     Sharc sharc_;
     Restir restir_;
+#if V2_HAS_NRCSDK
+    NrcSdk nrcSdk_;
+    uint32_t nrcSdkLogTick_ = 0;
+#endif
     Cuda cuda_;
     Clusters clusters_;
     Physics physics_;
@@ -2869,6 +3224,12 @@ class ForestApp : public SampleApp {
     void invalidate() { tracer_.resetAccumulation(); }
 
     Vec3 forward() const { return Camera::direction(yaw_, pitch_); }
+    // THE CAMERA'S OTHER TWO AXES, built exactly as Camera::gpu builds them --
+    // w forward, u = w x up, v = u x w. A pose is expressed against these
+    // three, so anything that reads a pose back out (the bow's launch point)
+    // has to use the same ones or it lands somewhere else.
+    Vec3 camRight() const { return normalize(cross(forward(), Vec3(0.0f, 1.0f, 0.0f))); }
+    Vec3 camUp() const { return cross(camRight(), forward()); }
 
     // The world as the player sees it: the terrain, plus the trees and rocks
     // close enough to walk into.
@@ -3277,18 +3638,45 @@ class ForestApp : public SampleApp {
     // those are 480 and 18 voxels a second; here they are metres, which is the
     // same numbers over ten.
     //
-    // WHERE IT STARTS is not the eye. The viewmodel sits a hand's breadth from
-    // the lens, far too close to spawn a full-size shaft, so the launch point
-    // is carried out along the view to where an arrow can be drawn -- and then
-    // AIMED at a point far down the sight line rather than straight along the
-    // view, so a shaft that leaves six voxels to the side still converges on
-    // the crosshair the way a real bow sight does.
+    // WHERE IT STARTS IS THE BOW, and getting that wrong is what made the
+    // arrow appear to vanish and be replaced (user 2026-09-07: "the arrow
+    // disappears when its being fired").
+    //
+    // The nocked arrow is off to the right and down, wherever the hand holds
+    // the bow. This used to spawn the shaft straight down the VIEW instead --
+    // dead centre -- so on release the arrow you were looking at blinked out
+    // and a different one appeared somewhere else. Two arrows, visibly.
+    //
+    // The JS engine's launchThrown has the answer and its note is the whole
+    // idea: the viewmodel sits too close to the lens to spawn a full-size shaft
+    // at, so take the bow's OWN sideways and vertical offset and carry it out
+    // along the view to where an arrow can be drawn. The launch point then lies
+    // on the RAY FROM THE EYE THROUGH THE BOW, which is the line the nocked
+    // arrow is already on -- so the shaft leaves exactly where the arrow was,
+    // just further down the same line, and the swap is invisible.
+    //
+    // ...and it must still go WHERE YOU AIMED. Leaving from a point to the side
+    // of the eye means firing straight down the view sends the shaft along a
+    // parallel line that never crosses the crosshair, so it is aimed at a
+    // distant point ON the sight line and converges onto it within a few
+    // metres, the way a real bow sight does.
     // -----------------------------------------------------------------------
-    void loose(float draw) {
+    // Returns whether a shaft actually left, which is what the whoosh hangs
+    // off -- see the call site.
+    bool loose(float draw) {
         const float k = clampf(draw, 0.0f, 1.0f);
-        if (k <= 0.0f) return;
+        if (k <= 0.0f) return false;
         const Vec3 dir = forward();
-        const Vec3 from = pos_ + dir * kArrowLaunchM;
+        // The bow's own place in the frame, carried out along the view.
+        // `carry` is what puts the launch point on the eye-through-bow ray:
+        // scale the lateral offsets by however much further out kArrowLaunchM
+        // is than the bow itself. Guarded, because a pose with the item at the
+        // eye would divide by nothing. NOT called k -- that is the draw, a few
+        // lines up, and it is what the shot is worth.
+        const Vec3 ho = lastHeld_.cam;
+        const float carry = kArrowLaunchM / maxf(0.02f, ho.z);
+        const Vec3 from =
+            pos_ + camRight() * (ho.x * carry) + camUp() * (ho.y * carry) + dir * kArrowLaunchM;
         const Vec3 aim = pos_ + dir * kArrowAimM;
         Vec3 v = aim - from;
         const float l = sqrtf(maxf(1e-8f, lengthSq(v)));
@@ -3300,6 +3688,7 @@ class ForestApp : public SampleApp {
                         double(kArrowSpeed * k));
             std::fflush(stdout);
         }
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -3321,7 +3710,11 @@ class ForestApp : public SampleApp {
         const bool sprint =
             in.isKeyDown(Input::Key::LeftShift) || in.isKeyDown(Input::Key::RightShift);
         const bool jump = in.isKeyDown(Input::Key::Space);
-        const bool down = in.isKeyDown(Input::Key::LeftControl) || in.isKeyDown(Input::Key::Q);
+        // Q HAS MOVED TO DROP (user 2026-09-07), which is where the JS engine
+        // has always had it -- its DEFBINDS name KeyQ as `drop`. Control alone
+        // descends in fly mode now; it was always the other half of that pair
+        // and is the binding every other engine uses for it.
+        const bool down = in.isKeyDown(Input::Key::LeftControl);
 
         // WASD in the horizontal plane only -- looking up must not walk you
         // into the sky. The forward vector is flattened and renormalised rather
@@ -3374,20 +3767,41 @@ class ForestApp : public SampleApp {
             const bool drawing = scripted || (in.isMouseButtonDown(Input::MouseButton::Right) &&
                                               looking_ && !menuOpen_ && !holdLook_);
             float draw = 0.0f;
-            if (held_.update(dt, swinging, player_.bobAmp, drawing, &draw)) {
+            const bool released = held_.update(dt, swinging, player_.bobAmp, drawing, &draw);
+            // THE STRING STARTS CREAKING WITH THE PULL, and is cut the instant
+            // it is let go -- whether or not a shaft left, so a half-draw never
+            // rings on over the release. The JS engine's playBowStretch and
+            // stopBowStretch, on the same two edges.
+            if (held_.drewNow()) toolSfx_.draw();
+            if (released) {
+                toolSfx_.release();
                 // AN ARROW IS AWAY. What it is worth is how far the bow was
-                // pulled, which is what `draw` carries.
-                loose(draw);
+                // pulled, which is what `draw` carries -- and the whoosh goes
+                // with the SHAFT, not with the release: a bow that whooshed on
+                // an empty loose would be lying about what happened, which is
+                // that engine's own note on the line this comes from.
+                if (loose(draw)) toolSfx_.loosed();
             }
+            // ...and the re-nock when the bow settles back to rest with a fresh
+            // arrow on the string. Silent until sound/bow/reload.mp4 exists --
+            // see ToolSounds::open.
+            if (held_.nockedNow()) toolSfx_.nocked();
             if (held_.struck()) {
                 // THE IMPACT FRAME. What a bite would be spent on; for now it
                 // is the verdict and nothing else -- see the header of
                 // render/helditem.h for why there is nothing to carve.
                 lastSwing_ = swingRay(walkWorld(), pos_, forward());
+                // ...and what it sounded like. The tool declares what it can
+                // take (Takes, in render/helditem.h) and the blow decides the
+                // rest, exactly as toolTakesFor and playToolHit split the job
+                // in the engine this comes from.
+                const Blow heard = toolSfx_.blow(held_.takes(), lastSwing_);
                 if (opt_.swingLog) {
                     static const char *kWhat[] = {"air", "ground", "trunk", "rock"};
+                    static const char *kHeard[] = {"silent", "wood", "rock", "knock"};
                     std::printf("v2: swing -> %s", kWhat[int(lastSwing_.kind)]);
                     if (lastSwing_.hit) std::printf("  %.2f m", lastSwing_.dist);
+                    std::printf("  %s -> %s", held_.name(), kHeard[int(heard)]);
                     std::printf("\n");
                     std::fflush(stdout);
                 }

@@ -71,6 +71,8 @@ target_sources(v2 PRIVATE
     shaders/Remodulate.cs.slang
     shaders/NeuralProbe.cs.slang
     shaders/Nrc.slang
+    shaders/NrcSdk.slang
+    shaders/NrcSdkResolve.cs.slang
     shaders/VoxelKey.slang
     shaders/Restir.slang
     shaders/RestirWorld.slang
@@ -243,6 +245,51 @@ target_include_directories(v2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # Copies every .slang above into <runtime>/shaders/v2/, preserving the shaders/
 # subfolder -- which is why the tracer loads "v2/shaders/Trace.cs.slang".
 target_copy_shaders(v2 v2)
+
+# ---------------------------------------------------------------------------
+# NRC -- NVIDIA's Neural Radiance Cache, also RTXGI 2.x, and NOT header-only.
+#
+# THE OPPOSITE SHAPE TO SHaRC BELOW. SHaRC is three HLSL headers and no library;
+# this is a binary distribution -- a .lib to link, a DLL that does the training,
+# and CUDA beside it. That is also the reason to want it: the training runs on
+# TENSOR CORES through that DLL rather than through cooperative vectors in a
+# shader, so unlike v2's own neural cache it has no Shader Model 6.10 floor and
+# runs on the D3D12 device that has DLSS and the clusters on it.
+#
+# FIVE DLLs, and all of them are needed. NRC_D3D12.dll is the library; the other
+# four are the CUDA runtime and NVRTC it loads at init. Copied beside the exe
+# rather than referenced in place, matching the rule the shaders, the DLSS model
+# and the preview DXC already follow -- the build output stays self-contained.
+#
+# It is a SUBMODULE of the RTXGI checkout and is not fetched by default:
+#   git -C <rtxgi> submodule update --init Libraries/Nrc
+# Without it this block finds nothing and the engine builds without the cache,
+# which is the same way every other optional SDK here behaves.
+# ---------------------------------------------------------------------------
+set(V2_NRCSDK_DIR "C:/Users/mrwbh/RTXGI/Libraries/Nrc" CACHE PATH "NRC (RTXGI 2.x) checkout")
+if(EXISTS "${V2_NRCSDK_DIR}/Include/NrcD3d12.h" AND EXISTS "${V2_NRCSDK_DIR}/Lib/NRC_D3D12.lib")
+    message(STATUS "v2: NRC from ${V2_NRCSDK_DIR}")
+    target_compile_definitions(v2 PRIVATE V2_HAS_NRCSDK=1)
+    target_include_directories(v2 PRIVATE "${V2_NRCSDK_DIR}/Include")
+    target_link_libraries(v2 PRIVATE "${V2_NRCSDK_DIR}/Lib/NRC_D3D12.lib")
+    # The SHADER headers, staged beside v2's own for the same reason SHaRC's
+    # are: NrcSdk.slang includes them relative to itself, so they have to land
+    # in the doubled shaders/v2/shaders/ directory rather than one level up.
+    add_custom_command(TARGET v2 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${V2_NRCSDK_DIR}/Include" "$<TARGET_FILE_DIR:v2>/shaders/v2/shaders/nrcsdk"
+        COMMENT "v2: staging the NRC shader headers"
+        VERBATIM)
+    foreach(nrcdll NRC_D3D12.dll cudart64_12.dll nvrtc64_120_0.dll nvrtc-builtins64_128.dll)
+        add_custom_command(TARGET v2 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${V2_NRCSDK_DIR}/Bin/${nrcdll}" $<TARGET_FILE_DIR:v2>
+            COMMENT "v2: staging ${nrcdll}"
+            VERBATIM)
+    endforeach()
+else()
+    message(STATUS "v2: no NRC at ${V2_NRCSDK_DIR} -- building without the neural cache SDK")
+endif()
 
 # ---------------------------------------------------------------------------
 # SHaRC -- the spatial hash radiance cache, from RTXGI 2.x.

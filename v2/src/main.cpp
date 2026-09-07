@@ -95,6 +95,10 @@ void usage() {
         "  --view N                  chunks of 25.6 m kept resident, radius          (12)\n"
         "  --density F               how thick the wood is, 0..1                 (0.2325)\n"
         "  --butterflies N           how many are in the air at once, 0 = none       (24)\n"
+        "  --sfx F                   tool and weapon volume; 0 silences them        (1.0)\n"
+        "  --arrow-pos X Y Z         nudge the nocked arrow, in whole 10 cm voxels:\n"
+        "                            across, along the shaft, up -- the .vox file's own\n"
+        "                            axes, and the three the settings panel edits (0 0 0)\n"
         "  --grass F                 fraction of grass columns with a strand      (0.105)\n"
         "  --grass-rows MIN MAX      strand height in voxels                        (3 6)\n"
         "  --flowers F               how thick a flower bed is, 0..1               (0.45)\n"
@@ -218,6 +222,31 @@ bool argUint(int argc, char **argv, int &i, uint32_t *out) {
 // blocks nested too deeply", which is exactly what adding these seven in line
 // produced. Anything further of this kind belongs here too.
 // ---------------------------------------------------------------------------
+// The wood's life, the hand, and what they sound like -- lifted out of the
+// else-if chain for the reason the note above gives, and because these six were
+// what pushed it back over the limit.
+bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *o) {
+    if (a == "--butterflies") { argInt(argc, argv, i, &o->butterflies); return true; }
+    if (a == "--butterfly-dir") {
+        if (i + 1 < argc) o->butterflyDir = argv[++i];
+        return true;
+    }
+    if (a == "--sound-dir") {
+        if (i + 1 < argc) o->soundDir = argv[++i];
+        return true;
+    }
+    if (a == "--sfx") { argFloat(argc, argv, i, &o->sfx); return true; }
+    // Three numbers, in whole voxels -- see ArrowOffset in render/bow.h.
+    if (a == "--arrow-pos") {
+        argInt(argc, argv, i, &o->arrowNudge.across);
+        argInt(argc, argv, i, &o->arrowNudge.along);
+        argInt(argc, argv, i, &o->arrowNudge.up);
+        return true;
+    }
+    if (a == "--drop-frame") { argInt(argc, argv, i, &o->dropFrame); return true; }
+    return false;
+}
+
 bool parseCacheOpt(const std::string &a, int argc, char **argv, int &i, Options *o) {
     // The SDK's distance-quantised hash grid, in place of v2's exact voxel face
     // key. For A/B comparison of the two -- see shaders/Sharc.slang.
@@ -235,6 +264,10 @@ bool parseCacheOpt(const std::string &a, int argc, char **argv, int &i, Options 
     // Load weights and DO NOT keep learning. What makes "train once, ship the
     // weights" a measurable claim rather than an assertion.
     if (a == "--nrc-frozen") { o->nrcFrozen = true; return true; }
+    if (a == "--nrc-sdk") { o->nrcSdk = true; return true; }
+    if (a == "--nrc-sdk-radiance") { argFloat(argc, argv, i, &o->nrcSdkRadiance); return true; }
+    if (a == "--nrc-sdk-builtin") { o->nrcSdkBuiltin = true; o->nrcSdk = true; return true; }
+    if (a == "--nrc-sdk-debug") { argInt(argc, argv, i, &o->nrcSdkDebug); o->nrcSdk = true; return true; }
     // The step size the cache learns at. Exposed because the default it
     // shipped with drives BOTH encodings into the weight clamp -- see the
     // note on learningRate in gpu/nrc.h.
@@ -283,8 +316,6 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--draw-hold") o->drawHold = true;
         else if (a == "--shot-loose") argInt(argc, argv, i, &o->shotLoose);
         else if (a == "--no-axe") o->axeOn = false;
-        else if (a == "--butterflies") argInt(argc, argv, i, &o->butterflies);
-        else if (a == "--butterfly-dir") { if (i + 1 < argc) o->butterflyDir = argv[++i]; }
         else if (a == "--swing-log") o->swingLog = true;
         else if (a == "--swing-hold") o->swingHold = true;
         else if (a == "--time") {
@@ -373,6 +404,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--vulkan") *vulkan = true;
         else if (a == "--nrc") o->nrc = true;
         else if (parseCacheOpt(a, argc, argv, i, o)) { }
+        else if (parseLifeOpt(a, argc, argv, i, o)) { }
         // Sky-dome next event estimation, and the irradiance cache. Both are on
         // by default; these turn them off or retune them without a rebuild,
         // which is also how a "did this change the picture" comparison is made.

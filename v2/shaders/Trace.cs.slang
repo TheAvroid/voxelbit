@@ -74,6 +74,14 @@
 #include "Nrc.slang"
 #endif
 
+// NVIDIA's cache, which is a different thing from the one above and is
+// mutually exclusive with it -- both answer "what leaves this point", so
+// running the pair would add the indirect twice with nothing to notice.
+// gpu/tracer.h sets at most one of the two defines.
+#ifdef V2_NRCSDK
+#include "NrcSdk.slang"
+#endif
+
 // ---------------------------------------------------------------------------
 // Bindings
 // ---------------------------------------------------------------------------
@@ -396,6 +404,44 @@ struct Hit
     uint mtl;
     Surface mat;
 };
+
+#ifdef V2_NRCSDK
+// ---------------------------------------------------------------------------
+// v2's Hit, described the way NVIDIA's cache wants it.
+//
+// LIVES HERE AND NOT IN NrcSdk.slang, because `Hit` and MAT_DIELECTRIC are the
+// tracer's own types and that header is also included by NrcSdkResolve, which
+// has no path tracer in it. Putting this there compiled fine from the tracer
+// and then failed to link the resolve pass with "undefined identifier 'Hit'",
+// out of a file that never mentions one.
+//
+// THE SPECULAR TERM IS A SCALAR HERE AND A COLOUR THERE. v2's materials carry
+// one specular number -- this wood is dielectric bark, needles, stone and
+// water, none of which is a coloured metal -- so the F0 handed over is that
+// number greyed out. Inventing a tinted F0 would describe a material the engine
+// does not have.
+//
+// isDeltaLobe IS THE WATER, and it matters more than it looks. A delta surface
+// has no radiance to cache: the cache stores what leaves a point in all
+// directions and a mirror leaves in exactly one. Marking it lets the library
+// skip the vertex rather than fit noise to it.
+// ---------------------------------------------------------------------------
+NrcSurfaceAttributes nrcSdkSurface(Hit h, float3 rayDir)
+{
+    NrcSurfaceAttributes sa;
+    sa.encodedPosition = NrcEncodePosition(h.p, gNrcConstants);
+    sa.roughness = h.mat.roughness;
+    sa.specularF0 = float3(h.mat.specular, h.mat.specular, h.mat.specular);
+    sa.diffuseReflectance = h.mat.albedo;
+    sa.shadingNormal = h.ns;
+    // TOWARDS the viewer, which is the opposite of the ray. Handing over the
+    // ray direction instead is a sign error the cache cannot detect: it simply
+    // learns the wood lit from behind.
+    sa.viewVector = -rayDir;
+    sa.isDeltaLobe = (h.mat.type == MAT_DIELECTRIC);
+    return sa;
+}
+#endif
 
 // `mask` is which of the two worlds this ray can see -- see MASK_WORLD and
 // MASK_HELD in Shared.slang. Everything but the primary ray passes both.
@@ -1049,6 +1095,21 @@ void main(uint3 tid: SV_DispatchThreadID)
     float3 giPos = float3(0.0f), giNormal = float3(0.0f, 1.0f, 0.0f);
     float3 giBeta = float3(1.0f), giLBefore = float3(0.0f);
 
+#ifdef V2_NRCSDK
+    // THE CACHE'S OWN VIEW OF THIS PATH, carried alongside v2's beta and L.
+    //
+    // NrcContext is per pixel and per sample; NrcPathState is per path and is
+    // what every call below threads through. The random number seeds the
+    // library's own decision about which vertices to keep for training, so it
+    // has to come from the same stream the rest of the path uses or the two
+    // disagree about what this pixel is doing.
+    NrcBuffers nrcSdkBuffers;
+    NrcContext nrcSdkCtx = NrcCreateContext(gNrcConstants, nrcSdkBuffers, pix);
+    NrcSetSampleIndex(nrcSdkCtx, 0u);
+    NrcPathState nrcSdkPath = NrcCreatePathState(gNrcConstants, rng.nextFloat());
+    bool nrcSdkStopAfterDirect = false;
+#endif
+
 #ifdef V2_NRC
     const uint nrcHash = (uint(pixIndex) * 73856093u) ^ (uint(gParams.tick) * 19349663u);
     const bool nrcTraining =
@@ -1089,6 +1150,13 @@ void main(uint3 tid: SV_DispatchThreadID)
 
         if (!h.hit)
         {
+#ifdef V2_NRCSDK
+            // The path left the world. The cache needs to know, because a
+            // path that escaped is a COMPLETE observation -- the radiance
+            // along it is final and can be trained on, where a path that was
+            // merely cut short cannot.
+            NrcUpdateOnMiss(nrcSdkPath);
+#endif
             // Escaped: the sky. The dome is never light-sampled, so it always
             // arrives at full weight; the disk may have been, so it is weighted
             // against the cone pdf that could have found it.
@@ -1399,6 +1467,34 @@ void main(uint3 tid: SV_DispatchThreadID)
             break;
         }
 
+#ifdef V2_NRCSDK
+        // -- HAND THE VERTEX TO THE CACHE ------------------------------
+        //
+        // Placed after the sky, the water and the probe early-outs, so what
+        // reaches here is an opaque surface the path is actually going to
+        // shade -- which is the only kind of vertex the cache has any use
+        // for.
+        //
+        // beta AND L GO IN BY REFERENCE, and that is the whole mechanism
+        // rather than a calling convention. When the library decides this
+        // path has gone far enough it writes a query record here, folds the
+        // predicted tail into L, and returns Terminate -- so the path stops
+        // and the cache supplies the rest. v2's own numbers are what it
+        // reads and what it rewrites.
+        {
+            const NrcSurfaceAttributes nrcSa = nrcSdkSurface(h, d);
+            const NrcProgressState nrcPs =
+                NrcUpdateOnHit(nrcSdkCtx, nrcSdkPath, nrcSa, h.t, uint(depth), beta, L);
+            if (nrcPs == NrcProgressState::TerminateImmediately)
+                break;
+            // TerminateAfterDirectLighting is the other stopping answer: the
+            // vertex is cached, but the direct light at it is not, so it has
+            // to be paid before leaving. The flag is carried down to the end
+            // of the iteration rather than acted on here.
+            nrcSdkStopAfterDirect = (nrcPs == NrcProgressState::TerminateAfterDirectLighting);
+        }
+#endif
+
         const Frame fr = Frame.make(h.ns);
         const float3 wo = fr.toLocal(-d);
         if (wo.z > 0.0f)
@@ -1433,6 +1529,14 @@ void main(uint3 tid: SV_DispatchThreadID)
             }
         }
 
+#ifdef V2_NRCSDK
+        // The cache took this vertex and only wanted its direct light. That
+        // has now been added, so the path ends here rather than sampling a
+        // direction it would never trace.
+        if (nrcSdkStopAfterDirect)
+            break;
+#endif
+
         // THE TWO DRAWS ARE SEQUENCED BY HAND, not left as two arguments to one
         // call. Argument evaluation order is unspecified, and these two are not
         // interchangeable: the first picks the lobe and the second the direction
@@ -1451,6 +1555,13 @@ void main(uint3 tid: SV_DispatchThreadID)
         }
         if (bs.pdf <= 0.0f || isBlack(bs.f))
             break;
+
+#ifdef V2_NRCSDK
+        // The pdf the cache reasons about when it decides how much this
+        // vertex is worth training on. Set AFTER the sample is known good --
+        // a rejected sample never became a path segment.
+        NrcSetBrdfPdf(nrcSdkPath, bs.pdf);
+#endif
 
         // WHICH LOBE LET THIS PATH THROUGH, as a fraction rather than a choice.
         // Weighted by luminance because the split has to be one scalar for a
@@ -1500,6 +1611,16 @@ void main(uint3 tid: SV_DispatchThreadID)
         if (maxComp(beta) <= 0.0f)
             break;
     }
+
+#ifdef V2_NRCSDK
+    // -- CLOSE THE PATH OUT TO THE CACHE ---------------------------------
+    //
+    // Written once per path, however the loop above ended -- escaped, cached,
+    // rouletted or run out of bounces. This is what turns everything the path
+    // accumulated into the training record the library fits against, so a path
+    // that returns without it is one the cache never learns from.
+    NrcWriteFinalPathInfo(nrcSdkCtx, nrcSdkPath, beta, L);
+#endif
 
     if (!allFinite(L))
         L = float3(0.0f);

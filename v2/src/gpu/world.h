@@ -245,6 +245,12 @@ constexpr int kArrowInstances = 12;
 // three times the flock the viewer opens with -- so `--butterflies` can be
 // turned up on the command line without the structure having to be told.
 constexpr int kFlyerInstances = 64;
+
+// ...AND WHAT HAS BEEN PUT DOWN. Eight, which is the JS engine's own cap on
+// dropped items, reserved for the same reason every other band here is: an
+// update may not change how many instances there are, so the slots exist from
+// the first build whether or not anything has been thrown.
+constexpr int kDropInstances = 8;
 static_assert(kMaskWorld == uint8_t(MASK_WORLD), "ray masks disagree with the shader");
 static_assert(kMaskHeld == uint8_t(MASK_HELD), "ray masks disagree with the shader");
 
@@ -523,6 +529,12 @@ class World {
         hm.sy = a.sy;
         hm.sz = a.sz;
         held_.push_back(std::move(hm));
+        // How many triangle-pool units this model owns, so replaceHeldVox can
+        // give them back. Kept beside held_ rather than in HeldModel because
+        // every other reader of that struct wants only the three fields it
+        // already has.
+        heldTris_.push_back(mesh.tri.size());
+        heldGen_.push_back(0);
 
         if (sx) *sx = a.sx;
         if (sy) *sy = a.sy;
@@ -536,6 +548,85 @@ class World {
         // in it, so a second tool changes nothing about the structure's shape.
         if (held_.size() == 1) rebuildTlas();
         return int(held_.size()) - 1;
+    }
+
+    // -----------------------------------------------------------------------
+    // Rebuild a held model that already exists, keeping its index.
+    //
+    // FOR TUNING, and the bow's arrow is the only caller: nudging it recomposes
+    // all fourteen frames of the strip, and adding fourteen more models on
+    // every nudge would grow the pool and the structure list for the rest of
+    // the session. Same index in, same index out, so every Tool that names it
+    // and every instance that points at it stay correct.
+    //
+    // THE NEW SLICE IS UPLOADED BEFORE THE OLD ONE IS RELEASED. Released first,
+    // the allocator is free to hand the same bytes straight back -- and a frame
+    // still in flight would then read this model's NEW attributes at the old
+    // offset. Doing it in this order costs one slice of pool for the length of
+    // the call and cannot alias.
+    //
+    // The structures underneath are Falcor resources, and Falcor defers a
+    // resource's destruction to its frame fence, so dropping the old one here
+    // does not pull it out from under a frame that is still reading it.
+    // -----------------------------------------------------------------------
+    bool replaceHeldVox(int index, const VoxModel &mo, const std::string &what, int *sx, int *sy,
+                        int *sz) {
+        // BOTH lists, though they are pushed together and cannot differ: the
+        // one that is indexed without being checked is the one that reads off
+        // the end the day somebody adds a second way to make a held model.
+        if (index < 0 || index >= int(held_.size()) || index >= int(heldTris_.size()) ||
+            index >= int(heldGen_.size()))
+            return false;
+        VoxAsset a = toWorldWhole(mo);
+        if (a.sx <= 0) return false;
+
+        std::vector<uint8_t> idOfEntry(256, mat::AIR);
+        std::vector<bool> used(256, false);
+        for (uint8_t v : a.a) used[v] = true;
+        const int before = palette.minted();
+        for (int e = 1; e <= 255; ++e)
+            if (used[size_t(e)]) idOfEntry[size_t(e)] = palette.forModelColor(mo.pal[size_t(e) - 1]);
+        // ONLY IF THE MODEL ACTUALLY BROUGHT A COLOUR. A rebuild is the same
+        // file it was first read from, so every entry is already in the table
+        // and forModelColor hands back the id it minted at load. Re-uploading
+        // anyway would create a fresh materials buffer for every frame of the
+        // strip, on every nudge, to say what the table already said.
+        if (palette.minted() != before) uploadMaterials();
+
+        const VoxMesh mesh = meshAsset(a, idOfEntry, 1.0f);
+        if (mesh.triCount() == 0) {
+            std::fprintf(stderr, "v2: %s meshed to nothing -- kept the old one\n", what.c_str());
+            return false;
+        }
+        const uint32_t tri = pool_.upload(ctx_, mesh.tri);
+        if (tri == TriPool::kInvalid) return false;
+        // A NEW GENERATION FIRST, then the build that belongs to it: any
+        // compaction still in flight for this slot is now stale and will be
+        // dropped when it lands. See PendingCompact::heldGen.
+        ++heldGen_[size_t(index)];
+        Blas blas = recordHeldBuild(mesh, index);
+        if (!blas.valid()) return false;
+
+        HeldModel &hm = held_[size_t(index)];
+        const uint32_t oldTri = hm.tri;
+        hm.tri = tri;
+        hm.blas = std::move(blas);
+        hm.sx = a.sx;
+        hm.sy = a.sy;
+        hm.sz = a.sz;
+        if (oldTri != TriPool::kInvalid) pool_.release(oldTri, heldTris_[size_t(index)]);
+        heldTris_[size_t(index)] = mesh.tri.size();
+
+        // THE SLOT IS CACHING THE OLD OFFSET. setHeldInstance only re-uploads
+        // an instance's record when the MODEL INDEX changes, which it has not
+        // -- so without this the structure would go on pointing the bow at the
+        // slice that has just been freed. Forgetting which model is in the slot
+        // makes the next write re-state it.
+        heldModel_ = -1;
+        if (sx) *sx = a.sx;
+        if (sy) *sy = a.sy;
+        if (sz) *sz = a.sz;
+        return true;
     }
 
     bool heldLoaded() const { return !held_.empty(); }
@@ -609,6 +700,45 @@ class World {
     }
 
     bool flyersLoaded() const { return !flyers_.empty(); }
+
+    // -----------------------------------------------------------------------
+    // Where a dropped item is this frame.
+    //
+    // It draws a HELD model -- the axe you were carrying is the axe on the
+    // ground -- so `model` indexes held_, not flyers_. Same batching as the
+    // flock: written into the host's copy here and sent in one range by
+    // flushDropInstances, because eight instances that all move is eight
+    // driver calls a frame otherwise.
+    // -----------------------------------------------------------------------
+    void setDropInstance(int slot, int model, const float *m, float tx, float ty, float tz,
+                         bool show) {
+        if (held_.empty() || dropBase_ < 0 || slot < 0 || slot >= kDropInstances) return;
+        const size_t idx = size_t(dropBase_ + slot);
+        if (idx >= instanceDescs_.size()) return;
+        static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        const bool ok = show && m && model >= 0 && model < int(held_.size());
+
+        RtInstanceDesc &inst = instanceDescs_[idx];
+        writeTransform(inst, ok ? m : kI, tx, ty, tz);
+        inst.instanceMask = ok ? kMaskWorld : 0;
+        inst.instanceID = uint32_t(idx);
+        const size_t mi = size_t(ok ? model : 0);
+        inst.accelerationStructure = held_[mi].blas.as->getGpuAddress();
+        instanceInfos_[idx].triOffset = held_[mi].tri;
+        dropsDirty_ = true;
+    }
+
+    void flushDropInstances() {
+        if (!dropsDirty_ || dropBase_ < 0 || !instanceDescBuf_ || !instanceInfo_) return;
+        dropsDirty_ = false;
+        const size_t base = size_t(dropBase_);
+        const size_t n = std::min(size_t(kDropInstances), instanceDescs_.size() - base);
+        if (n == 0) return;
+        ctx_->updateBuffer(instanceDescBuf_.get(), &instanceDescs_[base],
+                           base * sizeof(RtInstanceDesc), n * sizeof(RtInstanceDesc));
+        ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[base], base * sizeof(V6Instance),
+                           n * sizeof(V6Instance));
+    }
     int flyerModelCount() const { return int(flyers_.size()); }
 
     // -----------------------------------------------------------------------
@@ -1075,6 +1205,13 @@ class World {
         Staged staged;
         long long key = 0;       // the chunk to hand the compacted structure to
         Blas *direct = nullptr;  // ...or, at load time, this Blas
+        // ...or a held model, by index, REBUILT WHILE THE GAME RAN. See
+        // recordHeldBuild. The generation is what makes that safe: the same
+        // index can be rebuilt again before this compaction lands, and handing
+        // a slot the compacted form of geometry it no longer has would put the
+        // model back a version. A stale one is dropped instead.
+        int held = -1;
+        uint32_t heldGen = 0;
     };
 
     // One generation: the builds that share a query pool, and the fence value
@@ -1146,6 +1283,8 @@ class World {
         int sx = 0, sy = 0, sz = 0;
     };
     std::vector<HeldModel> held_;
+    std::vector<size_t> heldTris_;  // pool units per model -- see replaceHeldVox
+    std::vector<uint32_t> heldGen_;  // ...and which rebuild it is on
     int heldModel_ = -1;  // which of them the slot currently points at
     // EVERY FRAME OF EVERY COLOUR the flock can wear: six colours of eight, so
     // forty-eight structures of ten voxels each. They are separate structures
@@ -1156,6 +1295,8 @@ class World {
     std::vector<HeldModel> flyers_;
     int flyerBase_ = -1;        // first instance of the band, -1 while unbuilt
     bool flyersDirty_ = false;  // anything written since the last flush
+    int dropBase_ = -1;         // ...and the same pair for what has been put down
+    bool dropsDirty_ = false;
     ref<Buffer> tlasUpdateScratch_;
     std::vector<V6Instance> instanceInfos_;
 
@@ -1364,6 +1505,20 @@ class World {
 
         if (p.direct) {
             *p.direct = std::move(b);
+        } else if (p.held >= 0) {
+            if (p.held < int(held_.size()) && p.held < int(heldGen_.size()) &&
+                heldGen_[size_t(p.held)] == p.heldGen) {
+                held_[size_t(p.held)].blas = std::move(b);
+                // The instance record names a model index, not a structure, so
+                // nothing here has to be told -- but the slot caches WHICH model
+                // it last wrote, and the address it wrote has just changed under
+                // it. Forgetting makes the next write re-state it.
+                heldModel_ = -1;
+            }
+            // ...otherwise this is the compacted form of a model that has since
+            // been rebuilt. Dropping it costs a buffer and a descriptor and
+            // nothing else ever knew about it -- the same argument the chunk
+            // branch below makes for an evicted chunk.
         } else {
             // The chunk may have been evicted while this was in flight, in
             // which case the compacted structure is simply dropped -- it is a
@@ -1505,6 +1660,39 @@ class World {
         buildMs_ += ms;
         prof_.blasMs += ms;
         ++prof_.blasCalls;
+        return raw;
+    }
+
+    // -----------------------------------------------------------------------
+    // A held model's structure, RECORDED RATHER THAN BUILT, so it is legal
+    // inside a frame.
+    //
+    // This is recordChunkBuild with a different destination, and it exists
+    // because buildBlas below is not usable here and says so: it is the load
+    // path, it forces a compaction drain and two blocking submits, and the note
+    // over drainCompactions is explicit that the forced path "is never taken
+    // while a frame is being displayed". Calling it from a running frame while
+    // the streamer also had work in flight took the device out -- present
+    // returned E_FAIL after about a hundred rebuilds.
+    //
+    // What comes back is the UNCOMPACTED structure, which is a perfectly good
+    // structure and is exactly what a chunk is handed for its first few frames.
+    // The compacted one replaces it whenever the group it belongs to is drained,
+    // by the ordinary unforced path, on a frame that can afford it.
+    // -----------------------------------------------------------------------
+    Blas recordHeldBuild(const VoxMesh &m, int index) {
+        CompactGroup &grp = openGroup();
+        Staged g = recordBuild(m, grp);
+        Blas raw;
+        raw.buffer = g.uncompacted;
+        raw.as = g.as;
+
+        PendingCompact p;
+        p.staged = std::move(g);
+        p.held = index;
+        p.heldGen = heldGen_[size_t(index)];
+        grp.epoch = epoch_;
+        grp.items.push_back(std::move(p));
         return raw;
     }
 
@@ -2037,6 +2225,30 @@ class World {
                 ai.tint = float3(1.0f, 1.0f, 1.0f);
                 push(arrow, ai);
             }
+        }
+
+        // -- AND WHAT HAS BEEN DROPPED ------------------------------------
+        //
+        // KIND_FLYER, and not because it flies. That kind means "a transform
+        // with a uniform scale in it, and it may have moved" -- which is
+        // exactly a dropped item: it is a HELD model, meshed at one unit per
+        // voxel, so its instance carries VOXEL_M as a scale and its normals
+        // come out that factor short without the normalise KIND_FLYER buys.
+        dropBase_ = -1;
+        if (!held_.empty()) {
+            dropBase_ = int(instanceDescs_.size());
+            for (int i = 0; i < kDropInstances; ++i) {
+                RtInstanceDesc dd = {};
+                writeTransform(dd, kI, 0.0f, 0.0f, 0.0f);
+                dd.instanceMask = 0;
+                dd.accelerationStructure = held_[0].blas.as->getGpuAddress();
+                V6Instance di{};
+                di.triOffset = held_[0].tri;
+                di.kind = KIND_FLYER;
+                di.tint = float3(1.0f, 1.0f, 1.0f);
+                push(dd, di);
+            }
+            dropsDirty_ = true;
         }
 
         // -- AND THE FLOCK, RESERVED THE SAME WAY -------------------------

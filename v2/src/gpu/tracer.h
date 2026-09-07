@@ -38,6 +38,7 @@
 #include "Utils/Image/Bitmap.h"
 
 #include <functional>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,7 @@
 #include "dlss.h"
 #include "nrc.h"
 #include "restir.h"
+#include "nrcsdk.h"
 #include "atmosphere.h"
 #include "post.h"
 #include "volfog.h"
@@ -193,6 +195,13 @@ class Tracer {
         // insert in the update pass -- must agree. Two programs, one answer.
         if (voxelKey_) defs.add("V2_SHARC_VOXEL_KEY", "1");
 #endif
+#if V2_HAS_NRCSDK
+        // NVIDIA's cache compiles into the SAME tracer, as a third variant of
+        // it. Only when it is actually on: the include pulls in the SDK's
+        // headers and its buffer bindings, and a program carrying five
+        // resources nothing fills is a dispatch-time validation failure.
+        if (nrcSdkOn_) defs.add("V2_NRCSDK", "1");
+#endif
         Falcor::ProgramDesc dt;
         dt.addShaderLibrary("v2/shaders/Trace.cs.slang").csEntry("main");
         if (coopVec_ && device_->getType() == Falcor::Device::Type::Vulkan)
@@ -209,6 +218,24 @@ class Tracer {
         if (coopVec_ && device_->getType() == Falcor::Device::Type::Vulkan)
             du.addCompilerArguments({"-capability", "spvCooperativeVectorNV"});
         sharcUpdate_ = ComputePass::create(device_, du, updDefs);
+#endif
+#if V2_HAS_NRCSDK
+        // THE UPDATE PASS, and it is a separate program for the reason the
+        // SHaRC pair is: NRC_UPDATE and NRC_QUERY are compile-time on the
+        // SDK's side, so the mode cannot be a uniform. It runs at the training
+        // resolution rather than the frame's -- see nrcsdk.h.
+        if (nrcSdkOn_) {
+            Falcor::DefineList un = defs;
+            un.add("V2_NRCSDK_UPDATE", "1");
+            Falcor::ProgramDesc du2;
+            du2.addShaderLibrary("v2/shaders/Trace.cs.slang").csEntry("main");
+            nrcSdkUpdate_ = ComputePass::create(device_, du2, un);
+            // The custom resolve, which replaces nrc::Context::Resolve --
+            // see the long note at the top of NrcSdkResolve.cs.slang for why
+            // the built-in one cannot be used against an accumulating film.
+            nrcSdkResolve_ = ComputePass::create(
+                device_, "v2/shaders/NrcSdkResolve.cs.slang", "main", defs);
+        }
 #endif
         tonemap_ = ComputePass::create(device_, "v2/shaders/Tonemap.cs.slang", "main");
         // PHASE B, and the back half of PHASE D. Created unconditionally: they
@@ -305,6 +332,12 @@ class Tracer {
     void setDdgi(Ddgi *d) { ddgi_ = d; }
     void setSharc(Sharc *s) { sharc_ = s; }
     void setRestir(Restir *r) { restir_ = r; }
+#if V2_HAS_NRCSDK
+    // Told BEFORE init(), because whether the SDK is on decides which
+    // programs get compiled.
+    void setNrcSdk(NrcSdk *n) { nrcSdk_ = n; nrcSdkOn_ = (n != nullptr); }
+    bool nrcSdkResolveDebug = false;
+#endif
     void setVolFog(VolFog *f) { volfog_ = f; }
     void setClouds(Clouds *c) { clouds_ = c; }
     void setAtmosphere(Atmosphere *a) { atmo_ = a; }
@@ -536,6 +569,7 @@ class Tracer {
         // accumulating renderer, a capped window, or several samples a frame.
         // Reconstruction at one sample a frame is the case that has no film.
         p.keepFilm = (!denoise_ || cfg.maxAccum > 0u || cfg.samplesPerFrame > 1) ? 1 : 0;
+        keepFilm_ = (p.keepFilm != 0);
         // The jitter is a whole-frame Halton offset, driven by the monotonic
         // tick rather than the accumulation index -- see the note on the two
         // counters in Shared.slang. It was always here for the upscaler that
@@ -634,7 +668,20 @@ class Tracer {
 
         p.restirMode = (restir_ && restir_->active()) ? (restirWarm_ ? 2 : 1) : 0;
 
-        auto var = trace_->getRootVar();
+        // -- EVERY BINDING THE TRACER NEEDS, as a lambda rather than in line --
+        //
+        // Written straight against trace_'s root var until NVIDIA's cache
+        // arrived, at which point a SECOND program -- the NRC update pass --
+        // needed the identical set. Duplicating a hundred and fifty bindings is
+        // how two passes quietly drift into shading differently, which for a
+        // cache is not a cosmetic problem: it would be trained on a renderer
+        // that is not the one it serves.
+        //
+        // Captures by reference, so `p` and `cam` are the same objects the
+        // caller assembled; only the dispatch DIMENSIONS differ between the two
+        // passes, and they are the argument.
+        auto bindTrace = [&](const Falcor::ShaderVar &var, uint2 dim) {
+        p.dim = dim;
         var["gScene"].setAccelerationStructure(world_->tlasRef());
         var["gTriPool"] = world_->triPool();
         var["gInstances"] = world_->instanceBuffer();
@@ -693,6 +740,17 @@ class Tracer {
             var["gPrimaryPos"] = restir_->primaryPos();
         }
 
+#if V2_HAS_NRCSDK
+        // NVIDIA'S CACHE: five record buffers and the constants it fills in.
+        //
+        // Bound only when the programs were compiled with V2_NRCSDK -- unlike the
+        // probes below, these resources do not exist in the other variant at all,
+        // so there is nothing to bind a placeholder to.
+        if (nrcSdkOn_ && nrcSdk_ && nrcSdk_->configured()) {
+            bindNrcSdk(var);
+        }
+#endif
+
         // -- the irradiance probes -------------------------------------------
         //
         // ALWAYS BOUND, even on Vulkan where the volume can never come up: the
@@ -729,6 +787,10 @@ class Tracer {
 #endif
 
         var["gParamsCB"]["gParams"].setBlob(&p, sizeof(p));
+        };
+
+        auto var = trace_->getRootVar();
+        bindTrace(var, uint2(uint32_t(w_), uint32_t(h_)));
 
 #if V2_HAS_SHARC
         // -- the hash cache: update, resolve, and only then render ------------
@@ -769,6 +831,35 @@ class Tracer {
 
             sharc_->runResolve(ctx, camPos);
         }
+#endif
+
+#if V2_HAS_NRCSDK
+        // -- THE CACHE'S OWN PATH TRACE, before the camera's --------------------
+        //
+        // A SECOND, SMALLER TRACE whose only purpose is to be learnt from. It
+        // runs at trainingDimensions rather than the frame's, which
+        // ComputeIdealTrainingDimensions sizes so the batch lands near the 64K
+        // records the network wants -- a few percent of the pixels, not a
+        // second full frame.
+        //
+        // BEFORE the camera pass, so the records exist by the time QueryAndTrain
+        // runs at the end of the frame. It shades through exactly the same code
+        // because it IS the same shader, compiled with NRC_UPDATE instead of
+        // NRC_QUERY.
+        if (nrcSdkOn_ && nrcSdk_ && nrcSdk_->configured() && nrcSdkUpdate_) {
+            const uint32_t tw = nrcSdk_->trainingWidth();
+            const uint32_t th = nrcSdk_->trainingHeight();
+            if (tw > 0 && th > 0) {
+                auto uv = nrcSdkUpdate_->getRootVar();
+                bindTrace(uv, uint2(tw, th));
+                bindNrcSdk(uv);
+                nrcSdkUpdate_->execute(ctx, tw, th);
+            }
+        }
+        // ...and the camera pass is restored to the frame's own size, because
+        // bindTrace above left p.dim holding the training grid.
+        if (nrcSdkOn_ && nrcSdk_ && nrcSdk_->configured())
+            bindTrace(var, uint2(uint32_t(w_), uint32_t(h_)));
 #endif
 
         trace_->execute(ctx, uint32_t(w_), uint32_t(h_));
@@ -1019,6 +1110,85 @@ class Tracer {
         ++probeFrames_;
     }
 
+#if V2_HAS_NRCSDK
+    // The five buffers and the constant block, in one place so the query pass
+    // and the update pass cannot disagree about them.
+    void bindNrcSdk(const Falcor::ShaderVar &var) {
+        var["gNrcQueryPathInfo"] = nrcSdk_->buffer(nrc::BufferIdx::QueryPathInfo);
+        var["gNrcTrainingPathInfo"] = nrcSdk_->buffer(nrc::BufferIdx::TrainingPathInfo);
+        var["gNrcTrainingPathVertices"] = nrcSdk_->buffer(nrc::BufferIdx::TrainingPathVertices);
+        var["gNrcQueryRadianceParams"] = nrcSdk_->buffer(nrc::BufferIdx::QueryRadianceParams);
+        var["gNrcCounters"] = nrcSdk_->buffer(nrc::BufferIdx::Counter);
+
+        // POPULATED BY THE LIBRARY, not assembled here. It carries the scene
+        // bounds, both resolutions, the termination thresholds and the mode, and
+        // every one of them is derived from settings the SDK already holds.
+        NrcConstants c{};
+        nrcSdk_->populateConstants(c);
+        var["gNrcCB"]["gNrcConstants"].setBlob(&c, sizeof(c));
+    }
+
+    // -----------------------------------------------------------------------
+    // THE UPDATE PASS IS NOT WIRED YET, and this is where it goes.
+    //
+    // The program is compiled (nrcSdkUpdate_, V2_NRCSDK_UPDATE) and its shader
+    // side is complete -- Trace.cs.slang writes training vertices in that
+    // variant. What is missing is purely host-side plumbing: it needs the SAME
+    // ~150 lines of scene, guide, probe and parameter bindings that
+    // renderSample sets up inline for trace_, and those are currently written
+    // straight into that function against one root var rather than into
+    // something both programs can call.
+    //
+    // Sharing them is mechanical -- lift the block into a member taking a
+    // ShaderVar -- but it is a refactor of the hottest function in the engine
+    // and it is not worth doing carelessly. Until it is done the SDK cache has
+    // no training data, so nrcsdk trains on nothing and must stay behind its
+    // flag.
+    //
+    // The dispatch, once the bindings are shared, is:
+    //     bindTrace(var, cam, cfg, trainingWidth(), trainingHeight());
+    //     bindNrcSdk(var);
+    //     nrcSdkUpdate_->execute(ctx, trainingWidth(), trainingHeight());
+    // at the training resolution rather than the frame's -- it is a second,
+    // smaller path trace whose only purpose is to be learnt from.
+    // -----------------------------------------------------------------------
+#endif
+
+#if V2_HAS_NRCSDK
+    // Called AFTER QueryAndTrain, which is what fills the radiance buffer this
+    // reads. Everything about the ordering is in NrcSdkResolve.cs.slang.
+    void runNrcSdkResolve(Falcor::RenderContext *ctx) {
+        if (!nrcSdkOn_ || !nrcSdk_ || !nrcSdk_->configured() || !nrcSdkResolve_) return;
+        if (!nrcSdkScratch_ || nrcSdkScratch_->getWidth() != uint32_t(w_) ||
+            nrcSdkScratch_->getHeight() != uint32_t(h_)) {
+            // Same flags the film uses -- see the tex() lambda in resize(),
+            // which is local to it and so not reachable from here.
+            const auto rw = Falcor::ResourceBindFlags::ShaderResource |
+                            Falcor::ResourceBindFlags::UnorderedAccess;
+            nrcSdkScratch_ = device_->createTexture2D(
+                uint32_t(w_), uint32_t(h_), ResourceFormat::RGBA32Float, 1, 1, nullptr, rw);
+            nrcSdkScratch_->setName("v2::nrcSdkScratch");
+        }
+
+        // CLEARED FIRST, because the SDK's resolve mode is ADD. Left dirty it
+        // would accumulate its own output frame on frame into a runaway.
+        ctx->clearUAV(nrcSdkScratch_->getUAV().get(), Falcor::float4(0.0f));
+
+        // The SDK writes the prediction here rather than into the film. Its own
+        // resolve is known good -- its debug views draw the wood -- and this is
+        // the only thing that was ever wrong with using it.
+        if (!nrcSdk_->resolve(ctx, nrcSdkScratch_.get())) return;
+        ctx->uavBarrier(nrcSdkScratch_.get());
+        auto var = nrcSdkResolve_->getRootVar();
+        var["gNrcScratch"] = nrcSdkScratch_;
+        var["gAccum"] = accum_;
+        var["gColorOut"] = color_;
+        var["NrcResolveCB"]["gResolveDim"] = uint2(uint32_t(w_), uint32_t(h_));
+        var["NrcResolveCB"]["gResolveKeepFilm"] = keepFilm_ ? 1u : 0u;
+        nrcSdkResolve_->execute(ctx, uint32_t(w_), uint32_t(h_));
+    }
+#endif
+
     void runRestir(Falcor::RenderContext *ctx, uint32_t frame) {
         if (!restir_ || !restir_->active()) return;
         restir_->resize(uint32_t(w_), uint32_t(h_));
@@ -1186,6 +1356,14 @@ class Tracer {
     Falcor::ref<ComputePass> probeTrace_;
     uint32_t probeFrames_ = 0;
     Restir *restir_ = nullptr;
+#if V2_HAS_NRCSDK
+    NrcSdk *nrcSdk_ = nullptr;
+    bool nrcSdkOn_ = false;
+    bool keepFilm_ = true;
+    Falcor::ref<ComputePass> nrcSdkUpdate_;
+    Falcor::ref<ComputePass> nrcSdkResolve_;
+    Falcor::ref<Texture> nrcSdkScratch_;
+#endif
     V6Camera flareCam_ = {};
     VolFog *volfog_ = nullptr;
     Clouds *clouds_ = nullptr;

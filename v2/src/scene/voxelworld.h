@@ -212,6 +212,11 @@ class Palette {
     const std::vector<MaterialLook> &table() const { return look_; }
     int used() const { return next_; }
     int overflowed() const { return overflow_; }
+    // How many model entries have been handed out. Read by World::replaceHeldVox
+    // to tell "this model brought a new colour" from "it brought the same ones
+    // it did last time", which decides whether the GPU's copy of the table is
+    // stale at all.
+    int minted() const { return next_; }
 
     // -----------------------------------------------------------------------
     // Fill the ground slots from the colours the pines turned out to use.

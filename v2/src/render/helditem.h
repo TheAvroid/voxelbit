@@ -93,10 +93,38 @@ namespace v2 {
 // the thing that gets pasted back into the source: a slider that read 0.091
 // metres would not be recognisable as the 0.91 in the engine it came from.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// A POSE IS NOW IN METRES AND IN WORLD VOXELS, and `scale` is 1.
+//
+// It used to be neither. The offsets were voxels at the JS engine's 72-degree
+// field of view, corrected to whatever this camera has, and `scale` shrank a
+// model authored at one voxel per unit down to the few MILLIMETRES a viewmodel
+// voxel measured -- 11.0 mm for the tools, 14.6 mm for the bow, which is the
+// mismatch that started this (user 2026-09-07: "make sure all the hand held
+// items are the same size ... the hand held items need to match the 10cm voxel
+// resolution. no exceptions").
+//
+// So a held voxel IS a world voxel. scale 1.0 is exact, the axe is 50 x 90 x 10
+// centimetres because that is what its 5 x 9 x 1 grid measures at 10 cm, and
+// the bow is a real 1.8 m bow. It is the same object in the hand, on the
+// ground, and in the acceleration structure.
+//
+// AND THE FIELD-OF-VIEW CORRECTION IS GONE WITH IT. That existed to hold a
+// SCREEN-SPACE viewmodel at the same place and size in the frame whatever the
+// lens was doing. A real object does not work that way: it stands where it
+// stands, and a wider lens simply sees more of the room around it. Keeping the
+// correction would have made a 10 cm voxel measure 13.8 cm at 90 degrees and
+// something else again at 60, which is the one thing "no exceptions" rules out.
+// kPoseTanHalfFov is therefore no longer read by anything.
+//
+// The offsets below are ten times what they were, because the models are ten
+// times bigger and the framing they were tuned to is worth keeping: an object
+// N times the size at N times the distance projects to exactly the same place.
+// ---------------------------------------------------------------------------
 struct HeldPose {
-    float x = 0.800f, y = -0.10f, z = 0.96f;
+    float x = 7.27f, y = -0.91f, z = 8.73f;  // in world voxels from the eye
     float yaw = 0.04f, pitch = -1.42f, roll = 1.58f;
-    float scale = 0.08f;
+    float scale = 1.0f;  // 1 model voxel per world voxel -- see above
 };
 
 // ---------------------------------------------------------------------------
@@ -108,8 +136,34 @@ struct HeldPose {
 // because it is the same haft and the same swing, exactly as that engine's
 // own comment says of it.
 // ---------------------------------------------------------------------------
+// WHAT A TOOL CAN TAKE, which is the JS engine's toolTakesFor (sim/tools.js)
+// reduced to the materials v2 can actually be swung at.
+//
+// That engine asks this of the SWING and the AUDIO both, through one function,
+// and its note says why in as many words: "a sound that disagrees with the
+// swing is worse than no sound, because it teaches the player the wrong thing
+// about their tool." v2 has nothing to carve, so the swing has no opinion --
+// which leaves the audio as the only thing this decides, and makes it more
+// important rather than less that it is declared on the tool rather than
+// guessed from its name at the moment a blow lands.
+enum class Takes : uint8_t {
+    Nothing,  // a bow. It does not swing at all -- see HeldItem::update
+    Wood,     // an axe
+    Stone,    // a pick
+};
+
 struct Tool {
     const char *name = "";
+    Takes takes = Takes::Nothing;
+    // IS IT ACTUALLY IN THE KIT. False while it is lying in the wood -- the
+    // models and the pose stay loaded either way, because a dropped axe is the
+    // same axe and picking it up must not cost a reload.
+    bool carried = true;
+    // Where the model was read from. Only the bow needs it -- see retuneArrow,
+    // which recomposes the whole strip from the file every time the arrow moves
+    // -- but it is on the Tool rather than beside the bow because "which file
+    // is this" is a property of a tool and not of one feature.
+    std::string path;
     // A STRIP, not a model. Most tools are one frame and index [0] for ever;
     // the bow is fourteen -- seven of the draw with an arrow on the string,
     // then the same seven without it, for after the loose. They are separate
@@ -130,10 +184,6 @@ struct Tool {
 inline constexpr float kBowDrawMs = 260.0f;
 // The loose and the return to rest -- TWICE the speed of the pull.
 inline constexpr float kBowRelMs = 130.0f;
-
-// The field of view the poses above were tuned at, as the tangent of its half
-// angle. 72 degrees, from FOV in the JS engine's ui/hud.js.
-inline constexpr float kPoseTanHalfFov = 0.72654253f;  // tanf(36 degrees)
 
 // -- the swing, from tick-camera.js -----------------------------------------
 //
@@ -170,6 +220,20 @@ struct Swing {
     bool hit = false;
     float dist = 0.0f;   // metres from the eye
     Vec3 point{0, 0, 0}; // where it landed, world metres
+    // WHAT THE GROUND IS MADE OF, on a Ground hit and only then -- one of the
+    // mat:: ids, mat::AIR otherwise. The kinds above are coarse on purpose (see
+    // the note), but "ground" covers a grass bank and a bare stone hillside,
+    // and a pick has a great deal to say about the difference between them. It
+    // is one lookup, on the one frame a blow lands, so the four extra height
+    // evaluations topMaterial wants for its slope are paid at most once every
+    // 570 ms.
+    uint8_t material = mat::AIR;
+    // A MUSHROOM, not a boulder. Both are standable solids and the kind above
+    // cannot tell them apart; `bouncy` is set for mushrooms alone (see
+    // makeInstance), so this carries it out rather than inventing a fifth kind
+    // for one cap. The audio is the only reader: the engine this came from
+    // leaves a mushroom cap silent.
+    bool soft = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -234,6 +298,8 @@ inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
         bestT = t;
         out.hit = true;
         out.kind = s.standable ? Swing::Rock : Swing::Trunk;
+        out.soft = s.bouncy;
+        out.material = mat::AIR;
         out.dist = t;
         out.point = eye + dir * t;
     }
@@ -263,6 +329,13 @@ inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
         if (vy <= w.terrain->heightVox(vx, vz, memo)) {
             out.hit = true;
             out.kind = Swing::Ground;
+            out.soft = false;
+            // The column's own surface material, not the voxel the ray stopped
+            // in: the march stops at the topmost solid voxel, which IS the
+            // surface, and topMaterial is the one function that decides what
+            // that surface is made of -- so this cannot disagree with what the
+            // mesher put there to be looked at.
+            out.material = w.terrain->topMaterial(vx, vz, w.terrain->heightVox(vx, vz, memo), memo);
             out.dist = t * VOXEL_M;
             out.point = eye + dir * out.dist;
             return out;
@@ -283,6 +356,13 @@ struct HeldXform {
     float m[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     float tx = 0.0f, ty = 0.0f, tz = 0.0f;
     bool show = false;
+    // WHERE THE ITEM IS IN THE CAMERA'S OWN FRAME, in metres: right, up,
+    // forward. The renderer does not need it -- the nine numbers above already
+    // place the model -- but a projectile leaving the hand does, and it needs
+    // the pose AFTER the swing, the bob and the sway have moved it. Reported
+    // here rather than recomputed, so the shaft cannot leave from a bow that is
+    // somewhere else. See App::loose.
+    Vec3 cam{0, 0, 0};
 };
 
 class HeldItem {
@@ -301,10 +381,13 @@ class HeldItem {
     // goes in first so slot one is what the player holds when the world
     // appears.
     // -----------------------------------------------------------------------
-    bool add(World &world, const char *name, const std::string &voxPath, const HeldPose &pose) {
+    bool add(World &world, const char *name, const std::string &voxPath, const HeldPose &pose,
+             Takes takes = Takes::Nothing) {
         Tool t;
         t.name = name;
+        t.takes = takes;
         t.pose = pose;
+        t.path = voxPath;
         const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz);
         if (m < 0) return false;
         t.models.push_back(m);
@@ -334,6 +417,7 @@ class HeldItem {
         Tool t;
         t.name = name;
         t.pose = pose;
+        t.path = voxPath;
         t.bow = true;
         for (const VoxModel &m : strip.withArrow) {
             const int i = world.addHeldVox(m, voxPath + " (nocked)", &t.sx, &t.sy, &t.sz);
@@ -353,7 +437,106 @@ class HeldItem {
         return true;
     }
 
+    // -----------------------------------------------------------------------
+    // PUT DOWN WHAT IS IN THE HAND. Returns which tool left, or -1.
+    //
+    // The tool stays loaded and keeps its pose; only `carried` moves. The hand
+    // then falls to the next thing being carried, or to nothing at all -- and
+    // nothing is a real state here, which is why `shown` is cleared rather than
+    // the selection being left pointing at something that is not there.
+    // -----------------------------------------------------------------------
+    int dropSelected() {
+        if (!ready() || !tools_[size_t(sel_)].carried) return -1;
+        const int gone = sel_;
+        tools_[size_t(gone)].carried = false;
+        drawing_ = false;
+        loosed_ = false;
+        const int n = int(tools_.size());
+        for (int i = 1; i <= n; ++i) {
+            const int j = (gone + i) % n;
+            if (tools_[size_t(j)].carried) {
+                sel_ = j;
+                swapT0_ = nowMs_;
+                shown = true;
+                return gone;
+            }
+        }
+        shown = false;  // an empty hand
+        return gone;
+    }
+
+    // ...and take it back. The hand only changes to it if it was empty, so
+    // walking over a pick while swinging an axe does not swap the axe out.
+    void give(int tool) {
+        if (tool < 0 || tool >= int(tools_.size())) return;
+        tools_[size_t(tool)].carried = true;
+        if (!shown) {
+            sel_ = tool;
+            swapT0_ = nowMs_;
+            shown = true;
+        }
+    }
+    bool carrying() const { return ready() && tools_[size_t(sel_)].carried; }
+    const Tool &tool(int i) const { return tools_[size_t(i)]; }
+
     bool holdingBow() const { return ready() && tools_[size_t(sel_)].bow; }
+    Takes takes() const { return ready() ? tools_[size_t(sel_)].takes : Takes::Nothing; }
+
+    // The arrow's offset on the string, in whole voxels -- see ArrowOffset in
+    // render/bow.h for what it means and why it cannot be fractional. Read by
+    // the settings panel, which is the only thing that writes it.
+    ArrowOffset &arrow() { return arrow_; }
+    const ArrowOffset &arrow() const { return arrow_; }
+
+    // -----------------------------------------------------------------------
+    // MOVE THE ARROW, AND REBUILD THE STRIP AROUND IT.
+    //
+    // There is no cheaper way and it is worth saying why, because "it is only
+    // three numbers" invites one. The arrow is not an object placed near the
+    // bow -- it is voxels STAMPED INTO the same grid the bow is stamped into
+    // (render/bow.h), so moving it is not a transform, it is a different model.
+    // All fourteen frames go, not the seven with an arrow in them: both strips
+    // share one box by design, and a box that changed for one strip and not the
+    // other would shift the bow by a voxel the moment an arrow was loosed.
+    //
+    // IT COSTS TWO DEVICE SYNCS PER FRAME OF THE STRIP -- see World::buildBlas
+    // -- so this is a tuning control and not something to drive from anything
+    // that runs per frame. That is also why the panel steps it in whole voxels:
+    // a value that can only change when you mean it is a value that cannot be
+    // dragged through fifty rebuilds.
+    // -----------------------------------------------------------------------
+    bool retuneArrow(World &world, const ArrowOffset &off) {
+        // THE BOW, NOT WHATEVER IS IN THE HAND. This asked the SELECTED tool at
+        // first, which is right whenever the panel is showing the rows -- they
+        // only appear with a bow held -- and silently wrong everywhere else.
+        // --arrow-pos applies at load, and at load the hand holds the axe, so
+        // the whole thing returned false and did nothing without saying so.
+        // The arrow belongs to the bow however the request arrived.
+        int bi = -1;
+        for (size_t i = 0; i < tools_.size(); ++i)
+            if (tools_[i].bow) {
+                bi = int(i);
+                break;
+            }
+        if (bi < 0) return false;
+        Tool &t = tools_[size_t(bi)];
+        std::string err;
+        const BowStrip strip = parseBowStrip(t.path, &err, off);
+        if (!strip.ok() || strip.frames != bowFrames_) {
+            std::fprintf(stderr, "v2: bow %s: %s -- arrow not moved\n", t.path.c_str(),
+                         err.empty() ? "the strip changed shape" : err.c_str());
+            return false;
+        }
+        if (int(t.models.size()) < strip.frames * 2) return false;
+        for (int f = 0; f < strip.frames; ++f) {
+            world.replaceHeldVox(t.models[size_t(f)], strip.withArrow[size_t(f)],
+                                 t.path + " (nocked)", &t.sx, &t.sy, &t.sz);
+            world.replaceHeldVox(t.models[size_t(strip.frames + f)], strip.bowOnly[size_t(f)],
+                                 t.path + " (bare)", &t.sx, &t.sy, &t.sz);
+        }
+        arrow_ = off;
+        return true;
+    }
 
     bool ready() const { return !tools_.empty(); }
     int count() const { return int(tools_.size()); }
@@ -373,7 +556,13 @@ class HeldItem {
     void cycle(int d) {
         if (tools_.size() < 2) return;
         const int n = int(tools_.size());
-        sel_ = ((sel_ + d) % n + n) % n;
+        // SKIP WHAT IS NOT BEING CARRIED. The wheel walks the kit, and a tool
+        // lying on the ground is not in it -- stopping on an empty hand would
+        // read as the wheel being broken.
+        for (int i = 0; i < n; ++i) {
+            sel_ = ((sel_ + d) % n + n) % n;
+            if (tools_[size_t(sel_)].carried) break;
+        }
         swapT0_ = nowMs_;
     }
     void select(int i) {
@@ -436,12 +625,24 @@ class HeldItem {
         nowMs_ += double(dt) * 1000.0;
 
         // -- the draw --------------------------------------------------------
+        //
+        // THREE MOMENTS AND NOT ONE, because the bow's voices need all three --
+        // the string starts creaking when the pull begins, the creak is cut the
+        // instant it is released whether or not a shaft left, and the re-nock
+        // speaks when the bow settles back to rest. That is the JS engine's
+        // ui/audio.js exactly: playBowStretch on the mousedown, stopBowStretch
+        // on the mouseup, playBowReload from the tick that sees bowAtRest.
+        // Reported as edges rather than as state so a caller cannot fire one of
+        // them twice by reading it on two frames.
         bool loosedNow = false;
+        drewNow_ = false;
+        nockedNow_ = false;
         const bool wantDraw = drawHeld && shown && holdingBow();
         if (wantDraw && !drawing_) {
             drawing_ = true;
             loosed_ = false;
             bowT0_ = nowMs_;
+            drewNow_ = true;
         } else if (!wantDraw && drawing_) {
             drawing_ = false;
             bowRel_ = nowMs_;
@@ -453,7 +654,10 @@ class HeldItem {
             if (draw) *draw = clampf(float((nowMs_ - bowT0_) / double(kBowDrawMs)), 0.0f, 1.0f);
         }
         // Back at rest: the bow is nocked again and the arrow is on it.
-        if (loosed_ && !drawing_ && nowMs_ - bowRel_ >= double(kBowRelMs)) loosed_ = false;
+        if (loosed_ && !drawing_ && nowMs_ - bowRel_ >= double(kBowRelMs)) {
+            loosed_ = false;
+            nockedNow_ = true;
+        }
 
         if (shown != wasShown_) {
             // A tool that has just come into the hand rises into frame rather
@@ -502,6 +706,14 @@ class HeldItem {
     // update(), which returns whether an ARROW was loosed instead -- the two
     // cannot happen together, since a bow does not swing.
     bool struck() const { return swungNow_; }
+
+    // The two edges the bow's audio hangs off -- see the note in update().
+    // True on exactly one frame each.
+    bool drewNow() const { return drewNow_; }
+    bool nockedNow() const { return nockedNow_; }
+    // ...and whether the release that just happened was long enough to count.
+    // The JS engine will not loose on a tap: BOW_DRAW_MS * 0.5.
+    bool drawing() const { return drawing_; }
 
     // Where in the swing we are, 0..1, and >= 1 when nothing is swinging. Only
     // the menu's readout reads this; the pose below computes its own.
@@ -597,12 +809,12 @@ class HeldItem {
         const Vec3 ay(-sr * cy, cr * cp - sr * sy * sp, cr * sp + sr * sy * cp);
         const Vec3 az(sy, -cy * sp, cy * cp);
 
-        // -- into this renderer's units and this camera's field of view ------
-        // See the header: metres, and the lateral offsets and the model's size
-        // referenced to the 72 degrees the pose was tuned at.
-        const float k = (cam.halfH > 1e-4f) ? cam.halfH / kPoseTanHalfFov : 1.0f;
-        const Vec3 anchor(hx * k * VOXEL_M, hy * k * VOXEL_M, hz * VOXEL_M);
-        const float voxel = pose.scale * k * VOXEL_M;
+        // -- into this renderer's units ------------------------------------
+        // NO FIELD-OF-VIEW TERM ANYWHERE. See the note over HeldPose: this is a
+        // real object at the world's own voxel size, so neither where it is nor
+        // how big it is depends on the lens.
+        const Vec3 anchor(hx * VOXEL_M, hy * VOXEL_M, hz * VOXEL_M);
+        const float voxel = pose.scale * VOXEL_M;
 
         // -- camera space to world ------------------------------------------
         //
@@ -634,6 +846,7 @@ class HeldItem {
         // The mesh runs from its own (0,0,0) corner, and the pose names the
         // CENTRE of the box, so the translation is the centre less half the
         // model carried down its own three axes.
+        out.cam = anchor;
         const Vec3 eye(cam.pos.x, cam.pos.y, cam.pos.z);
         const Vec3 centre = eye + toWorldDir(anchor);
         const Vec3 corner = centre - (colX * (0.5f * float(tool.sx)) +
@@ -665,6 +878,9 @@ class HeldItem {
     int bowFrames_ = 0;
     bool drawing_ = false;  // the right button is down on a bow
     bool loosed_ = false;   // shot, and not yet settled back to rest
+    ArrowOffset arrow_;     // where the nocked arrow sits, in voxels
+    bool drewNow_ = false;  // the pull began this frame
+    bool nockedNow_ = false;  // ...and the string settled back this frame
     double bowT0_ = -1.0e9, bowRel_ = -1.0e9;
     bool swungNow_ = false;
 };
