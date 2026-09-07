@@ -276,7 +276,9 @@ class Butterflies {
                 }
                 ids.push_back(m);
             }
-            if (int(ids.size()) == kFlyFrames) colours_.push_back(ids);
+            if (int(ids.size()) != kFlyFrames) continue;
+            colours_.push_back(ids);
+            wings_.push_back(measureFlap(frames));
         }
 
         if (colours_.empty()) {
@@ -341,7 +343,7 @@ class Butterflies {
         for (int i = 0; i < int(flies_.size()); ++i) {
             const Fly &b = flies_[size_t(i)];
             if (!b.live) {
-                world.setFlyerInstance(i, 0, nullptr, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, false);
+                world.setFlyerInstance(i, 0, nullptr, 0.0f, 0.0f, 0.0f, nullptr, false);
                 continue;
             }
             // WHICH WAY IT FACES, and the half-turn in it is not a fudge.
@@ -375,10 +377,32 @@ class Butterflies {
             const float oy = m[3] * cx + m[4] * cy + m[5] * cz;
             const float oz = m[6] * cx + m[7] * cy + m[8] * cz;
 
-            const int frame = int(float(t_ * double(kFlyFps)) + b.phase) % kFlyFrames;
-            const int model = colours_[size_t(b.colour)][size_t(frame < 0 ? 0 : frame)];
-            world.setFlyerInstance(i, model, m, b.p.x - ox, b.p.y - oy, b.p.z - oz,
-                                   b.p.x - b.prev.x, b.p.y - b.prev.y, b.p.z - b.prev.z, true);
+            const int model = colours_[size_t(b.colour)][size_t(b.pose)];
+
+            // -- AND HOW FAR THE WING ROSE INSIDE ALL THAT -------------------
+            //
+            // The instance's own motion is p - prev and covers the body. It
+            // does not cover the WING, which stepped a voxel when the pose did,
+            // and handing Ray Reconstruction the body's vector for a wing is
+            // what smeared the whole flock -- see V6Instance::flap.
+            //
+            // A subtraction of two measured heights, so a pose that did not
+            // change gives exactly zero and the flyer costs the tracer nothing
+            // on the frames between steps. Times the fade, because the heights
+            // are in the model's own metres and the instance is drawn at that
+            // scale; and in world metres because the transform is a turn about
+            // Y, which leaves a rise a rise.
+            const WingBand &wb = wings_[size_t(b.colour)];
+            const float flap[3] = {
+                (wb.z[b.pose][1] - wb.z[b.poseWas][1]) * VOXEL_M * k,
+                (wb.z[b.pose][2] - wb.z[b.poseWas][2]) * VOXEL_M * k,
+                cx,  // the model's own centre, in object metres
+            };
+            // The FLIGHT is not passed: World::place differences the transform
+            // and gets the same p - prev this used to hand over, from the one
+            // place that cannot forget to. The FLAP is passed, because no
+            // transform describes it -- the pose changed underneath one.
+            world.setFlyerInstance(i, model, m, b.p.x - ox, b.p.y - oy, b.p.z - oz, flap, true);
         }
         world.flushFlyerInstances();
     }
@@ -434,7 +458,6 @@ class Butterflies {
     struct Fly {
         bool live = false;
         Vec3 p{0, 0, 0};
-        Vec3 prev{0, 0, 0};  // where it was last frame, for the motion vector
         float th = 0.0f;     // heading, radians, 0 = +z
         float om = 0.0f;     // turn rate now
         float omT = 0.0f;    // ...and what it is easing toward
@@ -455,6 +478,13 @@ class Butterflies {
         int hcx = 0, hcz = 0;        // ...and the cell that home belongs to
         int colour = 0;
         float phase = 0.0f;  // frames of flap offset, so the flock is not in step
+        // WHICH OF THE EIGHT IT IS WEARING, and which it wore last frame. This
+        // is state and not a thing publish() can work out for itself, for the
+        // same reason `prev` above is: what the motion vector needs is the
+        // DIFFERENCE between two frames, and a const publish that recomputed
+        // the pose from the clock would only ever have one of them. Held as a
+        // pair here, stepped in fly(), exactly like the position.
+        int pose = 0, poseWas = 0;
         float age = 0.0f;    // seconds since it appeared, for the fade
         float dying = -1.0f; // seconds into the fade OUT, or negative
         uint32_t rng = 1u;
@@ -491,6 +521,67 @@ class Butterflies {
     int colourOf(int cx, int cz) const {
         const uint32_t h = (uint32_t(cx) * 374761393u) ^ (uint32_t(cz) * 668265263u);
         return int(h % uint32_t(colours_.size()));
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW HIGH THE WING SITS IN EACH OF THE EIGHT GRIDS -- measured, not typed.
+    //
+    // This is the whole of what the motion vector needs to stop ghosting the
+    // flock, and the reasoning is in the note over V6Instance::flap. What is
+    // wanted per pose is the HEIGHT of the wing, so that the step between two
+    // poses is a subtraction rather than a table somebody has to keep in step
+    // with the art.
+    //
+    // BUCKETED BY HOW FAR OUT THE VOXEL IS, because that is the one thing the
+    // height depends on. The flap is a roll about the body's long axis: the
+    // column down the middle is the body and never moves, the voxels one out
+    // are the inner wing, and the ones two out are the tips, which swing
+    // furthest. Three buckets cover a model five voxels across, and anything
+    // wider would join its outer voxels to the tips -- a blunter answer, never
+    // a wrong-signed one.
+    //
+    // The mean is taken over whatever is in the bucket, so the body bucket
+    // comes out the same number in all eight poses and subtracts to exactly
+    // zero without being special-cased into doing so.
+    //
+    // Model coordinates, and the y-up conversion matters: MagicaVoxel is z-up
+    // and toWorldWhole maps model z to the object's y, so the HEIGHT read here
+    // is mo.at()'s third index and the SPAN is its first. Both without a flip,
+    // which is why this can be measured on the file and used on the mesh.
+    // -----------------------------------------------------------------------
+    struct WingBand {
+        // Mean height, in voxels, of each bucket in each pose.
+        float z[kFlyFrames][3] = {};
+    };
+
+    static WingBand measureFlap(const std::vector<VoxModel> &frames) {
+        WingBand w;
+        for (int f = 0; f < kFlyFrames && f < int(frames.size()); ++f) {
+            const VoxModel &mo = frames[size_t(f)];
+            const float cx = 0.5f * float(mo.sx);  // the model's centre, in voxels
+            double sum[3] = {0, 0, 0};
+            int n[3] = {0, 0, 0};
+            for (int z = 0; z < mo.sz; ++z)
+                for (int y = 0; y < mo.sy; ++y)
+                    for (int x = 0; x < mo.sx; ++x) {
+                        if (!mo.at(x, y, z)) continue;
+                        const float out = fabsf(float(x) + 0.5f - cx);
+                        const int b = mini(2, int(out + 0.5f));
+                        sum[b] += double(z) + 0.5;
+                        ++n[b];
+                    }
+            for (int b = 0; b < 3; ++b)
+                w.z[f][b] = n[b] ? float(sum[b] / double(n[b])) : 0.0f;
+        }
+        return w;
+    }
+
+    // Which of the eight it is wearing at this instant. The one place the flap
+    // clock is read, so the pose publish() draws and the pose the motion vector
+    // differences can never come from two different readings of it.
+    int poseNow(const Fly &b) const {
+        const int f = int(float(t_ * double(kFlyFps)) + b.phase) % kFlyFrames;
+        return f < 0 ? 0 : f;
     }
 
     float fade(const Fly &b) const {
@@ -607,7 +698,9 @@ class Butterflies {
             b.ground = hm.ground;
             b.gRef = hm.ground;
             b.p = Vec3(hm.x, hm.ground + kFlyCruiseM + b.lift, hm.z);
-            b.prev = b.p;
+            // Materialises mid-flap wherever the clock happens to be, and with
+            // no step behind it: its first frame has no history to describe.
+            b.pose = b.poseWas = poseNow(b);
             // Staggered, so sixty-four butterflies never probe the world on
             // one frame: the first think lands somewhere inside the interval
             // rather than immediately.
@@ -681,7 +774,8 @@ class Butterflies {
     // ...and what it DOES, every frame.
     // -----------------------------------------------------------------------
     void fly(float dt, Fly &b) {
-        b.prev = b.p;
+        b.poseWas = b.pose;
+        b.pose = poseNow(b);
         b.age += dt;
         if (b.dying >= 0.0f) b.dying += dt;
 
@@ -733,6 +827,10 @@ class Butterflies {
 
     // colours_[c][f] is the world's model id for frame f of colour c.
     std::vector<std::vector<int>> colours_;
+    // One per colour, in step with colours_: how high its wing sits in each
+    // pose. Pushed only for a colour that loaded WHOLE, so the two vectors
+    // cannot drift apart -- see the no-orphan-half-sets rule at init().
+    std::vector<WingBand> wings_;
     int sx_ = 0, sy_ = 0, sz_ = 0;  // the box every frame shares
     std::vector<Fly> flies_;
     std::vector<Home> cand_;

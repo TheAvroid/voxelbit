@@ -78,6 +78,10 @@ inline constexpr float kArrowAimM = 30.0f;  // AIM_FAR 300 voxels
 // minute is long enough that you can walk up to one you shot.
 inline constexpr float kArrowRestSec = 60.0f;
 
+// The roll, from the JS engine's projectiles.js. Radians a second about the
+// shaft's own axis -- about 1.4 turns a second.
+inline constexpr float kArrowRoll = 9.0f;
+
 inline constexpr int kArrowSlots = 12;
 
 // ---------------------------------------------------------------------------
@@ -91,6 +95,12 @@ class Arrows {
         // it went in at.
         Vec3 dir{0, 0, 1};
         float age = 0.0f;
+        // HOW FAR IT HAS ROLLED ABOUT ITS OWN SHAFT. The JS engine's
+        // ARROW_ROLL: "rad/s the arrow rolls about its own shaft in flight --
+        // ~1.4 turns a second: fast enough to read as a spin, slow enough not
+        // to smear into a blur". It stops when the shaft does, for the same
+        // reason `dir` does: an arrow standing in the ground is not turning.
+        float roll = 0.0f;
         bool live = false;   // in the air
         bool stuck = false;  // landed, and still standing in whatever it hit
         // Has the arc reached open air? False while a shaft is still inside
@@ -187,6 +197,7 @@ class Arrows {
                     break;
                 }
                 a.pos = next;
+                a.roll += kArrowRoll * h;
                 const float l = sqrtf(maxf(1e-8f, lengthSq(a.vel)));
                 a.dir = a.vel * (1.0f / l);
                 // Out of the world entirely -- under it, or so far up that
@@ -212,10 +223,22 @@ class Arrows {
                 world.setArrowInstance(i, model_, nullptr, 0.0f, 0.0f, 0.0f, false);
                 continue;
             }
-            // The model runs along its own local Z after scene/vox.h's y-up
-            // conversion -- the file lays the shaft down its depth axis -- so
-            // that is the column the flight direction goes in. The other two
-            // are any orthonormal pair; a shaft is round.
+            // THE SHAFT RUNS DOWN THE MODEL'S LOCAL Z, POINT AT THE LOW END.
+            // arrow.vox is one voxel wide and nine long down the file's y --
+            // which is this z after scene/vox.h's y-up conversion -- with the
+            // head at y=0 and the two fletching voxels at y=8. So the arrow's
+            // NOSE is its -z, and putting the flight direction in the third
+            // column flew it tail first. It did, visibly, from the day it was
+            // written; nobody saw it while a held voxel was eleven millimetres
+            // and the shaft was a speck.
+            //
+            // A HALF TURN, NOT A NEGATED COLUMN. Flipping one column alone
+            // gives a determinant of -1 -- a mirror, which reverses the winding
+            // of every triangle and turns the outward normals in. Negating TWO
+            // is a rotation: (-r, u, -f) is the same frame spun half a circle
+            // about u, so the model's -z lands on the flight direction and the
+            // matrix stays a rotation. This is the same trap render/
+            // butterflies.h documents for the same reason.
             const Vec3 f = a.dir;
             Vec3 up(0.0f, 1.0f, 0.0f);
             if (fabsf(f.y) > 0.99f) up = Vec3(1.0f, 0.0f, 0.0f);
@@ -224,15 +247,27 @@ class Arrows {
             r = r * (1.0f / rl);
             const Vec3 u = cross(f, r);
 
+            // ...and the roll, which turns the other two axes about the shaft
+            // and leaves the shaft itself alone. A round arrow would show
+            // nothing; this one has fletching, which is what there is to see.
+            const float cr = cosf(a.roll), sr = sinf(a.roll);
+            const Vec3 rr = r * cr + u * sr;
+            const Vec3 uu = u * cr - r * sr;
+
             const float s = VOXEL_M;
-            const float m[9] = {r.x * s, u.x * s, f.x * s, r.y * s, u.y * s,
-                                f.y * s, r.z * s, u.z * s, f.z * s};
-            // The mesh runs from its own corner, and `pos` is the middle of the
-            // shaft, so the translation is the centre less half the model down
-            // its own three axes.
-            const Vec3 corner = a.pos - (r * (0.5f * float(sx_) * s) +
-                                         u * (0.5f * float(sy_) * s) +
-                                         f * (0.5f * float(sz_) * s));
+            const float m[9] = {-rr.x * s, uu.x * s, -f.x * s, -rr.y * s, uu.y * s,
+                                -f.y * s, -rr.z * s, uu.z * s, -f.z * s};
+            // The mesh runs from its own corner and `pos` is the middle of the
+            // shaft, so the translation is the centre less the model's own
+            // half-box carried down the SAME three axes the matrix uses --
+            // which are now the turned ones.
+            const Vec3 corner = a.pos - (rr * (-0.5f * float(sx_) * s) +
+                                         uu * (0.5f * float(sy_) * s) +
+                                         f * (-0.5f * float(sz_) * s));
+            // NOTHING SAYS HOW FAR IT FLEW. World::place works that out from
+            // the transform this hands it and the one it handed last frame,
+            // which is why a shaft can no longer be launched across the screen
+            // with a motion vector of zero -- see the note over place().
             world.setArrowInstance(i, model_, m, corner.x, corner.y, corner.z, true);
         }
     }

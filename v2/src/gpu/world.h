@@ -431,7 +431,7 @@ class World {
     // The birch wood's sixteen trees. Same 10 cm grid as the pines.
     std::string birchDir = "C:/voxelbit/game/assets/foilage/birch_trees";
     int viewChunks = 12;  // ring radius, in chunks
-    float treeDensity = 0.2325f;
+    float treeDensity = 0.3210f;
     float rockDensity = 0.010f;
     float flowerDensity = 0.45f;
     float mushroomDensity = 0.015f;
@@ -718,12 +718,13 @@ class World {
         static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         const bool ok = show && m && model >= 0 && model < int(held_.size());
 
-        RtInstanceDesc &inst = instanceDescs_[idx];
-        writeTransform(inst, ok ? m : kI, tx, ty, tz);
-        inst.instanceMask = ok ? kMaskWorld : 0;
-        inst.instanceID = uint32_t(idx);
         const size_t mi = size_t(ok ? model : 0);
-        inst.accelerationStructure = held_[mi].blas.as->getGpuAddress();
+        // Its half-box in the MODEL'S OWN UNITS -- a held-item mesh is one unit
+        // per voxel and the transform carries VOXEL_M, so this is voxels. See
+        // place(), which is where the motion vector comes from.
+        place(idx, ok ? m : kI, tx, ty, tz, kMaskWorld, ok, 0.5f * float(held_[mi].sx),
+              0.5f * float(held_[mi].sy), 0.5f * float(held_[mi].sz));
+        instanceDescs_[idx].accelerationStructure = held_[mi].blas.as->getGpuAddress();
         instanceInfos_[idx].triOffset = held_[mi].tri;
         dropsDirty_ = true;
     }
@@ -746,7 +747,9 @@ class World {
     //
     // `m` is the 3x3 row-major, the fade scale folded in; `tx/ty/tz` the
     // translation; `px/py/pz` how far it moved since the last frame, which the
-    // motion vector needs and nothing else reads (see KIND_FLYER).
+    // motion vector needs and nothing else reads (see KIND_FLYER); `flap` how
+    // far its wings rose inside that -- inner, tips, and the model's own centre
+    // to measure "how far out along the wing" from (see V6Instance::flap).
     //
     // NOTHING GOES UP THE BUS HERE. Unlike the tool and the shafts, which are
     // one instance each and upload themselves, a flock is up to sixty-four
@@ -756,21 +759,24 @@ class World {
     // flushFlyerInstances sends the whole band in one go, twice.
     // -----------------------------------------------------------------------
     void setFlyerInstance(int slot, int model, const float *m, float tx, float ty, float tz,
-                          float px, float py, float pz, bool show) {
+                          const float *flap, bool show) {
         if (flyers_.empty() || flyerBase_ < 0 || slot < 0 || slot >= kFlyerInstances) return;
         const size_t idx = size_t(flyerBase_ + slot);
         if (idx >= instanceDescs_.size()) return;
         static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         const bool ok = show && m && model >= 0 && model < int(flyers_.size());
 
-        RtInstanceDesc &inst = instanceDescs_[idx];
-        writeTransform(inst, ok ? m : kI, tx, ty, tz);
-        inst.instanceMask = ok ? kMaskWorld : 0;
-        inst.instanceID = uint32_t(idx);
         const size_t mi = size_t(ok ? model : 0);
-        inst.accelerationStructure = flyers_[mi].blas.as->getGpuAddress();
+        // METRES here, not voxels: a flyer is meshed at VOXEL_M so its object
+        // space already is metres and its transform is a turn and a fade. See
+        // addFlyerModel for why, and place() for what the half-box is for.
+        place(idx, ok ? m : kI, tx, ty, tz, kMaskWorld, ok,
+              0.5f * float(flyers_[mi].sx) * VOXEL_M, 0.5f * float(flyers_[mi].sy) * VOXEL_M,
+              0.5f * float(flyers_[mi].sz) * VOXEL_M);
+        instanceDescs_[idx].accelerationStructure = flyers_[mi].blas.as->getGpuAddress();
         instanceInfos_[idx].triOffset = flyers_[mi].tri;
-        instanceInfos_[idx].prevOffset = float3(px, py, pz);
+        instanceInfos_[idx].flap =
+            (ok && flap) ? float3(flap[0], flap[1], flap[2]) : float3(0.0f, 0.0f, 0.0f);
         flyersDirty_ = true;
     }
 
@@ -813,10 +819,14 @@ class World {
         if (held_.empty() || !tlas_ || instanceDescs_.empty()) return;
         if (model < 0 || model >= int(held_.size())) show = false;
 
+        // NO MOTION TRACKED FOR THE TOOL, and that is not an omission: it is
+        // bolted to the camera, so its world point moves with the eye while its
+        // PIXEL does not move at all. The tracer says so where it writes the
+        // guide -- a held primary gets a zero motion vector outright -- and
+        // leaving prevOffset at zero here means the two agree instead of one
+        // quietly computing a number the other throws away.
+        place(0, m, tx, ty, tz, kMaskHeld, show, 0.0f, 0.0f, 0.0f, /*track*/ false);
         RtInstanceDesc &inst = instanceDescs_[0];
-        writeTransform(inst, m, tx, ty, tz);
-        inst.instanceMask = show ? kMaskHeld : 0;
-        inst.instanceID = 0;
         // WHICH MODEL IS IN THE SLOT, AND WHY AN UPDATE MAY CHANGE IT. A
         // top-level update is allowed to rewrite the instance descriptors; what
         // it may not change is how MANY there are. So swapping tools -- and the
@@ -842,6 +852,12 @@ class World {
     // descriptor is at a fixed offset like the tool's. Same 64-byte write, same
     // refit -- see setHeldInstance for why that is what makes any of this
     // affordable.
+    //
+    // `px/py/pz` is how far the shaft travelled since the last frame, and it is
+    // the whole of what stops it ghosting: see the note over the reserve below
+    // for what the static-world formula does to something moving this fast, and
+    // V6Instance::prevOffset for what the tracer does with this. Zero while it
+    // stands in the ground, which is the honest answer there.
     // -----------------------------------------------------------------------
     void setArrowInstance(int slot, int model, const float *m, float tx, float ty, float tz,
                           bool show) {
@@ -849,19 +865,25 @@ class World {
         const size_t idx = size_t(1 + slot);
         if (idx >= instanceDescs_.size()) return;
         static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        const size_t mi = size_t(model >= 0 && model < int(held_.size()) ? model : 0);
 
+        // Voxels, like the dropped tools above and for the same reason: a shaft
+        // is a held-item mesh with VOXEL_M in its transform.
+        place(idx, m ? m : kI, tx, ty, tz, kMaskWorld, show && m, 0.5f * float(held_[mi].sx),
+              0.5f * float(held_[mi].sy), 0.5f * float(held_[mi].sz));
         RtInstanceDesc &inst = instanceDescs_[idx];
-        writeTransform(inst, m ? m : kI, tx, ty, tz);
-        inst.instanceMask = (show && m) ? kMaskWorld : 0;
-        inst.instanceID = uint32_t(idx);
-        if (model >= 0 && model < int(held_.size())) {
-            inst.accelerationStructure = held_[size_t(model)].blas.as->getGpuAddress();
-            if (instanceInfos_[idx].triOffset != held_[size_t(model)].tri) {
-                instanceInfos_[idx].triOffset = held_[size_t(model)].tri;
-                ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[idx],
-                                   idx * sizeof(V6Instance), sizeof(V6Instance));
-            }
-        }
+        if (model >= 0 && model < int(held_.size()))
+            inst.accelerationStructure = held_[mi].blas.as->getGpuAddress();
+
+        // THE INFO RECORD GOES UP EVERY FRAME THE SHAFT IS IN THE AIR, not only
+        // when the model changes. It used to be written on a triOffset change
+        // alone, which was true while the record held nothing that moved -- a
+        // shaft keeps one model for its whole flight, so that test was false on
+        // every frame of it and the motion vector place() just worked out would
+        // never have reached the GPU.
+        instanceInfos_[idx].triOffset = held_[mi].tri;
+        ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[idx], idx * sizeof(V6Instance),
+                           sizeof(V6Instance));
         ctx_->updateBuffer(instanceDescBuf_.get(), &inst, idx * sizeof(RtInstanceDesc),
                            sizeof(RtInstanceDesc));
     }
@@ -1024,17 +1046,17 @@ class World {
         mesher_.flowerDensity = flowerDensity;
         mesher_.mushroomDensity = mushroomDensity;
         for (const ModelTemplate &t : pines_)
-            mesher_.pineFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+            mesher_.pineFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : rocks_)
-            mesher_.rockFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+            mesher_.rockFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : flowers_)
-            mesher_.flowerFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+            mesher_.flowerFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : mushrooms_)
-            mesher_.mushroomFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+            mesher_.mushroomFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : pinecones_)
-            mesher_.pineconeFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+            mesher_.pineconeFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : hives_)
-            mesher_.hiveFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ});
+            mesher_.hiveFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : pines_) mesher_.pinePerch.push_back(t.perches);
         for (const ModelTemplate &t : pines_) mesher_.pineHivePerch.push_back(t.hivePerches);
         mesher_.pineconesPerTree = pineconesPerTree;
@@ -1292,6 +1314,17 @@ class World {
     // see render/butterflies.h on why the flap is on the grid and the turn is
     // not. Which one a slot points at is a 64-byte write, exactly as swapping
     // the tool in the hand is.
+    // WHERE EVERY PLACEABLE INSTANCE WAS LAST FRAME, and whether it was on
+    // screen at all. Only the dynamic prefix -- the hand, the shafts, the
+    // dropped tools and the flock, which are pushed before the water and the
+    // chunks and so keep their indices whatever the ring does. The forty-odd
+    // thousand chunk and decor instances behind them never move, so the
+    // static-world reprojection is already exact for every one of them and
+    // there is nothing to remember. See place().
+    std::vector<float3> wasAt_;
+    std::vector<uint8_t> wasShown_;
+    int dynEnd_ = 0;  // one past the last instance place() may be called for
+
     std::vector<HeldModel> flyers_;
     int flyerBase_ = -1;        // first instance of the band, -1 while unbuilt
     bool flyersDirty_ = false;  // anything written since the last flush
@@ -2130,8 +2163,10 @@ class World {
         info->kind = (p.kind == 0) ? KIND_TREE : KIND_TERRAIN;
         info->tint = (p.kind == 0) ? tintFor(p.cell) : float3(1.0f, 1.0f, 1.0f);
         // A tree does not move, so the motion vector's static-world formula is
-        // exactly right for it and there is nothing to subtract.
+        // exactly right for it and there is nothing to subtract -- and nothing
+        // on it flaps, so there is nothing to add either.
         info->prevOffset = float3(0.0f, 0.0f, 0.0f);
+        info->flap = float3(0.0f, 0.0f, 0.0f);
 
         inst.instanceMask = kMaskWorld;
         inst.instanceContributionToHitGroupIndex = 0;
@@ -2149,6 +2184,67 @@ class World {
         const float t = hashUnit(seed + 19u, cell);
         const float v = 0.90f + 0.20f * hashUnit(seed + 20u, cell);
         return float3(lerpf(0.94f, 1.06f, t) * v, 1.0f * v, lerpf(1.05f, 0.92f, t) * v);
+    }
+
+    // -----------------------------------------------------------------------
+    // PLACE AN INSTANCE -- AND DERIVE ITS MOTION VECTOR FROM HAVING DONE SO.
+    //
+    // THIS EXISTS BECAUSE THE OTHER WAY ROUND DOES NOT WORK. Every moving thing
+    // in this scene used to hand its own motion in: the flock passed p - prev,
+    // and the shafts and the dropped tools passed nothing at all, because
+    // nobody remembered they had to. That is not a bug those two subsystems
+    // had, it is a bug the API had -- a parameter you can leave out is a
+    // parameter that will be left out, and what you get for leaving it out is
+    // an object reprojected as though it were nailed to the world. An arrow at
+    // forty-eight metres a second was, and it smeared the length of the shot.
+    //
+    // So it is not asked for any more. The instance's transform IS where it is,
+    // this array still holds where it WAS -- nothing has overwritten it yet --
+    // and the difference of those two is the motion vector, every time, for
+    // everything that comes through here. There is no longer a way to place a
+    // moving object and forget to say that it moved.
+    //
+    // THE CENTRE, NOT THE CORNER. A voxel mesh runs from its own corner, so the
+    // translation handed in is the object's centre less its half-box carried
+    // through the turn -- and differencing THAT would fold the turn into the
+    // vector: a butterfly banking on the spot would be reported as having
+    // travelled. Carrying the half-box back through the same matrix recovers
+    // the centre, which is the point the object actually turns about. The
+    // half-box is in the MODEL'S OWN units, because the matrix is what converts
+    // them -- voxels for a held-item mesh, metres for a flyer's. Each caller
+    // has already computed exactly this to place the thing at all.
+    //
+    // WHAT IT STILL DOES NOT COVER, and neither did the hand-written version:
+    // the turn itself. A point off the centre moves by (M - Mprev) * its offset
+    // as well, which no single translation can express -- see the measurements
+    // in render/arrows.h and render/butterflies.h for why that term is small
+    // against the travel in every case this scene has. Nor does it cover a
+    // model whose GEOMETRY changed under a fixed transform; that is the flap,
+    // and it has its own vector -- see V6Instance::flap.
+    //
+    // A SLOT THAT WAS HIDDEN LAST FRAME GETS NOTHING, and that is the right
+    // answer rather than a guard: an arrow slot recycled for a new shot, or a
+    // butterfly that has just materialised, was not on screen last frame at
+    // all. It has no history to describe, and telling Ray Reconstruction it
+    // flew in from wherever the last tenant died would be worse than telling it
+    // nothing.
+    // -----------------------------------------------------------------------
+    void place(size_t idx, const float *m, float tx, float ty, float tz, uint32_t mask, bool show,
+               float hx, float hy, float hz, bool track = true) {
+        RtInstanceDesc &inst = instanceDescs_[idx];
+        writeTransform(inst, m, tx, ty, tz);
+        inst.instanceMask = show ? mask : 0;
+        inst.instanceID = uint32_t(idx);
+
+        const float3 at(tx + m[0] * hx + m[1] * hy + m[2] * hz,
+                        ty + m[3] * hx + m[4] * hy + m[5] * hz,
+                        tz + m[6] * hx + m[7] * hy + m[8] * hz);
+        const bool had = track && show && idx < wasShown_.size() && wasShown_[idx] != 0;
+        instanceInfos_[idx].prevOffset = had ? (at - wasAt_[idx]) : float3(0.0f, 0.0f, 0.0f);
+        if (idx < wasShown_.size()) {
+            wasAt_[idx] = at;
+            wasShown_[idx] = (track && show) ? uint8_t(1) : uint8_t(0);
+        }
     }
 
     static void writeTransform(RtInstanceDesc &inst, const float *m, float tx, float ty, float tz) {
@@ -2209,11 +2305,25 @@ class World {
             // force a full rebuild on every loose and every landing -- the two
             // moments in the frame least able to afford one.
             //
-            // KIND_TERRAIN, not KIND_HELD: a shaft in the air is an ordinary
-            // object in the world. It is lit like one, it casts like one, and
-            // -- unlike the tool -- the motion vector formula is exactly right
-            // for it, because it really does move through a world the camera is
-            // looking at from outside.
+            // NOT KIND_HELD: a shaft in the air is an ordinary object in the
+            // world. It is lit like one and it casts like one, and it is not
+            // bolted to the camera, so it wants neither the tool's second ray
+            // mask nor the tool's zeroed motion vector.
+            //
+            // KIND_FLYER, AND IT WAS KIND_TERRAIN, WHICH WAS WRONG TWICE. The
+            // note that stood here said the static-world motion vector was
+            // "exactly right for it, because it really does move" -- which is
+            // the argument backwards. That formula IS the static world: it
+            // reprojects this frame's hit point through last frame's camera and
+            // so claims the surface was always where it is now. True of a tree.
+            // False of a shaft crossing the screen at forty-eight metres a
+            // second, which Ray Reconstruction was therefore told had never
+            // moved -- and it ghosted exactly as hard as that lie is big.
+            //
+            // The second thing the kind buys is the one the drops below spell
+            // out: an arrow is a HELD model, meshed at one unit per voxel, so
+            // its instance carries VOXEL_M as a scale and its face normals come
+            // out a tenth of unit length without KIND_FLYER's normalise.
             for (int i = 0; i < kArrowInstances; ++i) {
                 RtInstanceDesc arrow = {};
                 writeTransform(arrow, kI, 0.0f, 0.0f, 0.0f);
@@ -2221,7 +2331,7 @@ class World {
                 arrow.accelerationStructure = held_[m].blas.as->getGpuAddress();
                 V6Instance ai{};
                 ai.triOffset = held_[m].tri;
-                ai.kind = KIND_TERRAIN;
+                ai.kind = KIND_FLYER;
                 ai.tint = float3(1.0f, 1.0f, 1.0f);
                 push(arrow, ai);
             }
@@ -2279,6 +2389,20 @@ class World {
             // time the ring steps -- would leave the whole flock parked at the
             // origin, masked off, until something happened to touch it.
             flyersDirty_ = true;
+        }
+
+        // THE DYNAMIC PREFIX ENDS HERE, and what follows it -- the water, the
+        // chunks, the decor -- is placed once and never again. Kept ACROSS a
+        // rebuild when the layout is unchanged, which it is on every ring step:
+        // the bands above are a fixed size and sit at the front, so a butterfly
+        // in slot 40 is instance 40 before and after. Only a late model load
+        // can move them, and that is what the size test catches -- everything
+        // then starts again with no history, which is true, because the
+        // instances it would have described are not the same instances.
+        dynEnd_ = int(instanceDescs_.size());
+        if (wasAt_.size() != size_t(dynEnd_)) {
+            wasAt_.assign(size_t(dynEnd_), float3(0.0f, 0.0f, 0.0f));
+            wasShown_.assign(size_t(dynEnd_), uint8_t(0));
         }
 
         {

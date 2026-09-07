@@ -214,6 +214,14 @@ class Streamline {
             sl::kFeatureDLSS_G,    // Frame Generation     (after Phase D)
             sl::kFeatureReflex,    // required by DLSS_G
             sl::kFeaturePCL,       // latency markers Reflex paces against
+            // kFeatureLatewarp IS NOT ASKED FOR HERE, and that is the whole of
+            // it: this list is what Streamline LOADS, not what it reports on.
+            // Latewarp hooks the swapchain to re-project the finished frame,
+            // so loading it on hardware that cannot run it takes the PRESENT
+            // path down -- "GFX call mGfxSwapchain->present() failed with
+            // error -2147467259" on the first frame, every launch, which is
+            // exactly what it did on this Ada card (Reflex 2 launched on
+            // Blackwell). The capability probe below is harmless and stays.
         };
         static std::wstring pluginDir = exeDir.wstring();
         static const wchar_t *paths[] = {pluginDir.c_str()};
@@ -336,6 +344,19 @@ class Streamline {
         ask(sl::kFeatureReflex, "reflex", &hasReflex_);
         ask(sl::kFeaturePCL, "pcl markers", &hasPcl_);
         ask(sl::kFeatureDLSS_G, "frame generation", &hasFG_);
+        // REFLEX 2's FRAME WARP, asked about rather than assumed.
+        //
+        // A different thing from frame generation and not a substitute for it:
+        // generation inserts frames and costs a little latency, while this
+        // re-projects the FINISHED frame against the newest camera input just
+        // before it is shown. It is the half of the pairing that makes the game
+        // feel quicker rather than merely look smoother.
+        //
+        // Whether it runs on Ada at all is exactly the question -- Reflex 2
+        // launched on Blackwell -- so it is asked of the driver rather than
+        // reasoned about, and the refusal code is printed either way. Nothing
+        // drives it yet; this is a capability probe.
+        ask(sl::kFeatureLatewarp, "frame warp (reflex 2)", &hasLatewarp_);
 
         // FRAME GENERATION WITHOUT REFLEX IS NOT AN OPTION, it is a failure
         // mode. DLSS-G checks for Reflex at runtime and refuses; offering it in
@@ -908,6 +929,8 @@ class Streamline {
 
     bool ready_ = false;
     bool hasSR_ = false, hasRR_ = false, hasFG_ = false, hasReflex_ = false, hasPcl_ = false;
+    // Reflex 2's frame warp. Probed only -- nothing drives it yet.
+    bool hasLatewarp_ = false;
     FrameGen fg_ = FrameGen::Off;
     std::string status_ = "not initialised";
     std::string report_;

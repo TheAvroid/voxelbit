@@ -518,7 +518,79 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.ng = ng;
     h.ns = ng;
     h.held = (inst.kind == KIND_HELD);
-    h.moved = (inst.kind == KIND_FLYER) ? inst.prevOffset : float3(0.0f);
+    // HOW FAR THIS SURFACE'S INSTANCE TRAVELLED SINCE THE LAST FRAME, and no
+    // test on the kind: the host derives this for everything it PLACES and
+    // leaves it at zero for everything it builds once, so the wood, the water
+    // and the forty thousand chunks behind them read a zero here and the
+    // static-world reprojection below is untouched for all of them. Asking
+    // "is this a flyer?" was how a shaft in flight got a zero it should not
+    // have had -- it was not a flyer, it was KIND_TERRAIN. See World::place.
+    h.moved = inst.prevOffset;
+
+    // -- AND THE TOOL, WHICH IS NOT SOMEWHERE IN THE WORLD AT ALL -----------
+    //
+    // Everything above is a correction ON TOP of the static-world reprojection:
+    // a surface sits at a world point, the eye moves around it, and prevOffset
+    // says how far the point itself also went. The tool breaks that at the
+    // root. It is bolted to the eye, so turning moves its world point by the
+    // largest amount in the frame while its PIXEL does not move at all -- and
+    // no correction expressed as "how far the point went" can undo a term that
+    // has to be cancelled rather than added.
+    //
+    // So this one is reprojected properly: back to object space, forward
+    // through the pose the tool had LAST frame. That pose was built on last
+    // frame's camera, so the eye's own motion is inside it and cancels against
+    // prevCam when the guide is written; what does not cancel is the bob, the
+    // swing and the draw, which are the tool's own and are exactly the motion
+    // the old zero left out. See V6Params::heldPrev0.
+    if (inst.kind == KIND_HELD && gParams.heldPrevValid != 0)
+    {
+        const float3 op = mul(q.CommittedWorldToObject3x4(), float4(h.p, 1.0f));
+        const float3 was = float3(dot(gParams.heldPrev0, float4(op, 1.0f)),
+                                  dot(gParams.heldPrev1, float4(op, 1.0f)),
+                                  dot(gParams.heldPrev2, float4(op, 1.0f)));
+        h.moved = h.p - was;
+    }
+
+    // -- ...AND HOW FAR THE WING UNDER IT ROSE ------------------------------
+    //
+    // prevOffset moved the whole instance. On a flyer mid-flap the surface
+    // moved further than that: the pose changed under a transform that did
+    // not, so a wing voxel is a voxel higher or lower than the one the last
+    // frame drew while the body is exactly where the body was. inst.flap
+    // carries that step -- see the note over it in Shared.slang -- and the
+    // only question left here is which part of the model this hit is on.
+    //
+    // WHICH IS ANSWERED IN OBJECT SPACE, and cheaply. The 3x3 is a rotation
+    // times the fade's scale, so its first COLUMN is the model's own x axis in
+    // the world, of length that scale: projecting the hit onto it and dividing
+    // by its square length is the object x, with the scale divided back out.
+    // No inverse and no branch on the fade.
+    //
+    // THE QUARTER VOXEL IS NOT A FUDGE FACTOR. A hit lands ON a face, and the
+    // +/-x faces of the body column sit exactly on the boundary between the
+    // body's bucket and the inner wing's -- so rounding the raw coordinate
+    // picks between two answers by the last bit of a subtraction. nObj is the
+    // face's own outward normal in object space, so stepping back along it
+    // puts the sample inside the voxel that was actually hit, which is the
+    // voxel whose motion is being asked about. Every other face has a zero
+    // x component here and is untouched.
+    if (inst.kind == KIND_FLYER && any(inst.flap.xy != 0.0f))
+    {
+        const float3 ax = float3(o2w[0][0], o2w[1][0], o2w[2][0]);
+        const float xObj = dot(h.p - float3(o2w[0][3], o2w[1][3], o2w[2][3]), ax) /
+                           max(dot(ax, ax), 1e-12f);
+        const float outAlong =
+            abs((xObj - inst.flap.z) * (1.0f / kVoxelM) - nObj.x * 0.25f);
+        // The tips are one bucket and everything past them joins it: this art
+        // is five voxels across, so there is nothing past them to join.
+        const float rise = (outAlong < 0.5f) ? 0.0f
+                           : (outAlong < 1.5f) ? inst.flap.x
+                                               : inst.flap.y;
+        // h.moved is "subtract this from where it is to get where it was", so
+        // a wing that ROSE this frame was lower: the rise adds.
+        h.moved.y += rise;
+    }
 
     if (inst.kind == KIND_WATER)
     {
@@ -1139,6 +1211,35 @@ void main(uint3 tid: SV_DispatchThreadID)
             const Hit hw = traceRadiance(o, d, MASK_WORLD);
             const Hit hh = traceRadiance(o, d, MASK_HELD);
             h = hh.hit ? hh : hw;
+
+            // -- AND THE BURIED TOOL DOES NOT GO BLACK --------------------
+            //
+            // The mask trick above wins the PIXEL for the tool; it does not
+            // move the tool. Lean on a trunk and the axe is genuinely inside
+            // it, so every ray cast from that surface -- the shadow ray to the
+            // sun, every bounce -- starts inside wood and hits the inside of
+            // wood. The answer comes back black, and it is not wrong: that is
+            // what a surface buried in a tree is lit like.
+            //
+            // It is still not what should be drawn. A viewmodel intersecting
+            // the world is an artefact of bolting an object to the camera, not
+            // a situation the wood is in, and a black axe reads as a bug
+            // because it is one.
+            //
+            // SO THE SHADING POINT COMES OUT, and only the point. The pixel is
+            // still the tool's, the normal is still the tool's, the depth and
+            // the motion vector are untouched -- what moves is where the
+            // lighting is gathered FROM, to just in front of whatever the tool
+            // is inside. That place is open air by construction, because the
+            // ray reached it. The tool is then lit as though it were resting
+            // against the trunk rather than inside it, which is exactly what it
+            // looks like it is doing.
+            //
+            // Gated on the world being NEARER than the tool, which is the only
+            // case this can fire in -- a tool standing in open shade is not
+            // behind anything and keeps the shadow it is honestly in.
+            if (hh.hit && hw.hit && hw.t < hh.t)
+                h.p = o + d * max(0.0f, hw.t - 0.01f);
         }
         else
         {
@@ -1818,25 +1919,23 @@ void main(uint3 tid: SV_DispatchThreadID)
         // Reconstruction a still animal on a moving one, and it believes it.
         const bool ok =
             projectToPixel(gParams.prevCam, worldP - primaryMoved, gParams.dim, prevPix);
-        // ZERO FOR THE HELD ITEM, and it is the one place in this shader where
-        // the reprojection above is not merely approximate but backwards. That
-        // formula rests on the world being static and only the camera moving,
-        // so a surface's screen motion is its fixed world point seen through
-        // two cameras. The tool is bolted TO the camera: its world point moves
-        // with the eye, and reprojecting it hands the denoiser the largest
-        // motion in the frame for the one object that did not move on screen at
-        // all. Ray Reconstruction believes it, and the axe smears across the
-        // wood every time you turn.
+        // ZERO ONLY WHEN THERE IS NOTHING BETTER, and for the held item that is
+        // no longer the usual case. This used to read `heldPrimary ? 0`, which
+        // was right about the problem and only half right as an answer: a
+        // camera-locked surface really does land on the same pixel when the
+        // eye moves, so zero beat reprojecting it as though it were a tree --
+        // but the tool also bobs on the stride, swings, and pulls through a
+        // bow's draw, and zero says none of that happened. A walking axe
+        // ghosted for exactly that reason.
         //
-        // Zero is not an approximation here -- a camera-locked surface really
-        // does land on the same pixel it landed on last frame. What it leaves
-        // out is the tool's own animation, the bob and the swing, which move it
-        // by a few pixels a frame; that is a real motion the vector does not
-        // describe, and it is the right trade, since being a few pixels wrong
-        // on a swing costs a little softness for two hundred milliseconds and
-        // being wholly wrong on every turn costs a smeared tool for ever.
-        gGuideMotion[pix] = heldPrimary ? float2(0.0f, 0.0f)
-                                        : (ok ? (prevPix - curPix) : float2(0.0f, 0.0f));
+        // primaryMoved now carries the tool's own pose change (see where it is
+        // set), so the general formula is correct for it too and there is
+        // nothing left to special-case here. The fallback survives for the
+        // frames that have no previous pose to measure against -- a tool just
+        // drawn, or one that was hidden -- which is where zero is still the
+        // honest answer.
+        const bool noHistory = heldPrimary && gParams.heldPrevValid == 0;
+        gGuideMotion[pix] = (noHistory || !ok) ? float2(0.0f, 0.0f) : (prevPix - curPix);
 
         gGuideAlbedo[pix] = float4(gAlbedo, 0.0f);
         gGuideSpecular[pix] = float4(gSpecular, 0.0f);

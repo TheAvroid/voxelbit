@@ -404,6 +404,25 @@ class Tracer {
     // tracer's own -- see the note in reconstruct().
     Vec2 lastJitter() const { return lastJitter_; }
 
+    // -----------------------------------------------------------------------
+    // WHERE THE TOOL IS THIS FRAME, so that next frame can be told where it
+    // was. See V6Params::heldPrev0 for what it is for.
+    //
+    // HELD HERE AND NOT IN THE APP, for the same reason prevCam_ is: what a
+    // motion vector measures against is the PREVIOUS FRAME, and this is the one
+    // object in the scene whose previous frame has to be stepped in lockstep
+    // with the camera's. They are stepped by the same line below, so they
+    // cannot come from two different frames -- which, at more than one sample a
+    // frame, is exactly the bug the note over that line describes.
+    // -----------------------------------------------------------------------
+    void setHeldXform(const float *m, float tx, float ty, float tz, bool show) {
+        for (int i = 0; i < 9; ++i) held_[i] = m ? m[i] : ((i % 4) == 0 ? 1.0f : 0.0f);
+        held_[9] = tx;
+        held_[10] = ty;
+        held_[11] = tz;
+        heldShown_ = show;
+    }
+
     const Falcor::ref<Texture> &display() const { return display_; }
 
     // Ray Reconstruction replaces the film, so nothing accumulates while it is
@@ -548,6 +567,13 @@ class Tracer {
         // makes every motion vector zero, which is exactly right -- there is no
         // history for them to point into yet.
         p.prevCam = havePrev_ ? prevCam_ : cam;
+        // ...and where the tool was, in the same breath and under the same
+        // condition: no previous frame, no previous pose, and the w of 0 sends
+        // the tracer back to the zero it used to write.
+        p.heldPrevValid = (havePrev_ && heldPrevShown_ && heldShown_) ? 1 : 0;
+        p.heldPrev0 = float4(heldPrev_[0], heldPrev_[1], heldPrev_[2], heldPrev_[9]);
+        p.heldPrev1 = float4(heldPrev_[3], heldPrev_[4], heldPrev_[5], heldPrev_[10]);
+        p.heldPrev2 = float4(heldPrev_[6], heldPrev_[7], heldPrev_[8], heldPrev_[11]);
         p.sky = world_->sky.gpu();
         // The atmosphere's two borrowed words, patched in per frame rather than
         // baked by the Perez fit. Neither is a function of the sun, so making
@@ -906,6 +932,8 @@ class Tracer {
         if (++sampleInFrame_ >= (cfg.samplesPerFrame > 0 ? cfg.samplesPerFrame : 1)) {
             sampleInFrame_ = 0;
             prevCam_ = cam;
+            for (int i = 0; i < 12; ++i) heldPrev_[i] = held_[i];
+            heldPrevShown_ = heldShown_;
             havePrev_ = true;
         }
     }
@@ -1377,6 +1405,11 @@ class Tracer {
     bool resetHistory_ = true;
     bool havePrev_ = false;
     V6Camera prevCam_{};
+    // The tool's object-to-world, this frame and last: nine of rotation and
+    // three of translation. Stepped with prevCam_ above.
+    float held_[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    float heldPrev_[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    bool heldShown_ = false, heldPrevShown_ = false;
     // How many samples of the current frame have gone in. See the note where
     // it is stepped: it is what keeps prevCam_ a per-FRAME quantity.
     int sampleInFrame_ = 0;

@@ -29,7 +29,7 @@ constexpr float kSunEl = 24.0f;
 constexpr int kWidth = 3820;
 constexpr int kHeight = 1990;
 constexpr int kTrees = 900;
-constexpr float kTimeOfDay = 0.3333f;  // 08:00
+constexpr float kTimeOfDay = 0.4167f;  // 10:00
 constexpr float kCycleSpeed = 1.00f;
 constexpr bool kAtmosphere = true;
 

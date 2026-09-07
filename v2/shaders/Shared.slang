@@ -248,8 +248,15 @@ struct V6Instance
     uint triOffset;
     // HOW FAR THIS INSTANCE MOVED SINCE THE LAST FRAME, in world metres: the
     // point it is at now, less this, is where it was. Zero for everything that
-    // stands still, which is everything but a flyer -- so the motion vector's
-    // static-world formula is untouched for the whole of the wood.
+    // stands still -- the wood, the water, the chunks -- so the motion vector's
+    // static-world formula is untouched for all of them.
+    //
+    // NOT WRITTEN BY WHATEVER MOVED THE OBJECT. World::place derives it from
+    // the transform it is handed and the one it handed last frame, for every
+    // instance that is placed rather than built once. That is deliberate and it
+    // is worth the note: while this WAS written by hand, two of the three
+    // things in this scene that move never wrote it, and both ghosted the whole
+    // length of their travel.
     //
     // AHEAD OF `kind` AND NOT AFTER IT. A float3 wants a 16-byte boundary in a
     // structured buffer on the Vulkan path; put here it starts one, and the
@@ -258,6 +265,39 @@ struct V6Instance
     // error -- it is the wrong numbers.
     float3 prevOffset;
     uint kind; // one of KIND_*
+
+    // -----------------------------------------------------------------------
+    // AND THE PART OF A FLYER THAT MOVES WITHOUT THE INSTANCE MOVING.
+    //
+    // prevOffset above is the whole story for anything rigid: the instance
+    // travelled, so every point on it travelled by the same vector. A
+    // butterfly is not rigid. Its flap is EIGHT AUTHORED GRIDS swapped under
+    // one transform -- see the note over KIND_FLYER -- and between two of them
+    // the body stands still while the wings step a voxel up or down. Reproject
+    // a wing by the body's vector and Ray Reconstruction is told the wing held
+    // still when it did not, which is exactly the lie that ghosts it: the
+    // butterfly comes out a smear the size of two poses, and it never
+    // sharpens, because it never gets two frames of the same wing.
+    //
+    // The step is a property of WHERE ON THE MODEL the surface is, and the art
+    // makes that a one-dimensional question: the wings are a roll about the
+    // body's own long axis, so how far a voxel rose is fixed by how far out
+    // along the wing it sits. Two numbers cover the model -- the inner wing and
+    // the tips -- and the body, which never moves, needs none.
+    //
+    //   x  how far the INNER wing rose since the last frame, world metres.
+    //   y  ...and the TIPS. Both already carry the fade's scale.
+    //   z  the model's own centre, in object metres: what the tracer measures
+    //      "how far out along the wing" from.
+    //
+    // Zero for everything that is not mid-flap, which includes every instance
+    // in the wood and a flyer whose pose did not change this frame. See
+    // Butterflies::publish for where the two numbers come from -- they are
+    // MEASURED off the eight grids at load, not written down here, so
+    // re-authoring the flap cannot leave this describing the old one.
+    // -----------------------------------------------------------------------
+    float3 flap;
+    float flapPad;
 };
 
 // ---------------------------------------------------------------------------
@@ -495,7 +535,43 @@ struct V6Params
     // TOOK giPad0, so the struct is the same 528 bytes and the assert below is
     // unchanged.
     int blueNoise;
-    int giPad1;
+    // 1 when heldPrev below describes a real previous frame. TOOK giPad1, so
+    // the rows either side of it are unchanged and the assert only moves by the
+    // three rows actually added.
+    int heldPrevValid;
+
+    // -----------------------------------------------------------------------
+    // WHERE THE TOOL WAS, as its own object-to-world of the PREVIOUS frame --
+    // three rows of a 3x4, because a float3x3 in a constant buffer is three
+    // rows anyway and the translation may as well ride in the w.
+    //
+    // THE ONE INSTANCE THE STATIC-WORLD FORMULA CANNOT DESCRIBE AT ALL. Every
+    // other surface in this scene is somewhere in the world and stays there
+    // while the eye moves around it, which is what makes "this frame's hit
+    // point through last frame's camera" the answer. The tool is bolted TO the
+    // eye: turn, and its world point swings with you, so that formula reports
+    // the largest motion in the frame for the one object that did not move on
+    // screen at all.
+    //
+    // Zero was the old answer and it is exactly right for that -- and exactly
+    // wrong for everything the tool does on its OWN. It bobs on the stride, it
+    // swings, and a bow pulls through five frames of draw; all of that is real
+    // screen motion, and telling Ray Reconstruction there was none is what
+    // smears a walking axe. The two cannot both be had from a translation,
+    // because one has to be CANCELLED and the other ADDED.
+    //
+    // So the tool is reprojected the way a rasteriser does it: take the hit
+    // back to object space, forward through the transform it had LAST frame --
+    // which was built on last frame's camera, so the eye's own motion is inside
+    // it -- and project that through prevCam. Camera motion cancels because it
+    // appears on both sides; the bob and the swing survive because they do not.
+    //
+    // Twelve numbers exactly: three rows of (three of rotation, one of
+    // translation). Whether they mean anything is heldPrevValid above -- a tool
+    // just drawn, or one that was hidden last frame, has no previous pose, and
+    // the tracer then writes the zero it always used to.
+    // -----------------------------------------------------------------------
+    float4 heldPrev0, heldPrev1, heldPrev2;
 };
 
 // ---------------------------------------------------------------------------
@@ -550,8 +626,8 @@ static_assert(sizeof(V2Held) == 80, "V2Held must fill whole 16-byte rows");
 static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
 static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");
-static_assert(sizeof(V6Instance) == 32, "V6Instance must fill whole 16-byte rows");
-static_assert(sizeof(V6Params) == 528, "V6Params must fill whole 16-byte rows");
+static_assert(sizeof(V6Instance) == 48, "V6Instance must fill whole 16-byte rows");
+static_assert(sizeof(V6Params) == 576, "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2
 #endif

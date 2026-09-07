@@ -65,9 +65,16 @@ inline constexpr float kDropRestSec = 30.0f;
 inline constexpr float kDropEaseSec = 1.0f;
 // It turns while it hovers. Slow enough to read as an object on display rather
 // than a pickup spinning in an arcade.
-inline constexpr float kDropSpin = 1.2f;   // radians a second
-inline constexpr float kDropBobM = 0.06f;  // and rides up and down this far
-inline constexpr float kDropBobHz = 0.7f;
+inline constexpr float kDropSpin = 1.2f;  // radians a second
+
+// HOW HIGH IT FLOATS, and this is the number that was missing. The JS engine's
+// dropAnchor holds a dropped item 9.0 VOXELS above the ground with a 1.3-voxel
+// bob under it, then eases to the item's own resting extent when the hover time
+// is up. Without it the toss simply stopped where the arc met the world -- and
+// since `pos` is the item's CENTRE, "met the world" put half an axe underground.
+inline constexpr float kDropHoverM = 0.9f;  // dropAnchor's 9.0
+inline constexpr float kDropBobM = 0.13f;   // ...and its 1.3
+inline constexpr float kDropBobHz = 0.32f;  // sin(t * 0.002 ms) = 0.32 Hz
 
 // AUTO_PICK_R 16, in metres. Walk this close with a free hand and it comes back
 // to you -- the same rule that engine has, and the reason a drop is not a way
@@ -88,10 +95,11 @@ class Drops {
         Vec3 pos{0, 0, 0};
         Vec3 vel{0, 0, 0};
         float spin = 0.0f;   // its turn about Y
+        float phase = 0.0f;  // ...and where its bob starts, so eight do not pulse as one
         float age = 0.0f;
         bool flying = true;
-        float rest = 0.0f;   // seconds since it landed
-        float restY = 0.0f;  // ...and where it landed
+        float rest = 0.0f;     // seconds since it landed
+        float groundY = 0.0f;  // the terrain under where it landed
     };
 
     // -----------------------------------------------------------------------
@@ -128,6 +136,7 @@ class Drops {
         d.vel = dir * kTossSpeed;
         d.vel.y += kTossUp;
         d.spin = atan2f(dir.x, dir.z);  // it leaves facing the way you were
+        d.phase = float(slot) * 0.79f;  // an arbitrary spread, not a random one
         d.flying = true;
     }
 
@@ -140,7 +149,8 @@ class Drops {
     // engine marches the whole arc at the throw because it can -- its world is
     // one resident array.
     // -----------------------------------------------------------------------
-    int update(float dt, const WalkWorld &w, const Vec3 &player, bool handFree) {
+    // `handFree` is gone deliberately -- see the pickup below.
+    int update(float dt, const WalkWorld &w, const Vec3 &player) {
         int got = -1;
         const float h = minf(dt, 0.25f);
         for (Item &d : items_) {
@@ -149,6 +159,7 @@ class Drops {
 
             if (d.flying) {
                 float left = h;
+                TerrainMemo tm;
                 while (left > 0.0f && d.flying) {
                     const float s = minf(left, 0.005f);
                     left -= s;
@@ -156,12 +167,36 @@ class Drops {
                     const Vec3 step(d.vel.x * s, (d.vel.y + nvy) * 0.5f * s, d.vel.z * s);
                     const Vec3 next = d.pos + step;
                     d.vel.y = nvy;
-                    // The same predicate the arrow lands on, and the player
-                    // walks into -- see insideWorld in render/player.h.
-                    if (insideWorld(w, next)) {
+
+                    // -- THE ARC ENDS AT THE HOVER LINE, NOT AT THE GROUND ---
+                    //
+                    // This is the JS engine's own terminator, verbatim in
+                    // shape: `T > 0.12 && py <= hmap[...] + 9.0`. It stops the
+                    // flight where the hover BEGINS, which is what makes the
+                    // landing invisible -- the last point of the arc and the
+                    // first point of the hover are the same point.
+                    //
+                    // The first cut of this stopped when the item's CENTRE
+                    // entered the world instead, and both halves of that were
+                    // wrong to watch: a 90 cm axe was half underground before
+                    // anything registered as a landing, and then it snapped up
+                    // to the hover. Clipped, then teleported, which is exactly
+                    // what it looked like.
+                    //
+                    // THE 0.12 s IS THAT ENGINE'S TOO, and it earns its place:
+                    // the item leaves the hand at chest height, and on ground
+                    // that rises in front of you that is already below the
+                    // hover line -- so without it a throw uphill lands on the
+                    // frame it was thrown.
+                    const float g =
+                        w.terrain ? w.terrain->heightM(next.x, next.z, tm) : next.y;
+                    if (d.age > 0.12f && next.y <= g + kDropHoverM) {
+                        d.pos.x = next.x;
+                        d.pos.z = next.z;
+                        d.groundY = g;
+                        d.pos.y = g + kDropHoverM;  // where the hover starts
                         d.flying = false;
                         d.rest = 0.0f;
-                        d.restY = d.pos.y;
                         break;
                     }
                     d.pos = next;
@@ -172,16 +207,44 @@ class Drops {
                 }
             } else {
                 d.rest += h;
-                // HOVERS, THEN SETTLES. That engine's DROP_REST_MS: thirty
-                // seconds of turning slowly a hand's breadth off the ground,
-                // then an ease down to a dead stop so a wood left alone does
-                // not end up full of things bobbing for ever.
+                // HOVERS, THEN SETTLES -- dropAnchor, line for line. Thirty
+                // seconds floating and turning, then an ease down to a dead
+                // stop, so a wood left alone does not end up full of things
+                // bobbing for ever.
+                //
+                // THE POSITION IS COMPUTED, NOT INTEGRATED, once it has landed.
+                // That is what keeps it off the ground rather than in it, and
+                // it also means the pickup test below measures against where
+                // the item actually is.
+                const float e = 1.0f - settle(d);  // 0 while hovering, 1 once settled
+                const float half = 0.5f * float(d.sy) * VOXEL_M;
+                // THE BOB RAMPS IN over its first second. It is a sine with a
+                // per-item phase, so at the instant of landing it is somewhere
+                // between plus and minus 13 cm -- and applied cold that is a
+                // step in the one place this code exists to keep smooth. The
+                // ramp costs nothing and the phases stay spread, so eight
+                // dropped tools still do not pulse as one.
+                const float bob = sinf(d.rest * kDropBobHz * TWO_PI + d.phase) * kDropBobM *
+                                  minf(1.0f, d.rest);
+                d.pos.y = d.groundY + kDropHoverM + (half - kDropHoverM) * e + bob * (1.0f - e);
                 d.spin += kDropSpin * h * settle(d);
             }
             if (!d.live) continue;
 
-            // -- and walking over it takes it back ---------------------------
-            if (handFree && d.age > kPickupArmSec && got < 0) {
+            // -- AND WALKING OVER IT TAKES IT BACK, HANDS FULL OR NOT --------
+            //
+            // This asked for an empty hand at first, and that is not what the
+            // JS engine does: its autoPickup asks whether there is anywhere for
+            // the drop TO GO -- a free slot, or a stack with room -- not whether
+            // you happen to be holding something. A tool's slot in this kit
+            // always exists, so there is always somewhere for it to go, and
+            // demanding an empty hand made a dropped pick unrecoverable while
+            // an axe was in the hand.
+            //
+            // HeldItem::give only CHANGES what is in the hand when the hand is
+            // empty, so walking over a pick while swinging an axe puts the pick
+            // back in the kit without swapping the axe out.
+            if (d.age > kPickupArmSec && got < 0) {
                 const Vec3 o = d.pos - player;
                 if (lengthSq(o) < kPickupM * kPickupM) {
                     got = d.tool;
@@ -206,20 +269,26 @@ class Drops {
             const float c = cosf(d.spin), s = sinf(d.spin);
             const float v = VOXEL_M;
             const float m[9] = {c * v, 0.0f, s * v, 0.0f, v, 0.0f, -s * v, 0.0f, c * v};
-            // A hover while it is resting, easing away as it settles. The mesh
-            // runs from its own corner, so the translation is the centre less
-            // the model's half-box carried through the turn.
-            const float lift =
-                d.flying ? 0.0f
-                         : (kDropBobM * (0.5f + 0.5f * sinf(d.rest * kDropBobHz * TWO_PI)) *
-                            settle(d));
-            const float cx = 0.5f * float(d.sx) * v, cy = 0.5f * float(d.sy) * v,
-                        cz = 0.5f * float(d.sz) * v;
+            // The mesh runs from its own corner, so the translation is the
+            // centre less the model's half-box carried through the turn. The
+            // hover is already in `pos` -- see the settle in update().
+            // THE CENTRE IS IN MODEL VOXELS, NOT METRES, and that is the whole
+            // of the wide circular sweep this used to make. `m` already
+            // carries VOXEL_M as its scale, so multiplying the half-box by it
+            // here applied the scale TWICE: the offset came out ten times too
+            // long and the item orbited a point a metre away instead of
+            // turning on the spot. The matrix takes model units in and gives
+            // metres out -- that is what it is for.
+            const float cx = 0.5f * float(d.sx), cy = 0.5f * float(d.sy),
+                        cz = 0.5f * float(d.sz);
             const float ox = m[0] * cx + m[1] * cy + m[2] * cz;
             const float oy = m[3] * cx + m[4] * cy + m[5] * cz;
             const float oz = m[6] * cx + m[7] * cy + m[8] * cz;
-            world.setDropInstance(i, d.model, m, d.pos.x - ox, d.pos.y + lift - oy, d.pos.z - oz,
-                                  true);
+            // How far it travelled to get here is not passed and never was
+            // computed here: World::place differences the transform. See the
+            // note over it -- a tossed tool arcs, and then it hovers and turns,
+            // and this used to hand the tracer nothing at all.
+            world.setDropInstance(i, d.model, m, d.pos.x - ox, d.pos.y - oy, d.pos.z - oz, true);
         }
         world.flushDropInstances();
     }

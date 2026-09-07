@@ -93,7 +93,7 @@ void usage() {
         "  --eye F                   eye height, metres -- 20 voxels               (2.00)\n"
         "  --seed N                  world seed            (default 20260904)\n"
         "  --view N                  chunks of 25.6 m kept resident, radius          (12)\n"
-        "  --density F               how thick the wood is, 0..1                 (0.2325)\n"
+        "  --density F               how thick the wood is, 0..1                 (0.3210)\n"
         "  --butterflies N           how many are in the air at once, 0 = none       (24)\n"
         "  --sfx F                   tool and weapon volume; 0 silences them        (1.0)\n"
         "  --arrow-pos X Y Z         nudge the nocked arrow, in whole 10 cm voxels:\n"
@@ -150,6 +150,8 @@ void usage() {
         "                            against the composited trace -- then exit\n"
         "  --no-dlss                 turn off DLSS Ray Reconstruction and accumulate\n"
         "                            instead -- unbiased, and far noisier while walking\n"
+        "  --rr-preset N             which Ray Reconstruction model: 5 = preset E\n"
+        "                            (the default), 4 = D, 0 = the driver's own pick\n"
         "  --dlss MODE               ultra-performance | performance | balanced |\n"
         "                            quality | dlaa            (default quality)\n"
         "  --shot PATH               run the viewer, write a png, quit -- the only way\n"
@@ -375,6 +377,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--demodulate") o->demodulate = true;
         else if (a == "--check-demod") { o->checkDemod = true; o->outGiven = true; }
         else if (a == "--no-dlss") o->dlss = false;
+        else if (a == "--rr-preset") argInt(argc, argv, i, &o->rrPreset);
         else if (a == "--dlss") {
             if (i + 1 >= argc) { std::fprintf(stderr, "v2: --dlss needs a mode\n"); return false; }
             const std::string m = argv[++i];

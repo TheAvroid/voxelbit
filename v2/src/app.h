@@ -175,6 +175,10 @@ struct Options {
     // buys are worth more than the resolution they cost. --dlss <mode> still
     // names all five, for an offline render or a benchmark.
     DlssQuality dlssQuality = DlssQuality::Balanced;
+    // WHICH Ray Reconstruction MODEL, as the NGX preset hint. Pinned rather
+    // than left to the driver -- see the note in Dlss::resize for the
+    // measurement. 0 hands the choice back to whatever the driver ships.
+    int rrPreset = kDlssPresetDefault;
 
     // proven thing in the engine, it only exists on a device with cooperative
     // vectors, and a renderer whose default configuration depends on a network
@@ -373,7 +377,7 @@ struct Options {
     bool constantGrain = true;
 
     int view = 12;
-    float treeDensity = 0.2325f;
+    float treeDensity = 0.3210f;
     float grass = 0.105f, flowers = 0.45f, rocks = 0.010f;
     int grassMin = 3, grassMax = 6;
     std::string pines = "C:/voxelbit/game/assets/foilage/pine9";
@@ -644,6 +648,14 @@ inline ImVec4 rgb(int r, int g, int b, float a = 1.0f) {
     return ImVec4(float(r) / 255.0f, float(g) / 255.0f, float(b) / 255.0f, a);
 }
 inline ImVec4 kTitle() { return rgb(255, 214, 120); }  // amber
+// #ffd76a, AND IT IS ONE GOLD RATHER THAN TWO. Lifted from the JS engine's
+// style-console.css, where the same value dresses the copyright watermark, the
+// menu button hover and the button labels -- and its note says why it is not a
+// fresh number: "two golds a few hex apart read as a mistake rather than a
+// choice". The frame-rate readout and the watermark share it here for exactly
+// that reason. The alpha is the caller's; the watermark asks for 0.64, which
+// is that engine's opacity for it, and the readout takes it whole.
+inline ImVec4 kGold(float a = 1.0f) { return rgb(255, 215, 106, a); }
 inline ImVec4 kText() { return rgb(226, 232, 240); }
 inline ImVec4 kDim() { return rgb(150, 158, 170); }
 inline ImVec4 kHot() { return rgb(126, 220, 255); }  // cyan: the live value
@@ -771,6 +783,12 @@ class ForestApp : public SampleApp {
                         sl_.hasSuperResolution() ? "yes" : "no",
                         sl_.hasFrameGeneration() ? "yes" : "no",
                         sl_.hasReflex() ? "yes" : "no");
+            // THE PER-FEATURE ANSWERS, which the summary above cannot carry.
+            // Streamline distinguishes "this GPU cannot" from "this driver
+            // cannot" from "this SDK ships no plugin for it", and only the
+            // numeric refusal tells them apart -- which matters the moment you
+            // ask whether something like frame warp is reachable at all.
+            std::fputs(sl_.featureReport().c_str(), stdout);
         } else if (!opt_.outGiven) {
             std::printf("  stream   unavailable: %s\n", sl_.status().c_str());
         }
@@ -1165,8 +1183,12 @@ class ForestApp : public SampleApp {
             // distance projects to the same place, so the framing that was
             // tuned by eye survives the change of units exactly; what changed
             // is that the axe is now a 90 cm axe rather than a 10 cm one.
-            held_.add(world_, "stone axe", opt_.axe, HeldPose{}, Takes::Wood);
-            held_.add(world_, "stone pick", opt_.pick, HeldPose{}, Takes::Stone);
+            held_.add(world_, "stone axe", opt_.axe,
+                      HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f},
+                      Takes::Wood);
+            held_.add(world_, "stone pick", opt_.pick,
+                      HeldPose{8.512f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.003f},
+                      Takes::Stone);
             // THE BOW'S OWN BAKE, from the JS engine's PICK_DEFS for
             // 2026-08-04. It is not the tool family's pose: a bow is held
             // upright across the hand, further out and turned a quarter turn
@@ -1180,7 +1202,7 @@ class ForestApp : public SampleApp {
             // voxel sizes. They are on one now, and each keeps the framing it
             // was tuned to.
             held_.addBow(world_, "bow", opt_.bow,
-                         HeldPose{10.28f, -1.32f, 6.99f, 0.01f, 1.57f, -0.06f, 1.0f});
+                         HeldPose{12.000f, -1.320f, 6.990f, 0.010f, 1.570f, -0.060f, 1.234f});
             held_.select(opt_.tool);
             arrows_.init(world_, opt_.arrow);
             arrows_.log = opt_.swingLog;
@@ -1372,10 +1394,16 @@ class ForestApp : public SampleApp {
         // it up, which is what stops Q being a way to lose your axe -- the JS
         // engine's autoPickup, at its own radius.
         {
-            const int back = drops_.update(dt, walkWorld(), player_.pos, !held_.carrying());
+            const int back = drops_.update(dt, walkWorld(), player_.pos);
             if (back >= 0) {
+                // NAMED BEFORE THE GIVE, and it has to be: give() only changes
+                // what is in the HAND when the hand is empty, so asking name()
+                // afterwards reports whatever you are still holding. Walking
+                // over a dropped axe while carrying a pick said "picked up
+                // stone pick", which is the one thing that did not happen.
+                const char *what = held_.tool(back).name;
                 held_.give(back);
-                std::printf("v2: picked up %s\n", held_.name());
+                std::printf("v2: picked up %s\n", what);
                 std::fflush(stdout);
             }
         }
@@ -1451,6 +1479,9 @@ class ForestApp : public SampleApp {
                 useDlss = false;
             }
         }
+        // Before resize(), because the hint is read when the FEATURE is
+        // created and a feature already built ignores it.
+        dlss_.preset = opt_.rrPreset;
         tracer_.setDenoising(useDlss);
         tracer_.resize(rw, rh, ow, oh);
 
@@ -1550,6 +1581,12 @@ class ForestApp : public SampleApp {
             // bob is not something an eye can see.
             lastHeld_ = hx;
             world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+            // ...and the tracer is told the same pose, because it is the one
+            // thing in this scene whose motion vector cannot be worked out from
+            // where it is in the world -- see V6Params::heldPrev0. It keeps its
+            // own previous copy and steps it with prevCam_, which is the only
+            // way the two can be guaranteed to describe the same frame.
+            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show);
             arrows_.publish(world_);
             drops_.publish(world_);
             flock_.publish(world_);
@@ -1981,16 +2018,34 @@ class ForestApp : public SampleApp {
         // window that is not meant to be dragged.
         const Gui::WindowFlags kBare = Gui::WindowFlags::AutoResize | Gui::WindowFlags::NoResize;
 
+        // ---- the frame rate ------------------------------------------------
+        //
+        // NO BOX. The veil is zero, so the window paints nothing and what is on
+        // the screen is the number and the number only -- which is what a
+        // readout meant to be GLANCED at should be. The panel was buying one
+        // thing, contrast, and the shadow below buys it back for two pixels
+        // instead of a rectangle: gold over snow or a bright sky is gold you
+        // cannot read.
+        //
+        // TOP LEFT, which is where it began and where it is again (user
+        // 2026-09-07). The corner it sits in is the only thing that has moved:
+        // it is still the bare number, still gold, still with no panel behind
+        // it. Left-aligned it needs no measuring to place -- the corner is the
+        // corner -- but the width is still measured, because the recorder's
+        // panel has to be told where the readout ends so the two do not stack
+        // on top of each other. See `below`.
+        float below = 12.0f;
         {
-            styleV2 style(pGui, px3_, 0.60f, fbH);  // a lighter veil than the menu's
-            Gui::Window hud(pGui, "v2hud", {0, 0}, {12, 12}, kBare);
+            const float inset = 12.0f;  // the HUD's, so the two corners agree
+            // Room for the shadow, and no more: a window's draw list is clipped
+            // to its own rectangle, and at zero padding a two-pixel offset
+            // loses its bottom-right corner.
+            const float pad = 3.0f;
+            styleV2 style(pGui, px3_, 0.0f, fbH);  // veil 0: no panel, no box
+            ImGui::GetStyle().WindowPadding = ImVec2(pad, pad);
+            Gui::Window fpsWin(pGui, "v2fps", {0, 0}, {0, 0}, kBare);
             px3Font face(px3_);
             ImGui::SetWindowFontScale(style.scale);
-            // Set every frame rather than on first use: ImGui remembers window
-            // positions in an ini file between runs, so "where I asked for it"
-            // and "where it appears" are otherwise two different things.
-            ImGui::SetWindowPos(ImVec2(12.0f, 12.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(235, 240, 248));
             // WHAT IS ON THE SCREEN, which is not what this counter naturally
             // measures. fpsFrames_ increments once per onFrameRender, so it
             // counts RENDERED frames; DLSS-G inserts its frames at the
@@ -2005,14 +2060,54 @@ class ForestApp : public SampleApp {
             // genFps_ is zero and this is exactly what it always was. The
             // rendered figure is still in the settings menu, where the two are
             // worth telling apart.
-            ImGui::TextUnformatted(fmt("%.0f fps", fps_ + genFps_).c_str());
+            //
+            // AND IT IS ONLY THE NUMBER. The unit was worth its width while the
+            // readout sat in a panel with other lines to be told apart from;
+            // alone in a corner in gold there is nothing else it could be
+            // counting.
+            const std::string f = fmt("%.0f", fps_ + genFps_);
+            const ImVec2 sz = ImGui::CalcTextSize(f.c_str());
+            // Set every frame rather than on first use: ImGui remembers window
+            // positions in an ini file between runs, so "where I asked for it"
+            // and "where it appears" are otherwise two different things.
+            ImGui::SetWindowPos(ImVec2(inset - pad, inset - pad));
+            // WHERE THE NEXT THING IN THIS CORNER MAY START. The recorder's
+            // panel shares the corner now, and a REC badge drawn over the frame
+            // rate is two readouts and neither legible.
+            below = inset + sz.y + 8.0f;
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + 2.0f, at.y + 2.0f),
+                                                IM_COL32(0, 0, 0, 150), f.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::kGold());
+            ImGui::TextUnformatted(f.c_str());
             ImGui::PopStyleColor();
+        }
 
-            // THE BADGE IS DRAWN INTO THE WINDOW, NOT INTO THE FRAME, so it can
-            // never end up in the recording -- see the note at the capture site
-            // in onFrameRender. It pulses because a recorder that is running is
-            // the one piece of state where "I did not notice it was still on"
-            // is expensive.
+        // ---- what the recorder has to say, top left ------------------------
+        //
+        // IT IS DRAWN INTO THE WINDOW, NOT INTO THE FRAME, so it can never end
+        // up in the recording -- see the note at the capture site in
+        // onFrameRender. The badge pulses because a recorder that is running is
+        // the one piece of state where "I did not notice it was still on" is
+        // expensive.
+        //
+        // THE PANEL OPENS ONLY WHEN THERE IS A LINE FOR IT, which the fps
+        // readout used to guarantee and no longer does. An empty AutoResize
+        // window is not nothing on the screen: it is a small rounded rectangle
+        // in the corner with nothing inside it.
+        //
+        // So the saved notice is retired HERE, before the test, rather than
+        // inside the window where it used to be -- expiring mid-draw would
+        // leave exactly that empty rectangle for a frame.
+        if (savedTake_.valid() && nowSeconds() - savedAt_ >= kSavedNotice)
+            savedTake_ = vb::Take{};
+        if (recorder_.recording() || recorder_.busy() || savedTake_.valid()) {
+            styleV2 style(pGui, px3_, 0.60f, fbH);  // a lighter veil than the menu's
+            Gui::Window hud(pGui, "v2hud", {0, 0}, {12, 12}, kBare);
+            px3Font face(px3_);
+            ImGui::SetWindowFontScale(style.scale);
+            // UNDER THE FRAME RATE, not on top of it -- see `below`.
+            ImGui::SetWindowPos(ImVec2(12.0f, below));
             if (recorder_.recording()) {
                 const float pulse = 0.55f + 0.45f * std::sin(float(ImGui::GetTime()) * 4.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, pulse));
@@ -2035,7 +2130,7 @@ class ForestApp : public SampleApp {
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(255, 214, 120));
                 ImGui::TextUnformatted("encoding...");
                 ImGui::PopStyleColor();
-            } else if (savedTake_.valid()) {
+            } else {
                 // WHERE THE PERSON WHO PRESSED R IS ACTUALLY LOOKING. The take
                 // is written and the recorder names it on stdout, but stdout is
                 // behind the window -- and with nothing opening any more, a
@@ -2044,23 +2139,182 @@ class ForestApp : public SampleApp {
                 // It FADES rather than waiting to be dismissed. An
                 // acknowledgement is not a dialog: the thing wanted after a
                 // take is the wood back, not another key to press.
-                const double age = nowSeconds() - savedAt_;
-                if (age >= kSavedNotice) {
-                    savedTake_ = vb::Take{};
-                } else {
-                    const double f = (kSavedNotice - age) / 1.2;
-                    const float a = float(f > 1.0 ? 1.0 : f);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(150, 220, 160, a));
-                    ImGui::TextUnformatted(fmt("saved  %s", savedTake_.path.c_str()).c_str());
-                    ImGui::PopStyleColor();
-                    ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(150, 158, 170, a));
-                    ImGui::TextUnformatted(fmt("  %lld frames  %s",
-                                               (long long)savedTake_.frames,
-                                               clockLabel(savedTake_.seconds()).c_str())
-                                               .c_str());
-                    ImGui::PopStyleColor();
-                }
+                const double f = (kSavedNotice - (nowSeconds() - savedAt_)) / 1.2;
+                const float a = float(f > 1.0 ? 1.0 : f);
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(150, 220, 160, a));
+                ImGui::TextUnformatted(fmt("saved  %s", savedTake_.path.c_str()).c_str());
+                ImGui::PopStyleColor();
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(150, 158, 170, a));
+                ImGui::TextUnformatted(fmt("  %lld frames  %s",
+                                           (long long)savedTake_.frames,
+                                           clockLabel(savedTake_.seconds()).c_str())
+                                           .c_str());
+                ImGui::PopStyleColor();
             }
+        }
+
+        // ---- the copyright, bottom centre, always --------------------------
+        //
+        // The JS engine's #copyr watermark, brought over as it is written
+        // there: the same wording, the same gold, the same 0.64 opacity, the
+        // same ten pixels off the bottom edge, centred. Its own note says why
+        // it sits outside every overlay over there -- "it has to survive on the
+        // loading screen, in play and on the esc menu alike" -- and the same
+        // holds here, which is why it is drawn unconditionally rather than
+        // beside the readout that comes and goes.
+        //
+        // THE (c) IS A LETTER AND A RING, and that is not a flourish: the 3x3
+        // pixel face has no copyright glyph, so that engine builds the mark out
+        // of a px3 "c" with a circle drawn round it. Anything else -- a Unicode
+        // (c) from a fallback face, or the two characters -- is a different
+        // typeface in the middle of a word. Same trick here, with the circle on
+        // the window's own draw list.
+        //
+        // NOT IN THE RECORDING, like every other thing drawn here: the capture
+        // happens in onFrameRender, upstream of the whole interface. That
+        // matches the engine it comes from, whose watermark is a DOM element
+        // over a canvas the recorder never sees.
+        {
+            // Padding, and it is NOT what keeps the ring off the window's
+            // clip edge -- see the PushClipRectFullScreen below. Raising this
+            // was the first fix tried and it cannot work, for a reason worth
+            // writing down: ImGui insets InnerClipRect by HALF the window
+            // padding but places the CURSOR at the full padding, so every
+            // pixel added here moves the text one pixel further from the left
+            // edge and the clip only half a pixel to meet it. The margin grows
+            // at half a pixel per pixel spent, and the ring -- which starts to
+            // the LEFT of the text origin -- keeps losing the race.
+            const float pad = 11.0f;
+            styleV2 style(pGui, px3_, 0.0f, fbH);  // no panel behind it either
+            ImGui::GetStyle().WindowPadding = ImVec2(pad, pad);
+            Gui::Window cop(pGui, "v2copy", {0, 0}, {0, 0}, kBare);
+            px3Font face(px3_);
+            ImGui::SetWindowFontScale(style.scale);
+
+            // A SPACE AFTER THE c, so the ring has somewhere to be. That engine
+            // gets the room from a flex box; here the gap is the space glyph.
+            static const char *kMark = "c";
+            static const char *kRest = " 2026 voxelbit - all rights reserved";
+            const ImVec2 ms = ImGui::CalcTextSize(kMark);
+            const ImVec2 rs = ImGui::CalcTextSize(kRest);
+            const float wide = ms.x + rs.x;
+            ImGui::SetWindowPos(ImVec2((fbW - wide) * 0.5f - pad, fbH - rs.y - 10.0f - pad));
+
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            // -- OUT FROM UNDER THE WINDOW'S CLIP RECTANGLE -----------------
+            //
+            // Everything here is drawn by hand at absolute positions, and the
+            // ring reaches further left than the cursor this window sized
+            // itself around -- so an auto-resized window's rectangle is simply
+            // the wrong shape to clip it by, and it was shaving the left of
+            // the circle. The stroke read one pixel there against two on the
+            // right, which is what a half-clipped stroke looks like and why an
+            // angular PRESENCE test scored it a clean hundred per cent: enough
+            // of it survived to be found, and the wrong half was measured.
+            //
+            // The overlay is screen furniture at a fixed corner, so it is
+            // pinned to the screen and clipped by nothing else. Popped below.
+            dl->PushClipRectFullScreen();
+            // The shadow first, the whole line at once -- #copyr carries one
+            // too, and without it gold on a bright sky is unreadable.
+            dl->AddText(ImVec2(at.x + 1.0f, at.y + 2.0f), IM_COL32(0, 0, 0, 150), kMark);
+            dl->AddText(ImVec2(at.x + ms.x + 1.0f, at.y + 2.0f), IM_COL32(0, 0, 0, 150), kRest);
+
+            const ImU32 gold = ImGui::GetColorU32(ui::kGold(0.64f));
+            dl->AddText(at, gold, kMark);
+            dl->AddText(ImVec2(at.x + ms.x, at.y), gold, kRest);
+            // -- THE RING, ROUND THE INK AND NOT ROUND THE LINE BOX --------
+            //
+            // CalcTextSize answers with the ADVANCE and the LINE HEIGHT, which
+            // is a box the letter merely sits somewhere inside: for a lowercase
+            // c that box is most of a line tall and the ink is a short bar
+            // across the middle of it. Centring on that box put the circle high
+            // and sized it to the leading, which is why it read as a letter
+            // next to a circle rather than as a copyright mark.
+            //
+            // The glyph's own extent is the right thing to ask for, and ImGui
+            // will give it: FindGlyph returns the ink box in the font's base
+            // units, so scaling by the ratio of the current size to that base
+            // puts it in pixels. The ring is then concentric with the letter by
+            // construction, at any font size and after any SetWindowFontScale.
+            //
+            // HALF #copyr's 0.14 em OF THICKNESS, AND A PIXEL MORE RADIUS.
+            //
+            // The border width that is right in CSS is not right here, and the
+            // reason is the size: at this text size 0.14 em is a stroke almost
+            // as wide as the hole it encloses, so the ring filled in and the
+            // gold c vanished ON TOP of gold. What was left to read was the c's
+            // SHADOW -- a dark notch in a solid disc, sitting down and right of
+            // centre because a shadow is offset by definition. The letter was
+            // centred the whole time; there was nothing to see it against.
+            //
+            // So the stroke is halved and the circle grows by a pixel, which
+            // puts daylight back between the ink and the ring. That is what the
+            // CSS is really buying at ITS size, and this is the same look
+            // arrived at through this font's numbers rather than through that
+            // one's.
+            {
+                const ImFont *fnt = ImGui::GetFont();
+                const ImFontGlyph *gl = fnt ? fnt->FindGlyph((ImWchar)'c') : nullptr;
+                const float em = ImGui::GetFontSize();
+                float cx = at.x + ms.x * 0.5f, cy = at.y + ms.y * 0.5f, rad = ms.x * 0.62f;
+                if (gl && fnt->FontSize > 0.0f) {
+                    const float k = em / fnt->FontSize;
+                    const float x0 = at.x + gl->X0 * k, x1 = at.x + gl->X1 * k;
+                    const float y0 = at.y + gl->Y0 * k, y1 = at.y + gl->Y1 * k;
+                    cx = (x0 + x1) * 0.5f;
+                    // THE GLYPH BOX IS THE CENTRE. There WAS a pixel of
+                    // correction here, on the strength of a measurement that
+                    // said the c sat low in the ring -- and the measurement was
+                    // of the wrong thing. It was taken while the stroke was
+                    // 0.14 em, thick enough that the gold c disappeared into
+                    // gold and the only mark left to find was the c's SHADOW,
+                    // which is offset +1,+2 because that is what a shadow is.
+                    // So a shadow was measured and the ring was moved down to
+                    // meet it.
+                    //
+                    // With the stroke halved the letter is visible and can be
+                    // measured directly: ink rows 1963-1974 about a ring
+                    // spanning 1959-1980, which is the box centre exactly. The
+                    // correction is removed rather than re-tuned -- the metrics
+                    // were right the whole time.
+                    cy = (y0 + y1) * 0.5f;
+                    // TWO PIXELS MORE AIR (user 2026-09-07), on top of the one
+                    // the thinner stroke bought back. em * 0.13 is the gap
+                    // #copyr gets from its box-sizing; the constant beside it
+                    // is this face's, which is small enough that a proportional
+                    // term alone cannot buy a whole pixel.
+                    rad = maxf(x1 - x0, y1 - y0) * 0.5f + em * 0.13f + 3.0f;
+                }
+                const float ring = maxf(1.0f, em * 0.07f);
+                // -- THE DARK IS AN OUTLINE, NOT A DROP SHADOW ---------------
+                //
+                // It was a drop shadow at the text's own +1,+2, and that ate
+                // the left of the circle. A GLYPH is a solid block, so an
+                // offset shadow only ever peeks out from behind it; a thin RING
+                // is a one-pixel stroke, and an offset of one pixel lands the
+                // dark arc squarely underneath it. The anti-aliased gold then
+                // blends with black and the stroke muddies to nothing.
+                //
+                // Measured on a 16x crop before and after: coverage round the
+                // left of the ring was 47-50% against 75-96% everywhere else,
+                // and only the left -- because the y offset of two clears the
+                // stroke while the x offset of one is about the width of it.
+                //
+                // So the dark is drawn CONCENTRIC and two pixels wider instead.
+                // The gold covers the middle of it and dark shows on both
+                // edges, which is what an outline is: the same contrast against
+                // bright ground, and no side of the circle can be eaten because
+                // nothing is offset into it.
+                dl->AddCircle(ImVec2(cx, cy), rad, IM_COL32(0, 0, 0, 150), 0, ring + 2.0f);
+                dl->AddCircle(ImVec2(cx, cy), rad, gold, 0, ring);
+            }
+            dl->PopClipRect();
+            // The window has to be told how much it is holding: everything
+            // above went straight to the draw list, which ImGui does not
+            // measure. Without this the box is empty and collapses.
+            ImGui::Dummy(ImVec2(wide, rs.y));
         }
 
         // ---- the console --------------------------------------------------
@@ -2507,9 +2761,16 @@ class ForestApp : public SampleApp {
                 if (held_.count() > 1)
                     w.text(fmt("  %d of %d -- the wheel changes tools", held_.selected() + 1,
                                held_.count()));
-                w.slider("  right", held_.pose().x, -2.0f, 2.0f, false, "%.3f");
-                w.slider("  up", held_.pose().y, -2.0f, 2.0f, false, "%.3f");
-                w.slider("  forward", held_.pose().z, 0.1f, 3.0f, false, "%.3f");
+                // THE RANGES ARE IN WORLD VOXELS, like the pose itself. They
+                // were the old millimetre-scale pose's -- plus or minus two,
+                // when the axe now opens at 7.27 -- so "right" was pinned at
+                // its own maximum from the first frame and could only ever
+                // move the tool left. Thirty voxels is three metres, which is
+                // further than a hand reaches in any direction; forty forward
+                // is four, well past arm's length.
+                w.slider("  right", held_.pose().x, -30.0f, 30.0f, false, "%.3f");
+                w.slider("  up", held_.pose().y, -30.0f, 30.0f, false, "%.3f");
+                w.slider("  forward", held_.pose().z, 1.0f, 40.0f, false, "%.3f");
                 w.slider("  yaw", held_.pose().yaw, -PI, PI, false, "%.3f");
                 w.slider("  pitch", held_.pose().pitch, -PI, PI, false, "%.3f");
                 w.slider("  roll", held_.pose().roll, -PI, PI, false, "%.3f");
@@ -4354,7 +4615,79 @@ class ForestApp : public SampleApp {
         float bestX = opt_.camX, bestZ = opt_.camZ;
         bool found = false;
 
-        for (uint32_t i = 0; i < 512 && !found; ++i) {
+        // -- HOW OPEN IS IT, AND IS THE OPENING FACING THE SUN --------------
+        //
+        // The stand-density field is what plants the trees -- the gate in
+        // scene/chunks.h keeps 5% of the base density at 0.30 and 97% at 0.62 --
+        // so asking it is asking how many trunks are here, without a chunk
+        // having to exist.
+        //
+        // A DISC, NOT A POINT. One cell of low density is a hole between two
+        // trees, not a glade; a ring at twelve metres is what tells the two
+        // apart.
+        //
+        // AND ALONG THE SUN'S OWN LINE, which is the half that actually
+        // delivers sunlight. A clearing is not the same thing as a sunlit
+        // clearing: at the default elevation of 24 degrees a 22 m pine throws
+        // about fifty metres of shadow, so a twenty-metre glade with a wall of
+        // trees on its sunward side is in shade for the whole morning. The
+        // sunward samples run out to sixty metres and carry half the score.
+        //
+        // The azimuth is the one the options carry rather than the clock's,
+        // because the clock is not running yet when this is called -- and the
+        // base is where the day starts, which is when a spawn happens.
+        FbmMemo dm;
+        const float sunA = opt_.sunAz * PI / 180.0f;
+        const float sunX = cosf(sunA), sunZ = sinf(sunA);
+        auto openness = [&](float px, float pz) {
+            float local = t.standDensity(px, pz, dm);
+            for (int k = 0; k < 8; ++k) {
+                const float a2 = float(k) * (TWO_PI / 8.0f);
+                local += t.standDensity(px + cosf(a2) * 12.0f, pz + sinf(a2) * 12.0f, dm);
+            }
+            local *= (1.0f / 9.0f);
+            float sunward = 0.0f;
+            for (int k = 1; k <= 6; ++k) {
+                const float d2 = float(k) * 10.0f;
+                sunward += t.standDensity(px + sunX * d2, pz + sunZ * d2, dm);
+            }
+            sunward *= (1.0f / 6.0f);
+            return 0.5f * local + 0.5f * sunward;
+        };
+
+        // -- AND CAN THE GROUND ITSELF SEE THE SUN --------------------------
+        //
+        // Openness is about TRUNKS. This is about the hill, and at this sun it
+        // matters just as much: 24 degrees of elevation means a rise of one
+        // metre shadows two and a half metres of ground behind it, so a glade
+        // on the wrong side of a ridge is a glade in shade all morning. The
+        // first cut of this found beautifully sparse spots that were dark.
+        //
+        // One march along the sun's own bearing, out to ninety-odd metres,
+        // asking whether the height field ever climbs above the line the sun
+        // comes in on. It is the honest terrain-shadow test and it is cheap
+        // enough BECAUSE it runs last -- only for a candidate that has already
+        // beaten everything before it, which is a handful of times, not 512.
+        //
+        // The elevation is the option's rather than the clock's, for the reason
+        // the azimuth is: the clock has not started when this is called.
+        const float tanEl = tanf(maxf(2.0f, opt_.sunEl) * PI / 180.0f);
+        auto sunlit = [&](float px, float pz, float ph) {
+            for (int k = 1; k <= 16; ++k) {
+                const float d2 = float(k) * 6.0f;
+                if (t.heightM(px + sunX * d2, pz + sunZ * d2) > ph + d2 * tanEl) return false;
+            }
+            return true;
+        };
+
+        // THE BEST OF ALL OF THEM, not the first that passes. The old rule took
+        // whatever candidate cleared a band and stopped, which is why it opened
+        // in a wood as often as not: a band admits the thick end of itself just
+        // as readily as the thin end.
+        float bestScore = 1e9f;
+        float anyX = opt_.camX, anyZ = opt_.camZ, anyScore = 1e9f;
+
+        for (uint32_t i = 0; i < 512; ++i) {
             // A disc, sampled with a square root so the points are spread over
             // the AREA rather than piled up near the middle.
             const float r = 200.0f + 2800.0f * sqrtf(hashUnit(seed + 1u, i));
@@ -4374,20 +4707,36 @@ class ForestApp : public SampleApp {
                                    absi(t.heightVox(ci, cj + 1) - t.heightVox(ci, cj - 1)));
             if (slope >= VoxelTerrain::kTreeSlope) continue;  // scree, not ground
 
-            // The stand-density gate the trees themselves are planted through.
-            // Above 0.34 there is a wood; above about 0.62 it is a thicket, and
-            // waking up in one is waking up in a wall of trunks.
-            const float dens = t.standDensity(x, z);
-            if (dens < 0.34f || dens > 0.62f) continue;
-
+            const float score = openness(x, z);
+            // Kept whatever happens, so a seed that finds nothing ideal still
+            // spawns somewhere sensible rather than at the world origin.
+            if (score < anyScore) {
+                anyScore = score;
+                anyX = x;
+                anyZ = z;
+            }
+            // TOO THICK is a wall of trunks to wake up in. TOO OPEN is a bald
+            // patch, which is not the wood this engine is for -- the point is
+            // to open in sunlight AMONG trees, not away from them.
+            if (score > 0.45f || score < 0.20f) continue;
+            if (score >= bestScore) continue;
+            // LAST, because it is the expensive one -- see the note over it.
+            if (!sunlit(x, z, h)) continue;
+            bestScore = score;
             bestX = x;
             bestZ = z;
             found = true;
         }
+        if (!found) {
+            bestX = anyX;
+            bestZ = anyZ;
+            bestScore = anyScore;
+        }
 
         opt_.camX = bestX;
         opt_.camZ = bestZ;
-        std::printf("  spawn    %.1f, %.1f  (--spawn %u to come back here)\n", bestX, bestZ,
+        std::printf("  spawn    %.1f, %.1f  openness %.2f%s  (--spawn %u to come back here)\n",
+                    bestX, bestZ, double(bestScore), found ? "" : " -- nothing better found",
                     unsigned(seed));
         std::fflush(stdout);
     }

@@ -738,7 +738,12 @@ inline int floorMod(int a, int b) { const int m = a % b; return m < 0 ? m + b : 
 // pay a branch for the privilege.
 // ---------------------------------------------------------------------------
 struct TerrainMemo {
-    FbmMemo warpX, warpZ, roll, swell, ridge, basin, fine;  // heightM
+    FbmMemo warpX, warpZ, roll, swell, basin, fine;  // heightM, the pine's own
+    // THE BIRCH'S ROLL AND SWELL ARE ITS OWN NOW, and only a column inside
+    // the seam ever asks for them alongside the pine's -- see heightM. They
+    // replace the ridge memo rather than adding to the struct, the ridged
+    // octave having gone with it.
+    FbmMemo birchRoll, birchSwell;
     FbmMemo stand, litter, grassMask;                       // topMaterial
 };
 
@@ -876,53 +881,66 @@ class VoxelTerrain {
     // -----------------------------------------------------------------------
     // The continuous landform, before quantisation.
     // -----------------------------------------------------------------------
-    // ROUNDED, AND TWICE AS TALL AGAIN -- so four times the relief this field
-    // started with. The amplitudes below and the two gates under them are the
-    // only numbers that move: the FREQUENCIES are deliberately untouched, so
-    // the hills keep the width they had and gain height, which is what makes a
-    // rolling wood read as a mountain one. Doubling the frequency instead would
-    // have given twice as many hills of the same shape.
+    // SMOOTH AND ROUND, AT THE SAME ELEVATION. Asked for directly, and the
+    // second half of that is the hard half: everything that takes roughness out
+    // of a field takes height out with it, so every amplitude here had to be
+    // re-fitted to put the height back.
     //
-    // Every slope therefore doubles as well, and two thresholds downstream are
-    // measured in slope: kRockSlope and kTreeSlope. They double with it, or the
-    // same hillside that held soil and pines yesterday is bare rock today. That
-    // coupling is the whole reason those constants live next to this function.
+    //     was    4.0 + roll*60 x5 + swell*24 x3 + ridge*6
+    //     now   14.0 + roll*48 x2 + swell*21.5 x2
     //
+    // Three separate things were making the pine wood lumpy, and they live at
+    // three different scales:
     //
-    // The old field was dominated by a ridged multifractal, and a ridged
-    // multifractal is *for* creasing -- 1 - |2n-1| is a fold by construction,
-    // which is the opposite of rounded. The dominant term is now a low-octave
-    // warped fbm, which gives broad domes, plus an even lower-frequency swell
-    // underneath it for the large forms. The ridge survives at a fifth of its
-    // old weight purely so the landscape is not all one shape.
+    //   * THE RIDGED OCTAVE, at 33 m. A ridged multifractal is *for* creasing
+    //     -- 1 - |2n-1| is a fold by construction -- so it cannot be smoothed,
+    //     only removed. The birch wood dropped it long ago for exactly this
+    //     reason and the note below records what that did; this is the same
+    //     decision arriving in the pine.
+    //   * ROLL'S TOP THREE OCTAVES, at 19, 9 and 4.5 m. Together they carried
+    //     about 12 m of relief on features you cross in a stride or two, which
+    //     is what made a hillside read as rubble rather than as a hill.
+    //   * SWELL'S THIRD OCTAVE, at 35 m, worth another 3.4 m of the same.
+    //
+    // THE FREQUENCIES ARE STILL UNTOUCHED, which is the rule this field has
+    // been grown under twice already. The hills are the same hills, in the same
+    // places, at the same widths and the same heights -- what has gone is the
+    // small stuff riding on them.
+    //
+    // MEASURED, 360k columns over 1.5 km square, pinned pine. Elevation is read
+    // as the height DISTRIBUTION rather than as a range, since the ends of a
+    // range are single columns; roundness as the mean sag from flat over a
+    // baseline, which is a scale-by-scale answer to "how bumpy is it".
+    //
+    //     height m   mean   sd    p1     p5    p50    p95    p99
+    //       was     48.08  8.65  28.83  33.94  48.06  62.37  67.81
+    //       now     47.94  8.59  29.21  34.06  47.71  62.42  67.47
+    //
+    //     sag from flat, m    1 m     3 m    10 m    30 m   100 m   |grad|
+    //       was               .075    .415   1.513   3.910   7.792   0.528
+    //       now               .014    .088    .656   3.219   7.631   0.312
+    //
+    // So 82% less at a stride, 79% at three metres, 57% at ten -- and 2% at a
+    // hundred, which is the number that says the LANDSCAPE did not change. The
+    // gradient a body actually walks up fell by 41%.
+    //
+    // kRockSlope and kTreeSlope are left where they are. They are cliff guards
+    // -- 3.6 and 3.0 m of drop across two 10 cm columns -- and neither fires on
+    // a single column of that sample either before or after, so moving them
+    // with the amplitudes, as the two earlier growth spurts had to, would only
+    // start rejecting ground that is perfectly good to stand a tree on.
+    //
+    // AND IT IS CHEAPER. A pine column is 17 octaves of value noise where it
+    // was 24: the three the roll dropped and the one the swell dropped are gone
+    // along with the ridge's three. Only a column inside the 90 m seam pays
+    // more, at 25, because it evaluates both woods' fields -- and the warp
+    // underneath them is shared, so the second call hits the memo.
     //
     // The two fine octaves that used to sit on top are down to one at half the
     // amplitude. At 10 cm voxels those were quantising into single-voxel
     // stipple, which reads as gravel rather than as ground and cost a side quad
     // on nearly every column to draw.
     float heightM(float x, float z, TerrainMemo &memo) const {
-        const float roll =
-            warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 5);
-        const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-
-        // ------------------------------------------------------------- birch
-        // MUCH LOWER, AND ROUNDED. The pine wood is a mountain range -- 90 m of
-        // relief with a ridged octave sharpening every crest, because that is
-        // what makes a conifer stand read as altitude. A birch wood is the
-        // opposite kind of place: open, gentle, and low.
-        //
-        // Three changes, and the ridge is the important one. Dropping the
-        // ridged octave entirely is what makes the hills ROUND -- ridged noise
-        // is |1 - 2n|, which has a crease at every zero crossing, and no amount
-        // of scaling it down removes the crease. What is left is the warped fbm
-        // and the swell, both of which are smooth by construction.
-        //
-        //     pine    4 + roll*60 + swell*24 + ridge*6     4 .. 94 m
-        //     birch   2 + roll*15 + swell*7               2 .. 24 m
-        //
-        // A quarter of the relief and no creases: hills you walk over rather
-        // than climb. The basin carve is skipped too -- it exists to hollow out
-        // lakes, and this wood has no water in it yet.
         // THE FINE OCTAVE IS SHARED, and asked once. Both woods want it for the
         // same reason -- at 10 cm a smooth slope terraces into wide flat
         // plateaus and the small stuff is what breaks the steps up -- and
@@ -931,14 +949,48 @@ class VoxelTerrain {
         const float fine = (fbm(memo.fine, x * 0.090f + 3.7f, z * 0.090f + 9.1f, 3) - 0.5f) * 1.2f;
         const float mix = birchMix(x);
 
-        // WHOLLY BIRCH: the common case inside the band, and it skips the
-        // ridged octave and the basin fbm entirely rather than computing them
-        // and multiplying by zero.
-        if (mix >= 0.999f) return 2.0f + roll * 15.0f + swell * 7.0f + fine;
+        // ------------------------------------------------------------- birch
+        // MUCH LOWER, AND ROUNDED. The pine wood is a mountain range -- 90 m of
+        // relief -- because that is what makes a conifer stand read as
+        // altitude. A birch wood is the opposite kind of place: open, gentle,
+        // and low.
+        //
+        // Dropping the ridged octave entirely is what made these hills ROUND --
+        // ridged noise is |1 - 2n|, which has a crease at every zero crossing,
+        // and no amount of scaling it down removes the crease. What is left is
+        // the warped fbm and the swell, both of which are smooth by
+        // construction.
+        //
+        //     pine   14 + roll*48 x2 + swell*21.5 x2    14 .. 84 m
+        //     birch   2 + roll*15 x5 + swell*7 x3        2 .. 24 m
+        //
+        // A quarter of the relief and no creases: hills you walk over rather
+        // than climb. The basin carve is skipped too -- it exists to hollow out
+        // lakes, and this wood has no water in it yet.
+        //
+        // THE BIRCH KEEPS ALL FIVE ROLL OCTAVES AND ALL THREE SWELL, and that
+        // is the point of the split above: the pine was asked to be smoothed
+        // and the birch was not, so the birch's field is the one it always had,
+        // value for value. Its small stuff is worth about a metre and a half on
+        // a wood with 22 m of relief, where the pine's was worth twelve on
+        // ninety -- which is why one of them was asked about and the other was
+        // not.
+        if (mix >= 0.999f) {
+            const float roll =
+                warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 5);
+            const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
+            return 2.0f + roll * 15.0f + swell * 7.0f + fine;
+        }
 
-        const float ridge = ridged(memo.ridge, x * 0.0300f + 13.1f, z * 0.0300f + 7.3f, 3);
+        // -------------------------------------------------------------- pine
+        // TWO OCTAVES EACH, AND NOTHING ABOVE THEM. See the note on this
+        // function for what the missing ones were carrying and what taking them
+        // out measured.
+        const float roll =
+            warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 2);
+        const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
 
-        float h = 4.0f + roll * 60.0f + swell * 24.0f + ridge * 6.0f;
+        float h = 14.0f + roll * 48.0f + swell * 21.5f;
 
         const float b = fbm(memo.basin, x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
         if (b < 0.40f) {
@@ -949,6 +1001,10 @@ class VoxelTerrain {
             // is 36. Leave it behind and it sits below almost every column, no
             // basin ever cuts, and the water plane ends up buried under the
             // whole world with not a lake anywhere.
+            //
+            // THE SMOOTHING DID NOT MOVE IT, and that follows from what the
+            // smoothing was fitted to do: the range this is a fraction of is
+            // the same range it was.
             const float lowGate = saturate((36.0f - h) / 28.0f);
             h -= m * lowGate * (h - (waterLevel - 3.2f));
         }
@@ -959,16 +1015,33 @@ class VoxelTerrain {
         // smooth everywhere terraces into wide flat plateaus -- which reads as
         // worse, not rounder. Roundness belongs in the large shapes; the small
         // ones have to keep enough gradient to break the steps up.
+        //
+        // IT MATTERS MORE NOW THAN IT DID, which is worth saying plainly: this
+        // field is smoother than the one that warning was written about, so the
+        // fine octave is most of what stands between a hillside and a
+        // staircase. Its own gradient reaches 0.34, which holds the steps to
+        // about 30 cm wherever the landform underneath has gone flat.
         h += fine;
         if (mix <= 0.001f) return h;
 
         // THE SEAM. Ninety metres of blend between a wood whose median floor is
-        // 49 m and one whose median is 13, which is a 36 m drop -- so this is
+        // 48 m and one whose median is 13, which is a 35 m drop -- so this is
         // not a detail, it is a hillside, and it wants to be walked down rather
         // than fallen off. sstep on both sides of birchWeight is what makes the
         // join C1: the gradient goes to zero at each end of the blend instead
         // of changing abruptly where the lerp starts and stops.
-        return lerpf(h, 2.0f + roll * 15.0f + swell * 7.0f + fine, mix);
+        //
+        // THE BIRCH SIDE IS ASKED FOR SEPARATELY HERE, at its own octave
+        // counts, and that is the entire cost of the two woods no longer
+        // sharing one field. It falls on the 11% of columns inside a seam and
+        // on none of the others. The warp is the same warp at the same
+        // frequency, so the second warpedFbm walks straight into the memo the
+        // first one filled; only the two fbm memos have to be their own, which
+        // is what the pair freed by the ridge is doing on TerrainMemo.
+        const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
+                                      z * 0.0130f, 1.5f, 5);
+        const float bSwell = fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
+        return lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f + fine, mix);
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.

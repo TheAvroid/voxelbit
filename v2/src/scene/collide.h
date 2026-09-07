@@ -59,6 +59,17 @@ struct ModelCollider {
     // kBaseHeightM. Not the bounding box: a boulder is usually widest around
     // its middle, and the middle is not what has to be supported.
     int baseX = 0, baseZ = 0;
+    // AND WHERE THAT FOOTPRINT SITS, in metres from the model's own centre.
+    //
+    // A SIZE WITHOUT AN OFFSET IS ONLY HALF AN ANSWER, and for a tree it is the
+    // wrong half. A birch is a trunk with a crown leaning off it: the bounding
+    // box is centred on the CROWN, and the trunk can stand five metres from the
+    // middle of it (birch 7 and 10 are at 4.8 and 4.95 m). Anything that spaced
+    // itself against the box centre was therefore protecting an empty patch of
+    // air and leaving the trunk itself open -- see collectTrees in
+    // scene/chunks.h, which is where that showed up as a mushroom growing out
+    // of a birch. Free to measure: the sweep above already has the bounds.
+    float baseCX = 0.0f, baseCZ = 0.0f;
     bool solid() const { return hx > 0.0f && hz > 0.0f; }
 };
 
@@ -281,6 +292,10 @@ inline ModelCollider measureCollider(const VoxAsset &a, float voxelM, float body
         if (bx1 >= 0) {
             c.baseX = bx1 - bx0 + 1;
             c.baseZ = bz1 - bz0 + 1;
+            // Same expression as cx/cz below, over the base slab rather than
+            // the body one -- so the two cannot drift apart.
+            c.baseCX = (float(bx0 + bx1 + 1) * 0.5f - float(a.sx) * 0.5f) * voxelM;
+            c.baseCZ = (float(bz0 + bz1 + 1) * 0.5f - float(a.sz) * 0.5f) * voxelM;
         }
     }
 

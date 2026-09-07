@@ -146,10 +146,38 @@ class ChunkMesher {
     // sx, sz, sy is the model's bounding box; baseX and baseZ are the footprint
     // where it MEETS THE GROUND, which is a different and usually smaller
     // number -- see kBaseHeightM in collide.h.
-    struct Footprint { int sx, sz, sy, baseX, baseZ; };
-    // A circle on the ground that something already occupies. Used to keep the
-    // small decor out of the boulders -- see collectRocks.
-    struct Disc { float x, z, r; };
+    // sx, sz, sy is the model's bounding box; baseX and baseZ the footprint
+    // that meets the ground, and cx, cz where that footprint sits relative to
+    // the box centre, in metres. The last two are what make a disc land on a
+    // birch's TRUNK rather than under the middle of its crown -- see the note
+    // on ModelCollider::baseCX in scene/collide.h.
+    struct Footprint { int sx, sz, sy, baseX, baseZ; float cx, cz; };
+    // GROUND SOMETHING ALREADY OCCUPIES: a box of half extents hx, hz with a
+    // circle of radius r rolled around it. Both degenerate cases are used and
+    // that is the point of writing it this way --
+    //
+    //   * A BOULDER is a circle: hx = hz = 0, r its radius. A stone is lumpy
+    //     and round-ish, and a circle is the honest shape for it.
+    //   * A TRUNK is a box: r = 0, hx and hz its base footprint. A circle
+    //     INSCRIBES that footprint and therefore leaves the four corners
+    //     unguarded, which is exactly where the last of the mushrooms were
+    //     still standing in the bark -- measured at 7 in 1213 after the discs
+    //     were re-centred, each a voxel or two deep.
+    //
+    // One expression covers both: push the query point out of the box first,
+    // then compare what is left against the radii. With hx = hz = 0 that is
+    // the circle-circle test this used to be, unchanged.
+    struct Disc {
+        float x, z, r;
+        float hx = 0.0f, hz = 0.0f;
+        // Does a circle of radius q at (qx, qz) reach this?
+        bool reaches(float qx, float qz, float q) const {
+            const float dx = maxf(0.0f, fabsf(qx - x) - hx);
+            const float dz = maxf(0.0f, fabsf(qz - z) - hz);
+            const float reach = q + r;
+            return dx * dx + dz * dz < reach * reach;
+        }
+    };
     // The rock scatter's grid, named because two passes now have to agree about
     // it: the one that places rocks and the one that avoids them.
     static constexpr float kRockStride = 1.6f;
@@ -222,7 +250,41 @@ class ChunkMesher {
     // one already placed. Offer fewer and proportionally fewer of them clash,
     // so a quarter off here is measured as 22-24% fewer pines on the ground,
     // and the exact figure depends on how thick the stand was to begin with.
-    float treeDensity = 0.2325f;  // 0.55, less a quarter, three times over
+    //
+    // A QUARTER MORE PINES -- AND THE KNOB HAD TO GO UP BY 38% TO BUY THEM.
+    // 0.2325 -> 0.3210.
+    //
+    // Asked for as a quarter more trees, and 0.2906 -- the knob itself plus a
+    // quarter -- is not that, for the same reason the paragraph above gives
+    // read backwards: offering a quarter more candidates puts proportionally
+    // more of them within a trunk's width of one already standing, and the
+    // spacing test takes the difference. 0.29 was measured at 7069 trees, which
+    // is +16.9%, so two thirds of what it was asked for. The elasticity here is
+    // about 0.66 -- a percent on the knob buys two thirds of a percent of wood
+    // -- and it keeps falling as the stand thickens, which is why this was
+    // solved by sweeping rather than by scaling.
+    //
+    // MEASURED, ring for ring on a pinned pine wood, at the three places the
+    // birch notes below use:
+    //
+    //     400, 0        6046 -> 7557    +25.0%
+    //     2000, 1500    5822 -> 7283    +25.1%
+    //     400, -3000    6285 -> 7900    +25.7%
+    //
+    // THE LANDFORM CANNOT MOVE THESE NUMBERS, which is worth writing down
+    // because it is not obvious and it is what made the smoothing in heightM
+    // free: every one of the six figures above came back identical on the
+    // rounded field. A tree's PLACE is decided by the lattice, the jitter, the
+    // stand-density gate and the spacing test, none of which can see the
+    // height; the two gates that can are the shore band and kTreeSlope, and
+    // over a 625-chunk ring neither fires on ground either field produces. The
+    // wood stands where it always stood, on smoother hills.
+    //
+    // The gate this multiplies tops out at 0.97, so there is still two thirds
+    // of the knob's range left above this -- at 1.0 every cell the stand
+    // density admits would take a tree and the clumping would flatten into an
+    // even field, which is the thing that gate exists to prevent.
+    float treeDensity = 0.3210f;  // was 0.55, less a quarter three times, then +25% of wood
     float treeStride = 2.4f;
 
     // ---- the birch wood ----------------------------------------------------
@@ -237,8 +299,32 @@ class ChunkMesher {
     // behaviour of thick stands with clearings between them rather than trees
     // spread evenly. Only the grid under it changes.
     float birchStride = 4.4f;
-    // A QUARTER FEWER BIRCHES -- AND THE KNOB HAD TO COME DOWN BY MORE THAN A
-    // THIRD TO PAY FOR IT. 0.84 -> 0.54.
+    // A QUARTER FEWER BIRCHES, TWICE OVER. 0.84 -> 0.54 -> 0.363.
+    //
+    // -- THE SECOND QUARTER, 0.54 -> 0.363 -------------------------------
+    //
+    // Asked for the same way and paid for the same way, but it cost LESS of
+    // the knob than the first one did: a 32.8% cut where the first took 35.7%.
+    // That is the note below read forwards rather than backwards. The wood is
+    // thinner than it was, so it sits further from the packing the spacing test
+    // will allow, so less of what it stops offering was going to be rejected
+    // anyway -- and the knob therefore has to over-reach by less to deliver the
+    // same quarter.
+    //
+    // MEASURED at the same three places, ring for ring on a pinned birch wood:
+    //
+    //     400, 0        8977 -> 6734    -25.0%
+    //     2000, 1500    8839 -> 6655    -24.7%
+    //     400, -3000    9500 -> 7040    -25.9%
+    //
+    // AND THE PINE WOOD IS BIT FOR BIT UNCHANGED, which is the check this knob
+    // always has to pass: a pinned pine wood gives 7557 trees and 967 rocks at
+    // 400, 0 before and after, because nothing reads this outside the isBirch
+    // branch. The hives thin with the birches as before -- 75 -> 58 at 400, 0 --
+    // for the same reason they did the first time: one birch in a hundred is
+    // still one birch in a hundred.
+    //
+    // -- THE FIRST QUARTER, 0.84 -> 0.54 ---------------------------------
     //
     // Asked for as a quarter off the frequency, and 0.63 -- the knob itself
     // less a quarter -- is not that. This is a probability per CANDIDATE, and
@@ -272,7 +358,7 @@ class ChunkMesher {
     // there is a great deal now -- at 1.0 every cell the stand-density field
     // admits would take a tree and the clumping would flatten out into an even
     // field, which is the thing that gate exists to prevent.
-    float birchDensity = 0.54f;
+    float birchDensity = 0.363f;
 
     // TWICE AS MANY BIRCHES, AS AN EXTRA SWEEP RATHER THAN A BIGGER NUMBER.
     //
@@ -441,7 +527,7 @@ class ChunkMesher {
             // a seam -- once on each pitch -- and neither pass would know about
             // the other's spacing rejections. So the birch's 4.4 m is the grid
             // and each band fills its own share of it -- the birch 0.84, the
-            // pine 0.2325 -- which is what lets one lattice serve both.
+            // pine 0.3210 -- which is what lets one lattice serve both.
             const bool anyBirch = birchBase < int(pineFoot.size());
             const float tStride = anyBirch ? birchStride : treeStride;
             const int steps = int(CHUNK_M / tStride);
@@ -568,8 +654,51 @@ class ChunkMesher {
         // ---- rocks and flowers --------------------------------------------
         // Both are scattered on a finer grid than the trees and take whatever
         // ground is left; a rock may sit on rock or soil, a flower only on
-        // grass. Flowers and mushrooms still ignore the trees entirely, and
-        // should: growing under a canopy is what they do.
+        // grass.
+        //
+        // NOTHING SMALL STANDS INSIDE A TRUNK ANY MORE. The note that used to
+        // sit here said flowers and mushrooms ignore the trees entirely "and
+        // should: growing under a canopy is what they do" -- which is right
+        // about the CANOPY and was being used to excuse the trunk. Those are
+        // different objects and collectTrees only ever measured the second: a
+        // box a third of a metre across at the foot of the tree, not the
+        // twelve-metre crown over it. Growing under the branches is still
+        // exactly what they do; there is simply no longer a mushroom inside
+        // the wood of the tree.
+        //
+        // THREE THINGS WERE WRONG AND ALL THREE HAD TO GO, which is why the
+        // first two fixes each left a residue:
+        //
+        //   1. The small passes never consulted the trees at all -- this
+        //      block.
+        //   2. collectTrees centred its disc on the model's BOUNDING BOX, and
+        //      a birch model is centred on its crown: birch 7 and 10 carry
+        //      their trunks 4.8 and 4.95 m off that centre, so the guard was
+        //      five metres from the trunk.
+        //   3. The disc INSCRIBED the trunk's square footprint, leaving the
+        //      four corners open, and the test was asked at the jittered
+        //      position rather than at the column the model is stamped on.
+        //
+        // MEASURED PER VOXEL, not per bounding box: every placed model's own
+        // occupancy mask laid down where the scatter put it, against the
+        // columns the trees' base slabs occupy, over the 625-chunk ring at
+        // 400, 0. "Sharing a column with a trunk" is the strictest reading of
+        // the complaint there is.
+        //
+        //                    birch wood              pine wood
+        //     mushrooms   156/1414 -> 0/1194     156/1373 -> 0/1142
+        //     flowers     276/22396 -> 0/21753   162/10681 -> 0/10276
+        //     rocks        36/802  -> 4/787       12/779  -> 1/764
+        //
+        // Zero, and it costs 15% of the mushrooms, 3% of the flowers and 2% of
+        // the stones -- every one of them a model that was standing in a tree.
+        //
+        // THE FOUR REMAINING ROCKS ARE THE SHAPE OF A ROCK, not a bug in the
+        // spacing: a boulder asks with a CIRCLE of its mean half extent, which
+        // is the honest shape for something lumpy and round, and a long
+        // irregular stone can still put a corner into bark. Worst case 25
+        // columns, a quarter of a square metre against a twelve-metre
+        // boulder, and it reads as a stone leaning on a tree.
         //
         // ROCKS NO LONGER DO. The note that used to sit here said a boulder
         // half under a canopy is what a real wood looks like, and that was
@@ -592,8 +721,16 @@ class ChunkMesher {
         std::vector<Disc> trees;
         collectTrees(b, &trees, memo);
         scatterSmall(b, 1, rockFoot, rockDensity, kRockStride, false, &trees);
-        scatterSmall(b, 2, flowerFoot, flowerDensity, 0.9f, true, &rocks);
-        scatterSmall(b, 3, mushroomFoot, mushroomDensity, 1.3f, true, &rocks);
+        // ONE LIST FOR THE SMALL PASSES, because a mushroom has to clear both
+        // and scatterSmall takes a single set to avoid. Concatenated rather
+        // than passed as two, so the rejection stays the one loop it was: a
+        // chunk's neighbourhood holds a couple of dozen stones and a hundred or
+        // so trunks, and the scan runs only for a candidate every other test
+        // has already accepted.
+        std::vector<Disc> solid = rocks;
+        solid.insert(solid.end(), trees.begin(), trees.end());
+        scatterSmall(b, 2, flowerFoot, flowerDensity, 0.9f, true, &solid);
+        scatterSmall(b, 3, mushroomFoot, mushroomDensity, 1.3f, true, &solid);
     }
 
     // -----------------------------------------------------------------------
@@ -819,7 +956,37 @@ class ChunkMesher {
                             const int bxv = (yaw & 1) ? f.baseZ : f.baseX;
                             const int bzv = (yaw & 1) ? f.baseX : f.baseZ;
                             if (bxv <= 0 || bzv <= 0) continue;
-                            out->push_back({x, z, 0.25f * float(bxv + bzv) * VOXEL_M});
+                            // ON THE TRUNK, NOT ON THE BOUNDING BOX. This used
+                            // to sit at the tree's own (x, z), which is where
+                            // the MODEL is centred -- and a birch model is
+                            // centred on its crown. Birch 7 and 10 carry their
+                            // trunks 4.8 and 4.95 m off that centre, so a
+                            // half-metre disc was landing five metres from the
+                            // thing it was meant to be guarding: the trunk was
+                            // wide open and an empty patch of ground beside it
+                            // was fenced off instead. That is a mushroom
+                            // growing out of a birch, which is what was
+                            // reported, and it was a rock growing out of one
+                            // just as often.
+                            //
+                            // The column, not the jittered position, because
+                            // that is where makeInstance actually stamps the
+                            // model -- and then the model-space offset turned
+                            // by the placement's own quarter turn, which is the
+                            // 2x2 of the kRot matrix that function uses.
+                            float ox = f.cx, oz = f.cz;
+                            switch (yaw & 3) {
+                                case 1: { const float t = ox; ox = oz; oz = -t; break; }
+                                case 2: { ox = -ox; oz = -oz; break; }
+                                case 3: { const float t = ox; ox = -oz; oz = t; break; }
+                                default: break;
+                            }
+                            // AS A BOX, not as a circle: see Disc. The base
+                            // footprint is what the trunk occupies, and a
+                            // circle drawn inside it leaves the corners open.
+                            out->push_back({float(ci) * VOXEL_M + ox, float(cj) * VOXEL_M + oz,
+                                            0.0f, float(bxv) * VOXEL_M * 0.5f,
+                                            float(bzv) * VOXEL_M * 0.5f});
                         }
             }
     }
@@ -1142,6 +1309,19 @@ class ChunkMesher {
                 const int cj = int(floorf(z / VOXEL_M));
                 if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX) continue;
 
+                // WHERE THE MODEL ACTUALLY LANDS, which is not (x, z). The
+                // jittered position picks a COLUMN and the model is then
+                // centred on that column -- makeInstance offsets by
+                // halfOf(fx), which puts the bounding-box centre exactly on
+                // ci * VOXEL_M. So x and z are up to half a voxel out, and the
+                // "is this inside something" tests below have to be asked at
+                // the place the thing is drawn or they answer about a position
+                // nothing occupies. Measured: that half voxel was the whole of
+                // the residue left after the trunk discs were re-centred --
+                // 0.3-0.5% of the small decor still grazing a trunk by up to
+                // 9 cm, which this takes to zero.
+                const float px = float(ci) * VOXEL_M, pz = float(cj) * VOXEL_M;
+
                 const int h = terrain_.heightVox(ci, cj, memo);
                 if (h <= wl + 2) continue;
                 const uint8_t top = terrain_.topMaterial(ci, cj, h, memo);
@@ -1272,11 +1452,8 @@ class ChunkMesher {
                     // is the same rule the flatness bar already follows.
                     if (!refuse && avoid) {
                         const float br = 0.25f * float(bf.sx + bf.sz) * VOXEL_M;
-                        for (const Disc &d : *avoid) {
-                            const float ddx = d.x - x, ddz = d.z - z;
-                            const float reach = br + d.r;
-                            if (ddx * ddx + ddz * ddz < reach * reach) { refuse = true; break; }
-                        }
+                        for (const Disc &d : *avoid)
+                            if (d.reaches(px, pz, br)) { refuse = true; break; }
                     }
 
                     if (refuse) {
@@ -1332,10 +1509,11 @@ class ChunkMesher {
                     if (!clear) continue;
                 }
 
-                // NOTHING SMALL GROWS OUT OF A BOULDER. Last of all the
-                // tests, so it only runs for a placement everything else has
-                // already accepted, and a linear scan because a chunk holds a
-                // couple of dozen rocks at most.
+                // NOTHING SMALL GROWS OUT OF A BOULDER -- OR OUT OF A
+                // TRUNK. Last of all the tests, so it only runs for a placement
+                // everything else has already accepted, and a linear scan
+                // because a chunk's neighbourhood holds a couple of dozen rocks
+                // and a hundred or so trees at most.
                 //
                 // No slack here, unlike the same-kind spacing above, which
                 // allows a 0.9 overlap so two stones may touch. A mushroom is
@@ -1345,11 +1523,8 @@ class ChunkMesher {
                     const Footprint &sf = foot[size_t(k)];
                     const float mr = 0.25f * float(sf.sx + sf.sz) * VOXEL_M;
                     bool inside = false;
-                    for (const Disc &d : *avoid) {
-                        const float ddx = d.x - x, ddz = d.z - z;
-                        const float reach = mr + d.r;
-                        if (ddx * ddx + ddz * ddz < reach * reach) { inside = true; break; }
-                    }
+                    for (const Disc &d : *avoid)
+                        if (d.reaches(px, pz, mr)) { inside = true; break; }
                     if (inside) continue;
                 }
 
