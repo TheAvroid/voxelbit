@@ -100,6 +100,17 @@ target_sources(v2 PRIVATE
 # ---------------------------------------------------------------------------
 target_link_libraries(v2 PRIVATE mfplat.lib mfreadwrite.lib mfuuid.lib mf.lib shell32.lib)
 
+# ---------------------------------------------------------------------------
+# The forest ambience (src/render/audio.h).
+#
+# One more in-box import library and still no vendored SDK: xaudio2.lib in the
+# Windows SDK is the stub for XAudio2.9, which has shipped in Windows since 10
+# and needs no redistributable. The DECODER is the Media Foundation above --
+# the source reader that already exists for the recorder turns the mp3 into
+# PCM, so audio costs this single line rather than a third-party mp3 library.
+# ---------------------------------------------------------------------------
+target_link_libraries(v2 PRIVATE xaudio2.lib)
+
 target_include_directories(v2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------

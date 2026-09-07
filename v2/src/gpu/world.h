@@ -1245,9 +1245,16 @@ class World {
                 paths.push_back(pineDir + "/pine_" + std::to_string(i) + ".vox");
         mesher_.birchBase = wantPine ? 9 : 0;
         if (wantBirch)
-            // 1.vox .. 16.vox, authored at 10 cm like everything else -- 14.4 m
-            // to 24.1 m, so a birch stands with the tallest pines rather than
-            // under them.
+            // 1.vox .. 16.vox, authored at 10 cm like everything else -- 18.2 m
+            // to 30.5 m, the tallest a 100 ft tree exactly. The set was scaled by
+            // ONE factor so the saplings stayed saplings in proportion, which makes
+            // the spread wide: the shortest birch is barely half the tallest and
+            // stands well under the pines, every one of which is 30.5 m.
+            //
+            // Anything past 25.5 m is TWO STACKED MODELS in one file, that being
+            // the tallest a .vox coordinate byte can address -- see the scene-graph
+            // note at the top of scene/vox.h, and tools/revoxel_trees_tall.py,
+            // which writes them.
             for (int i = 1; i <= 16; ++i)
                 paths.push_back(birchDir + "/" + std::to_string(i) + ".vox");
         loadModelSet(paths, &pines_, false, false, 0u, /*perches=*/true);

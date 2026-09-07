@@ -52,6 +52,8 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <cmath>   // std::llround, used below -- and only reached
+                    // transitively today because Falcor gets there first
 #include <cstdint>
 #include <cstdio>
 #include <mutex>

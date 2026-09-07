@@ -65,6 +65,7 @@
 #include "physics/physics.h"
 #include "gpu/tracer.h"
 #include "gpu/world.h"
+#include "render/audio.h"
 #include "render/camera.h"
 #include "render/player.h"
 #include "render/recorder.h"
@@ -329,6 +330,21 @@ struct Options {
     int grassMin = 3, grassMax = 6;
     std::string pines = "C:/voxelbit/game/assets/foilage/pine9";
     std::string decor = "C:/voxelbit/game/assets/decoration";
+
+    // ---- the wood's ambience (render/audio.h) --------------------------
+    //
+    // IN THE GAME'S SOUND FOLDER, not one of v2's own, for the same reason
+    // `pines` and `decor` point into its asset tree: there is one set of
+    // assets for this project and two engines that read them. v2 owns no
+    // assets at all, and this is not the feature to start it owning some.
+    //
+    // `ambience` is a MASTER gain, not a level -- what actually reaches the
+    // voice is this times the canopy closure at the listener's feet. 1.0 is
+    // the bed at the level it was baked (peak -3 dBFS, mean -23.6), which is
+    // a background at a normal system volume rather than a foreground.
+    std::string sound = "C:/voxelbit/game/sound/bird_ambience.mp3";
+    float ambience = 1.0f;
+    bool soundOn = true;
 
     float sunAz = defaults::kSunAz;
     float sunEl = defaults::kSunEl;
@@ -863,6 +879,18 @@ class ForestApp : public SampleApp {
         // start by recording a hitch.
         recorder_.init(getDevice());
 
+        // The bed is decoded and started HERE, silently, and then only its
+        // volume ever moves -- render/audio.h says why it is not started on
+        // entering a wood instead.
+        //
+        // NOT UNDER --out AND NOT UNDER --background. An offline render has
+        // no listener and would only be a five-second decode added to every
+        // frame job; and a --background instance is one you are meant to be
+        // able to forget is running, which a forest singing out of a
+        // minimised window rather defeats.
+        if (opt_.soundOn && !opt_.outGiven && !opt_.background)
+            ambience_.open(opt_.sound, opt_.ambience);
+
         printHelp();
         lastTime_ = std::chrono::steady_clock::now();
     }
@@ -984,6 +1012,11 @@ class ForestApp : public SampleApp {
             streamMs_.push_back(updateMs);
         }
         if (processInput(dt)) tracer_.resetAccumulation();
+
+        // The bed follows the canopy. Fed the same dt as the walk and the day
+        // cycle -- the shot clock when one is running -- so a scripted move
+        // and a live one fade identically.
+        ambience_.update(dt, forestGain());
 
         // Simulation is over: the camera is where it is going to be and the ring
         // has streamed. Everything after this is the GPU's frame.
@@ -1531,8 +1564,17 @@ class ForestApp : public SampleApp {
         // separate surfaces and either may be up without the other.
         if (consoleOpen_) {
             const float cw = fbW > 0 ? float(fbW) : 1280.0f;
-            const float boxW = minf(cw - 40.0f, 720.0f);
-            ImGui::SetNextWindowPos(ImVec2((cw - boxW) * 0.5f, 40.0f), ImGuiCond_Always);
+            const float ch = fbH > 0 ? float(fbH) : 720.0f;
+            const float margin = 12.0f;  // the HUD's inset, so the two line up
+            const float boxW = minf(cw - margin * 2.0f, 720.0f);
+            // BOTTOM LEFT, ANCHORED BY ITS BOTTOM EDGE. The pivot is what
+            // makes that work: this window is AlwaysAutoResize, so it grows
+            // downward by a line the moment a command prints a reply, and
+            // positioning its top-left would push the prompt off the bottom of
+            // the screen. Pivot (0,1) pins the BOTTOM-left corner instead, so
+            // the reply opens upward and the caret never moves.
+            ImGui::SetNextWindowPos(ImVec2(margin, ch - margin), ImGuiCond_Always,
+                                    ImVec2(0.0f, 1.0f));
             ImGui::SetNextWindowSize(ImVec2(boxW, 0.0f), ImGuiCond_Always);
             ImGui::Begin("##v2console", nullptr,
                          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -1544,6 +1586,12 @@ class ForestApp : public SampleApp {
                 ImGui::SetKeyboardFocusHere();
                 consoleFocus_ = false;
             }
+            // THE REPLY IS DRAWN ABOVE THE PROMPT, which is the other half of
+            // the move down here. At the top of the screen the reply belonged
+            // under the line that caused it; at the bottom the prompt wants to
+            // be the last thing before the screen edge with what it said
+            // stacked above -- every console in every game reads that way.
+            if (!consoleMsg_.empty()) ImGui::TextUnformatted(consoleMsg_.c_str());
             ImGui::TextUnformatted(">");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(-1.0f);
@@ -1556,7 +1604,6 @@ class ForestApp : public SampleApp {
                 // the second one four keystrokes instead of one.
                 consoleFocus_ = true;
             }
-            if (!consoleMsg_.empty()) ImGui::TextUnformatted(consoleMsg_.c_str());
 
             // ---- ESC CLOSES IT, AND IT HAS TO BE ASKED HERE ----------------
             //
@@ -2009,16 +2056,32 @@ class ForestApp : public SampleApp {
         // exposure and walk speed above it.
         w.slider("Sensitivity", opt_.sensitivity, 0.02f, 0.50f, false, "%.3f deg/px");
         if (w.slider("Field of view", fov_, 10.0f, 100.0f)) invalidate();
+        // No invalidate here either, and for a stronger reason than the two
+        // above: this one changes nothing the renderer can even see. Hidden
+        // rather than greyed when there is no voice -- under --no-sound or on
+        // a machine with no endpoint, a slider that does nothing is worse
+        // than no slider.
+        if (ambience_.active()) {
+            float amb = ambience_.masterGain();
+            if (w.slider("Ambience", amb, 0.0f, 2.0f, false, "%.2f"))
+                ambience_.setMasterGain(amb);
+        }
         w.separator();
 
         // ---- the air, and the lens ------------------------------------------
         //
-        // The density cap is five times what the analytic fog offered. That fog
-        // washed out at 0.02 because its in-scatter was the unshadowed sky and
-        // more of it only meant more grey; the froxel grid is shadowed, so more
-        // density means deeper beams rather than flatter ones, and the range is
-        // finally worth having.
-        if (w.slider("Fog density", opt_.r.fogDensity, 0.0f, 0.10f, false, "%.4f /m"))
+        // THE CAP IS THE TOP OF THE USEFUL BAND, NOT THE TOP OF WHAT THE PASS
+        // WILL DRAW. The froxel grid goes on working far past this -- the cap
+        // used to be 0.10, five times what the analytic fog could offer before it
+        // washed out to grey -- but nothing up there is a look anyone reaches for,
+        // and a trough that wide is not adjustable. The default is 0.0022, so 0.10
+        // spent its first 2% on every value worth having and the rest on soup.
+        // 0.0040 puts the default a little past halfway and makes the whole travel
+        // mean something.
+        //
+        // Five decimals rather than four for the same reason: %.4f reads out in
+        // steps of 0.0001, which over this range is forty of them end to end.
+        if (w.slider("Fog density", opt_.r.fogDensity, 0.0f, 0.0040f, false, "%.5f /m"))
             invalidate();
         if (w.slider("Fog height", opt_.r.fogHeight, 1.0f, 200.0f, false, "%.0f m"))
             invalidate();
@@ -2406,6 +2469,9 @@ class ForestApp : public SampleApp {
         // it drops the file rather than waiting on an encoder while the device
         // is being torn down underneath it.
         recorder_.abandon();
+        // Before the window goes: an audio device held open past it is the
+        // one kind of leak you can hear.
+        ambience_.stop();
         saveWindowPlacement();
     }
 
@@ -2417,6 +2483,7 @@ class ForestApp : public SampleApp {
     Tracer tracer_;
     Dlss dlss_;
     Player player_;
+    vb::Ambience ambience_;
     Falcor::ref<Falcor::FullScreenPass> crosshair_;
     DayNight clock_;  // owns the sun; sunAz_/sunEl_ are its output
     bool placedTwice_ = false;
@@ -3364,6 +3431,52 @@ class ForestApp : public SampleApp {
         for (int k = 0; k < mat::SOIL_COUNT; ++k) std::printf(" %6d", ss[k]);
         std::printf("\n");
         std::fflush(stdout);
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW MUCH OF A WOOD THE LISTENER IS STANDING IN.  0 in the open, 1 under
+    // a closed canopy, and it drives nothing but the ambience volume.
+    //
+    // IT IS THE PLANTING RULE, NOT A SECOND OPINION.  scene/chunks.h decides
+    // whether a cell grows a tree with
+    //
+    //     saturate((dens - 0.30) / 0.32) * 0.92 + 0.05
+    //
+    // and the canopy-closure ramp inside it is reused here verbatim. A
+    // separate "am I in a forest" field would be a second definition of the
+    // wood, and two definitions drift apart the first time either is tuned --
+    // the audible symptom being birds in a clearing.
+    //
+    // The 0.05 floor is deliberately NOT carried over. That floor is the
+    // handful of stragglers a real clearing still has standing in it, and a
+    // clearing you can still hear the wood from is not a clearing.
+    //
+    // BOTH BANDS COUNT: pine and birch are both woods, so birchMix does not
+    // appear here at all.
+    //
+    // AND THERE IS NO SLOPE TEST, though the planter has one. kTreeSlope stops
+    // a tree standing on scree; it does not stop scree being in the middle of
+    // a forest, and cutting the birds because you stepped onto a boulder field
+    // would put a hard edge in a signal that is otherwise smooth everywhere.
+    //
+    // THE WATER FADE IS KEPT, AND RAMPED. topMaterial paints sand up to 3.4 m
+    // and the planter refuses that band outright -- a beach and a lake are the
+    // one part of this world with no wood in them. Ramped over the four metres
+    // above it rather than switched at it, which also lands the full level at
+    // the same 7.6 m chooseSpawn calls "well clear of the shore". A step test
+    // on the height field is exactly the pop the smoothing in
+    // Ambience::update should not be asked to hide.
+    // -----------------------------------------------------------------------
+    float forestGain() const {
+        const VoxelTerrain &t = world_.terrain;
+        const float x = pos_.x, z = pos_.z;
+
+        const float above = t.heightM(x, z) - (t.waterLevel + 0.8f);
+        if (!(above > 0.0f)) return 0.0f;
+        const float wet = above < 4.0f ? above * 0.25f : 1.0f;
+
+        const float closure = (t.standDensity(x, z) - 0.30f) / 0.32f;
+        return wet * (closure < 0.0f ? 0.0f : (closure > 1.0f ? 1.0f : closure));
     }
 
     void chooseSpawn() {

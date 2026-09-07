@@ -61,6 +61,11 @@ void usage() {
         "  --shadow-ray-depth N      bounces that get them            (default 1)\n"
         "  --settle                  let a still camera converge; default holds the grain\n"
         "  --background              open minimised, never take focus or the mouse\n"
+        "                            (and silent -- see --no-sound)\n"
+        "  --ambience F              forest ambience gain, 0 = silent   (default 1.0)\n"
+        "                            what you hear is this times the canopy overhead\n"
+        "  --sound PATH              the ambience bed; any file Media Foundation reads\n"
+        "  --no-sound                open no audio device at all\n"
         "  --walk F                  offline: advance F m/frame, film resets as it would\n"
         "                            when walking\n"
         "  --depth N                 max path length        (default 10)\n"
@@ -203,6 +208,9 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         }
         else if (a == "--pines") { if (i + 1 < argc) o->pines = argv[++i]; }
         else if (a == "--decor") { if (i + 1 < argc) o->decor = argv[++i]; }
+        else if (a == "--sound") { if (i + 1 < argc) o->sound = argv[++i]; }
+        else if (a == "--ambience") argFloat(argc, argv, i, &o->ambience);
+        else if (a == "--no-sound") o->soundOn = false;
         else if (a == "--time") {
             float h = 7.0f;
             argFloat(argc, argv, i, &h);

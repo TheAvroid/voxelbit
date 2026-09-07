@@ -237,16 +237,42 @@ class ChunkMesher {
     // behaviour of thick stands with clearings between them rather than trees
     // spread evenly. Only the grid under it changes.
     float birchStride = 4.4f;
-    // DOUBLED, 0.42 -> 0.84. The opening value came from treating the browser
-    // engine's coarser 4.4 m grid as "an open wood", and it read as too open --
-    // a birch stand is dense, it is the TRUNKS being pale and bare that make it
-    // feel light rather than the gaps between them.
+    // A QUARTER FEWER BIRCHES -- AND THE KNOB HAD TO COME DOWN BY MORE THAN A
+    // THIRD TO PAY FOR IT. 0.84 -> 0.54.
     //
-    // It is a probability per candidate cell, and the gate above it tops out at
-    // 0.97, so 0.84 still leaves headroom -- at 1.0 every cell the stand-density
-    // field admits would take a tree and the clumping would flatten out into an
-    // even field, which is the thing that gate exists to prevent.
-    float birchDensity = 0.84f;
+    // Asked for as a quarter off the frequency, and 0.63 -- the knob itself
+    // less a quarter -- is not that. This is a probability per CANDIDATE, and
+    // the spacing test below rejects fewer of the survivors as the wood thins,
+    // so offering a quarter fewer gave back only 17% fewer trees. The birch
+    // feels that far more than the pine does (see treeDensity, which loses
+    // 22-24% for the same cut): the same 625-chunk ring holds 12002 birches
+    // where a pinned pine wood holds 6010, which puts the birch much closer
+    // to the packing the spacing test will allow, so more of what it stops
+    // offering was going to be rejected anyway.
+    //
+    // MEASURED ring for ring on a pinned birch wood, at the three places the
+    // birchExtra note below uses, with the trees at their present height:
+    //
+    //     400, 0        12002 -> 8977    -25.2%
+    //     2000, 1500    11849 -> 8839    -25.4%
+    //     400, -3000    12685 -> 9500    -25.1%
+    //
+    // It scales EVERY pass, pass 0 and the extra ones alike, so the wood thins
+    // evenly rather than by undoing the second sweep -- the stands and the
+    // clearings between them keep their shape, there is simply more room
+    // inside a stand. The hives thin with it: one birch in a hundred is still
+    // one birch in a hundred, and there are a quarter fewer birches to roll.
+    //
+    // Before that: DOUBLED, 0.42 -> 0.84. The opening value came from treating
+    // the browser engine's coarser 4.4 m grid as "an open wood", and it read as
+    // too open -- a birch stand is dense, it is the TRUNKS being pale and bare
+    // that make it feel light rather than the gaps between them.
+    //
+    // The gate above it tops out at 0.97, so there was headroom at 0.84 and
+    // there is a great deal now -- at 1.0 every cell the stand-density field
+    // admits would take a tree and the clumping would flatten out into an even
+    // field, which is the thing that gate exists to prevent.
+    float birchDensity = 0.54f;
 
     // TWICE AS MANY BIRCHES, AS AN EXTRA SWEEP RATHER THAN A BIGGER NUMBER.
     //
@@ -278,6 +304,20 @@ class ChunkMesher {
     //     400, 0        7055 -> 13967    1.98x
     //     2000, 1500    6884 -> 13583    1.97x
     //     400, -3000    7496 -> 14792    1.97x
+    //
+    // THAT TABLE IS FROM BEFORE THE TREES GREW, and the numbers in it no
+    // longer come back. Re-run against the models it was measured on, 400, 0
+    // still gives 13955 -- but those models have since been revoxelised
+    // taller, a birch being 18.2 to 30.5 m now, and a wider trunk clashes more
+    // often: the same ring on the same settings dropped to 12002. Growing the
+    // wood upwards thinned it by 14% on its own, before birchDensity above
+    // took its quarter.
+    //
+    // Re-measured where it stands now, at 400, 0: 4579 trees with these passes
+    // off, 8977 with them on. 1.96x -- so the doubling this exists for is back,
+    // and it is the THINNER wood that gave it back. Fewer candidates on the
+    // same ground clash less often, which is the note above read from the
+    // other end.
     //
     // AND ZERO IS THE OLD WOOD, EXACTLY, which is the check worth keeping:
     // birchExtra = 0 gives one pass and reproduced the pre-change build to

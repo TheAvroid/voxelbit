@@ -68,12 +68,162 @@ inline int32_t i32le(const uint8_t *b, size_t o) {
     return v;
 }
 
-// Parse the first model in a .vox file.
+// ---------------------------------------------------------------------------
+// THE SCENE GRAPH, AND WHY A TREE NEEDS ONE
+//
+// A .vox XYZI record packs each coordinate in a single byte, so no one model
+// can be more than 256 voxels on a side -- 25.6 m on this 10 cm grid. The 100 ft
+// pines and birches are 305 voxels tall and do not fit in one.
+//
+// MagicaVoxel's own answer to that is the scene graph: a file may hold SEVERAL
+// models, each placed by an nTRN transform, so a 30 m tree is two stacked
+// objects rather than one illegal model. That is what tools/revoxel_trees_tall.py
+// writes and what the code below composes back into the single grid the stamper
+// wants. The files stay ordinary MagicaVoxel documents -- open one and you get
+// pieces you can edit -- and the 256 ceiling applies to each PIECE, not to the
+// tree.
+//
+// ONLY TRANSLATION IS HONOURED. Every sub-model shipped here is axis-aligned,
+// and a rotated one would need the 3x3 basis packed into _r that this
+// deliberately does not carry. A rotated file composes as though it were
+// identity, which is visibly wrong rather than quietly wrong.
+// ---------------------------------------------------------------------------
+
+// One SIZE/XYZI pair, still pointing into the caller's buffer.
+struct VoxChunkModel {
+    int sx = 0, sy = 0, sz = 0;
+    const uint8_t *voxels = nullptr;
+    size_t voxelBytes = 0;
+};
+
+// A scene-graph node. nTRN carries one child and a translation, nGRP a list of
+// children, nSHP a list of model indices -- one struct holds all three because
+// the traversal treats them almost identically.
+struct VoxNode {
+    enum Kind { Trn, Grp, Shp };
+    int id = -1;
+    Kind kind = Trn;
+    int tx = 0, ty = 0, tz = 0;
+    std::vector<int> kids;  // child node ids, or model indices when kind is Shp
+};
+
+// Walk a MagicaVoxel DICT: an int32 count, then that many (STRING key, STRING
+// value) pairs, each STRING an int32 length followed by its bytes. Returns the
+// offset just past the dict, or 0 if it runs off the end of the chunk -- so
+// every caller can treat 0 as "malformed, stop". When wantKey is set the
+// matching value is copied out.
+inline size_t voxSkipDict(const std::vector<uint8_t> &raw, size_t o, size_t end,
+                          const char *wantKey, std::string *value) {
+    if (o + 4 > end) return 0;
+    const int32_t n = i32le(raw.data(), o);
+    o += 4;
+    if (n < 0) return 0;
+    for (int i = 0; i < n; ++i) {
+        std::string kv[2];
+        for (int half = 0; half < 2; ++half) {
+            if (o + 4 > end) return 0;
+            const int32_t len = i32le(raw.data(), o);
+            o += 4;
+            if (len < 0 || o + size_t(len) > end) return 0;
+            kv[half].assign(reinterpret_cast<const char *>(raw.data()) + o, size_t(len));
+            o += size_t(len);
+        }
+        if (wantKey && value && kv[0] == wantKey) *value = kv[1];
+    }
+    return o;
+}
+
+// "_t" is three space-separated integers. A malformed one leaves the
+// translation at zero, which stacks that piece at the origin -- wrong, but in
+// bounds.
+inline void voxTranslation(const std::string &s, VoxNode *node) {
+    int v[3] = {0, 0, 0};
+    if (std::sscanf(s.c_str(), "%d %d %d", &v[0], &v[1], &v[2]) == 3) {
+        node->tx = v[0];
+        node->ty = v[1];
+        node->tz = v[2];
+    }
+}
+
+// One nTRN, nGRP or nSHP chunk. Anything that does not parse cleanly is dropped
+// by the caller rather than failing the file: a graph we cannot read falls back
+// to the single-model path, which is what this reader did before the graph
+// existed.
+inline bool voxParseNode(const std::vector<uint8_t> &raw, const uint8_t *id, size_t body,
+                         size_t end, VoxNode *node) {
+    size_t o = body;
+    if (o + 4 > end) return false;
+    node->id = i32le(raw.data(), o);
+    o += 4;
+
+    if (std::memcmp(id, "nTRN", 4) == 0) {
+        node->kind = VoxNode::Trn;
+        o = voxSkipDict(raw, o, end, nullptr, nullptr);
+        if (!o || o + 16 > end) return false;
+        const int child = i32le(raw.data(), o);
+        const int frames = i32le(raw.data(), o + 12);
+        o += 16;
+        // The translation lives in the FRAME dict, not the node's own. A static
+        // scene has exactly one frame; a keyframed one takes the first.
+        for (int f = 0; f < frames; ++f) {
+            std::string t;
+            o = voxSkipDict(raw, o, end, "_t", &t);
+            if (!o) return false;
+            if (f == 0) voxTranslation(t, node);
+        }
+        node->kids.push_back(child);
+        return true;
+    }
+    if (std::memcmp(id, "nGRP", 4) == 0) {
+        node->kind = VoxNode::Grp;
+        o = voxSkipDict(raw, o, end, nullptr, nullptr);
+        if (!o || o + 4 > end) return false;
+        const int n = i32le(raw.data(), o);
+        o += 4;
+        if (n < 0 || o + size_t(n) * 4 > end) return false;
+        for (int i = 0; i < n; ++i) node->kids.push_back(i32le(raw.data(), o + size_t(i) * 4));
+        return true;
+    }
+    if (std::memcmp(id, "nSHP", 4) == 0) {
+        node->kind = VoxNode::Shp;
+        o = voxSkipDict(raw, o, end, nullptr, nullptr);
+        if (!o || o + 4 > end) return false;
+        const int n = i32le(raw.data(), o);
+        o += 4;
+        if (n < 0) return false;
+        for (int i = 0; i < n; ++i) {
+            if (o + 4 > end) return false;
+            node->kids.push_back(i32le(raw.data(), o));
+            o += 4;
+            o = voxSkipDict(raw, o, end, nullptr, nullptr);  // per-model attributes
+            if (!o) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Parse a .vox file into ONE model.
 //
 // Chunks are walked rather than assumed to be in a fixed order, and unknown
-// ones (nTRN, nSHP, MATL, LAYR and the rest of the scene-graph extensions) are
-// skipped by their declared size -- a reader that assumed SIZE and XYZI came
-// first would work on these files and break on the next MagicaVoxel export.
+// ones (MATL, LAYR, rCAM and the rest) are skipped by their declared size -- a
+// reader that assumed SIZE and XYZI came first would work on these files and
+// break on the next MagicaVoxel export.
+//
+// A file holding one model is read exactly as it always was: the graph is
+// ignored and the grid is that model's own. A file holding several is composed
+// through its nTRN translations into one grid -- see the note above; that is
+// how a tree taller than the format's own ceiling is stored.
+//
+// THIS CHANGED WHAT A MULTI-MODEL FILE MEANS HERE, so it is worth being plain
+// about: voxParse used to return the FIRST model and silently drop the rest, and
+// it now returns all of them assembled. That is the right reading for this
+// function -- voxLoad means "one asset", and an asset in several pieces is still
+// one asset -- while "several assets in one file" is what voxLoadAll below is
+// for. The only shipped files carrying more than one model are flowers.vox and
+// mushroom.vox; both go through voxLoadAll, so nothing in the engine reads them
+// through here. A caller that wanted just the first model of a row wants
+// voxLoadAll and an index.
 inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string *err) {
     auto fail = [&](const char *why) {
         if (err) *err = why;
@@ -81,10 +231,10 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
     };
     if (raw.size() <= 8 || std::memcmp(raw.data(), "VOX ", 4) != 0) return fail("not a .vox file");
 
+    std::vector<VoxChunkModel> models;
+    std::vector<VoxNode> nodes;
     bool haveSize = false;
     int sx = 0, sy = 0, sz = 0;
-    const uint8_t *voxels = nullptr;
-    size_t voxelBytes = 0;
     auto pal = defaultPalette();
 
     size_t o = 8;
@@ -104,40 +254,128 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
             sx = i32le(raw.data(), body);
             sy = i32le(raw.data(), body + 4);
             sz = i32le(raw.data(), body + 8);
-            haveSize = true;
-        } else if (std::memcmp(id, "XYZI", 4) == 0 && content >= 4 && voxels == nullptr) {
+            haveSize = (sx > 0 && sy > 0 && sz > 0);
+        } else if (std::memcmp(id, "XYZI", 4) == 0 && content >= 4 && haveSize) {
             const size_t n = size_t(std::max(0, i32le(raw.data(), body)));
-            const size_t need = 4 + n * 4;
-            if (content < need) return fail("XYZI shorter than its own count");
-            voxels = raw.data() + body + 4;
-            voxelBytes = n * 4;
+            if (content < 4 + n * 4) return fail("XYZI shorter than its own count");
+            VoxChunkModel m;
+            m.sx = sx;
+            m.sy = sy;
+            m.sz = sz;
+            m.voxels = raw.data() + body + 4;
+            m.voxelBytes = n * 4;
+            models.push_back(m);
+            haveSize = false;  // one XYZI per SIZE
         } else if (std::memcmp(id, "RGBA", 4) == 0 && content >= 1024) {
             for (int i = 0; i < 255; ++i) {
                 const size_t p = body + size_t(i) * 4;
                 pal[i] = {raw[p], raw[p + 1], raw[p + 2], raw[p + 3]};
             }
+        } else if (std::memcmp(id, "nTRN", 4) == 0 || std::memcmp(id, "nGRP", 4) == 0 ||
+                   std::memcmp(id, "nSHP", 4) == 0) {
+            VoxNode node;
+            if (voxParseNode(raw, id, body, body + content, &node)) nodes.push_back(node);
         }
         o = body + content + children;
     }
 
-    if (!haveSize) return fail("no SIZE chunk");
-    if (!voxels) return fail("no XYZI chunk");
-    if (sx <= 0 || sy <= 0 || sz <= 0 || double(sx) * sy * sz > 64.0 * (1 << 20))
+    if (models.empty()) return fail("no SIZE/XYZI pair");
+
+    // WHERE EACH PIECE SITS. One model needs no graph and is given none, so
+    // every file that predates this -- which is all of them but the tall trees
+    // -- takes the identical path it always did.
+    struct Placed {
+        int model, x, y, z;
+    };
+    std::vector<Placed> placed;
+    if (models.size() == 1) {
+        placed.push_back({0, 0, 0, 0});
+    } else {
+        // Depth-first from node 0, MagicaVoxel's root, summing translations on
+        // the way down. An explicit stack rather than recursion, and a visited
+        // set, so a malformed or cyclic graph terminates instead of blowing the
+        // C stack.
+        std::vector<bool> seen(nodes.size(), false);
+        std::vector<std::array<int, 4>> stack;  // node id, then the translation so far
+        stack.push_back({0, 0, 0, 0});
+        while (!stack.empty()) {
+            const std::array<int, 4> cur = stack.back();
+            stack.pop_back();
+            size_t idx = nodes.size();
+            for (size_t i = 0; i < nodes.size(); ++i)
+                if (nodes[i].id == cur[0]) {
+                    idx = i;
+                    break;
+                }
+            if (idx == nodes.size() || seen[idx]) continue;
+            seen[idx] = true;
+            const VoxNode &n = nodes[idx];
+            const int tx = cur[1] + n.tx, ty = cur[2] + n.ty, tz = cur[3] + n.tz;
+            if (n.kind == VoxNode::Shp) {
+                for (int m : n.kids)
+                    if (m >= 0 && m < int(models.size())) placed.push_back({m, tx, ty, tz});
+            } else {
+                for (int k : n.kids) stack.push_back({k, tx, ty, tz});
+            }
+        }
+        // Several models but no graph we could follow: fall back to the first
+        // one alone, which is what this function returned before it could
+        // compose. A short tree beats no tree.
+        if (placed.empty()) placed.push_back({0, 0, 0, 0});
+    }
+
+    // nTRN gives a piece's CENTRE, so its minimum corner is that translation
+    // less half its size, truncated -- the same integer halving MagicaVoxel
+    // does on the way in. The composed model is then shifted to start at zero.
+    long long minX = 0, minY = 0, minZ = 0, maxX = 0, maxY = 0, maxZ = 0;
+    for (size_t i = 0; i < placed.size(); ++i) {
+        const VoxChunkModel &m = models[size_t(placed[i].model)];
+        const long long x0 = placed[i].x - m.sx / 2;
+        const long long y0 = placed[i].y - m.sy / 2;
+        const long long z0 = placed[i].z - m.sz / 2;
+        if (i == 0) {
+            minX = x0;
+            minY = y0;
+            minZ = z0;
+            maxX = x0 + m.sx;
+            maxY = y0 + m.sy;
+            maxZ = z0 + m.sz;
+            continue;
+        }
+        minX = std::min(minX, x0);
+        minY = std::min(minY, y0);
+        minZ = std::min(minZ, z0);
+        maxX = std::max(maxX, x0 + m.sx);
+        maxY = std::max(maxY, y0 + m.sy);
+        maxZ = std::max(maxZ, z0 + m.sz);
+    }
+
+    const long long w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
+    if (w <= 0 || h <= 0 || d <= 0 ||
+        double(w) * double(h) * double(d) > 64.0 * double(1 << 20))
         return fail("implausible model dimensions");
 
-    out->sx = sx;
-    out->sy = sy;
-    out->sz = sz;
+    out->sx = int(w);
+    out->sy = int(h);
+    out->sz = int(d);
     out->pal = pal;
-    out->m.assign(size_t(sx) * sy * sz, 0);
-    for (size_t q = 0; q + 4 <= voxelBytes; q += 4) {
-        const int x = voxels[q], y = voxels[q + 1], z = voxels[q + 2];
-        const uint8_t c = voxels[q + 3];
-        // Out-of-range voxels are dropped rather than fatal: a hand-edited file
-        // occasionally carries one past its own SIZE, and losing it beats
-        // refusing the tree.
-        if (x < sx && y < sy && z < sz)
-            out->m[size_t(x) + size_t(y) * sx + size_t(z) * sx * sy] = c;
+    out->m.assign(size_t(w) * size_t(h) * size_t(d), 0);
+    for (const Placed &p : placed) {
+        const VoxChunkModel &m = models[size_t(p.model)];
+        const long long ox = (p.x - m.sx / 2) - minX;
+        const long long oy = (p.y - m.sy / 2) - minY;
+        const long long oz = (p.z - m.sz / 2) - minZ;
+        for (size_t q = 0; q + 4 <= m.voxelBytes; q += 4) {
+            const int x = m.voxels[q], y = m.voxels[q + 1], z = m.voxels[q + 2];
+            const uint8_t c = m.voxels[q + 3];
+            // Out-of-range voxels are dropped rather than fatal: a hand-edited
+            // file occasionally carries one past its own SIZE, and losing it
+            // beats refusing the tree.
+            if (x >= m.sx || y >= m.sy || z >= m.sz) continue;
+            const long long wx = ox + x, wy = oy + y, wz = oz + z;
+            if (wx < 0 || wy < 0 || wz < 0 || wx >= w || wy >= h || wz >= d) continue;
+            out->m[size_t(wx) + size_t(wy) * size_t(w) + size_t(wz) * size_t(w) * size_t(h)] = c;
+        }
     }
     return true;
 }
