@@ -295,7 +295,9 @@ class Butterflies {
         std::printf("v2: butterflies %d colours x %d frames, %dx%dx%d voxels\n",
                     int(colours_.size()), kFlyFrames, sx_, sy_, sz_);
         std::fflush(stdout);
-        flies_.assign(size_t(kFlyerInstances), Fly{});
+        // ITS OWN RUN OF THE BAND, not all of it -- the perched songbirds
+        // own the rest. See kButterflySlots.
+        flies_.assign(size_t(kButterflySlots), Fly{});
         return true;
     }
 

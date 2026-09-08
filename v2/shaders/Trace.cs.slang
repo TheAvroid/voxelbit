@@ -575,7 +575,25 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // puts the sample inside the voxel that was actually hit, which is the
     // voxel whose motion is being asked about. Every other face has a zero
     // x component here and is untouched.
-    if (inst.kind == KIND_FLYER && any(inst.flap.xy != 0.0f))
+    // A SPIN IN PLACE, which is the songbirds -- see V6Instance::flapPad. The
+    // surface turned about a vertical axis while the instance stood still, so
+    // where a point WAS is that point rotated back by the same angle about the
+    // same axis. h.moved is "subtract this to get where it was", so it is the
+    // difference between the two.
+    //
+    // Exact rather than approximate, and it costs a sin, a cos and six
+    // multiplies -- there is no reason to linearise a rotation this cheap.
+    if (inst.kind == KIND_FLYER && inst.flapPad != 0.0f)
+    {
+        const float a = -inst.flapPad;
+        const float ca = cos(a), sa = sin(a);
+        const float rx = h.p.x - inst.flap.x;
+        const float rz = h.p.z - inst.flap.z;
+        const float3 prev =
+            float3(inst.flap.x + ca * rx + sa * rz, h.p.y, inst.flap.z - sa * rx + ca * rz);
+        h.moved += h.p - prev;
+    }
+    else if (inst.kind == KIND_FLYER && any(inst.flap.xy != 0.0f))
     {
         const float3 ax = float3(o2w[0][0], o2w[1][0], o2w[2][0]);
         const float xObj = dot(h.p - float3(o2w[0][3], o2w[1][3], o2w[2][3]), ax) /
@@ -1284,6 +1302,26 @@ void main(uint3 tid: SV_DispatchThreadID)
                 const float w = specularBounce ? 1.0f : powerHeuristic(1.0f, bsdfPdf, 1.0f, lightPdf);
                 sky += disk * w;
             }
+            // -- SHOOTING STARS, down the PRIMARY ray and at night -----------
+            //
+            // Ahead of the deck, so a cloud drawn over them hides one -- which
+            // is what a cloud does. Emissive and added rather than composited:
+            // a meteor is a light in the sky, not a surface in front of it.
+            //
+            // depth == 0 for the same reason the deck is: a meteor is worth
+            // nothing to an indirect bounce that escaped, and eight slots of
+            // arithmetic on every one of those would be paid millions of times
+            // a frame to change no pixel.
+            if (depth == 0)
+            {
+                // NIGHT, from the sun's own elevation, smoothed across the
+                // last few degrees so nothing switches on at a hard edge. The
+                // meteors are gone entirely by the time the sun is up, which
+                // is one compare on a value that is exactly 0 all day.
+                const float ny = saturate((0.02f - gParams.sky.sunDir.y) * 8.3333f);
+                sky += meteors(d, gParams.skyTime, ny * ny * (3.0f - 2.0f * ny));
+            }
+
             // -- THE DECK, over the sky and only down the PRIMARY ray --------
             //
             // Composited as a surface with alpha rather than blended against

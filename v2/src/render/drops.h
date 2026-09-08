@@ -74,6 +74,21 @@ inline constexpr float kDropSpin = 1.2f;  // radians a second
 // since `pos` is the item's CENTRE, "met the world" put half an axe underground.
 inline constexpr float kDropHoverM = 0.9f;  // dropAnchor's 9.0
 inline constexpr float kDropBobM = 0.13f;   // ...and its 1.3
+
+// AND IT NEVER COMES DOWN THE WHOLE WAY (user 2026-09-07): three voxels of air
+// under a dropped item, always, whatever else the hover is doing.
+//
+// It is a floor under the UNDERSIDE, not a height for the centre, and the
+// difference is the whole point. `pos` is the centre, so a rule written as a
+// centre height means a tall item floats less than a short one -- and the two
+// places this bites were both real. The settle below eased to `half`, which
+// puts the underside exactly ON the ground, so every drop lay down flat after
+// thirty seconds. And the hover itself is a centre height of 9 voxels, so an
+// item 18 voxels tall hovered with its base already at ground level and the
+// 1.3-voxel bob then took it under.
+//
+// Written as a gap, both go away at once and the item's size stops mattering.
+inline constexpr float kDropFloorM = 0.3f;  // three 10 cm voxels
 inline constexpr float kDropBobHz = 0.32f;  // sin(t * 0.002 ms) = 0.32 Hz
 
 // AUTO_PICK_R 16, in metres. Walk this close with a free hand and it comes back
@@ -83,6 +98,31 @@ inline constexpr float kPickupM = 1.6f;
 // ...but not the instant it leaves your hand. A throw that could be walked into
 // on the frame it was thrown would be a Q that does nothing.
 inline constexpr float kPickupArmSec = 0.6f;
+
+// -- AND IT FLIES TO YOU RATHER THAN VANISHING (user 2026-09-07) ------------
+//
+// "have the object float towards the player like the player is absorbing it."
+// Walking into range used to delete the drop and grant the tool on the same
+// frame, so a pickup was a thing that had already happened by the time you
+// could see it. The JS engine never did that: autoPickup hands the item to
+// startGrab, which flies it in over GRAB_MS, and a chunk knocked off a rock
+// takes the same trip on sim/solver.js's absorb curve.
+//
+// This is that curve, and the numbers are all its:
+//
+//   * GRAB_MS 360, the flight for a DROPPED item. (A chunk's own absorbFly is
+//     672 -- longer, because it sets off from wherever it was knocked to.)
+//   * smoothstep on the way, "leaves the ground gently, arrives fast".
+//   * absorbY -12 voxels, so it converges BELOW the eye -- at the chest, not
+//     in your face. The engine over there retuned this twice and landed here.
+//   * a 3-voxel arc, sin(e * pi), "slight arc so it lifts rather than slides".
+//   * full size the whole way. That engine's note is worth keeping: it used to
+//     shrink to a tenth on the way in, "which read as the chunk evaporating
+//     rather than being picked up".
+inline constexpr float kGrabSec = 0.36f;      // GRAB_MS
+inline constexpr float kAbsorbEyeM = -1.2f;   // absorbY, -12 voxels off the eye
+inline constexpr float kAbsorbArcM = 0.3f;    // ...and its 3-voxel lift
+inline constexpr float kAbsorbSpin = 6.0f;    // omega, rad/s -- it tumbles on the way in
 
 // ---------------------------------------------------------------------------
 class Drops {
@@ -100,6 +140,18 @@ class Drops {
         bool flying = true;
         float rest = 0.0f;     // seconds since it landed
         float groundY = 0.0f;  // the terrain under where it landed
+        // -- being absorbed --------------------------------------------------
+        // `from` is captured ONCE, at the instant the flight is armed, and the
+        // curve is evaluated against it rather than integrated. That is the
+        // same choice the hover makes for the same reason: a computed position
+        // cannot drift, and the arrival lands exactly on the target however
+        // ragged the frame times were on the way.
+        bool taken = false;
+        float fly = 0.0f;
+        Vec3 from{0, 0, 0};
+        // How far it turned since the last frame -- what the motion vector
+        // needs, which is not the same as how fast it is turning.
+        float dspin = 0.0f;
     };
 
     // -----------------------------------------------------------------------
@@ -150,12 +202,37 @@ class Drops {
     // one resident array.
     // -----------------------------------------------------------------------
     // `handFree` is gone deliberately -- see the pickup below.
-    int update(float dt, const WalkWorld &w, const Vec3 &player) {
+    int update(float dt, const WalkWorld &w, const Vec3 &player, const Vec3 &eye) {
         int got = -1;
         const float h = minf(dt, 0.25f);
         for (Item &d : items_) {
             if (!d.live) continue;
             d.age += h;
+
+            // -- ...AND ONCE IT IS COMING TO YOU, NOTHING ELSE MOVES IT ------
+            //
+            // Ahead of the toss and the hover both, because an item on this
+            // curve is no longer subject to either -- the JS solver says the
+            // same thing in one line at the top of its integrator, "an
+            // absorbing chunk is driven by its flight curve, not by physics".
+            // The target is read LIVE off the eye so the item follows a player
+            // who keeps walking, which is that engine's "tracked live" note.
+            if (d.taken) {
+                d.fly += h;
+                const float k = minf(1.0f, d.fly / kGrabSec);
+                const float e = k * k * (3.0f - 2.0f * k);
+                const Vec3 to(eye.x, eye.y + kAbsorbEyeM, eye.z);
+                d.pos = d.from + (to - d.from) * e;
+                d.pos.y += sinf(e * PI) * kAbsorbArcM;
+                const float wasFly = d.spin;
+                d.spin += kAbsorbSpin * h;
+                d.dspin = d.spin - wasFly;
+                if (k >= 1.0f) {
+                    got = d.tool;
+                    d = Item{};
+                }
+                continue;
+            }
 
             if (d.flying) {
                 float left = h;
@@ -190,11 +267,17 @@ class Drops {
                     // frame it was thrown.
                     const float g =
                         w.terrain ? w.terrain->heightM(next.x, next.z, tm) : next.y;
+                    // The hover LINE is still what stops the arc -- see the
+                    // note above -- but where it comes to rest is subject to
+                    // the same floor as everything below, so a big item does
+                    // not spend its first frame lower than it will ever be
+                    // again.
                     if (d.age > 0.12f && next.y <= g + kDropHoverM) {
                         d.pos.x = next.x;
                         d.pos.z = next.z;
                         d.groundY = g;
-                        d.pos.y = g + kDropHoverM;  // where the hover starts
+                        d.pos.y = maxf(g + kDropHoverM,
+                                       g + 0.5f * float(d.sy) * VOXEL_M + kDropFloorM);
                         d.flying = false;
                         d.rest = 0.0f;
                         break;
@@ -226,8 +309,18 @@ class Drops {
                 // dropped tools still do not pulse as one.
                 const float bob = sinf(d.rest * kDropBobHz * TWO_PI + d.phase) * kDropBobM *
                                   minf(1.0f, d.rest);
-                d.pos.y = d.groundY + kDropHoverM + (half - kDropHoverM) * e + bob * (1.0f - e);
+                // The ease still runs from the hover to the resting extent; the
+                // resting extent is just three voxels higher than the ground
+                // now. The clamp is what makes it a MINIMUM rather than merely
+                // an endpoint -- it catches the trough of the bob, and it
+                // catches an item tall enough that its hover was already lower
+                // than its floor, which then simply hangs at the floor.
+                const float low = d.groundY + half + kDropFloorM;
+                const float air = d.groundY + kDropHoverM;
+                d.pos.y = maxf(low, air + (low - air) * e + bob * (1.0f - e));
+                const float was = d.spin;
                 d.spin += kDropSpin * h * settle(d);
+                d.dspin = d.spin - was;
             }
             if (!d.live) continue;
 
@@ -244,11 +337,16 @@ class Drops {
             // HeldItem::give only CHANGES what is in the hand when the hand is
             // empty, so walking over a pick while swinging an axe puts the pick
             // back in the kit without swapping the axe out.
-            if (d.age > kPickupArmSec && got < 0) {
+            // ONE FLIGHT AT A TIME, which is that engine's rule too ("one
+            // flight at a time -- startGrab would clobber the item already in
+            // the air"). A pile therefore drains one item per trip rather than
+            // all of them converging at once.
+            if (d.age > kPickupArmSec && got < 0 && !anyTaken()) {
                 const Vec3 o = d.pos - player;
                 if (lengthSq(o) < kPickupM * kPickupM) {
-                    got = d.tool;
-                    d = Item{};
+                    d.taken = true;
+                    d.fly = 0.0f;
+                    d.from = d.pos;
                 }
             }
         }
@@ -288,9 +386,30 @@ class Drops {
             // computed here: World::place differences the transform. See the
             // note over it -- a tossed tool arcs, and then it hovers and turns,
             // and this used to hand the tracer nothing at all.
-            world.setDropInstance(i, d.model, m, d.pos.x - ox, d.pos.y - oy, d.pos.z - oz, true);
+            const float spin[4] = {d.pos.x, d.pos.y, d.pos.z, d.dspin};
+            world.setDropInstance(i, d.model, m, d.pos.x - ox, d.pos.y - oy, d.pos.z - oz, true,
+                                  spin);
         }
         world.flushDropInstances();
+    }
+
+    // WHAT IT ACTUALLY CLEARS, so that the floor can be checked rather than
+    // argued about. The underside is `pos.y - half` BY CONSTRUCTION -- publish()
+    // subtracts exactly that to turn a centre into the corner a voxel mesh
+    // wants -- so this is the one number the three-voxel rule is about, and it
+    // is read from the same place the renderer reads.
+    bool clearance(int i, float *outM) const {
+        if (i < 0 || i >= kDropSlots) return false;
+        const Item &d = items_[size_t(i)];
+        if (!d.live) return false;
+        *outM = d.pos.y - 0.5f * float(d.sy) * VOXEL_M - d.groundY;
+        return true;
+    }
+
+    bool anyTaken() const {
+        for (const Item &d : items_)
+            if (d.live && d.taken) return true;
+        return false;
     }
 
     int count() const {

@@ -196,6 +196,34 @@ inline constexpr float kImpactMs = 250.0f;
 // How long a tool takes to rise back into frame after a change of hands.
 inline constexpr float kSwapMs = 240.0f;
 
+// -- AND IT OVERSHOOTS ON THE WAY UP (user 2026-09-07) ----------------------
+//
+// "the object comes up, a little higher then it sits naturally then returns to
+// the resting state." The swap already lifted the tool into frame, but along a
+// smoothstep, which is monotonic -- it approaches the resting pose and stops.
+// There is nothing to overshoot with, so a bounce cannot be tuned into it; it
+// has to be a different curve.
+//
+// A bounce IS a spring, so this is one: the unit step response of a damped
+// second-order system,
+//
+//     x(t) = e^(-zwt) * (cos(wd t) + (z w / wd) sin(wd t)),   wd = w sqrt(1-z^2)
+//
+// which is 1 at t=0 and decays to 0 through zero -- so a pose displaced by
+// -drop * x(t) starts a drop low, rises, passes its resting place, and settles
+// back onto it. One expression for the whole movement, and the shape is set by
+// two numbers that mean something rather than by hand-fitted keyframes.
+//
+// The overshoot is exp(-pi z / sqrt(1-z^2)) of the drop, so z = 0.34 rises
+// about a third of the drop above the pose -- around two centimetres at this
+// scale, which reads as a bounce without looking sprung. w sets the speed: the
+// first crossing is at a quarter period, ~70 ms, so the tool is UP about as
+// fast as it was before and spends the rest of the time settling.
+inline constexpr float kSwapW = 22.0f;      // rad/s
+inline constexpr float kSwapZeta = 0.34f;   // ...and its damping ratio
+// Settled to within a thousandth: 4 time constants, 1/(z*w) each.
+inline constexpr float kSwapSettleMs = 4000.0f / (kSwapZeta * kSwapW);
+
 // -- the reach, from tools.js -----------------------------------------------
 //
 // 53 voxels level, opening out to 107 when you look steeply down -- the same
@@ -396,6 +424,27 @@ class HeldItem {
     }
 
     // -----------------------------------------------------------------------
+    // AN EMPTY HAND, AS A SLOT (user 2026-09-07: "give an empty hand. so 4
+    // slots total").
+    //
+    // A Tool with no models. Everything downstream already handles that -- the
+    // model lookup returns -1 for an empty strip and the world draws nothing --
+    // so this needs no special case anywhere else, which is why it is a slot
+    // rather than a mode. `shown` stays what it is: H still puts the whole hand
+    // away, and that is a different thing from holding nothing.
+    //
+    // It TAKES nothing, so a swing with it lands on no material and the sound
+    // path stays silent of its own accord -- see Takes and ToolSounds::blow.
+    // -----------------------------------------------------------------------
+    bool addEmpty(const char *name) {
+        Tool t;
+        t.name = name;
+        t.takes = Takes::Nothing;
+        tools_.push_back(t);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
     // The bow: one file, cut into a strip, registered as fourteen models.
     //
     // The two halves go in one after the other and the draw indexes them by
@@ -447,6 +496,13 @@ class HeldItem {
     // -----------------------------------------------------------------------
     int dropSelected() {
         if (!ready() || !tools_[size_t(sel_)].carried) return -1;
+        // AN EMPTY HAND CANNOT BE PUT DOWN. Without this, Q on the fourth slot
+        // marked it uncarried -- taking it out of the wheel for good, since
+        // nothing can ever pick it up again -- and tossed a drop whose model is
+        // -1, which is an item lying in the wood that cannot be drawn or
+        // collected. Having no models is exactly what makes it the empty slot,
+        // so it is the right thing to ask.
+        if (tools_[size_t(sel_)].models.empty()) return -1;
         const int gone = sel_;
         tools_[size_t(gone)].carried = false;
         drawing_ = false;
@@ -726,7 +782,7 @@ class HeldItem {
     // already invalidates through the eye it moves.
     bool animating() const {
         return shown && (nowMs_ - swingStart_ < double(kSwingMs) ||
-                         nowMs_ - swapT0_ < double(kSwapMs) || live_ > 0.01f || drawing_ ||
+                         nowMs_ - swapT0_ < double(kSwapSettleMs) || live_ > 0.01f || drawing_ ||
                          (loosed_ && nowMs_ - bowRel_ < double(kBowRelMs)));
     }
 
@@ -775,12 +831,34 @@ class HeldItem {
         float hy = pose.y + 0.22f * wind - 0.18f * chop;
         float hz = pose.z - 0.05f * wind + 0.18f * chop;
 
-        // -- the swap -------------------------------------------------------
-        // Squared, so it leaves fast and settles softly.
-        const float swapR = maxf(0.0f, 1.0f - float((nowMs_ - swapT0_) / double(kSwapMs)));
-        const float swapF = swapR * swapR * (3.0f - 2.0f * swapR);
-        hy -= 0.62f * swapF * swapF;
-        hz -= 0.10f * swapF;
+        // -- the swap, which bounces -----------------------------------------
+        // See kSwapW: this is the spring's step response, and the sign is what
+        // makes it a bounce rather than a rise -- the term is SUBTRACTED, so
+        // x(t) crossing zero carries the pose up past where it rests before it
+        // comes back down onto it.
+        const float swapT = float(nowMs_ - swapT0_) * 0.001f;
+        float swapF = 0.0f;
+        if (swapT < kSwapSettleMs * 0.001f) {
+            const float wd = kSwapW * sqrtf(1.0f - kSwapZeta * kSwapZeta);
+            swapF = expf(-kSwapZeta * kSwapW * swapT) *
+                    (cosf(wd * swapT) + (kSwapZeta * kSwapW / wd) * sinf(wd * swapT));
+        }
+        // TWICE THE TRAVEL (user 2026-09-07: "double the switch bounce
+        // depth"). 0.62 -> 1.24, and the overshoot doubles with it because the
+        // spring's shape is a ratio -- z alone decides how far past the pose it
+        // goes, as a FRACTION of the drop, so scaling the drop scales the whole
+        // movement and the bounce keeps its proportions rather than becoming a
+        // deeper dip with the same little hop on the end.
+        // DOUBLED AGAIN (user 2026-09-07). 0.62 -> 1.24 -> 2.48. The spring's
+        // shape is untouched by this: z alone sets how far past the pose it
+        // rides, as a fraction of the drop, so the whole movement scales and
+        // the overshoot keeps its proportion of it.
+        hy -= 2.48f * swapF;
+        // The forward part does NOT overshoot -- only the lift does. A tool that
+        // also swung toward the camera and back read as being shoved rather than
+        // bounced, and the ask was for one of those. maxf clips the spring's
+        // negative half without changing the half that rises.
+        hz -= 0.40f * maxf(0.0f, swapF);
 
         // -- the bob and the breath -----------------------------------------
         //

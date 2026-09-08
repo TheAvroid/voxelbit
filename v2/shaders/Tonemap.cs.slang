@@ -66,6 +66,15 @@ cbuffer gTonemapCB
     float3 gCamFwd;
     float gSunCosR;
 
+    // -- AND THE SAME FOR THE MOON, at its own strength ----------------------
+    //
+    // "a slight glare like the sun. only slightly though." The flare below is
+    // not really about the sun -- it is about a very bright small disc seen
+    // through a lens -- so the moon wants the same function and a much smaller
+    // number, not a second effect. gMoonFlare is that number and 0 disables it.
+    float3 gMoonDir;
+    float gMoonFlare;
+
     // The vignette. 0 is off, which is the default -- it is a look, not a fix.
     float gVignette;
 
@@ -74,7 +83,9 @@ cbuffer gTonemapCB
     // unchanged.
     float gBloomStrength;
     uint gUseAuto;
-    float gVigPad2;
+    // Took the last padding word this buffer was carrying, so its size is
+    // unchanged -- the moon's own angular radius, which is not the sun's.
+    float gMoonCosR;
 };
 
 // The ACES filmic approximation (Narkowicz). Reinhard desaturates highlights
@@ -178,17 +189,22 @@ float3 deepShadowLift(float3 ldr, float amount, float range)
 // not define smoothstep for e0 > e1, which the source relied on.
 float sstepDown(float hi, float lo, float x) { return 1.0f - smoothstep(lo, hi, x); }
 
-float3 sunFlare(float2 fc, float2 dim)
+// A BODY, NOT THE SUN. Everything below was written against gSunDir and gFlare
+// directly, and none of it is actually about the sun: it is about a small very
+// bright disc seen through a lens. Passing the body in lets the moon have the
+// same glare at its own strength instead of growing a second copy of this that
+// would drift out of step with it.
+float3 bodyFlare(float2 fc, float2 dim, float3 bodyDir, float bodyCosR, float strength)
 {
-    if (gFlare <= 0.0f) return float3(0.0f);
+    if (strength <= 0.0f) return float3(0.0f);
 
     // Behind the camera, or below the horizon: nothing.
-    const float sf = dot(gSunDir, gCamFwd);
-    const float dayK = smoothstep(-0.03f, 0.05f, gSunDir.y);
+    const float sf = dot(bodyDir, gCamFwd);
+    const float dayK = smoothstep(-0.03f, 0.05f, bodyDir.y);
     if (sf <= 0.05f || dayK <= 0.0f) return float3(0.0f);
 
-    const float2 sunNDC = float2(dot(gSunDir, gCamRight) / (sf * gTanH * gAspect),
-                                 dot(gSunDir, gCamUp) / (sf * gTanH));
+    const float2 sunNDC = float2(dot(bodyDir, gCamRight) / (sf * gTanH * gAspect),
+                                 dot(bodyDir, gCamUp) / (sf * gTanH));
     const float2 sunPix = float2((sunNDC.x * 0.5f + 0.5f) * dim.x,
                                  (0.5f - sunNDC.y * 0.5f) * dim.y);
 
@@ -199,7 +215,7 @@ float3 sunFlare(float2 fc, float2 dim)
     // instead lets the disc outgrow its own glare past about 15 degrees off
     // axis, leaving a bare hard circle. 1.5 is the exponent between the two
     // magnifications. The max() guards 1/sf^1.5 from blowing up at the gate.
-    const float sunPx = tan(acos(gSunCosR)) / gTanH * 0.5f * dim.y / pow(max(sf, 0.2f), 1.5f);
+    const float sunPx = tan(acos(bodyCosR)) / gTanH * 0.5f * dim.y / pow(max(sf, 0.2f), 1.5f);
     const float2 ctr = dim * 0.5f;
     const float2 axis = ctr - sunPix;
 
@@ -297,7 +313,16 @@ float3 sunFlare(float2 fc, float2 dim)
     float3 add = float3(0.0f);
     for (int i = 0; i < 4; ++i)
         add += TINT[i] * (ghw[i] * 0.16f + sgw[i] * 0.24f);
-    return add * sv * dayK * gFlare;
+    return add * sv * dayK * strength;
+}
+
+// The two of them. Exactly one can ever contribute -- they sit at opposite
+// points of the sky, so whichever is up the other is below the horizon and its
+// own dayK gate returns black.
+float3 sunFlare(float2 fc, float2 dim)
+{
+    return bodyFlare(fc, dim, gSunDir, gSunCosR, gFlare) +
+           bodyFlare(fc, dim, gMoonDir, gMoonCosR, gMoonFlare);
 }
 [numthreads(8, 8, 1)]
 void main(uint3 tid: SV_DispatchThreadID)

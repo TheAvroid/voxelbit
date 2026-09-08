@@ -90,7 +90,7 @@ struct RenderSettings {
     // derived from anything: it is the haze the wood is meant to have, and the
     // number only means what it does because the slider now resolves it -- at
     // the old 0..0.10 range this and the previous 0.0022 were the same pixel.
-    float fogDensity = 0.00164f;
+    float fogDensity = 0.00100f;  // user 2026-09-07; was 0.00164
     float fogHeight = 30.0f;      // e-folding height of the haze, metres
     uint32_t seed = 20260904u;
     // 0 = accumulate without limit. Set while the day/night clock is running,
@@ -349,6 +349,15 @@ class Tracer {
     // Costs nothing measurable and changes no estimator; see BlueNoise.slang.
     bool blueNoise = false;
 
+    // THE WORLD'S OWN CLOCK, in seconds, and not the wall clock. The meteors
+    // are scheduled against it (see meteors() in Sky.slang), so tying it to the
+    // day-night cycle rather than to how long the process has been running is
+    // what makes a given night reproducible: the same time of day gives the
+    // same sky, which is the difference between a reference shot that can be
+    // taken twice and one that cannot. It also means scrubbing time scrubs the
+    // meteors, which is the behaviour anybody scrubbing would expect.
+    float skyTime = 0.0f;
+
     // Auto-exposure and bloom live in their own module because they share a
     // resolution and a number; this is how the command line reaches their
     // knobs. See post.h.
@@ -386,6 +395,16 @@ class Tracer {
     // five times life size, which is what the flare radii in blit.js were
     // fitted against and what makes a sun read as a sun rather than a dot.
     float flareSunCosR = 0.999756245f;
+    // The moon's, and the fraction of the sun's glare it gets.
+    //
+    // A TENTH, because "only slightly" is the whole of the request and a moon
+    // with the sun's glare stops reading as a moon -- the ghosts down the axis
+    // are what a bright source does to a lens, and a night sky with a chain of
+    // coloured discs across it is a lens flare with a moon in it. At 0.1 the
+    // halo is visible against a dark sky, which is where a tenth of something
+    // is still plenty, and the ghosts stay under the noise.
+    float moonFlare = 0.10f;
+    float flareMoonCosR = 0.999756245f;
 
     int width() const { return w_; }      // traced
     int height() const { return h_; }
@@ -415,12 +434,15 @@ class Tracer {
     // cannot come from two different frames -- which, at more than one sample a
     // frame, is exactly the bug the note over that line describes.
     // -----------------------------------------------------------------------
-    void setHeldXform(const float *m, float tx, float ty, float tz, bool show) {
+    // `which` identifies WHAT is in the hand -- see heldPrevValid below for why
+    // a transform on its own is not enough.
+    void setHeldXform(const float *m, float tx, float ty, float tz, bool show, int which) {
         for (int i = 0; i < 9; ++i) held_[i] = m ? m[i] : ((i % 4) == 0 ? 1.0f : 0.0f);
         held_[9] = tx;
         held_[10] = ty;
         held_[11] = tz;
         heldShown_ = show;
+        heldWhich_ = which;
     }
 
     const Falcor::ref<Texture> &display() const { return display_; }
@@ -570,7 +592,28 @@ class Tracer {
         // ...and where the tool was, in the same breath and under the same
         // condition: no previous frame, no previous pose, and the w of 0 sends
         // the tracer back to the zero it used to write.
-        p.heldPrevValid = (havePrev_ && heldPrevShown_ && heldShown_) ? 1 : 0;
+        // -- AND IT HAS TO BE THE SAME TOOL, NOT JUST A VISIBLE ONE --------
+        //
+        // This asked three questions -- is there a previous frame, was
+        // something held then, is something held now -- and none of them is
+        // "was it the SAME THING". So on the frame the hand changed tools the
+        // tracer reprojected the bow's surface through the AXE's object-to-
+        // world of the previous frame: a wrong motion vector on every pixel of
+        // the item, which under Ray Reconstruction is a smear across the middle
+        // of the screen for a frame or two. That is the swap glitch.
+        //
+        // The BOW showed it worst of the three and that is not a coincidence:
+        // its pose is the furthest from the others (z 6.99 against 8.73, and a
+        // scale of its own), so the bad transform was wrongest for it.
+        //
+        // THE TOOL, NOT THE MODEL. The bow steps through fourteen models as it
+        // draws, and those share an origin and a pose by construction -- the
+        // strip is meshed whole for exactly that reason -- so the transform
+        // stays valid across them and invalidating per model would throw away a
+        // good motion vector on every frame of a draw. What is not valid is
+        // carrying one across a change of OBJECT.
+        p.heldPrevValid =
+            (havePrev_ && heldPrevShown_ && heldShown_ && heldWhich_ == heldPrevWhich_) ? 1 : 0;
         p.heldPrev0 = float4(heldPrev_[0], heldPrev_[1], heldPrev_[2], heldPrev_[9]);
         p.heldPrev1 = float4(heldPrev_[3], heldPrev_[4], heldPrev_[5], heldPrev_[10]);
         p.heldPrev2 = float4(heldPrev_[6], heldPrev_[7], heldPrev_[8], heldPrev_[11]);
@@ -613,6 +656,8 @@ class Tracer {
         p.giDepth = cfg.giDepth;
         p.giStrength = cfg.giStrength;
         p.blueNoise = blueNoise ? 1 : 0;
+        p.skyTime = skyTime;
+        p.skyPad0 = p.skyPad1 = p.skyPad2 = 0.0f;
         // THE GUIDES ARE NOT ONLY FOR THE DENOISER any more. Demodulation
         // divides the specular channel by gGuideSpecular, and NRD reads the
         // normal, depth and motion guides directly -- so the guide block has to
@@ -934,6 +979,7 @@ class Tracer {
             prevCam_ = cam;
             for (int i = 0; i < 12; ++i) heldPrev_[i] = held_[i];
             heldPrevShown_ = heldShown_;
+            heldPrevWhich_ = heldWhich_;
             havePrev_ = true;
         }
     }
@@ -1269,6 +1315,15 @@ class Tracer {
         var["gTonemapCB"]["gAspect"] = flareCam_.halfH > 0.0f ? flareCam_.halfW / flareCam_.halfH : 1.0f;
         var["gTonemapCB"]["gCamFwd"] = flareCam_.w;
         var["gTonemapCB"]["gSunCosR"] = flareSunCosR;
+        // ...AND THE MOON'S, at a fraction of it. The moon is the same
+        // geometry to this shader -- a small bright disc -- so it takes the
+        // same glare rather than a second effect, at moonFlare's own strength.
+        // Its angular radius is its own: the two discs subtend nearly the same
+        // angle in the sky but this engine draws them at different sizes, so
+        // borrowing the sun's would put the moon's halo around the wrong circle.
+        var["gTonemapCB"]["gMoonDir"] = sky.moonDir;
+        var["gTonemapCB"]["gMoonFlare"] = flare * moonFlare;
+        var["gTonemapCB"]["gMoonCosR"] = flareMoonCosR;
         var["gTonemapCB"]["gVignette"] = vignette;
 
         // The bloom, and the stop. Both resources are bound every frame whether
@@ -1410,6 +1465,9 @@ class Tracer {
     float held_[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
     float heldPrev_[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
     bool heldShown_ = false, heldPrevShown_ = false;
+    // Which tool the transform above describes, and which one the previous
+    // frame's described. -1 for an empty hand.
+    int heldWhich_ = -1, heldPrevWhich_ = -1;
     // How many samples of the current frame have gone in. See the note where
     // it is stepped: it is what keeps prevCam_ a per-FRAME quantity.
     int sampleInFrame_ = 0;

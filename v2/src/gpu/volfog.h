@@ -228,7 +228,23 @@ class VolFog {
             var["VolFogCB"]["gDensity"] = density;
             var["VolFogCB"]["gCellSize"] = float3(cell, cell, cell);
             var["VolFogCB"]["gHeight"] = height;
-            var["VolFogCB"]["gSunDir"] = sky.sunDir;
+            // -- THE KEY LIGHT, NOT THE SUN (user 2026-09-07: "moon rays") ---
+            //
+            // This was sky.sunDir unconditionally, and that is why the night
+            // had no shafts in it. The volume stores VISIBILITY -- can this
+            // parcel of air see the light -- and it was asking whether each
+            // cell could see a sun that is forty-six degrees UNDER the horizon.
+            // The answer is no, everywhere, so the volume filled with zero and
+            // the fog scattered nothing all night.
+            //
+            // The tracer.s own fog march already had this right: it takes
+            // keyDir(sky), which is the sun by day and the moon by night. The
+            // two halves of one effect simply disagreed about which light they
+            // were describing, and the visibility half was the one that was
+            // wrong. Measured before and after: the fog changed 53% of a
+            // daylight frame and 0.0% of a moonlit one.
+            var["VolFogCB"]["gSunDir"] =
+                sky.sunDir.y > 0.0f ? sky.sunDir : sky.moonDir;
             var["VolFogCB"]["gSkyShadow"] = skyShadow;
             var["VolFogCB"]["gHistShift"] = int3(shiftX, shiftY, shiftZ);
             var["VolFogCB"]["gOriginCell"] = int3(ox, oy, oz);

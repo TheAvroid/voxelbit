@@ -33,6 +33,12 @@ constexpr float kTimeOfDay = 0.4167f;  // 10:00
 constexpr float kCycleSpeed = 1.00f;
 constexpr bool kAtmosphere = true;
 
+// HOW DARK THE NIGHT IS, as a multiplier over the moon's key light and the
+// airglow floor together. 1.00 is the night v2 has always rendered; below it
+// the wood goes dark, and 0 is the black the scattering model on its own
+// actually implies. Menu row "Night brightness", or --night-brightness.
+constexpr float kNightBrightness = 1.00f;
+
 // The three settings added on 2026-09-06, all OFF so that every screenshot and
 // every tuning decision taken before that date still reproduces exactly. Turn
 // them on here, or with --blue-noise / --auto-exposure / --bloom, or from the Y

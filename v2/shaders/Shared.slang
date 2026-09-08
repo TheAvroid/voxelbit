@@ -297,6 +297,24 @@ struct V6Instance
     // re-authoring the flap cannot leave this describing the old one.
     // -----------------------------------------------------------------------
     float3 flap;
+    // -- AND WHAT IT MEANS DEPENDS ON WHETHER THIS IS SET --------------------
+    //
+    // Padding until now, and it is the discriminator for a SECOND kind of
+    // surface motion the transform cannot describe. Zero: `flap` above is the
+    // butterfly's wing step, read as it always was. Non-zero: this instance
+    // SPUN in place by this many radians about a vertical axis, and `flap` is
+    // that axis in WORLD space rather than a wing measurement.
+    //
+    // The perched songbirds need it because their rotation lives in the ART.
+    // Eleven authored frames ARE a quarter turn, so the bird turns 8.2 degrees
+    // every 66 ms while its instance transform does not move at all -- the same
+    // shape of problem as the wing, and unrepresentable the same way, but a
+    // rotation instead of a lift. Rendering the turn through the transform
+    // instead would fix the motion vector and lose the grid alignment that is
+    // the whole reason the frames exist.
+    //
+    // The two readings are exclusive by construction: a wing step has no axis
+    // and a spin has no wing.
     float flapPad;
 };
 
@@ -540,6 +558,20 @@ struct V6Params
     // three rows actually added.
     int heldPrevValid;
 
+    // -- THE NIGHT SKY'S OWN CLOCK -------------------------------------------
+    //
+    // Seconds, continuous, and it is NOT the frame counter. The meteors are
+    // scheduled in windows of real time (see meteors() in Sky.slang), so a
+    // counter would run them at whatever rate the machine happens to render
+    // at -- faster on a good frame, and differently on every machine.
+    //
+    // A WHOLE NEW ROW, because giPad0 and giPad1 were both spent already. The
+    // three words after it are the rest of that row and are the next thing to
+    // take rather than growing the struct again; the assert at the bottom
+    // moves by exactly one row, which is what it is there to make me notice.
+    float skyTime;
+    float skyPad0, skyPad1, skyPad2;
+
     // -----------------------------------------------------------------------
     // WHERE THE TOOL WAS, as its own object-to-world of the PREVIOUS frame --
     // three rows of a 3x4, because a float3x3 in a constant buffer is three
@@ -627,7 +659,7 @@ static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
 static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");
 static_assert(sizeof(V6Instance) == 48, "V6Instance must fill whole 16-byte rows");
-static_assert(sizeof(V6Params) == 576, "V6Params must fill whole 16-byte rows");
+static_assert(sizeof(V6Params) == 592, "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2
 #endif

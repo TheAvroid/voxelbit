@@ -112,6 +112,9 @@ void usage() {
         "                            scattering -- cheaper, and its sunset freezes\n"
         "                            once the sun is under the horizon\n"
         "  --night-floor V           airglow/starlight the sky never goes below\n"
+        "  --night-brightness M      how dark the night gets -- one master over the\n"
+        "                            moon's key light AND the floor above. 1 is as\n"
+        "                            rendered, 0 is black, 3 is a readable midnight\n"
         "  --blue-noise              void-and-cluster sampling on the shallow\n"
         "                            dimensions -- same variance, less of it visible\n"
         "  --auto-exposure           a trimmed histogram sets the stop, and adapts\n"
@@ -246,6 +249,8 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
         return true;
     }
     if (a == "--drop-frame") { argInt(argc, argv, i, &o->dropFrame); return true; }
+    if (a == "--stage") { o->stageAtStart = true; return true; }
+    if (a == "--bird-dir") { if (i + 1 < argc) o->birdDir = argv[++i]; return true; }
     return false;
 }
 
@@ -357,6 +362,10 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
             argFloat(argc, argv, i, &o->nightFloor);
             o->nightFloorGiven = true;
         }
+        // NO GIVEN-FLAG. It is a multiplier with a neutral value, so an unset
+        // one is 1.0 and changes nothing -- there is no "unspecified" for it to
+        // mean, which is the only thing a given-flag is ever for.
+        else if (a == "--night-brightness") argFloat(argc, argv, i, &o->nightBrightness);
         else if (a == "--blue-noise") o->blueNoise = true;
         else if (a == "--no-blue-noise") o->blueNoise = false;
         else if (a == "--auto-exposure") o->autoExposure = true;

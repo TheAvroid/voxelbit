@@ -70,6 +70,7 @@
 #include "render/audio.h"
 #include "render/camera.h"
 #include "render/arrows.h"
+#include "render/birds.h"
 #include "render/butterflies.h"
 #include "render/drops.h"
 #include "render/helditem.h"
@@ -457,6 +458,8 @@ struct Options {
     // twenty-odd metres of wood, which is a few in view at a time in the open
     // and one at a time under a canopy.
     std::string butterflyDir = "C:/voxelbit/game/assets/life/butterfly";
+    // The three species' folders sit under this one -- see Birds::init.
+    std::string birdDir = "C:/voxelbit/game/assets/life";
     int butterflies = 24;
 
     // WHERE THE NOCKED ARROW STARTS, in whole voxels -- the same three numbers
@@ -491,6 +494,8 @@ struct Options {
     // it and for the same reason: a still of an item leaving the hand, or of
     // one lying in the wood, has to be reproducible. Negative never drops.
     int dropFrame = -1;
+    // Open straight into the asset editor -- what U does, without the key.
+    bool stageAtStart = false;
     int shotLoose = -1;
 
     float sunAz = defaults::kSunAz;
@@ -529,6 +534,16 @@ struct Options {
     // Atmosphere itself, so an unset flag changes nothing.
     float nightFloor = 0.0f;
     bool nightFloorGiven = false;
+
+    // HOW DARK THE NIGHT IS, as one number, and it is a MULTIPLIER over the two
+    // things that light a wood after dark rather than a third light of its own:
+    // the moon's key (sky.h moonKeyScale) and the airglow floor above it.
+    //
+    // BOTH, because either alone is a control that lies. The moon is worth tens
+    // of times the floor while it is up and near nothing when it is new, so a
+    // slider that moved only one of them would do nothing at all on half the
+    // nights of the month. 1.0 is the night this engine has always rendered.
+    float nightBrightness = defaults::kNightBrightness;
 
     // -- the sampler's pattern, and the two passes before the curve ---------
     //
@@ -706,6 +721,16 @@ class ForestApp : public SampleApp {
         // again because it never starts the clock.
         if (opt_.moonScaleGiven) world_.sky.moonScale = opt_.moonScale;
         if (opt_.moonKeyGiven) world_.sky.moonKeyScale = opt_.moonKey;
+
+        // AND THE NIGHT LEVEL ON TOP OF THEM, here for the reason the comment
+        // above gives: the offline path never rebuilds the sky, so a scale
+        // applied after setSun is a scale the GPU never sees. What is captured
+        // first is the BASE -- whatever the command line just said -- so
+        // --moon-key goes on meaning "the moon at 1.0x" and this stays a master
+        // over it rather than a second opinion about it.
+        nightLevel_ = maxf(0.0f, opt_.nightBrightness);
+        moonKeyBase_ = world_.sky.moonKeyScale;
+        world_.sky.moonKeyScale = moonKeyBase_ * nightLevel_;
 
         // THE PHASE HAS TO BE SET HERE TOO. This is the branch the OFFLINE path
         // takes -- it never starts the clock, so applySun (where the phase
@@ -946,8 +971,12 @@ class ForestApp : public SampleApp {
         if (opt_.cloudVarGiven) clouds_.regVar = opt_.cloudVar;
         if (opt_.cloudSunGiven) clouds_.sunStrength = opt_.cloudSun;
         if (opt_.cloudMoonKeyGiven) clouds_.moonStrength = opt_.cloudMoonKey;
-        if (opt_.moonScaleGiven) world_.sky.moonScale = opt_.moonScale;
-        if (opt_.moonKeyGiven) world_.sky.moonKeyScale = opt_.moonKey;
+        // THE MOON SCALES ARE NOT RE-APPLIED HERE, and they used to be. Setting
+        // the same value twice from the same flag cannot be seen, so the second
+        // copy survived as a no-op -- but it stops being one the moment
+        // anything sits between the two, and the night level now does. Left in
+        // place it would quietly undo the multiplier on the viewer path while
+        // leaving it standing on the offline one, which is the worst of both.
         if (clouds_.init(getDevice())) {
             tracer_.setClouds(&clouds_);
             std::printf("  clouds   %s\n", clouds_.status().c_str());
@@ -964,6 +993,13 @@ class ForestApp : public SampleApp {
         const bool atmoOk = atmo_.init(getDevice());
         atmo_.enabled = opt_.atmosphere && atmoOk;
         if (opt_.nightFloorGiven) atmo_.nightFloor = opt_.nightFloor;
+        // The floor's base, captured after its flag for the same reason the
+        // moon's was: --night-floor names the level at 1.0x and the night level
+        // scales what it names. No invalidate needed, unlike the menu row that
+        // writes these same two fields -- nothing has been built from it yet,
+        // the sky-view table is baked on the first update.
+        nightFloorBase_ = atmo_.nightFloor;
+        atmo_.nightFloor = nightFloorBase_ * nightLevel_;
         tracer_.setAtmosphere(&atmo_);
         std::printf("  sky      %s\n",
                     !atmoOk ? atmo_.status().c_str()
@@ -1071,8 +1107,12 @@ class ForestApp : public SampleApp {
         // picture of a different place. renderOffline ticks the flock itself,
         // because it runs none of the per-frame systems that would otherwise.
         if (opt_.butterflies > 0) {
-            flock_.wanted = mini(opt_.butterflies, kFlyerInstances);
+            flock_.wanted = mini(opt_.butterflies, kButterflySlots);
             flock_.init(world_, opt_.butterflyDir);
+            // The songbirds share the band -- see kButterflySlots -- so they
+            // are loaded here, beside the flock, and for the same reason: the
+            // flyer models have to exist before anything is built.
+            birds_.init(world_, opt_.birdDir);
             std::fflush(stdout);
         }
 
@@ -1123,6 +1163,23 @@ class ForestApp : public SampleApp {
         if (opt_.profile && getDevice()->getProfiler()) getDevice()->getProfiler()->setEnabled(true);
 
         if (opt_.menuAtStart) setMenuOpen(true);
+        // THE EDITOR, FROM THE COMMAND LINE. The same path U takes, so a shot
+        // of the stage is a shot of the thing the key opens rather than of a
+        // second arrangement that could drift from it.
+        if (opt_.stageAtStart) {
+            world_.setStage(true);
+            const Vec3 c = World::stageCentre();
+            // THREE METRES ON THE +Z SIDE, because yaw 0 looks down -Z in this
+                // engine (Camera::direction). Standing on the -Z side and facing
+                // that way put the subject squarely behind the camera.
+                player_.pos = Vec3(c.x, c.y + 0.2f, c.z + 3.0f);
+            player_.fly = true;
+            player_.vy = 0.0f;
+            yaw_ = 0.0f;
+            pitch_ = -8.0f;
+            pos_ = player_.eyePosition();
+            birds_.stageOne(Vec3(c.x, c.y, c.z));
+        }
 
         // The recorder compiles its conversion shader here rather than on the
         // first R: a first take that spent 300 ms in the shader compiler would
@@ -1203,6 +1260,12 @@ class ForestApp : public SampleApp {
             // was tuned to.
             held_.addBow(world_, "bow", opt_.bow,
                          HeldPose{12.000f, -1.320f, 6.990f, 0.010f, 1.570f, -0.060f, 1.234f});
+            // ...AND A FOURTH SLOT WITH NOTHING IN IT (user 2026-09-07). LAST
+            // rather than first, so the wheel reaches it after the bow and the
+            // game still opens with the axe in hand -- putting it at slot zero
+            // would have changed what you start holding, which was not asked
+            // for.
+            held_.addEmpty("empty hand");
             held_.select(opt_.tool);
             arrows_.init(world_, opt_.arrow);
             arrows_.log = opt_.swingLog;
@@ -1394,7 +1457,34 @@ class ForestApp : public SampleApp {
         // it up, which is what stops Q being a way to lose your axe -- the JS
         // engine's autoPickup, at its own radius.
         {
-            const int back = drops_.update(dt, walkWorld(), player_.pos);
+            // The night sky's clock -- see Tracer::skyTime. DayNight carries
+            // whole days separately from the fraction, so this stays continuous
+            // across midnight instead of snapping back at every wrap.
+            tracer_.skyTime = float((double(clock_.days) + double(clock_.tday)) * DAY_SECONDS);
+
+
+            // -- IS IT ACTUALLY SIMULATING? ---------------------------------
+            //
+            // A wiring check with teeth, and the reason it exists is that every
+            // cheap way of asking this question lies. PhysX prints a healthy
+            // status line whether or not anything is stepped; a body that never
+            // moves looks the same as one the scene never received; and a body
+            // that falls for ever looks, for the first second, exactly like one
+            // that is going to land. So the probe asks the question that has
+            // only one right answer: drop boxes from a known height and see
+            // whether they come to rest ON THE GROUND -- at their own half
+            // extent above the terrain the renderer draws, and asleep.
+            //
+            // That single number exercises the whole chain: the scene exists,
+            // step() runs it, the height field tile was built at the right
+            // origin and the right scale, and the solver's ground and the
+            // renderer's ground are the same surface.
+
+            // THE EYE AS WELL AS THE FEET: the reach is measured from the
+            // player, but a drop being absorbed converges on the CHEST, which
+            // is a fixed drop below the eye rather than a height above the
+            // ground. See kAbsorbEyeM.
+            const int back = drops_.update(dt, walkWorld(), player_.pos, player_.eyePosition());
             if (back >= 0) {
                 // NAMED BEFORE THE GIVE, and it has to be: give() only changes
                 // what is in the HAND when the hand is empty, so asking name()
@@ -1423,6 +1513,23 @@ class ForestApp : public SampleApp {
         // around IT. See Butterflies::decide for the clock that keeps that
         // affordable.
         flock_.update(dt, world_, player_.pos);
+        // -- PERCHES ARE LOOKED FOR FURTHER OUT THAN COLLISION IS ----------
+        //
+        // solids_ is gathered at six metres, which is the distance the PLAYER
+        // can walk into something. A bird may sit in any tree you can see, so
+        // it needs its own query at its own radius -- handing it the collision
+        // list confined the whole population to the few trunks within arm.s
+        // reach of the player, which is not a wood full of birds.
+        //
+        // NOT EVERY FRAME. This is a wide query and the answer barely changes
+        // while you walk: trees do not move, and a bird only consults it when a
+        // perch has to be filled. Twice a second is instant to a player and
+        // costs a fraction of what the collision query costs -- the JS engine
+        // makes the same call about its own perch check for the same reason.
+        ++frameTick_;
+        if (birds_.ready() && (frameTick_ % 30) == 0)
+            world_.collidersNear(player_.pos, kBirdKeepM, &perches_);
+        birds_.update(dt, perches_, player_.pos);
 
         // The bed follows the canopy. Fed the same dt as the walk and the day
         // cycle -- the shot clock when one is running -- so a scripted move
@@ -1586,10 +1693,13 @@ class ForestApp : public SampleApp {
             // where it is in the world -- see V6Params::heldPrev0. It keeps its
             // own previous copy and steps it with prevCam_, which is the only
             // way the two can be guaranteed to describe the same frame.
-            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+            // ...AND WHICH TOOL IT IS, so a change of hands does not carry the
+            // last one's motion vector onto this one. See heldPrevValid.
+            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show, held_.selected());
             arrows_.publish(world_);
             drops_.publish(world_);
             flock_.publish(world_);
+            birds_.publish(world_);
             world_.refitTlas();
         }
 
@@ -1913,6 +2023,43 @@ class ForestApp : public SampleApp {
                 else if (!opt_.shotPath.empty())
                     std::fprintf(stderr, "v2: could not write %s\n", opt_.shotPath.c_str());
                 if (opt_.profile) printProfile();
+                // A SCRIPTED DROP SAYS WHERE IT ENDED UP, not just where it was
+                // thrown from. The toss print above is half a measurement: what
+                // the floor under a dropped item is worth cannot be read off a
+                // screenshot, because the grass stands taller than the gap.
+                std::printf("v2: dug %zu voxels out of %zu chunks, %zu resident tris\n",
+                            world_.editedVoxels(), world_.editedChunks(), world_.residentTris());
+                if (birds_.ready()) {
+                    std::printf("v2: flyer band %d slots, %d models\n",
+                                world_.flyerBandSlots(), world_.flyerModelCount());
+                    std::printf("v2: %d songbirds perched\n", birds_.count());
+                    Vec3 bp;
+                    for (int k = 0; k < 12 && birds_.nth(k, &bp); ++k) {
+                        const Vec3 to = bp - pos_;
+                        const float len = maxf(0.001f, length(to));
+                        // NO LINE-OF-SIGHT TEST HERE, and the one that was is
+                        // worth recording as a warning. swingRay looked like
+                        // the right instrument -- it marches the terrain and
+                        // the solids and knows nothing about flyers -- but it
+                        // is the TOOL swing, and it stops at the tool.s reach.
+                        // Every bird beyond a few metres therefore came back
+                        // "nothing in the way", which is not a measurement of
+                        // anything. It read as twelve clear sight lines and was
+                        // twelve rays that never got there.
+                        std::printf("v2:   bird %d at (%.2f, %.2f, %.2f)  %.1f m  "
+                                    "yaw %+.1f pitch %+.1f\n",
+                                    k, double(bp.x), double(bp.y), double(bp.z), double(len),
+                                    double(atan2f(to.x, -to.z) * 180.0f / PI),
+                                    double(asinf(to.y / len) * 180.0f / PI));
+                    }
+                }
+                if (opt_.dropFrame >= 0) {
+                    float clear = 0.0f;
+                    for (int i = 0; i < kDropSlots; ++i)
+                        if (drops_.clearance(i, &clear))
+                            std::printf("v2: drop %d clears %.3f m (%.1f voxels)\n", i,
+                                        double(clear), double(clear / VOXEL_M));
+                }
                 std::fflush(stdout);
                 shutdown(0);
             }
@@ -2927,16 +3074,31 @@ class ForestApp : public SampleApp {
         // against an image taken before 2026-09-06. Neither is worth a row, and
         // the wrong answer to it silently freezes every sunset.
         //
-        // The night floor came out with it and is now --night-floor, because a
-        // setting whose only access was a sub-row of a checkbox that no longer
-        // exists is a setting nobody can reach. It stands in for airglow and
-        // starlight: the model knows about sunlight and nothing else, so at 0 a
-        // deep night is honestly -- and uselessly -- black.
+        // THE NIGHT FLOOR IS BACK, as half of the row below rather than as a
+        // row of its own. It left with the sky group and lived on --night-floor
+        // alone, which put the answer to "the night is too dark" behind a
+        // relaunch. It stands in for airglow and starlight: the model knows
+        // about sunlight and nothing else, so at 0 a deep night is honestly --
+        // and uselessly -- black.
         //
         // AND NOTE THE TURBIDITY ROW BELOW. It is a PREETHAM parameter, and the
         // scattering path carries its own fixed aerosol profile and ignores it,
         // so with the atmosphere always on that slider moves nothing anybody
         // can see. It is left alone because --no-atmosphere still reads it.
+        // ONE ROW FOR THE WHOLE NIGHT. It drives the moon's key light and the
+        // airglow floor together -- Options::nightBrightness says why it has to
+        // be both -- so 0.5x is a night half as bright at every phase of the
+        // moon, rather than only on the ones where the term it happened to move
+        // was the one doing the lighting. 0 is the physically honest black; 3
+        // leaves the wood readable at midnight, which is usually what a
+        // screenshot at that hour actually wants.
+        //
+        // LEFT OF 1.0 IS DARKER, which is the direction this gets reached for,
+        // and the row is still named for brightness: every other slider in this
+        // menu moves right for more of what it names, and one that ran
+        // backwards would be wrong more often than it was clever.
+        if (w.slider("Night brightness", nightLevel_, 0.0f, 3.0f, false, "%.2fx"))
+            applyNightLevel();
         if (w.slider("Sky turbidity", opt_.turbidity, 1.8f, 8.0f)) {
             applySun(true);
             invalidate();
@@ -2993,6 +3155,60 @@ class ForestApp : public SampleApp {
             player_.fly = !player_.fly;
             if (!player_.fly) player_.vy = 0.0f;  // do not inherit a climb as a fall
             std::printf("v2: %s\n", player_.fly ? "flying" : "walking");
+            std::fflush(stdout);
+            quitArmed_ = false;
+            return true;
+        }
+        // -----------------------------------------------------------------
+        // U -- THE ASSET EDITOR, AND U AGAIN TO COME BACK.
+        //
+        // A different PLACE, not a different mode of this one: on the stage the
+        // wood is not in the acceleration structure at all, so what a ray finds
+        // is the deck or the sky and nothing else. See World::setStage.
+        //
+        // THE WOOD IS LEFT EXACTLY AS IT WAS. Where you were standing, which
+        // way you were looking, and every chunk that was resident -- all kept,
+        // so U back is a rebuild and not a reload. That is what makes this
+        // something you press to check a model rather than something you commit
+        // to.
+        //
+        // FLYING, and it has to be: the player walks on the TERRAIN, and the
+        // terrain function knows nothing about a deck floating at y 512 -- it
+        // would answer with whatever hillside is at those coordinates and drop
+        // you through the floor. Flight takes the ground out of the question.
+        // -----------------------------------------------------------------
+        if (e.key == Input::Key::U && !consoleOpen_) {
+            const bool on = !world_.staged();
+            if (on) {
+                woodPos_ = player_.pos;
+                woodYaw_ = yaw_;
+                woodPitch_ = pitch_;
+                woodFly_ = player_.fly;
+            }
+            world_.setStage(on);
+            if (on) {
+                const Vec3 c = World::stageCentre();
+                // Back from the middle and looking at it, so the cardinal is in
+                // front of you the moment you arrive rather than underfoot.
+                // THREE METRES ON THE +Z SIDE, because yaw 0 looks down -Z in this
+                // engine (Camera::direction). Standing on the -Z side and facing
+                // that way put the subject squarely behind the camera.
+                player_.pos = Vec3(c.x, c.y + 0.2f, c.z + 3.0f);
+                player_.fly = true;
+                yaw_ = 0.0f;
+                pitch_ = -8.0f;
+                // ...and the subject, standing on the deck in front of you.
+                birds_.stageOne(Vec3(c.x, c.y, c.z));
+            } else {
+                player_.pos = woodPos_;
+                player_.fly = woodFly_;
+                yaw_ = woodYaw_;
+                pitch_ = woodPitch_;
+            }
+            player_.vy = 0.0f;  // no fall carried across the doorway
+            pos_ = player_.eyePosition();
+            tracer_.resetAccumulation();
+            std::printf("v2: %s\n", on ? "asset editor" : "back to the wood");
             std::fflush(stdout);
             quitArmed_ = false;
             return true;
@@ -3384,6 +3600,12 @@ class ForestApp : public SampleApp {
     float sunAz_ = 38.0f, sunEl_ = 24.0f;
     // Last phase uploaded, so applySun can tell when the moon has moved on.
     float moonPh_ = -1.0f;
+    // HOW DARK THE NIGHT IS -- the menu row, --night-brightness -- and the two
+    // levels it multiplies, both captured in onLoad once the flags that name
+    // them have been read. See applyNightLevel.
+    float nightLevel_ = defaults::kNightBrightness;
+    float moonKeyBase_ = 1.0f;
+    float nightFloorBase_ = 0.0f;
 
     bool looking_ = false;   // cursor captured, mouse turns the camera
     bool holdLook_ = false;  // ...because the right button is held
@@ -3455,6 +3677,15 @@ class ForestApp : public SampleApp {
     Cuda cuda_;
     Clusters clusters_;
     Physics physics_;
+    Birds birds_;
+    // Where the wood was when U was pressed -- see the handler.
+    Vec3 woodPos_{0, 0, 0};
+    float woodYaw_ = 0.0f, woodPitch_ = 0.0f;
+    bool woodFly_ = false;
+    std::vector<Solid> perches_;  // trees a songbird may sit in -- see the note at its update
+    // A PLAIN FRAME COUNTER. It paces the perch query above and salts the
+    // chunk hashes; it is not the tracer's tick, which is a sampler seed.
+    uint32_t frameTick_ = 0;
     double fpsAccum_ = 0.0;
     int fpsFrames_ = 0;
     uint32_t liveMaxAccum_ = 0;
@@ -3561,6 +3792,23 @@ class ForestApp : public SampleApp {
         // sun actually moved, which applySun has already established.
         if (syncSunToSky()) world_.sky.setSun(az, el);
         return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // The night level, fanned out to the two lights it is a master over.
+    //
+    // BOTH OF THEM HAVE TO BE PUSHED, and neither pushes itself on a paused
+    // night -- which is exactly the state somebody tuning this is in. The
+    // moon's key reaches the GPU only through setSun, and the floor only
+    // through a sky-view rebuild that is skipped on every frame the sun has not
+    // moved. Without these two lines a paused midnight would take the new value
+    // and go on showing the old picture until something else moved the sun.
+    void applyNightLevel() {
+        world_.sky.moonKeyScale = moonKeyBase_ * nightLevel_;
+        atmo_.nightFloor = nightFloorBase_ * nightLevel_;
+        applySun(true);
+        atmo_.invalidate();
+        invalidate();
     }
 
     // -----------------------------------------------------------------------
@@ -4057,6 +4305,42 @@ class ForestApp : public SampleApp {
                 // rest, exactly as toolTakesFor and playToolHit split the job
                 // in the engine this comes from.
                 const Blow heard = toolSfx_.blow(held_.takes(), lastSwing_);
+                // -- AND A CHUNK COMES OUT OF IT ------------------------------
+                //
+                // The impact frame is where the JS engine takes its bite, and
+                // this is the same moment. What v2 cannot do is make the HOLE:
+                // ...AND THE HOLE IT TAKES OUT OF THE WORLD.
+                //
+                // ONLY IF THE TOOL TAKES SOMETHING. An empty hand and a bow
+                // both reach the impact frame -- the swing clock does not care
+                // what is in the hand -- and neither should break ground. Takes
+                // is the tool's own answer to "what can I get from this", and
+                // it is already what the sound path gates on, so the two agree
+                // by construction.
+                if (held_.takes() != Takes::Nothing) {
+                    if (lastSwing_.kind != Swing::None) {
+                        // -- BITE THE COLUMN, NOT THE GRASS ON TOP OF IT ------
+                        //
+                        // The ball was centred on the hit POINT, and on a
+                        // ground blow that point is wherever the ray stopped --
+                        // which is the top of a grass strand, standing three to
+                        // six voxels proud of the soil. So the whole ball was
+                        // carved out of air: measured, 123 voxels removed and
+                        // the resident triangle count unchanged to the digit.
+                        //
+                        // A ground blow is aimed at the GROUND, so it is
+                        // anchored to that column's own surface. A rock or a
+                        // trunk keeps the hit point, because there the thing
+                        // struck is where the ray stopped.
+                        Vec3 at = lastSwing_.point;
+                        if (lastSwing_.kind == Swing::Ground) {
+                            const int gi = int(floorf(at.x / VOXEL_M));
+                            const int gj = int(floorf(at.z / VOXEL_M));
+                            at.y = float(world_.terrain.heightVox(gi, gj)) * VOXEL_M;
+                        }
+                        world_.carve(at, kCarveVox);
+                    }
+                }
                 if (opt_.swingLog) {
                     static const char *kWhat[] = {"air", "ground", "trunk", "rock"};
                     static const char *kHeard[] = {"silent", "wood", "rock", "knock"};
@@ -4227,6 +4511,15 @@ class ForestApp : public SampleApp {
         if (flock_.ready()) {
             for (int i = 0; i < 60; ++i) flock_.update(1.0f / 60.0f, world_, cam.origin);
             flock_.publish(world_);
+            // The birds settle the same way: the offline path runs no frames,
+            // so a population that fills itself over time has to be given the
+            // time here or the render shows an empty wood.
+            {
+                std::vector<Solid> perches;
+                world_.collidersNear(cam.origin, kBirdKeepM, &perches);
+                for (int i = 0; i < 60; ++i) birds_.update(1.0f / 60.0f, perches, cam.origin);
+                birds_.publish(world_);
+            }
             world_.refitTlas();
             Vec3 at{0, 0, 0};
             float d = 0.0f, lo = 0.0f, hi = 0.0f;
@@ -4746,17 +5039,46 @@ class ForestApp : public SampleApp {
     // The terrain test above cannot see trees -- they are placed per chunk and
     // no chunk existed yet -- so this runs once the ring is resident and steps
     // outward until the body fits.
+    // How far a solid may rise above the ground before standing where it is
+    // counts as being INSIDE it rather than on it. A voxel is 10 cm and the
+    // player steps up rather more than that, so this is a low kerb: anything
+    // taller is something you would be buried in.
+    static constexpr float kSpawnStepM = 0.45f;
+
     void nudgeOutOfSolids() {
         // NOT named 'near'. windows.h, which this file includes for the mouse
         // capture, still defines near and far as empty macros from the segmented
         // memory era, and the error it produces names neither of them.
         std::vector<Solid> nearby;
-        world_.collidersNear(player_.pos, 8.0f, &nearby);
+        world_.collidersNear(player_.pos, 12.0f, &nearby);
+        // -- INSIDE IS THE TEST, NOT UNSTANDABLE (user 2026-09-07) ----------
+        //
+        // "dont spawn me into rocks, or anything for that matter." This asked
+        // `!s.standable`, which excludes precisely the thing that was being
+        // complained about: a rock IS standable -- that is what lets you climb
+        // a small one -- so every rock in the wood was skipped by the test
+        // meant to keep you out of them, and a spawn inside a boulder was not a
+        // near miss but a case the check declined to look at.
+        //
+        // Standable is the wrong question anyway. Standing ON a rock is fine
+        // and being INSIDE one is not, and those differ by HEIGHT, not by kind.
+        // So the test is vertical now: a solid blocks the spot if its footprint
+        // holds you AND its top stands more than a step above the ground you
+        // would be placed on -- which is the definition of being embedded in
+        // it. A pebble whose top is within a step is something you walk onto,
+        // and it still does not block.
+        //
+        // Trunks keep working unchanged: a trunk's top is a canopy twenty
+        // metres up, so it fails the height test by a mile, exactly as it
+        // failed the standable test before.
+        TerrainMemo nm;
         auto blocked = [&](float x, float z) {
-            for (const Solid &s : nearby)
-                if (!s.standable && s.hx > 0.0f && s.hz > 0.0f &&
-                    touches(s, x, z, player_.halfWidth))
-                    return true;
+            const float g = world_.terrain.heightM(x, z, nm);
+            for (const Solid &s : nearby) {
+                if (s.hx <= 0.0f || s.hz <= 0.0f) continue;
+                if (!touches(s, x, z, player_.halfWidth)) continue;
+                if (s.top > g + kSpawnStepM) return true;
+            }
             return false;
         };
         if (!blocked(player_.pos.x, player_.pos.z)) return;
@@ -4774,7 +5096,7 @@ class ForestApp : public SampleApp {
                 opt_.camZ = z;
                 player_.placeOnGround(walkWorld(), x, z);
                 pos_ = player_.eyePosition();
-                std::printf("  spawn    stepped %.1f m clear of a trunk\n", rad);
+                std::printf("  spawn    stepped %.1f m clear of solid ground cover\n", rad);
                 std::fflush(stdout);
                 return;
             }
@@ -5276,6 +5598,7 @@ class ForestApp : public SampleApp {
             "constexpr float kTimeOfDay = %.4ff;  // %s\n"
             "constexpr float kCycleSpeed = %.2ff;\n"
             "constexpr bool kAtmosphere = %s;\n"
+            "constexpr float kNightBrightness = %.2ff;\n"
             "constexpr bool kBlueNoise = %s;\n"
             "constexpr bool kAutoExposure = %s;\n"
             "constexpr float kBloom = %.2ff;\n"
@@ -5294,7 +5617,7 @@ class ForestApp : public SampleApp {
             clock_.azimuthBase, sunEl_,
             int(getTargetFbo()->getWidth()),
             int(getTargetFbo()->getHeight()), defaults::kTrees, clock_.tday, clockText,
-            clock_.cycleSpeed, atmo_.enabled ? "true" : "false",
+            clock_.cycleSpeed, atmo_.enabled ? "true" : "false", nightLevel_,
             // BAKED FROM THE LIVE OBJECTS, not from opt_. The menu writes
             // straight to tracer_ and post(), so opt_ still holds whatever the
             // command line said at start-up -- baking that would quietly

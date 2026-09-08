@@ -214,6 +214,115 @@ float keyCosR(V6Sky sky) { return sky.sunDir.y > 0.0f ? kSunCosThetaMax : kMoonC
 float keySolidAngle(V6Sky sky) { return TWO_PI * (1.0f - keyCosR(sky)); }
 
 float3 keyDir(V6Sky sky) { return sky.sunDir.y > 0.0f ? sky.sunDir : sky.moonDir; }
+
+// ---------------------------------------------------------------------------
+// SHOOTING STARS, ported from the JS engine's pre.js.
+//
+// EIGHT SLOTS, EACH WITH ITS OWN WINDOW. There is no list of live meteors and
+// nothing is simulated: slot `mi` owns one window of MET_PER seconds, offset by
+// mi * MET_PER / 8 so the eight are evenly spread, and within its window it
+// picks a start time, a direction and a lean from a hash of the window index.
+// A pixel asks "is any of the eight crossing me right now", which is eight
+// iterations of arithmetic and no state at all. That is the whole trick, and it
+// is why this costs nothing on a sky that is empty 99% of the time.
+//
+// THE STREAK IS BLOCKS, NOT A LINE. The view ray is resolved into the meteor's
+// own frame and snapped to a grid of MET_Q-radian cells, so what reaches the
+// screen is a chain of hard-edged squares stepping across the sky. 10 cm voxels
+// on the ground and the same discipline overhead -- that engine's note is
+// blunt about it, "a smooth antialiased streak is the thing this must not be".
+//
+// The rates are all that engine's, after three separate halvings by the user:
+// MET_PER 32 with 80% of windows taken is one arrival every 5 s SOMEWHERE in
+// the sky, and a 1.4 s life leaves 0.28 alive at any instant. Most of those are
+// behind you -- the view is a small part of a sphere -- which is why that reads
+// as an event rather than as weather.
+// ---------------------------------------------------------------------------
+static const float kMetPer = 32.0f;    // seconds of window per slot
+static const float kMetLife = 1.40f;   // how long one burns
+static const float kMetQ = 0.0040f;    // the cell grid, in radians
+static const int kMetLen = 30;         // cells from head to tail
+static const float kMetW0 = 0.75f;     // half-width in cells at the head...
+static const float kMetW1 = 0.05f;     // ...and at the tip
+
+// An integer hash to [0,1). Three ints in, because a slot is identified by its
+// window index and its own number and the field being asked for.
+float metHash(int a, int b, int c)
+{
+    uint h = uint(a) * 0x8DA6B343u ^ uint(b) * 0xD8163841u ^ uint(c) * 0xCB1AB31Fu;
+    h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16;
+    return float(h) * 2.3283064e-10f;
+}
+
+float3 meteors(float3 d, float t, float night)
+{
+    float3 c = float3(0.0f, 0.0f, 0.0f);
+    if (night <= 0.02f || d.y < -0.02f) return c;
+    // Fades out at the horizon, where the haze would have eaten one anyway --
+    // and, more to the point, where a hard-edged block appearing against the
+    // treeline reads as a bug rather than as a meteor.
+    const float hz = saturate(d.y * 8.0f);
+
+    for (int mi = 0; mi < 8; ++mi)
+    {
+        const float off = float(mi) * kMetPer / 8.0f;
+        const float ei = floor((t + off) / kMetPer);
+        const int k0 = int(ei) * 7919 + mi * 104729;
+        if (metHash(k0, 3, 11) < 0.20f) continue;   // a fifth of windows stay empty
+        // Somewhere inside the window, never on the beat -- eight slots firing
+        // on their own regular tick would read as a machine.
+        const float tau = t + off - ei * kMetPer - metHash(k0, 7, 29) * (kMetPer - kMetLife);
+        if (tau < 0.0f || tau > kMetLife) continue;
+
+        // Where it comes in: clear of the horizon haze, clear of the zenith.
+        const float el = 0.22f + metHash(k0, 13, 5) * 0.62f;
+        const float az = metHash(k0, 23, 41) * 6.2831853f;
+        const float ce = cos(el);
+        const float3 A = float3(ce * sin(az), sin(el), ce * cos(az));
+        const float3 R = normalize(cross(A, float3(0.0f, 1.0f, 0.0f)));
+        // AND THEY DO NOT ALL FALL STRAIGHT DOWN. The lean is an ANGLE rather
+        // than a sideways nudge, which is the difference between every meteor
+        // reading as dropping and half of them crossing the sky: +/-1.25 rad is
+        // +/-72 degrees. cos stays positive across it, so none travels upward.
+        const float lean = (metHash(k0, 37, 53) * 2.0f - 1.0f) * 1.25f;
+        float3 D = float3(0.0f, -cos(lean), 0.0f) + R * sin(lean);
+        D = normalize(D - A * dot(D, A));   // re-seated into the plane through A
+        const float3 Bm = cross(A, D);
+        const float thH = (0.42f + metHash(k0, 59, 67) * 0.34f) * tau;  // the head, as an angle
+
+        const float qb = floor(dot(d, Bm) / kMetQ + 0.5f);                    // across the path
+        const float qa = floor(atan2(dot(d, D), dot(d, A)) / kMetQ + 0.5f);   // and along it
+        const int kb = int(round((thH - qa * kMetQ) / kMetQ));                // cells behind the head
+        if (kb < 0 || kb >= kMetLen) continue;
+
+        // The width TAPERS rather than stepping: linear from the head to the
+        // tip, compared against the continuous value, so the silhouette narrows
+        // a cell at a time. Still snapped to the grid -- it stays a chain of
+        // blocks rather than becoming a smooth wedge.
+        const float tfrac = float(kb) / float(kMetLen);
+        const float hw = kMetW0 + (kMetW1 - kMetW0) * tfrac;
+        if (abs(qb) > hw) continue;
+        // ...and cells drop out down the tail, so it frays instead of stopping
+        // on a ruler line.
+        if (metHash(int(qa), 909, k0) < 0.10f + 0.34f * tfrac) continue;
+
+        // Bright at the head, dim at the tail. The exponent IS the gradient:
+        // 2.4 falls away from the head immediately, so the head reads as the
+        // source and the tail as what is left of it. The second factor dims
+        // across the line too, so a one-cell tail still has a soft edge.
+        const float fade = pow(1.0f - tfrac, 2.4f) *
+                           (0.35f + 0.65f * saturate((hw - abs(qb)) * 1.6f));
+        const float lf = smoothstep(0.0f, 0.08f, tau) *
+                         (1.0f - smoothstep(kMetLife * 0.70f, kMetLife, tau));  // strikes in, burns out
+        // ORANGE, and deliberately not white -- a white streak reads as another
+        // star. The magnitude is this engine's rather than that one's: v2's sky
+        // is physically scaled and tone mapped later, so the number that made
+        // the head clip on a WGSL canvas means nothing here. Sized against the
+        // moon's own disc radiance so it sits a little under it.
+        c += float3(1.00f, 0.26f, 0.030f) * (0.9f * fade * lf * night * hz);
+    }
+    return c;
+}
 // THE KEY IS BOOSTED OFF THE DISC, and the two cannot be the same number.
 // moonRadiance is sized so the disc shows its phase under a daylight tone
 // curve; the light needed to actually reach the forest floor through that same

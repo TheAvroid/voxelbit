@@ -244,7 +244,28 @@ constexpr int kArrowInstances = 12;
 // band is a rounding error in the top-level structure and its refit, and it is
 // three times the flock the viewer opens with -- so `--butterflies` can be
 // turned up on the command line without the structure having to be told.
-constexpr int kFlyerInstances = 64;
+// -- ONE BAND, TWO POPULATIONS ----------------------------------------------
+//
+// The butterflies and the perched songbirds are the same KIND of thing to the
+// structure -- an orthonormal basis under a uniform scale, that moves -- so
+// they share the flyer band rather than each reserving one. A band is reserved
+// at a FIXED size because a TLAS update may not change the instance count (see
+// refitTlas), so a second band would cost its slots whether or not anything
+// used them, on every frame, for ever.
+//
+// Divided rather than pooled: each population owns a contiguous run and writes
+// every slot in it, empty ones included. A shared free list would be smaller
+// and would also mean a butterfly could take a bird's slot mid-flight, which is
+// a motion vector between two unrelated objects -- the one thing this band
+// exists to get right.
+// HOW BIG A BITE A BLOW TAKES, in voxels. It had been derived from the size of
+// the chunk that flew off; that system is gone, so the dig carries its own
+// number. Three voxels of radius is a 30 cm bite, which is a tool's worth.
+constexpr int kCarveVox = 3;
+
+constexpr int kButterflySlots = 64;
+constexpr int kBirdSlots = 48;
+constexpr int kFlyerInstances = kButterflySlots + kBirdSlots;
 
 // ...AND WHAT HAS BEEN PUT DOWN. Eight, which is the JS engine's own cap on
 // dropped items, reserved for the same reason every other band here is: an
@@ -399,6 +420,10 @@ class TransientPool {
 // triangle offset; the decor it holds is placed.
 struct Chunk {
     int cx = 0, cz = 0;
+    // Which state of the mutable overlay this mesh was built from. When the
+    // world's version for this chunk moves past it, the mesh is out of date and
+    // updateRing asks for it again -- see World::carve.
+    uint32_t editVer = 0;
     Blas blas;
     uint32_t triOffset = TriPool::kInvalid;
     size_t tris = 0;
@@ -710,8 +735,12 @@ class World {
     // flushDropInstances, because eight instances that all move is eight
     // driver calls a frame otherwise.
     // -----------------------------------------------------------------------
+    //  is {axisX, axisY, axisZ, radians}, as setFlyerInstance takes it: a
+    // dropped item TURNS while it hovers, and a turn about its own axis moves
+    // its surface without moving the transform enough to describe it. Optional,
+    // so a caller with nothing to say passes nothing.
     void setDropInstance(int slot, int model, const float *m, float tx, float ty, float tz,
-                         bool show) {
+                         bool show, const float *spin = nullptr) {
         if (held_.empty() || dropBase_ < 0 || slot < 0 || slot >= kDropInstances) return;
         const size_t idx = size_t(dropBase_ + slot);
         if (idx >= instanceDescs_.size()) return;
@@ -722,6 +751,12 @@ class World {
         // Its half-box in the MODEL'S OWN UNITS -- a held-item mesh is one unit
         // per voxel and the transform carries VOXEL_M, so this is voxels. See
         // place(), which is where the motion vector comes from.
+        // A DROP TURNS WHILE IT HOVERS, and a turn about its own axis is not
+        // in its transform's translation -- which is all place() differences.
+        // Same channel the songbirds use; see V6Instance::flapPad.
+        instanceInfos_[idx].flap =
+            (ok && spin) ? float3(spin[0], spin[1], spin[2]) : float3(0.0f, 0.0f, 0.0f);
+        instanceInfos_[idx].flapPad = (ok && spin) ? spin[3] : 0.0f;
         place(idx, ok ? m : kI, tx, ty, tz, kMaskWorld, ok, 0.5f * float(held_[mi].sx),
               0.5f * float(held_[mi].sy), 0.5f * float(held_[mi].sz));
         instanceDescs_[idx].accelerationStructure = held_[mi].blas.as->getGpuAddress();
@@ -741,6 +776,13 @@ class World {
                            n * sizeof(V6Instance));
     }
     int flyerModelCount() const { return int(flyers_.size()); }
+    // How many slots of the flyer band the structure actually reserved. Not the
+    // constant: a write past the end is dropped silently by setFlyerInstance,
+    // so the two being equal is worth being able to check rather than assume.
+    int flyerBandSlots() const {
+        if (flyerBase_ < 0 || size_t(flyerBase_) >= instanceDescs_.size()) return 0;
+        return int(std::min(size_t(kFlyerInstances), instanceDescs_.size() - size_t(flyerBase_)));
+    }
 
     // -----------------------------------------------------------------------
     // Where one butterfly is this frame.
@@ -758,8 +800,12 @@ class World {
     // frame to move six kilobytes. So these write the host's own copy and
     // flushFlyerInstances sends the whole band in one go, twice.
     // -----------------------------------------------------------------------
+    // `spin`, when given, is {axisX, axisY, axisZ, radians}: the instance turned
+    // in place about that world axis by that angle since the last frame, which
+    // no transform of it describes. See V6Instance::flapPad. It replaces the
+    // `flap` reading rather than adding to it -- nothing has both.
     void setFlyerInstance(int slot, int model, const float *m, float tx, float ty, float tz,
-                          const float *flap, bool show) {
+                          const float *flap, bool show, const float *spin = nullptr) {
         if (flyers_.empty() || flyerBase_ < 0 || slot < 0 || slot >= kFlyerInstances) return;
         const size_t idx = size_t(flyerBase_ + slot);
         if (idx >= instanceDescs_.size()) return;
@@ -776,7 +822,10 @@ class World {
         instanceDescs_[idx].accelerationStructure = flyers_[mi].blas.as->getGpuAddress();
         instanceInfos_[idx].triOffset = flyers_[mi].tri;
         instanceInfos_[idx].flap =
-            (ok && flap) ? float3(flap[0], flap[1], flap[2]) : float3(0.0f, 0.0f, 0.0f);
+            (ok && spin)   ? float3(spin[0], spin[1], spin[2])
+            : (ok && flap) ? float3(flap[0], flap[1], flap[2])
+                           : float3(0.0f, 0.0f, 0.0f);
+        instanceInfos_[idx].flapPad = (ok && spin) ? spin[3] : 0.0f;
         flyersDirty_ = true;
     }
 
@@ -968,6 +1017,65 @@ class World {
     }
     size_t residentTris() const { return residentTris_; }
     size_t pendingChunks() { return mesher_.inFlight(); }
+
+    // Where the deck sits in the world. Far from the wood so nothing streams
+    // into view behind it, and at a round height so a model's own numbers are
+    // easy to read off it.
+    static Vec3 stageOrigin() { return Vec3(kStageAtX, kStageAtY, kStageAtZ); }
+    static Vec3 stageCentre() {
+        return Vec3(kStageAtX + float(kStageVox) * VOXEL_M * 0.5f, kStageAtY + VOXEL_M,
+                    kStageAtZ + float(kStageVox) * VOXEL_M * 0.5f);
+    }
+
+    // In the editor, or in the wood.
+    void setStage(bool on) {
+        if (on == stage_) return;
+        if (on) buildStage();
+        stage_ = on;
+        rebuildTlas();
+    }
+    bool staged() const { return stage_; }
+
+    // -----------------------------------------------------------------------
+    // TAKE A BALL OUT OF THE WORLD, and put the chunks it touched back in the
+    // queue.
+    //
+    // The overlay does the remembering; this does the plumbing. Dropping a
+    // chunk from `chunks_` and from `requested_` is all it takes to have it
+    // rebuilt -- the ring notices it is wanted and missing on its next pass and
+    // asks for it, exactly as it does for a chunk you have walked toward. There
+    // is deliberately no separate "re-mesh" path: one way in means a rebuilt
+    // chunk and a freshly streamed one cannot diverge.
+    //
+    // The hole appears a frame or two later, when that mesh lands. That is the
+    // same latency the wood already has for everything else, and it is why the
+    // CHUNK that flies off the blow is spawned immediately and separately --
+    // the debris covers the rebuild.
+    // -----------------------------------------------------------------------
+    void carve(const Vec3 &at, int radiusVox) {
+        const int ci = int(floorf(at.x / VOXEL_M));
+        const int cy = int(floorf(at.y / VOXEL_M));
+        const int cj = int(floorf(at.z / VOXEL_M));
+        // NOTHING IS EVICTED HERE, and the first cut of this did evict --
+        // dropping the touched chunks from `chunks_` AND from `requested_` so
+        // the ring would notice them missing and ask again.
+        //
+        // That is a request storm. `requested_` is the only thing stopping two
+        // jobs for one chunk being in flight at once, so clearing it while a
+        // mesh was already running let the ring queue a second, and both landed
+        // and both claimed triangle-pool space. Holding the swing button made
+        // it compound: measured, it reached 4.5 GB and stopped responding.
+        //
+        // So a carve only bumps the overlay's version (carveBall does it) and
+        // updateRing compares. One request per chunk at a time, guaranteed by
+        // the mechanism that already guaranteed it.
+        edits_.carveBall(ci, cy, cj, radiusVox);
+        // ...and tell the ring there is something to do. See update().
+        ++carveEpoch_;
+    }
+
+    size_t editedChunks() const { return edits_.chunksTouched(); }
+    size_t editedVoxels() const { return edits_.voxelsRemoved(); }
     double buildMs() const { return buildMs_; }
 
     // -- where the main thread goes while the world streams -------------------
@@ -1063,6 +1171,13 @@ class World {
         mesher_.mushroomBig0 = mushroomBig0;
 
         const int hw = int(std::thread::hardware_concurrency());
+        // BEFORE start, so no worker can ever run without it.
+        mesher_.useEdits(&edits_);
+        // ...and the MAIN THREAD's copy of the terrain gets it too, so
+        // collision, the swing ray and the physics ground answer from the world
+        // as dug rather than as generated. ChunkMesher::start clears it on the
+        // workers' copy -- see VoxelTerrain::edits for why the two differ.
+        terrain.edits = &edits_;
         mesher_.start(terrain, meshThreads > 0 ? meshThreads : maxi(2, hw - 2));
         return true;
     }
@@ -1114,9 +1229,18 @@ class World {
             scratchPool_.trim(cutoff);
             rawPool_.trim(cutoff);
         }
-        if (!primed_ || cx != lastCx_ || cz != lastCz_) {
+        // -- ...OR SOMEBODY HAS DUG SINCE THE LAST PASS ---------------------
+        //
+        // rering was gated on CROSSING A CHUNK, which is the only thing that
+        // used to change what the ring should hold. Digging changes it too, and
+        // without this a hole made while standing still was recorded in the
+        // overlay and never reached a mesh -- measured, 123 voxels removed and
+        // the resident triangle count identical to the digit. An epoch rather
+        // than a flag so a carve during a rering cannot be swallowed by it.
+        if (!primed_ || cx != lastCx_ || cz != lastCz_ || carveEpoch_ != reringEpoch_) {
             lastCx_ = cx;
             lastCz_ = cz;
+            reringEpoch_ = carveEpoch_;
             primed_ = true;
             const auto tr = std::chrono::steady_clock::now();
             changed |= rering(cx, cz);
@@ -1285,9 +1409,22 @@ class World {
     // loadHives and the hive pass in scene/chunks.h.
     std::vector<ModelTemplate> hives_;
     Blas waterBlas_;
+    // The editor's floor -- see buildStage.
+    static constexpr int kStageVox = 160;          // 16 m square
+    static constexpr float kStageAtX = 4096.0f;    // well clear of the wood
+    static constexpr float kStageAtY = 512.0f;
+    static constexpr float kStageAtZ = 4096.0f;
+    Blas stageBlas_;
+    uint32_t stageTri_ = TriPool::kInvalid;
+    bool stage_ = false;
     uint32_t waterTriOffset_ = TriPool::kInvalid;
 
     std::map<long long, Chunk> chunks_;
+    // What the player has taken out of the world -- see scene/edits.h. Owned
+    // here because the mesher borrows it and must not outlive it.
+    Edits edits_;
+    // Bumped by carve, consumed by update: what makes a dig re-ring.
+    uint32_t carveEpoch_ = 0, reringEpoch_ = 0;
     std::map<long long, int> wanted_;
     std::set<long long> requested_;
 
@@ -1970,6 +2107,58 @@ class World {
         loadedPinecones = int(pinecones_.size());
     }
 
+    // -----------------------------------------------------------------------
+    // THE ASSET EDITOR'S STAGE -- a white floor under an empty sky.
+    //
+    // Built once, on the first U, and kept: it is a fixed object with no
+    // streaming behind it, which is the whole point of the editor. The wood is
+    // not unloaded when you step onto it -- the ring keeps its chunks resident
+    // so that coming back is instant -- it is simply not put in the structure.
+    // See rebuildTlas.
+    //
+    // MADE OF 10 cm VOXELS, like everything else here, and that is not
+    // decoration: the editor exists to look at models at the size they will be
+    // in the world, so its floor has to be the same lattice they sit on. A
+    // quad with a grid texture would have been a tenth of the triangles and a
+    // lie about scale.
+    //
+    // THE GRIDLINES ARE VOXELS TOO, one metre apart -- every tenth column, in
+    // both directions. A metre is the unit a model gets judged in ("is that
+    // bird too big for a branch"), and ten voxels is what a metre IS here, so
+    // the line falls on the lattice rather than across it.
+    // -----------------------------------------------------------------------
+    void buildStage() {
+        if (stageBlas_.valid()) return;
+
+        // Its own two colours, allocated the way every model's are. White for
+        // the deck and a mid grey for the rules -- dark enough to read against
+        // white under a bright sky, light enough not to look like a hole.
+        const uint8_t white = palette.forModelColor({255, 255, 255, 255}, false);
+        const uint8_t grey = palette.forModelColor({120, 120, 120, 255}, false);
+        uploadMaterials();
+
+        VoxAsset a;
+        a.sx = kStageVox;
+        a.sz = kStageVox;
+        a.sy = 1;  // a deck, not a block: one voxel thick
+        a.a.assign(size_t(kStageVox) * size_t(kStageVox), 1);
+        for (int z = 0; z < kStageVox; ++z)
+            for (int x = 0; x < kStageVox; ++x)
+                if (x % 10 == 0 || z % 10 == 0)
+                    a.a[size_t(x) + size_t(z) * size_t(kStageVox)] = 2;
+
+        std::vector<uint8_t> idOfEntry(256, mat::AIR);
+        idOfEntry[1] = white;
+        idOfEntry[2] = grey;
+        const VoxMesh mesh = meshAsset(a, idOfEntry, VOXEL_M);
+        if (mesh.triCount() == 0) return;
+        stageTri_ = pool_.upload(ctx_, mesh.tri);
+        stageBlas_ = buildBlas(mesh);
+        std::printf("  stage    %d x %d voxels (%.1f m square), %zu tris\n", kStageVox, kStageVox,
+                    float(kStageVox) * VOXEL_M, mesh.triCount());
+    }
+
+
     void buildWater() {
         // One flat quad, larger than any ring will ever reach. Flat because a
         // tarn in a wood is sheltered; the ripple lives in the shading normal.
@@ -1998,6 +2187,28 @@ class World {
             } else {
                 ++it;
             }
+        }
+
+        // -- ...AND WHAT HAS BEEN DUG SINCE IT WAS MESHED --------------------
+        //
+        // A resident chunk whose stamp is behind the overlay's version is out
+        // of date, and this is the ONE place that may act on it -- because it
+        // is the one place that owns `requested_`, which is what keeps a single
+        // job in flight per chunk. Releasing here and falling through to the
+        // request below therefore cannot queue a second job for a chunk that
+        // already has one: the `requested_` test below sees it.
+        if (edits_.any()) {
+            for (int j = -R; j <= R; ++j)
+                for (int i = -R; i <= R; ++i) {
+                    const long long k = chunkKey(cx + i, cz + j);
+                    auto it = chunks_.find(k);
+                    if (it == chunks_.end() || requested_.count(k)) continue;
+                    if (it->second.editVer == edits_.versionOf(cx + i, cz + j)) continue;
+                    pool_.release(it->second.triOffset, it->second.tris);
+                    residentTris_ -= it->second.tris;
+                    chunks_.erase(it);
+                    changed = true;
+                }
         }
 
         // Nearest first: the chunk you are standing on matters more than the
@@ -2030,6 +2241,7 @@ class World {
             Chunk c;
             c.cx = b.cx;
             c.cz = b.cz;
+            c.editVer = b.editVer;
             c.blas = recordChunkBuild(b.mesh, key);
             c.tris = b.mesh.triCount();
             const auto tp = std::chrono::steady_clock::now();
@@ -2405,6 +2617,35 @@ class World {
             wasShown_.assign(size_t(dynEnd_), uint8_t(0));
         }
 
+        // -- THE EDITOR REPLACES THE WORLD, IT DOES NOT HIDE IT ---------------
+        //
+        // On the stage the wood is not in the structure at all -- no water, no
+        // chunks, no decor -- so the editor is genuinely a separate place
+        // rather than the wood with things switched off. A ray that misses the
+        // deck hits the sky, which is why the atmosphere is all that is left
+        // behind it.
+        //
+        // The dynamic bands ABOVE this line stay, and that is deliberate: they
+        // are what carries the models you came here to look at, and their fixed
+        // layout is what lets an update work at all.
+        //
+        // The chunks stay RESIDENT while you are here. Nothing is evicted and
+        // nothing re-streams, so U back into the wood is one rebuild and no
+        // wait -- it costs their memory for as long as the editor is open,
+        // which is the right trade for a key you press to check a model.
+        if (stage_) {
+            if (stageBlas_.valid()) {
+                RtInstanceDesc deck = {};
+                writeTransform(deck, kI, kStageAtX, kStageAtY, kStageAtZ);
+                deck.instanceMask = kMaskWorld;
+                deck.accelerationStructure = stageBlas_.as->getGpuAddress();
+                V6Instance info{};
+                info.triOffset = stageTri_;
+                info.kind = KIND_TERRAIN;
+                info.tint = float3(1.0f, 1.0f, 1.0f);
+                push(deck, info);
+            }
+        } else {
         {
             RtInstanceDesc water = {};
             writeTransform(water, kI, 0.0f, 0.0f, 0.0f);
@@ -2434,6 +2675,7 @@ class World {
 
             for (size_t i = 0; i < c.decorDesc.size(); ++i) push(c.decorDesc[i], c.decorInfo[i]);
         }
+        }  // ...and the end of the "not on the stage" branch above.
 
         const uint32_t n = uint32_t(instanceDescs_.size());
         ensureBuffer(instanceDescBuf_, n * sizeof(RtInstanceDesc), ResourceBindFlags::ShaderResource,

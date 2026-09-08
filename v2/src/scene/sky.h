@@ -38,7 +38,14 @@ class Sky {
     // Multipliers for tuning without a rebuild: the disc.s brightness, and the
     // light it casts. Separate because they trade against different things --
     // one against the phase being visible, the other against the wood being.
-    float moonScale = 1.0f;
+    // TWICE AS BRIGHT (user 2026-09-07). This scales the DISC's radiance, and
+    // through keyRadiance it scales the moon's volumetric shafts with it -- the
+    // fog march already takes the moon as its key light at night, so the "moon
+    // rays" and the brightness are one number rather than two. moonKey, the
+    // surface calibration, is deliberately NOT doubled: that is what lights the
+    // forest floor, and it was fitted against a dark-adapted eye rather than a
+    // photometer (see the note over it).
+    float moonScale = 2.0f;
     float moonKeyScale = 1.0f;
 
     // THE SUN'S COLOUR, WHEN THE ATMOSPHERE PASS IS SUPPLYING IT.
