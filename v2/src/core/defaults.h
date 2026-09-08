@@ -47,5 +47,19 @@ constexpr bool kBlueNoise = false;
 constexpr bool kAutoExposure = false;
 constexpr float kBloom = 0.0f;
 
+// HOW LOUD THE WOOD IS, as a master gain over the ambience bed -- what
+// actually reaches the voice is this times the canopy closure at your feet.
+// 1.00 is the bed at the level it was baked; a quarter of that is a
+// background rather than a foreground, and it is where the Volume slider
+// sits at its MIDPOINT. Menu row "Volume", or --ambience.
+constexpr float kAmbience = 0.25f;
+
+// HOW MUCH THE THING IN YOUR HAND MOVES as you walk -- a gain over the
+// stride and the breath in render/helditem.h, not a speed and not a shape.
+// 1.00 is the look those constants describe, so 2.00 is twice it; 0 nails
+// the tool to its pose for a reference screenshot. No menu row -- this one
+// is --hand-sway and a bake, as kBloom and kAutoExposure are.
+constexpr float kHandSway = 2.00f;
+
 }  // namespace defaults
 }  // namespace v2

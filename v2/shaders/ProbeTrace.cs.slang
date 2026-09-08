@@ -142,14 +142,23 @@ uint hashVoxel(int3 v)
     return h ^ (h >> 16);
 }
 
-uint groundShade(uint mtl, float3 p, float3 ng)
+uint groundShade(uint packed, float3 p, float3 ng)
 {
+    const uint mtl = triMaterial(packed);
     uint base, count;
     if (mtl >= kGrass0 && mtl < kGrass0 + kGrassCount) { base = kGrass0; count = kGrassCount; }
     else if (mtl >= kSoil0 && mtl < kSoil0 + kSoilCount) { base = kSoil0; count = kSoilCount; }
     else if (mtl >= kLitter0 && mtl < kLitter0 + kLitterCount) { base = kLitter0; count = kLitterCount; }
     else return mtl;
     const int3 v = int3(floor((p - ng * (0.5f * kVoxelM)) / kVoxelM));
+    // A blade takes its shade from its height above the soil rather than from
+    // the hash -- see the long note in Trace.cs.slang. The probes have to agree
+    // with the camera about this: a blade lit as a flat green here and shaded
+    // as a gradient there is a floor whose bounce light does not match the
+    // surface it came off.
+    const uint strand = triStrand(packed);
+    if (strand != 0u && base == kGrass0)
+        return kGrass0 + min((uint(v.y) - (strand - 1u)) & kStrandRowMask, kGrassCount - 1u);
     return base + hashVoxel(v) % count;
 }
 
@@ -259,7 +268,7 @@ void main(uint3 tid: SV_DispatchThreadID)
     const V6Instance inst = gInstances[q.CommittedInstanceID()];
     const uint packed = loadPackedTri(inst.triOffset, q.CommittedPrimitiveIndex());
     const float3x4 o2w = q.CommittedObjectToWorld3x4();
-    const float3 ng = mul((float3x3)o2w, faceNormal(packed >> 8));
+    const float3 ng = mul((float3x3)o2w, faceNormal(triDir(packed)));
 
     // A BACKFACE HIT IS A NEGATIVE DISTANCE, and that is a message rather than
     // a measurement. RTXGI counts the backfaces a probe sees and relocates any
@@ -272,7 +281,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         return;
     }
 
-    V6Material L = gMaterials[groundShade(packed & 0xFFu, p, ng)];
+    V6Material L = gMaterials[groundShade(packed, p, ng)];
     float3 albedo = L.albedo;
     if (inst.kind == KIND_TREE) albedo *= inst.tint;
 

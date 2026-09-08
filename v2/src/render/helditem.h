@@ -398,6 +398,28 @@ class HeldItem {
     // Whether there is anything in the hand at all. H puts it away.
     bool shown = true;
 
+    // -------------------------------------------------------------------
+    // HOW MUCH THE HAND MOVES, as a gain over the stride and the breath in
+    // xform(). 1.0 is what the constants down there describe; defaults::
+    // kHandSway sets what is actually used, and it is 2.0.
+    //
+    // A GAIN AND NOT SIX NUMBERS. The movement is two sine pairs with tuned
+    // phases and periods, and what has been asked of it three times running
+    // is that it be BIGGER -- never faster, never a different shape. One
+    // multiplier is exactly that ask and cannot express anything else, so it
+    // can go to either end without the hand starting to buzz or to drift.
+    //
+    // WHY THE 2.0 IS NOT JUST FOLDED INTO THOSE CONSTANTS: they are the
+    // tuned SHAPE, carried over from the JS engine and readable against it
+    // (see the note beside them). Multiplying them out would leave six
+    // numbers that match nothing in either engine and no way to say how far
+    // from the original this has travelled. It has travelled 2.0.
+    //
+    // ZERO IS A USEFUL SETTING, not a degenerate one: it nails the tool to
+    // the pose, which is what a reference screenshot of a viewmodel wants.
+    // -------------------------------------------------------------------
+    float sway = 1.0f;
+
     // -----------------------------------------------------------------------
     // Put a tool in the kit. Everything about it as GEOMETRY -- the palette
     // registration, the mesh, the triangle pool, the structure -- lives in the
@@ -869,11 +891,33 @@ class HeldItem {
         // has to double to cover the same ground over that longer stride. The
         // two are read off the same bobPhase, so the head and the hand cannot
         // drift apart.
+        //
+        // DOUBLED AGAIN, BOB AND BREATH BOTH (user 2026-09-08: "double the
+        // movement of the hand items, double the motion sway"). Every
+        // amplitude on these two lines is twice what it was -- 0.150 -> 0.300
+        // and 0.056 -> 0.112 on the stride, and the four breathing terms with
+        // them -- which is how the JS engine has always taken this ask too:
+        // its own comment beside the same four numbers reads "idle breathing
+        // sway (tripled)". Scaling the constants is the whole change, because
+        // the SHAPE is in the phases and the periods and none of those move.
+        //
+        // The breath is still gated on live_ and the stride still on bobAmp,
+        // so a tool held still is held still and a screenshot still converges
+        // -- see the note above on why that gate exists at all. This makes the
+        // movement bigger, not more frequent and not more often.
+        //
+        // ...AND THE WHOLE OF IT IS SCALED BY `sway` -- see the member. The
+        // constants below stay the 1.0 reference, so what is written here is
+        // still the tuned shape and the gain says how much of it is used.
         const float ms = float(nowMs_);
-        hx += sinf(bobPhase) * 0.150f * bobAmp +
-              (sinf(ms * 0.0013f) * 0.0069f + sinf(ms * 0.00073f + 1.7f) * 0.0039f) * live_;
-        hy += -fabsf(cosf(bobPhase)) * 0.056f * bobAmp +
-              (sinf(ms * 0.0017f + 0.9f) * 0.0069f + sinf(ms * 0.00091f) * 0.0036f) * live_;
+        hx += (sinf(bobPhase) * 0.300f * bobAmp +
+               (sinf(ms * 0.0013f) * 0.0138f + sinf(ms * 0.00073f + 1.7f) * 0.0078f) *
+                   live_) *
+              sway;
+        hy += (-fabsf(cosf(bobPhase)) * 0.112f * bobAmp +
+               (sinf(ms * 0.0017f + 0.9f) * 0.0138f + sinf(ms * 0.00091f) * 0.0072f) *
+                   live_) *
+              sway;
 
         // -- the three axes, in CAMERA space --------------------------------
         //

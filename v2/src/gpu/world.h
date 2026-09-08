@@ -88,6 +88,17 @@ static_assert(v2::mat::SOIL_0 == v2::kSoil0, "soil ramp disagrees with the shade
 static_assert(v2::mat::SOIL_COUNT == v2::kSoilCount, "soil ramp disagrees with the shader");
 static_assert(v2::mat::LITTER_0 == v2::kLitter0, "litter ramp disagrees with the shader");
 static_assert(v2::mat::LITTER_COUNT == v2::kLitterCount, "litter ramp disagrees with the shader");
+// The packed triangle word. A disagreement here would not paint the floor the
+// wrong colour, it would hand the shader the wrong NORMAL for every face whose
+// direction bits moved -- so it is checked with the rest.
+static_assert(v2::TRI_DIR_SHIFT == int(v2::kTriDirShift), "tri layout disagrees with the shader");
+static_assert(v2::TRI_DIR_MASK == int(v2::kTriDirMask), "tri layout disagrees with the shader");
+static_assert(v2::TRI_STRAND_SHIFT == int(v2::kTriStrandShift),
+              "tri layout disagrees with the shader");
+static_assert(v2::TRI_STRAND_MASK == int(v2::kTriStrandMask),
+              "tri layout disagrees with the shader");
+static_assert(v2::STRAND_MAX_ROWS == int(v2::kStrandRowMask) + 1,
+              "strand height disagrees with the shader");
 static_assert(v2::SUN_COS_THETA_MAX == v2::kSunCosThetaMax, "sun size disagrees with the shader");
 
 namespace v2 {

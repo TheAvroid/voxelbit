@@ -267,8 +267,12 @@ uint hashVoxel(int3 v)
     return h ^ (h >> 16);
 }
 
-uint groundShade(uint mtl, float3 p, float3 ng)
+// TAKES THE WHOLE PACKED WORD, not just the material byte, because a grass
+// blade's shade is not drawn from the same place the ground's is -- see the
+// gradient below.
+uint groundShade(uint packed, float3 p, float3 ng)
 {
+    const uint mtl = triMaterial(packed);
     uint base, count;
     if (mtl >= kGrass0 && mtl < kGrass0 + kGrassCount)
     {
@@ -295,6 +299,38 @@ uint groundShade(uint mtl, float3 p, float3 ng)
     // a coordinate is a coin toss and every edge in the frame would shimmer
     // between two shades as the camera moved.
     const int3 v = int3(floor((p - ng * (0.5f * kVoxelM)) / kVoxelM));
+
+    // -----------------------------------------------------------------------
+    // A BLADE IS A GRADIENT, NOT A SCATTER.
+    //
+    // The hash above is right for the ground, which is a material seen from
+    // above: what varies over a lawn is the plant, and the plant changes from
+    // one tuft to the next. A standing blade is the opposite case. Its base is
+    // buried in its own sward and sees almost no sky; its tip sees all of it.
+    // Scattering shades up a blade paints that away and leaves a green stick.
+    //
+    // So a strand reads the ramp ALONG ITS HEIGHT -- kGrass0 at the soil, the
+    // lightest green at the tip -- and the ramp is already sorted that way,
+    // being the pines' own foliage taken in order of luminance.
+    //
+    // MEASURED FROM THE GROUND, NOT NORMALISED PER BLADE, which is a choice
+    // and not a shortcut. Normalising would make every strand span the whole
+    // ramp, so a three-voxel blade and a six-voxel one standing side by side
+    // would disagree about the colour of the same height -- per-blade paint
+    // rather than a light field. Absolute, they agree everywhere, short blades
+    // stay dark because a short blade IS in shadow, and only the ones tall
+    // enough to clear the sward carry a lit tip.
+    //
+    // The row comes back from the three bits the mesher stored: modular
+    // arithmetic, so it is right below sea level too, where v.y is negative.
+    // -----------------------------------------------------------------------
+    const uint strand = triStrand(packed);
+    if (strand != 0u && base == kGrass0)
+    {
+        const uint row = (uint(v.y) - (strand - 1u)) & kStrandRowMask;
+        return kGrass0 + min(row, kGrassCount - 1u);
+    }
+
     return base + hashVoxel(v) % count;
 }
 
@@ -494,7 +530,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // inverse transpose -- no adjugate needed, which is the other thing the
     // quarter-turn-only rule buys besides keeping the voxel silhouette crisp.
     const float3x4 o2w = q.CommittedObjectToWorld3x4();
-    const float3 nObj = faceNormal(packed >> 8);
+    const float3 nObj = faceNormal(triDir(packed));
     // NO normalize(). Every transform in this scene is a quarter turn about Y
     // plus a translation, so the 3x3 is a signed permutation of the identity --
     // and nObj is a unit axis. The product is therefore another unit axis with
@@ -630,7 +666,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // the spot to look up a colour. The neural cache wants the index itself:
     // a discrete identity is a far better network input than the three floats
     // it decodes to -- see the encoding note in Nrc.slang.
-    const uint shade = groundShade(packed & 0xFFu, h.p, ng);
+    const uint shade = groundShade(packed, h.p, ng);
     const V6Material L = gMaterials[shade];
     h.mtl = shade;
     h.mat.type = MAT_OPAQUE;

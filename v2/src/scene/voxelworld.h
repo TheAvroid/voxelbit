@@ -432,12 +432,56 @@ inline Vec3 faceNormal(uint8_t dir) {
     }
 }
 
-// Material in the low byte, face direction in the high byte.
-inline uint16_t packTri(uint8_t material, uint8_t dir) {
-    return uint16_t(material) | (uint16_t(dir) << 8);
+// ---------------------------------------------------------------------------
+// THE PACKED TRIANGLE WORD.
+//
+//     bits  0..7   material
+//     bits  8..10  face direction (0..5)
+//     bits 11..14  strand code: 0 for everything that is not a grass blade,
+//                  otherwise 1 + (the blade's base row & 7)
+//     bit   15     spare
+//
+// THE STRAND CODE IS A GRADIENT THAT COSTS NO GEOMETRY, and that is the whole
+// reason it is here rather than in the material byte.
+//
+// A blade wants to be dark where it meets the ground and light at its tip --
+// six voxels, six greens. The obvious way to say that is to name a shade per
+// row, and a material is per QUAD, so it means one quad per voxel instead of
+// one quad per uncovered span. Measured over 49 chunks of this terrain that
+// takes the strands from 51k triangles a chunk to 187k, and strands are
+// already 46% of the terrain's geometry -- a 2.2x on the whole floor to change
+// a colour.
+//
+// So the quads stay merged and the SHADE IS DRAWN PER VOXEL ON THE DEVICE, the
+// same way the ground's own scatter already is: groundShade() knows the voxel
+// the ray landed in, and the only thing it is missing is where that blade
+// started. Three bits of the base row are enough to recover it -- a strand is
+// at most eight voxels tall, so `(v.y - base) & 7` is its row above the soil --
+// and the fourth bit is what distinguishes a blade from the ground it stands
+// in, since a base row of zero is a real base row.
+//
+// The dir field is three bits wide now rather than a whole byte, so anything
+// reading it MUST mask. See triFace here and faceNormal in Trace.cs.slang.
+// ---------------------------------------------------------------------------
+constexpr int TRI_DIR_SHIFT = 8, TRI_DIR_MASK = 0x7;
+constexpr int TRI_STRAND_SHIFT = 11, TRI_STRAND_MASK = 0xF;
+// A blade eight voxels tall is the most the three stored bits can tell apart.
+constexpr int STRAND_MAX_ROWS = 8;
+
+// The value the mesher stores for a blade standing on surface voxel `hc` --
+// its base row is the one above. Never 0, which is what marks a face as a
+// blade at all.
+inline uint8_t strandCodeFor(int baseRow) { return uint8_t(1 + (baseRow & 7)); }
+
+inline uint16_t packTri(uint8_t material, uint8_t dir, uint8_t strand = 0) {
+    return uint16_t(material) | (uint16_t(dir) << TRI_DIR_SHIFT) |
+           (uint16_t(strand) << TRI_STRAND_SHIFT);
 }
 inline uint8_t triMaterial(uint16_t p) { return uint8_t(p & 0xFFu); }
-inline uint8_t triFace(uint16_t p) { return uint8_t(p >> 8); }
+inline uint8_t triFace(uint16_t p) { return uint8_t((p >> TRI_DIR_SHIFT) & TRI_DIR_MASK); }
+inline uint8_t triStrand(uint16_t p) {
+    return uint8_t((p >> TRI_STRAND_SHIFT) & TRI_STRAND_MASK);
+}
 
 // ---------------------------------------------------------------------------
 // A meshed voxel surface: quads, plus what each triangle is and which way it
@@ -446,11 +490,11 @@ inline uint8_t triFace(uint16_t p) { return uint8_t(p >> 8); }
 struct VoxMesh {
     std::vector<Vec3> position;
     std::vector<uint32_t> index;
-    std::vector<uint16_t> tri;  // packTri(material, face), one per triangle
+    std::vector<uint16_t> tri;  // packTri(material, face, strand), one per triangle
 
     size_t triCount() const { return index.size() / 3; }
 
-    void addQuad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, uint8_t m, uint8_t dir) {
+    void addQuad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, uint8_t m, uint8_t dir, uint8_t strand = 0) {
         const uint32_t base = uint32_t(position.size());
         position.push_back(a);
         position.push_back(b);
@@ -458,7 +502,7 @@ struct VoxMesh {
         position.push_back(d);
         index.insert(index.end(), {base, base + 1, base + 2});
         index.insert(index.end(), {base, base + 2, base + 3});
-        const uint16_t p = packTri(m, dir);
+        const uint16_t p = packTri(m, dir, strand);
         tri.push_back(p);
         tri.push_back(p);
     }
@@ -1363,8 +1407,15 @@ class VoxelTerrain {
                 const uint32_t cell = hashU32(uint32_t(I0 + i), uint32_t(J0 + j));
                 if (hashUnit(strandSeed, cell) >= grassDensity) continue;
                 const int span = maxi(1, grassMaxRows - grassMinRows + 1);
-                rows = uint8_t(grassMinRows +
-                               mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span)));
+                // CLAMPED TO WHAT THE PACKED TRIANGLE CAN SAY. The device
+                // recovers a blade's row from three bits of its base, so a
+                // ninth voxel would wrap to the bottom of the gradient and
+                // wear the darkest green at the tip. These two are tuning
+                // knobs; the ceiling is a format.
+                rows = uint8_t(mini(STRAND_MAX_ROWS,
+                                    grassMinRows +
+                                        mini(span - 1,
+                                             int(hashUnit(strandSeed + 1u, cell) * span))));
             }
 
         // A side quad from voxel row lo up to row hi (exclusive), in one band,
@@ -1419,25 +1470,26 @@ class VoxelTerrain {
         //
         // No bottom face either. It is standing on the ground.
         // -------------------------------------------------------------------
-        auto sideQuad = [&](VoxMesh &out, int i, int j, int dir, int lo, int hi, uint8_t mtl) {
+        auto sideQuad = [&](VoxMesh &out, int i, int j, int dir, int lo, int hi, uint8_t mtl,
+                            uint8_t sc) {
             if (hi <= lo) return;
             const float x0 = float(I0 + i) * s, x1 = x0 + s;
             const float z0 = float(J0 + j) * s, z1 = z0 + s;
             const float y0 = float(lo) * s, y1 = float(hi) * s;
             switch (dir) {
-                case 0: out.addQuad({x1,y0,z0},{x1,y1,z0},{x1,y1,z1},{x1,y0,z1}, mtl, face::POS_X); break;
-                case 1: out.addQuad({x0,y0,z0},{x0,y0,z1},{x0,y1,z1},{x0,y1,z0}, mtl, face::NEG_X); break;
-                case 2: out.addQuad({x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}, mtl, face::POS_Z); break;
-                default:out.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, mtl, face::NEG_Z); break;
+                case 0: out.addQuad({x1,y0,z0},{x1,y1,z0},{x1,y1,z1},{x1,y0,z1}, mtl, face::POS_X, sc); break;
+                case 1: out.addQuad({x0,y0,z0},{x0,y0,z1},{x0,y1,z1},{x0,y1,z0}, mtl, face::NEG_X, sc); break;
+                case 2: out.addQuad({x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}, mtl, face::POS_Z, sc); break;
+                default:out.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, mtl, face::NEG_Z, sc); break;
             }
         };
 
         // The part of [lo,hi) that [nlo,nhi) does not cover, as up to two runs.
         auto emitUncovered = [&](VoxMesh &out, int i, int j, int dir, int lo, int hi, int nlo,
-                                 int nhi, uint8_t mtl) {
-            if (nhi <= nlo) { sideQuad(out, i, j, dir, lo, hi, mtl); return; }
-            sideQuad(out, i, j, dir, lo, mini(hi, nlo), mtl);
-            sideQuad(out, i, j, dir, maxi(lo, nhi), hi, mtl);
+                                 int nhi, uint8_t mtl, uint8_t sc) {
+            if (nhi <= nlo) { sideQuad(out, i, j, dir, lo, hi, mtl, sc); return; }
+            sideQuad(out, i, j, dir, lo, mini(hi, nlo), mtl, sc);
+            sideQuad(out, i, j, dir, maxi(lo, nhi), hi, mtl, sc);
         };
 
         // -------------------------------------------------------------------
@@ -1488,6 +1540,14 @@ class VoxelTerrain {
                     // strand is just a strand.
                     const uint8_t cap = tm;
                     const int lo = hc + 1, hi = lo + rows;
+                    // WHAT MAKES A BLADE A GRADIENT rather than a green stick.
+                    // Every face of this strand carries the row it stands on,
+                    // and the device turns the height above that row into a
+                    // shade -- dark at the soil, light at the tip. Stored per
+                    // STRAND, not per row: the quads below still merge over
+                    // whole spans, so the gradient costs nothing but these
+                    // three bits. See the packed-triangle note above.
+                    const uint8_t sc = strandCodeFor(lo);
                     static const int di[4] = {1, -1, 0, 0};
                     static const int dj[4] = {0, 0, 1, -1};
                     for (int d = 0; d < 4; ++d) {
@@ -1500,12 +1560,12 @@ class VoxelTerrain {
                         const int nhi = (nr > 0) ? nlo + nr : hi;
                         const int ground = H(ni, nj) + 1;
                         // Below the neighbour's surface is buried in terrain.
-                        emitUncovered(m, i, j, d, maxi(lo, ground), hi, nlo, nhi, tm);
+                        emitUncovered(m, i, j, d, maxi(lo, ground), hi, nlo, nhi, tm, sc);
                     }
 
                     const float yt = float(hi) * s;
                     m.addQuad({x0, yt, z0}, {x0, yt, z1}, {x1, yt, z1}, {x1, yt, z0}, cap,
-                              face::POS_Y);
+                              face::POS_Y, sc);
                 }
 
             }

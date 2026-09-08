@@ -201,9 +201,48 @@ class Player {
     static constexpr float kCamBob = 0.11f;     // 1.1 voxels, twice the port's
     static constexpr float kCamBobRun = 0.65f;  // extra swing once past a walk
 
+    // -- THE CROUCH, from the JS engine's tick-body.js and sim/player.js -----
+    //
+    // Held, not toggled, and on CAPS LOCK -- which is where that engine put it
+    // on 2026-08-05, off Alt, off C before that. DEFBINDS names it
+    // `crouch: 'CapsLock'` and BINDNAMES calls the row "crouch / fly down", so
+    // the same key descends in flight, and v2 does both.
+    //
+    // THE DROP IS SEVEN VOXELS, and it is taken off the HEIGHT rather than off
+    // the eye. That engine carries both -- EYE 18.5 with HEIGHT 20, CR_EYE 11.5
+    // with CR_HEIGHT 13 -- and v2 deliberately carries one number that is both
+    // (see the note at the top of this file: nothing is modelled above the
+    // eye). 20 -> 13 is the pair that matches what v2's number MEANS, and it
+    // is the same seven voxels either way.
+    //
+    // A FRACTION AND NOT A HEIGHT, so it survives the eye slider: crouching is
+    // 65% of however tall you are, not a hardcoded 1.3 m that would put a
+    // shortened player's head underground and a raised one's barely lower.
+    static constexpr float kCrouchEyeMul = 13.0f / 20.0f;  // CR_HEIGHT / HEIGHT
+    static constexpr float kCrouchSpeed = 0.45f;           // CROUCHM
+    // 13 per second -- the ~150 ms ease that engine's tick-body.js uses, so the
+    // eye sinks rather than snapping. There is nothing to hurry for: v2 has no
+    // overhead clearance test to beat (see blocked(), which is a wall at every
+    // height), so unlike the port there is no instant collision height that the
+    // smoothing has to be kept away from.
+    static constexpr float kCrouchRate = 13.0f;
+
+    // How high the eye is standing right now -- `eye` full up, kCrouchEyeMul of
+    // it fully down, and interpolated between while the crouch eases. The JS
+    // engine's eyeH, and the reason the crouch is a smooth sink rather than a
+    // cut. NOT written back into `eye`, which is a TUNING value the menu edits
+    // and a bake writes: folding a crouch into it would bake a crouched player
+    // as the height everyone spawns at.
+    float eyeHeight() const { return eye * (1.0f - crouchT_ * (1.0f - kCrouchEyeMul)); }
+    // How far into the crouch the eye is, 0..1 -- for anything that wants to
+    // show it. The movement itself does not go through here.
+    float crouchAmount() const { return crouchT_; }
+
     // stepLag_ is carried here and NOT in pos, so the physics still sees the
     // feet exactly on the ground while the eye is still catching up.
-    Vec3 eyePosition() const { return Vec3(pos.x, pos.y + eye + camBobY + stepLag_, pos.z); }
+    Vec3 eyePosition() const {
+        return Vec3(pos.x, pos.y + eyeHeight() + camBobY + stepLag_, pos.z);
+    }
     float speed() const { return sqrtf(hvx_ * hvx_ + hvz_ * hvz_); }
 
     // Put the body on the ground at (x, z), stepping aside first if that spot
@@ -221,7 +260,20 @@ class Player {
     // -----------------------------------------------------------------------
     // One tick. `move` is the desired horizontal direction, already normalised.
     // -----------------------------------------------------------------------
-    void update(const WalkWorld &w, Vec3 move, bool sprint, bool jump, bool down, float dt) {
+    void update(const WalkWorld &w, Vec3 move, bool sprint, bool jump, bool down, bool crouch,
+                float dt) {
+        // NOT WHILE FLYING, exactly as tick-body.js has it: in the air the same
+        // key is a descent and there is no gait for it to shorten. The eye
+        // therefore rises back to full the moment F is pressed, which is what
+        // you want -- a flying crouch is a camera dropped for no reason.
+        const bool crouching = crouch && !fly;
+        crouchT_ += ((crouching ? 1.0f : 0.0f) - crouchT_) * (1.0f - expf(-kCrouchRate * dt));
+        if (crouchT_ < 0.001f) crouchT_ = 0.0f;
+        // THE CROUCH BEATS THE SPRINT rather than the two multiplying out to
+        // something between them -- `sprint = keys.has(binds.sprint) &&
+        // !crouching` in that engine, and holding both should not be a way to
+        // creep at four fifths of a walk.
+        sprint = sprint && !crouching;
         if (fly) {
             const float spd = walk * 3.0f * (sprint ? sprintMul : 1.0f);
             const float k = 1.0f - expf(-10.0f * dt);
@@ -234,7 +286,8 @@ class Player {
             vy = 0.0f;
             onGround = false;
         } else {
-            const float spd = walk * (sprint ? sprintMul : 1.0f);
+            const float spd =
+                walk * (sprint ? sprintMul : 1.0f) * (crouching ? kCrouchSpeed : 1.0f);
             // Approached exponentially rather than set outright, and far more
             // slowly in the air (3.2 against 14): that difference IS the sense
             // of having weight, and of not being able to change your mind
@@ -397,6 +450,8 @@ class Player {
 
   private:
     float hvx_ = 0.0f, hvz_ = 0.0f;
+    // 0 standing, 1 fully crouched, and every value between while it eases.
+    float crouchT_ = 0.0f;
 
     // How far the eye is still behind the feet after a step, in metres. Always
     // decaying toward zero; never read by anything that decides where the body

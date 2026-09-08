@@ -81,6 +81,38 @@ static const uint kSoilCount = 4;
 static const uint kLitter0 = 17;
 static const uint kLitterCount = 3;
 
+// HOW A TRIANGLE'S WORD IS LAID OUT.
+//
+//     bits  0..7   material
+//     bits  8..10  face direction (0..5)
+//     bits 11..14  strand code: 0 for everything that is not a grass blade,
+//                  otherwise 1 + (the blade's base row & 7)
+//     bit   15     spare
+//
+// Duplicated from packTri in voxelworld.h and asserted against it in world.h,
+// for the same reason the ramps above are. The direction was a whole byte
+// until the blades wanted somewhere to put their gradient, so ANYTHING READING
+// IT HAS TO MASK -- an unmasked shift now returns a strand code as well and
+// faceNormal would answer -Z for every blade in the frame.
+static const uint kTriDirShift = 8;
+static const uint kTriDirMask = 0x7u;
+static const uint kTriStrandShift = 11;
+static const uint kTriStrandMask = 0xFu;
+// A strand is at most eight voxels tall, which is what three bits of base row
+// can tell apart. The mesher clamps to it.
+static const uint kStrandRowMask = 0x7u;
+
+// SLANG ONLY. This file is otherwise types and constants, and it has to be,
+// because cl.exe compiles it as a header in half a dozen translation units --
+// a function at namespace scope here would be a duplicate symbol at link time.
+// The host already has its own accessors next to packTri in voxelworld.h; the
+// static_asserts in world.h are what keep the two spellings honest.
+#ifndef HOST_CODE
+uint triDir(uint packed) { return (packed >> kTriDirShift) & kTriDirMask; }
+uint triMaterial(uint packed) { return packed & 0xFFu; }
+uint triStrand(uint packed) { return (packed >> kTriStrandShift) & kTriStrandMask; }
+#endif
+
 // The sun subtends about 0.53 degrees; this is the cosine of its half-angle.
 // Also duplicated, also asserted.
 static const float kSunCosThetaMax = 0.99998932f;

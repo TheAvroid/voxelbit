@@ -250,6 +250,8 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     }
     if (a == "--drop-frame") { argInt(argc, argv, i, &o->dropFrame); return true; }
     if (a == "--stage") { o->stageAtStart = true; return true; }
+    // A gain over the stride and breath in render/helditem.h -- see kHandSway.
+    if (a == "--hand-sway") { argFloat(argc, argv, i, &o->handSway); return true; }
     if (a == "--bird-dir") { if (i + 1 < argc) o->birdDir = argv[++i]; return true; }
     return false;
 }

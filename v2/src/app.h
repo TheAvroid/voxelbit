@@ -420,8 +420,15 @@ struct Options {
     // The compressor in render/dynamics.h is upstream of this and unaffected:
     // it decides the SHAPE of the bed, this decides how much of it you get.
     // --ambience 1.0 still restores the baked level.
+    //
+    // FROM THE BAKE NOW, like every other setting with a row in the menu.
+    // The quarter used to be written here and nowhere else, so the one
+    // control that changes it -- the Volume slider -- was the only one in the
+    // Y menu whose value a bake silently threw away: tune the wood down, bake,
+    // rebuild, and it came back at whatever this line said. defaults.h is
+    // where a tuned setting belongs, and the volume is a tuned setting.
     std::string sound = "C:/voxelbit/game/sound/bird_ambience.mp3";
-    float ambience = 0.25f;
+    float ambience = defaults::kAmbience;
     bool soundOn = true;
     // ---- what the tools sound like (render/toolsound.h) ------------------
     //
@@ -434,6 +441,18 @@ struct Options {
     // v2 has two things that make sound rather than five.
     std::string soundDir = "C:/voxelbit/game/sound";
     float sfx = 1.0f;
+
+    // ---- how much the hand moves (render/helditem.h) --------------------
+    //
+    // A GAIN over the stride and the breath. The constants in helditem.h are
+    // the 1.00 look; this is how much of it you get, and it is 2.00.
+    //
+    // COMMAND LINE AND BAKE, with no row in the Y menu. It had one for a few
+    // minutes on 2026-09-08 and the answer it produced was "2.00, and take the
+    // slider away" -- which is the same shape kBloom and kAutoExposure have,
+    // and the menu is shorter for every setting that has stopped being a
+    // question.
+    float handSway = defaults::kHandSway;
 
     // ---- what is in the player's hand (render/helditem.h) ---------------
     //
@@ -744,6 +763,9 @@ class ForestApp : public SampleApp {
         // flags give the same picture, so it keeps the camera it was given.
         if (!opt_.outGiven && !opt_.camGiven) chooseSpawn();
         if (opt_.groundStats) { groundStats(); skyStats(); shutdown(0); return; }
+
+        // BEFORE THE MODELS LOAD, because the load is the only moment their
+        // voxels exist and it throws them away when it is done.
 
         auto t0 = std::chrono::steady_clock::now();
         if (!world_.build(getDevice(), ctx)) {
@@ -1146,6 +1168,7 @@ class ForestApp : public SampleApp {
         player_.walk = opt_.speed;
         player_.fly = opt_.startFly;
         player_.eye = opt_.eye;
+        held_.sway = opt_.handSway;
         player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
         pos_ = player_.eyePosition();
         yaw_ = opt_.yaw;
@@ -1677,6 +1700,8 @@ class ForestApp : public SampleApp {
         cam.focusDist = 40.0f;
         const V6Camera gcam = cam.gpu(tracer_.width(), tracer_.height());
 
+
+
         // -- the tool in the hand, for the tracer to hit ---------------------
         //
         // HERE AND NOT IN processInput, because the pose is expressed in the
@@ -2032,6 +2057,9 @@ class ForestApp : public SampleApp {
                 else if (!opt_.shotPath.empty())
                     std::fprintf(stderr, "v2: could not write %s\n", opt_.shotPath.c_str());
                 if (opt_.profile) printProfile();
+                // The march writes its own picture, so it saves its own file
+                // beside the traced one -- the two are the same camera and the
+                // same frame, which is what makes them comparable.
                 // A SCRIPTED DROP SAYS WHERE IT ENDED UP, not just where it was
                 // thrown from. The toss print above is half a measurement: what
                 // the floor under a dropped item is worth cannot be read off a
@@ -2502,23 +2530,26 @@ class ForestApp : public SampleApp {
                 ImGui::SetKeyboardFocusHere();
                 consoleFocus_ = false;
             }
-            // THE REPLY IS DRAWN ABOVE THE PROMPT, which is the other half of
-            // the move down here. At the top of the screen the reply belonged
-            // under the line that caused it; at the bottom the prompt wants to
-            // be the last thing before the screen edge with what it said
-            // stacked above -- every console in every game reads that way.
-            if (!consoleMsg_.empty()) ImGui::TextUnformatted(consoleMsg_.c_str());
+            // NOTHING IS DRAWN ABOVE THE PROMPT ANY MORE. The reply used to
+            // sit here, stacked over the input the way a game console reads,
+            // but Enter now shuts the box before it could be read -- so the
+            // reply moved to the fading line at the foot of this branch, which
+            // takes over this exact corner once the window is gone.
             ImGui::TextUnformatted(">");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(-1.0f);
+            bool submitted = false;
             if (ImGui::InputText("##cmd", consoleBuf_, sizeof(consoleBuf_),
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
                 consoleMsg_ = runCommand(std::string(consoleBuf_));
                 consoleBuf_[0] = 0;
-                // STAYS OPEN after a command. /locate is usually run twice --
-                // go there, look, come back -- and closing on Enter would make
-                // the second one four keystrokes instead of one.
-                consoleFocus_ = true;
+                // CLOSES ON ENTER. A command is meant to be one keystroke to
+                // open, the line, and done -- back in the wood looking at what
+                // it did rather than reading past a box. The reply is not lost
+                // with the window: it is handed to the fading line below, which
+                // draws in exactly this corner for a few seconds afterwards.
+                consoleMsgUntil_ = nowSeconds() + kConsoleMsgHold;
+                submitted = true;
             }
 
             // ---- ESC CLOSES IT, AND IT HAS TO BE ASKED HERE ----------------
@@ -2548,8 +2579,45 @@ class ForestApp : public SampleApp {
             if (px3_) ImGui::PopFont();
             ImGui::End();
             // Closed AFTER End(), because setConsoleOpen may hand the mouse
-            // back and the window still has to be finished either way.
-            if (escaped) setConsoleOpen(false);
+            // back and the window still has to be finished either way. Escape
+            // throws the line away and takes the old reply with it; Enter has
+            // already run the line and wants the reply left up.
+            if (escaped) {
+                consoleMsgUntil_ = 0.0;
+                setConsoleOpen(false);
+            } else if (submitted) {
+                setConsoleOpen(false);
+            }
+        } else if (!consoleMsg_.empty() && nowSeconds() < consoleMsgUntil_) {
+            // ---- WHAT THE COMMAND SAID, AFTER THE BOX HAS GONE -------------
+            //
+            // Same corner, same font, no prompt and no input, so the reply
+            // reads as the tail of the line you just typed rather than as a
+            // second surface. NoInputs because the mouse is back on the camera
+            // the instant Enter lands -- a window sitting there taking clicks
+            // would steal the look for as long as it was up.
+            const float cw = fbW > 0 ? float(fbW) : 1280.0f;
+            const float ch = fbH > 0 ? float(fbH) : 720.0f;
+            const float margin = 12.0f;
+            const float boxW = minf(cw - margin * 2.0f, 720.0f);
+            // Solid first and only fading over the last kConsoleMsgFade
+            // seconds, so a reply you are still reading does not dim under you.
+            const float left = float(consoleMsgUntil_ - nowSeconds());
+            const float alpha = left >= kConsoleMsgFade ? 1.0f : left / kConsoleMsgFade;
+            ImGui::SetNextWindowPos(ImVec2(margin, ch - margin), ImGuiCond_Always,
+                                    ImVec2(0.0f, 1.0f));
+            ImGui::SetNextWindowSize(ImVec2(boxW, 0.0f), ImGuiCond_Always);
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+            ImGui::Begin("##v2consolemsg", nullptr,
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+                             ImGuiWindowFlags_NoFocusOnAppearing);
+            if (px3_) ImGui::PushFont(px3_);
+            ImGui::TextUnformatted(consoleMsg_.c_str());
+            if (px3_) ImGui::PopFont();
+            ImGui::End();
+            ImGui::PopStyleVar();
         }
 
         if (!menuOpen_) return;
@@ -2863,9 +2931,25 @@ class ForestApp : public SampleApp {
         // somebody hunting through a menu for a row that was never going to be
         // drawn. A line of text is not a control that does nothing, it is the
         // answer to the question the missing control provokes.
+        //
+        // THE DEFAULT IS THE MIDDLE OF THE TRACK. This ran to 2.0, and the
+        // bed is a background: everything anybody would actually choose
+        // lived in the first eighth of the travel, with the whole right-hand
+        // half reserved for twice the level the asset was baked at. So the
+        // top is now twice the default instead of eight times it, which puts
+        // the handle you start with in the centre and spends the travel on
+        // the range the ear is actually being asked about.
+        //
+        // The command line is unchanged and still reaches the baked level:
+        // --ambience 1.0, or 2.0, is a number rather than a drag.
         if (ambience_.active()) {
             float amb = ambience_.masterGain();
-            if (w.slider("Volume", amb, 0.0f, 2.0f, false, "%.2f"))
+            // The floor is what stops a bake at zero from welding the control
+            // shut: a slider whose top is its bottom can never be dragged back
+            // up, and the volume is the one setting somebody is most likely to
+            // take all the way down before baking.
+            const float top = maxf(0.05f, defaults::kAmbience * 2.0f);
+            if (w.slider("Volume", amb, 0.0f, top, false, "%.2f"))
                 ambience_.setMasterGain(amb);
         }
         // ITS OWN SLIDER, which is the JS engine's split: the bed and the
@@ -3538,6 +3622,10 @@ class ForestApp : public SampleApp {
     }
 
     void onShutdown() override {
+        // THE WORKER OUTLIVES NOTHING. It holds `this` and writes into a member
+        // grid, so letting the process tear down around a running one is a use
+        // after free with a thread attached to it.
+
         // A take still finalising owns a thread and a sink writer. Abandoning
         // it drops the file rather than waiting on an encoder while the device
         // is being torn down underneath it.
@@ -3627,7 +3715,10 @@ class ForestApp : public SampleApp {
     bool consoleFocus_ = false;          // grab the caret on the frame it opens
     bool consoleCapture_ = false;        // was the mouse captured before it opened
     char consoleBuf_[160] = {0};
-    std::string consoleMsg_;             // the last reply, shown under the input
+    std::string consoleMsg_;             // the last reply, drawn after the box shuts
+    double consoleMsgUntil_ = 0.0;       // steady-clock seconds; 0 means nothing to draw
+    static constexpr double kConsoleMsgHold = 5.0;  // how long the reply stays up
+    static constexpr float kConsoleMsgFade = 1.0f;  // ...of which the last second fades
     // False until the panel has been centred for this opening; see onGuiRender.
     bool menuPlaced_ = false;
     // Where the player last dragged the settings panel, in framebuffer pixels.
@@ -3685,6 +3776,7 @@ class ForestApp : public SampleApp {
     Clusters clusters_;
     Physics physics_;
     Birds birds_;
+
     // Where the wood was when U was pressed -- see the handler.
     Vec3 woodPos_{0, 0, 0};
     float woodYaw_ = 0.0f, woodPitch_ = 0.0f;
@@ -3949,6 +4041,11 @@ class ForestApp : public SampleApp {
             holdLook_ = false;
             consoleBuf_[0] = 0;
             consoleFocus_ = true;
+            // A FRESH BOX. The reply lives in the fading line now, so carrying
+            // the last one back into the window would stack a stale answer
+            // above a prompt that has not been typed into yet.
+            consoleMsg_.clear();
+            consoleMsgUntil_ = 0.0;
         } else if (consoleCapture_) {
             setCapture(true);
             consoleCapture_ = false;
@@ -4029,7 +4126,8 @@ class ForestApp : public SampleApp {
                           world_.terrain.birchAt(pos_.x) ? "birch" : "pine");
             return std::string(buf);
         }
-        if (verb == "help") return std::string("/locate <biome>   /where   ESC closes");
+        if (verb == "help")
+            return std::string("/locate <biome>   /where   ENTER runs and closes   ESC cancels");
         return std::string("unknown command '" + verb + "' -- try /help");
     }
 
@@ -4226,11 +4324,31 @@ class ForestApp : public SampleApp {
         const bool sprint =
             in.isKeyDown(Input::Key::LeftShift) || in.isKeyDown(Input::Key::RightShift);
         const bool jump = in.isKeyDown(Input::Key::Space);
+        // -- CROUCH IS CAPS LOCK, AND IT IS HELD --------------------------
+        //
+        // Straight off the JS engine's DEFBINDS, which has read
+        // `crouch: 'CapsLock'` since 2026-08-05 -- it went C, then left Alt,
+        // then here, and ui/keybinds.js still carries the migration that drags
+        // saved bindings forward off the two dead keys.
+        //
+        // POLLED AND NOT TOGGLED, which is the whole reason this reads
+        // isKeyDown rather than living in onKeyEvent beside F. Caps Lock
+        // LATCHES A LIGHT ON THE KEYBOARD and nothing can stop it -- that
+        // engine's input.js says so in as many words next to its
+        // preventDefault: "preventDefault cannot stop CAPS LOCK toggling the OS
+        // state". So the lamp will disagree with the crouch, and the only way
+        // to keep the CROUCH honest is to read the physical key rather than
+        // anything derived from it. Hold it down and you are down.
+        const bool crouch = in.isKeyDown(Input::Key::CapsLock) && !menuOpen_;
         // Q HAS MOVED TO DROP (user 2026-09-07), which is where the JS engine
         // has always had it -- its DEFBINDS name KeyQ as `drop`. Control alone
         // descends in fly mode now; it was always the other half of that pair
         // and is the binding every other engine uses for it.
-        const bool down = in.isKeyDown(Input::Key::LeftControl);
+        // ...AND IT DESCENDS IN FLIGHT TOO, which is why that engine's BINDNAMES
+        // calls the row "crouch / fly down" rather than "crouch". Control keeps
+        // the job it was given on 2026-09-07; this is a second way down, not a
+        // replacement for it.
+        const bool down = in.isKeyDown(Input::Key::LeftControl) || crouch;
 
         // WASD in the horizontal plane only -- looking up must not walk you
         // into the sky. The forward vector is flattened and renormalised rather
@@ -4253,7 +4371,7 @@ class ForestApp : public SampleApp {
         if (lengthSq(move) > 1e-6f) move = normalize(move);
 
         const Vec3 before = player_.eyePosition();
-        player_.update(walkWorld(), move, sprint, jump, down, dt);
+        player_.update(walkWorld(), move, sprint, jump, down, crouch, dt);
         pos_ = player_.eyePosition();
 
         // -- the swing -------------------------------------------------------
@@ -5501,6 +5619,7 @@ class ForestApp : public SampleApp {
             "  right-drag            look around without capturing\n"
             "  W A S D               walk (hold shift to sprint)\n"
             "  space                 jump\n"
+            "  caps lock             crouch -- and descend, in fly mode\n"
             "  F                     toggle fly mode\n"
             "  arrow keys            scrub time (up/down = fast)\n"
             "  X + scroll wheel      day/night speed -- scroll down past 0.25x to REWIND\n"
@@ -5578,6 +5697,20 @@ class ForestApp : public SampleApp {
             "constexpr bool kAutoExposure = %s;\n"
             "constexpr float kBloom = %.2ff;\n"
             "\n"
+            "// HOW LOUD THE WOOD IS, as a master gain over the ambience bed -- what\n"
+            "// actually reaches the voice is this times the canopy closure at your feet.\n"
+            "// 1.00 is the bed at the level it was baked; a quarter of that is a\n"
+            "// background rather than a foreground, and it is where the Volume slider\n"
+            "// sits at its MIDPOINT. Menu row \"Volume\", or --ambience.\n"
+            "constexpr float kAmbience = %.2ff;\n"
+            "\n"
+            "// HOW MUCH THE THING IN YOUR HAND MOVES as you walk -- a gain over the\n"
+            "// stride and the breath in render/helditem.h, not a speed and not a shape.\n"
+            "// 1.00 is the look those constants describe, so 2.00 is twice it; 0 nails\n"
+            "// the tool to its pose for a reference screenshot. No menu row -- this one\n"
+            "// is --hand-sway and a bake, as kBloom and kAutoExposure are.\n"
+            "constexpr float kHandSway = %.2ff;\n"
+            "\n"
             "}  // namespace defaults\n"
             "}  // namespace v2\n",
             opt_.scale, opt_.r.maxDepth, opt_.movingDepth, opt_.r.exposure, opt_.r.shadowLift,
@@ -5598,7 +5731,17 @@ class ForestApp : public SampleApp {
             // command line said at start-up -- baking that would quietly
             // discard the thing just tuned, which is the one job this has.
             tracer_.blueNoise ? "true" : "false",
-            tracer_.post().autoExposure ? "true" : "false", tracer_.post().bloom);
+            tracer_.post().autoExposure ? "true" : "false", tracer_.post().bloom,
+            // THE LIVE GAIN WHERE THERE IS ONE, and the option otherwise. A bake
+            // under --no-sound or --background never opened the bed, so masterGain()
+            // is the 1.0 the object was constructed with rather than anything anybody
+            // chose -- and baking that would turn the wood up fourfold for having
+            // tuned the picture with the sound off.
+            ambience_.active() ? ambience_.masterGain() : opt_.ambience,
+            // Straight off the live object, like the two above it: the menu
+            // row writes into held_ and never into opt_, so opt_ still holds
+            // whatever the command line said at start-up.
+            held_.sway);
         std::fclose(f);
         // The FULL PATH, not just the file name. "run rebuild.bat" is only
         // useful if you already know which of the engine trees it lives in,
