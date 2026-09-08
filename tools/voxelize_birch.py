@@ -154,22 +154,28 @@ SUB = 0.5           # triangle sample spacing, in voxels
 MINSUB = 6          # ...but never fewer than this many steps on an ALPHA-TESTED triangle. See DIFFERENCE 4
 CHUNK = 40000       # triangles per rasterizer batch, so MINSUB's sample count cannot blow the heap
 
-for _a in sys.argv[1:]:
-    if _a.startswith('--tall='):
-        TALL_M = float(_a[7:])
-    elif _a.startswith('--nbark='):
-        NBARK = int(_a[8:])
-    elif _a.startswith('--nleaf='):
-        NLEAF = int(_a[8:])
-    elif _a.startswith('--alpha='):
-        ALPHA_MIN = int(_a[8:])
-    elif _a == '--repoint':
-        OWN_COLOURS = False
-    elif _a.startswith('--out='):
-        _o = _a[6:]
-        OUT = _o if os.path.isabs(_o) else os.path.join(ROOT, _o)
-    else:
-        sys.exit('unknown argument %s' % _a)
+# -- ONLY WHEN RUN DIRECTLY (2026-09-08) -- voxelize_birch_forest.py imports this file AS A LIBRARY, and
+# an unguarded parse at module level reads the PARENT's argv: every flag that is the forest tool's own and
+# not this one's died here with "unknown argument" before that tool ever saw it. --only=<tree>, documented
+# in the forest tool's own header as the way to iterate on one tree, could therefore never actually run.
+# The block still does exactly what it did when this file is the program.
+if __name__ == '__main__':
+    for _a in sys.argv[1:]:
+        if _a.startswith('--tall='):
+            TALL_M = float(_a[7:])
+        elif _a.startswith('--nbark='):
+            NBARK = int(_a[8:])
+        elif _a.startswith('--nleaf='):
+            NLEAF = int(_a[8:])
+        elif _a.startswith('--alpha='):
+            ALPHA_MIN = int(_a[8:])
+        elif _a == '--repoint':
+            OWN_COLOURS = False
+        elif _a.startswith('--out='):
+            _o = _a[6:]
+            OUT = _o if os.path.isabs(_o) else os.path.join(ROOT, _o)
+        else:
+            sys.exit('unknown argument %s' % _a)
 
 
 # -- STEP 1: FBX -> OBJ VIA BLENDER ------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Voxelize game/assets/foilage/pine_trees/EuropeanPine.obj into NINE pine trees, 75 feet tall.
+"""Voxelize game/assets/foilage/pine_trees/EuropeanPine.obj into NINE pine trees, 75 to 100 feet tall.
 
 RUN IT WITH THE WINDOWS PYTHON, not the msys2 one on PATH - numpy and Pillow live there:
   "$LOCALAPPDATA/Programs/Python/Python313/python.exe" tools/voxelize_pine9.py
@@ -18,12 +18,12 @@ by which trunk centre they sit nearest in X, which is what makes nine trees out 
 x = width, y = depth, z = height, which voxelize_rocks.py and gen_birch.py also write, so the
 axis swap here is game(x, y, z) = model(x, z, y). Getting this wrong lays the forest on its side.
 
-── 75 FEET ── the engine's voxel is 10 cm (see voxelize_fir.py), so 75 ft = 22.86 m = 228
-voxels. The nine source trees are NOT the same height (24.0 to 35.6 model units), and each is
-scaled to 228 on its OWN height rather than by one shared factor, because the request was nine
-trees of 75 feet and a shared factor would deliver one 75-foot tree and eight shorter ones.
-Proportions are kept: the same scalar drives all three axes.
-(Was 152 = 50 ft. See the TALL_VOX note for why it moved.)
+── 75 TO 100 FEET ── the engine's voxel is 10 cm (see voxelize_fir.py), so the nine targets
+run 228 voxels (75 ft, 22.86 m) to 305 (100 ft, 30.48 m), evenly spaced. Each tree is scaled to
+its OWN target off its OWN measured height rather than by one shared factor, so every target is
+met exactly. Proportions are kept: the same scalar drives all three axes.
+(Was 152 = 50 ft, then a single 228, then a single 305 - see the TALL_FT note for why it is a
+range now, and for why tree N gets the height it gets.)
 
 ── WHY SAMPLES AND NOT CORNERS ── a leaf card is a quad with a cutout alpha, and most of its
 area is transparent. Testing the alpha at triangle CORNERS throws the whole canopy away
@@ -41,25 +41,45 @@ TEX  = os.path.join(ROOT, 'source/pine9/tex')
 OUT  = os.path.join(ROOT, 'game/assets/foilage/pine9')
 BAKE = os.path.join(ROOT, 'source/pine9/pine9.json')
 
-TALL_VOX   = 228          # 75 ft at the engine's 10 cm voxel
-                          # ── WAS 152 / 50 FT (user 2026-09-03: "increase the height of the pines trees
-                          # porportionally by 50% to reach 75 feet") ── the 50 ft was never a measurement: the
-                          # nine source trees run 24.0 to 35.6 model units and every one of them is normalised
-                          # to this constant, so it is a target the stand is forced to and nothing else. 75 ft
-                          # = 22.9 m puts them mid-range for mature Scots pine (20-35 m) instead of at the
-                          # young end, and above the five short birches while staying under the tall eleven,
-                          # which is the right way round for the species pair - a mature pine out-tops a birch.
-                          # THE BIRCHES ARE DELIBERATELY NOT TOUCHED: voxelize_birch_forest.py scales each tree
-                          # to the real height in its own filename (12.1 m .. 26.4 m) x TALL_SCALE 0.91, so
-                          # that set is already life-size and raising it would make it LESS accurate.
-                          # 228 still clears the .vox 255-per-axis limit (the assert in main), so the nine
-                          # stay single-part files and need none of the stacked-part scene graph the tall
-                          # birches once did. Width follows the same scalar: the widest tree goes 67 -> ~100.
-                          # THE VOXEL COUNT GOES AS THE AREA, NOT THE VOLUME: measured 112,879 -> 245,591
-                          # over the nine, 2.18x, against the 2.25x a pure x1.5 surface scaling predicts. This
-                          # is a SURFACE voxelizer - sample_tree walks triangles and keeps the voxels the mesh
-                          # passes through - so a hollow shell grows with its area. Reasoning from the volume
-                          # gives ~3.4x and overstates the cost of this change by half.
+VOX_M      = 0.1          # the engine's voxel, in metres (scene/voxelworld.h)
+FT_M       = 0.3048
+TALL_FT_LO = 75.0         # ── NINE HEIGHTS, NOT ONE (user 2026-09-08: "I want you to rebake the 9 at
+TALL_FT_HI = 100.0        # different height. I want you to bake them anywhere from 75 feet to 100 feet.
+                          # to allow for more variation") ── every bake before this one normalised all
+                          # nine trees onto a SINGLE constant, so the stand was a row of pines of identical
+                          # height and the only variation left in it was crown shape. A real stand is not
+                          # that, and at this renderer's draw distance a flat skyline is the tell. The nine
+                          # targets are now spread evenly across this range.
+                          #
+                          # WHICH TREE GETS WHICH HEIGHT IS NOT ARBITRARY. The nine source trees are already
+                          # different heights in the OBJ (24.0 to 35.6 model units) and each carries a crown
+                          # that suits its own stature - the tall ones are lankier. So the targets are dealt
+                          # out by each tree's OWN natural rank: the naturally shortest source tree becomes
+                          # the 75-footer and the naturally tallest the 100-footer. Handing them out at
+                          # random would put a lanky crown on the stubbiest trunk and read as a mistake
+                          # rather than as variation. tree_span measures this BEFORE any sampling, off the
+                          # triangles the bake will actually keep, so it is deterministic and a re-bake
+                          # reproduces the same stand.
+                          #
+                          # THE NUMBERING IS DELIBERATELY LEFT ALONE (user: "dont change anything about the
+                          # frequency of the trees or anything"). pine_N is still the Nth trunk along X in
+                          # the OBJ, exactly as before, so a scatter that hashes to model index N keeps the
+                          # same tree in the same place and only its HEIGHT changes. Renumbering the set
+                          # short-to-tall would have reshuffled the whole forest to no purpose.
+                          #
+                          # WHAT IT COSTS: nothing - it REFUNDS. This is a SURFACE voxelizer, so a tree's
+                          # voxel count follows its AREA and moves as the square of the scalar. Against the
+                          # nine-at-305 set that shipped, eight of the nine come DOWN, so the forest gets
+                          # cheaper to trace while gaining the variation.
+TALL_VOX_LO = int(round(TALL_FT_LO * FT_M / VOX_M))    # 228
+TALL_VOX_HI = int(round(TALL_FT_HI * FT_M / VOX_M))    # 305
+                          # ── AND 305 DOES NOT FIT IN A .vox COORDINATE ── an XYZI record packs each axis
+                          # in ONE BYTE, so no single model may exceed 256. write_vox therefore SPLITS a
+                          # tall tree into stacked parts plus the nTRN/nGRP/nSHP scene graph that places
+                          # them, exactly as voxelize_birch_forest.py does, and scene/vox.h composes them
+                          # back into one grid on load. A tree that fits in 255 is still written as one
+                          # plain model - no scene graph, no behaviour change. Only Z is ever split: X and Y
+                          # stay under the byte on their own (the widest crown here measures ~134).
 ALPHA_MIN  = 128          # leaf-card cutout
 SAMPLE_DEN = 14.0         # samples per square voxel of triangle area. At 2.2 the trees came out
                           # 1.2% full against pine5.vox's 5.8% - a surface the sampler kept MISSING,
@@ -150,8 +170,20 @@ def group_trees(V, tris):
     return owner, trunks
 
 
-def sample_tree(V, VT, tris, texs, keep):
-    """Rasterise one tree's triangles into {(x,y,z): [rsum,gsum,bsum,n,needle_n]}."""
+def tree_span(V, tris, keep):
+    """One tree's own height in MODEL units, over exactly the triangles the bake will keep.
+
+    Measured BEFORE any sampling, because the height targets are dealt out by natural rank and the
+    rank has to exist before the first tree is rasterised (see TALL_FT_LO). Model Y is UP."""
+    faces = [vi for o, m, vi, ti in tris if o in keep]
+    idx = np.unique(np.asarray(faces, dtype=np.int64).ravel())
+    return float(V[idx, 1].max() - V[idx, 1].min())
+
+
+def sample_tree(V, VT, tris, texs, keep, tall_vox):
+    """Rasterise one tree's triangles into {(x,y,z): [rsum,gsum,bsum,n,needle_n]}.
+
+    tall_vox is THIS tree's target height in voxels, not a shared constant - see TALL_FT_LO."""
     acc = {}
     # group triangles by material so each batch samples ONE texture
     by_mat = collections.defaultdict(list)
@@ -162,7 +194,7 @@ def sample_tree(V, VT, tris, texs, keep):
     allv = np.unique(np.concatenate([np.asarray([t[0] for t in v], dtype=np.int64).ravel()
                                      for v in by_mat.values()]))
     lo = V[allv].min(axis=0); hi = V[allv].max(axis=0)
-    scale = TALL_VOX / float(hi[1] - lo[1])             # model Y is UP
+    scale = tall_vox / float(hi[1] - lo[1])             # model Y is UP; tall_vox is per tree
     for mat, lst in by_mat.items():
         texf, cls = MAT[mat]
         T = texs[texf]; th, tw = T.shape[0], T.shape[1]
@@ -235,21 +267,58 @@ def chunk(cid, content, children=b''):
     return cid + struct.pack('<II', len(content), len(children)) + content + children
 
 
+def _s(t):
+    b = t.encode('utf-8')
+    return struct.pack('<I', len(b)) + b
+
+
+def _dict(d):
+    out = struct.pack('<I', len(d))
+    for k, v in d.items():
+        out += _s(k) + _s(v)
+    return out
+
+
+VOXMAX = 256                                           # the .vox single-byte coordinate ceiling
+
+
 def write_vox(path, vox, pal, sx, sy, sz):
     # ── THE RGBA CHUNK IS SHIFTED BY ONE ── MagicaVoxel stores the colour for voxel index ci at
     # POSITION ci-1 (index 0 is not addressable; a 0 voxel is empty). palette.js reads it as
     # vpal[(ci - 1) * 4], so the table written here must start at the colour of index 1 or every
     # voxel comes out wearing its neighbour's shade - and with a ramp, that is a silent bug.
     pal = pal[1:]
-    size = chunk(b'SIZE', struct.pack('<III', sx, sy, sz))
-    vv = b''.join(struct.pack('<BBBB', x, y, z, i) for (x, y, z, i) in vox)
-    xyzi = chunk(b'XYZI', struct.pack('<I', len(vox)) + vv)
+    # ── AND THE MODEL SPLITS IF IT IS TALLER THAN A BYTE ── see TALL_VOX_HI. Parts are cut on Z only,
+    # at VOXMAX; a tree short enough to fit stays a single plain model with no scene graph at all.
+    parts = []
+    for z0 in range(0, sz, VOXMAX):
+        pz = [q for q in vox if z0 <= q[2] < z0 + VOXMAX]
+        if pz:
+            parts.append((z0, min(VOXMAX, sz - z0), pz))
+    body = b''
+    for z0, szp, pz in parts:
+        vv = b''.join(struct.pack('<BBBB', x, y, z - z0, i) for (x, y, z, i) in pz)
+        body += chunk(b'SIZE', struct.pack('<III', sx, sy, szp))
+        body += chunk(b'XYZI', struct.pack('<I', len(pz)) + vv)
+    if len(parts) > 1:
+        # root nTRN(0) -> nGRP(1) -> [ nTRN(2+2i) -> nSHP(3+2i) ] per part. MagicaVoxel places a model
+        # by its CENTRE, so the translation is the centre of that part's box in tree-local space.
+        body += chunk(b'nTRN', struct.pack('<i', 0) + _dict({}) + struct.pack('<iiii', 1, -1, -1, 1) + _dict({}))
+        kids = b''.join(struct.pack('<i', 2 + 2 * i) for i in range(len(parts)))
+        body += chunk(b'nGRP', struct.pack('<i', 1) + _dict({}) + struct.pack('<I', len(parts)) + kids)
+        for i, (z0, szp, pz) in enumerate(parts):
+            t = '%d %d %d' % (0, 0, z0 + szp // 2 - sz // 2)
+            body += chunk(b'nTRN', struct.pack('<i', 2 + 2 * i) + _dict({}) +
+                          struct.pack('<iiii', 3 + 2 * i, -1, 0, 1) + _dict({'_t': t}))
+            body += chunk(b'nSHP', struct.pack('<i', 3 + 2 * i) + _dict({}) +
+                          struct.pack('<I', 1) + struct.pack('<i', i) + _dict({}))
     rgba = b''
     for i in range(256):
         c = pal[i] if i < len(pal) else [0, 0, 0]
         rgba += struct.pack('<BBBB', c[0], c[1], c[2], 255)
-    open(path, 'wb').write(b'VOX ' + struct.pack('<I', 150)
-                           + chunk(b'MAIN', b'', size + xyzi + chunk(b'RGBA', rgba)))
+    body += chunk(b'RGBA', rgba)
+    open(path, 'wb').write(b'VOX ' + struct.pack('<I', 150) + chunk(b'MAIN', b'', body))
+    return len(parts)
 
 
 def main():
@@ -261,9 +330,21 @@ def main():
     members = collections.defaultdict(set)
     for o, t in owner.items():
         members[t].add(o)
+    # ── PASS ONE: THE NATURAL HEIGHTS, SO THE TARGETS CAN BE DEALT OUT BY RANK ── cheap, it is a
+    # bbox over the kept triangles and no rasterising happens here. See TALL_FT_LO for why rank and
+    # not random, and for why the file NUMBERING is left exactly as it was.
+    nat = [tree_span(V, tris, members[t]) for t in range(9)]
+    steps = np.linspace(TALL_VOX_LO, TALL_VOX_HI, 9)
+    target = [0] * 9
+    for rank, t in enumerate(sorted(range(9), key=lambda i: nat[i])):
+        target[t] = int(round(steps[rank]))
+    print('  height targets, dealt out by natural rank:')
+    for t in range(9):
+        print('    pine_%d  natural %6.2f u  ->  %3d vox  %5.2f m  %5.1f ft'
+              % (t + 1, nat[t], target[t], target[t] * VOX_M, target[t] * VOX_M / FT_M))
     trees = []
     for t in range(9):
-        acc = sample_tree(V, VT, tris, texs, members[t])
+        acc = sample_tree(V, VT, tris, texs, members[t], target[t])
         trees.append(acc)
         zs = [k[2] for k in acc]
         print('  tree %d  %-58s %6d voxels  h=%d' %
@@ -290,8 +371,8 @@ def main():
         if Cw.shape != (K_BARK, 3) or Cn.shape != (K_NEEDLE, 3):
             sys.exit('%s carries a %s bark / %s needle ramp, not %d / %d'
                      % (os.path.relpath(BAKE, ROOT), Cw.shape, Cn.shape, K_BARK, K_NEEDLE))
-        print('  ramps LOCKED to the previous bake (%s), geometry rebuilt at TALL_VOX = %d'
-              % (os.path.relpath(BAKE, ROOT), TALL_VOX))
+        print('  ramps LOCKED to the previous bake (%s), geometry rebuilt at %d..%d voxels'
+              % (os.path.relpath(BAKE, ROOT), TALL_VOX_LO, TALL_VOX_HI))
     else:
         wood, need = [], []
         for acc in trees:
@@ -330,13 +411,15 @@ def main():
     print('  needle ramp', [list(c) for c in Cn])
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(os.path.dirname(BAKE), exist_ok=True)
-    bake = {'tall': TALL_VOX, 'bark': [list(map(int, c)) for c in Cw],
+    bake = {'tall': [int(v) for v in target], 'bark': [list(map(int, c)) for c in Cw],
             'needle': [list(map(int, c)) for c in Cn], 'trees': []}
     for t, acc in enumerate(trees):
         xs = [k[0] for k in acc]; ys = [k[1] for k in acc]; zs = [k[2] for k in acc]
         x0, y0, z0 = min(xs), min(ys), min(zs)
         sx, sy, sz = max(xs) - x0 + 1, max(ys) - y0 + 1, max(zs) - z0 + 1
-        assert max(sx, sy, sz) < 256, 'tree %d is %dx%dx%d - past the .vox 255 limit' % (t + 1, sx, sy, sz)
+        # Only Z is split (write_vox), so X and Y still have to fit a byte on their own. The widest
+        # crown in this set measures ~134 at 100 ft, so this is headroom rather than a live constraint.
+        assert max(sx, sy) < 256, 'tree %d is %d x %d wide - past the .vox 255 limit on X/Y' % (t + 1, sx, sy)
         vox, jvox = [], []
         for (x, y, z), a in acc.items():
             c = np.asarray([a[0] / a[3], a[1] / a[3], a[2] / a[3]], dtype=np.float32)
@@ -347,10 +430,12 @@ def main():
             vox.append((x - x0, y - y0, z - z0, i))
             jvox.append([x - x0, y - y0, z - z0, i])
         p = os.path.join(OUT, 'pine_%d.vox' % (t + 1))
-        write_vox(p, vox, pal, sx, sy, sz)
-        bake['trees'].append({'name': 'pine_%d' % (t + 1), 'sx': sx, 'sy': sy, 'sz': sz, 'vox': jvox})
-        print('  wrote %-12s %3d x %3d x %3d  %6d voxels  %5.0f KB'
-              % ('pine_%d.vox' % (t + 1), sx, sy, sz, len(vox), os.path.getsize(p) / 1024))
+        nparts = write_vox(p, vox, pal, sx, sy, sz)
+        bake['trees'].append({'name': 'pine_%d' % (t + 1), 'sx': sx, 'sy': sy, 'sz': sz,
+                              'tall': target[t], 'vox': jvox})
+        print('  wrote %-12s %3d x %3d x %3d  %5.2f m (%5.1f ft)  %6d voxels  %d part%s  %5.0f KB'
+              % ('pine_%d.vox' % (t + 1), sx, sy, sz, sz * VOX_M, sz * VOX_M / FT_M, len(vox),
+                 nparts, '' if nparts == 1 else 's', os.path.getsize(p) / 1024))
     json.dump(bake, open(BAKE, 'w'))
     print('bake -> %s (%.1f MB)' % (os.path.relpath(BAKE, ROOT), os.path.getsize(BAKE) / 1e6))
 

@@ -119,7 +119,7 @@ vb.TEXD = TEXD                                         # tex_of() reads this
 
 VOXDIR = os.path.join(ROOT, 'game', 'assets', 'foilage', 'birch_trees')
 VOXMAX = 256                                           # MagicaVoxel stores a coordinate in ONE BYTE - write_vox splits on it
-TALL_SCALE = 0.91                                      # HALF the 1.82 that shipped: 26.4 m -> 24.0 m. See the note in build()
+TALL_SCALE = 1.154                                     # the height the set SHIPS at: 26.4 m -> 30.5 m. See the note in build()
 
 
 def _chunk(cid, content, children=b''):
@@ -315,14 +315,27 @@ def build(label, height_m, rar):
     # -- LARGER THAN LIFE, ON PURPOSE (user 2026-08-23: "make them much taller") -- the source trees are
     # 12.1 m to 26.4 m, which are their real heights and which the user finds too short. TALL_SCALE lifts the
     # whole set uniformly, so the RANGE of sizes is preserved and only the overall stature changes.
-    # 0.91 is HALF of the 1.82 that shipped (user 2026-08-23: "reduce the trees in half ... scaled
-    # porportionally"), so the set runs 11.0 m to 24.0 m. Two consequences worth knowing: every model is
-    # then under the 256 .vox axis limit, so NONE of them split any more and each file is a single object
-    # in MagicaVoxel again; and the tallest tree fits under WY 504, so core/gpu.js goes back to the FULL
-    # 2048 window and the view radius returns to ~100 m.
-    # (was 1.82, which put the tallest at 48.0 m against the 50.8 m the world could hold at WY 728, leaving
-    # ~3 m of margin for the ground to be higher than the 218 that ceiling was measured against.
-    # The 256 cap that used to SHRINK four trees is gone: write_vox splits instead of scaling down.
+    #
+    # -- 1.154 IS THE HEIGHT THE SET ALREADY SHIPS AT, BAKED RATHER THAN UPSAMPLED ------------------------
+    # (user 2026-09-08: "rebake from the .fbx files. the birch, same sizes, do not scale up the .vox files")
+    # The shipped heights were not baked. They were reached in two .vox passes on top of an 0.91 bake:
+    # birch_rescale.py shrank the set 0.70x, then revoxel_trees_tall.py grew it 1.2656x to put the tallest
+    # tree at 100 ft. Both are NEAREST-NEIGHBOUR resamples of a voxel grid, and growing one is the lossy
+    # direction: a one-voxel-thick shell becomes a two-voxel-thick shell, so the model gains bulk the mesh
+    # never had and its surface goes blocky at exactly the scale the eye reads bark texture at. Baking at
+    # the final height instead re-derives every voxel from the triangles and gives a true one-voxel shell.
+    #
+    # THE NUMBER IS MEASURED, NOT CHOSEN. It is the mean of shipped_voxel_height / (filename_metres * 10)
+    # over all sixteen shipped models (1.1510 .. 1.1575), which reproduces every one of them to within a
+    # voxel or two - the residue being that build() scales to the FILENAME height while the shipped set was
+    # resampled off its own mesh bbox. So the forest's silhouette is unchanged and only the voxels are new.
+    # It is also, to four figures, the 0.91 * 1.2656 those two passes multiply out to.
+    #
+    # CONSEQUENCE: the set runs 18.2 m to 30.5 m and eleven of the sixteen are past the 256 .vox axis
+    # limit, so write_vox splits those into stacked parts plus a scene graph again - which is what the
+    # shipped files already are, so nothing downstream changes.
+    # (was 0.91, the bake the two resample passes were applied to, itself HALF of the 1.82 that shipped
+    # before it: user 2026-08-23, "reduce the trees in half ... scaled porportionally".)
     scale = (height_m * TALL_SCALE) / tall
     org = allv.min(0) * scale
     dims = np.maximum(1, np.ceil((allv.max(0) * scale - org) / vb.VOX).astype(int) + 1)

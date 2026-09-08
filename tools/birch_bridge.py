@@ -21,6 +21,15 @@ time, which is the twig the bake could not resolve.
 The added voxel takes the CLUSTER's own dominant colour, so a leaf cluster welds with a leaf and the join is
 invisible; it is never given a bark id, which would put a grey speck out at the crown edge.
 
+MULTI-PART AWARE (2026-09-08). A birch past 256 voxels ships as a STACK of models plus an nTRN/nGRP/nSHP
+scene graph, because a .vox coordinate is one byte. This used to assert single-part and stop, which was
+honest while every model was short enough to fit - and stopped being true the moment the set was baked at
+its shipped height, when eleven of the sixteen split. Connectivity is now flooded in TREE space across the
+seams, exactly as birch_deblack.py and birch_islands.py do it, so a crown in the part above is not reported
+adrift from the trunk in the part below - which is what a per-part run would have said about every tall
+tree in the set. A weld is written back into whichever part its z lands in, and the scene graph, the
+palette and the SIZE chunks are carried through untouched.
+
 Iterates to a fixed point: welding one cluster can merge others, and a cluster may sit two steps out.
 Single-part files only (at the shipped 0.91 scale every model is one), and it asserts rather than guessing.
 
@@ -61,6 +70,56 @@ def components(occ):
     return comps
 
 
+def rd_dict(d, o):
+    """A .vox DICT: count, then that many (key, value) STRINGs. -> (dict, offset past it)."""
+    n = struct.unpack_from('<I', d, o)[0]
+    o += 4
+    out = {}
+    for _ in range(n):
+        k = struct.unpack_from('<I', d, o)[0]
+        key = d[o + 4:o + 4 + k].decode('utf-8', 'replace')
+        o += 4 + k
+        k = struct.unpack_from('<I', d, o)[0]
+        val = d[o + 4:o + 4 + k].decode('utf-8', 'replace')
+        o += 4 + k
+        out[key] = val
+    return out, o
+
+
+def part_offsets(d, ch, sizes):
+    """The z base of each model, read out of the scene graph. Falls back to sequential stacking.
+
+    Lifted from birch_deblack.py so the two passes cannot drift apart about where a part sits: a
+    disagreement here would have one tool welding into a seam the other one thinks is somewhere else."""
+    shp, trn = {}, []
+    for cid, o, cs in ch:
+        if cid == b'nSHP':
+            nid = struct.unpack_from('<i', d, o)[0]
+            o2 = o + 4
+            _, o2 = rd_dict(d, o2)
+            o2 += 4                                     # num_models
+            shp[nid] = struct.unpack_from('<i', d, o2)[0]
+        elif cid == b'nTRN':
+            o2 = o + 4
+            _, o2 = rd_dict(d, o2)
+            child = struct.unpack_from('<i', d, o2)[0]
+            o2 += 16                                    # child, reserved, layer, num_frames
+            fr, o2 = rd_dict(d, o2)
+            tz = int(fr['_t'].split(' ')[2]) if '_t' in fr else 0
+            trn.append((child, tz))
+    base = [None] * len(sizes)
+    for child, tz in trn:
+        mi = shp.get(child)
+        if mi is not None and mi < len(sizes):
+            base[mi] = tz - (sizes[mi][2] // 2)
+    if any(b is None for b in base):                    # no usable scene graph -> stack in file order
+        run, base = 0, []
+        for sz in sizes:
+            base.append(run)
+            run += sz[2]
+    return base
+
+
 print('%-14s %8s %9s %8s %8s' % ('tree', 'voxels', 'adrift', 'clusters', 'welds'))
 tot_a = tot_w = 0
 for path in sorted(glob.glob(os.path.join(DIR, '*.vox'))):
@@ -68,14 +127,19 @@ for path in sorted(glob.glob(os.path.join(DIR, '*.vox'))):
     ch = chunks(d)
     sizes = [struct.unpack_from('<III', d, o) for cid, o, cs in ch if cid == b'SIZE']
     xyzi = [(o, cs) for cid, o, cs in ch if cid == b'XYZI']
-    assert len(xyzi) == 1, '%s is multi-part (%d) - bridge assumes one' % (path, len(xyzi))
-    sx, sy, sz = sizes[0]
-    o0 = xyzi[0][0]
-    occ = {}
-    n = struct.unpack_from('<I', d, o0)[0]
-    for k in range(n):
-        b = o0 + 4 + k*4
-        occ[(d[b], d[b+1], d[b+2])] = d[b+3]
+    if not xyzi or len(sizes) != len(xyzi):
+        print('%-14s malformed (%d SIZE, %d XYZI) - skipped' % (os.path.basename(path)[:-4], len(sizes), len(xyzi)))
+        continue
+    zoff = part_offsets(d, ch, sizes)
+    sx = max(q[0] for q in sizes); sy = max(q[1] for q in sizes)
+    zlo = min(zoff); zhi = max(zoff[i] + sizes[i][2] for i in range(len(sizes)))
+    occ, n = {}, 0                                       # TREE space, so a weld may cross a part seam
+    for pi, (o, cs) in enumerate(xyzi):
+        cnt = struct.unpack_from('<I', d, o)[0]
+        n += cnt
+        for k in range(cnt):
+            b = o + 4 + k*4
+            occ[(d[b], d[b+1], d[b+2] + zoff[pi])] = d[b+3]
     added, adrift0, clusters0 = [], 0, 0
     for _ in range(12):
         comps = components(occ)
@@ -106,14 +170,25 @@ for path in sorted(glob.glob(os.path.join(DIR, '*.vox'))):
                     cur[axis] += 1 if b[axis] > cur[axis] else -1
                     t = tuple(cur)
                     if t == b: break
-                    if t not in occ and 0 <= t[0] < sx and 0 <= t[1] < sy and 0 <= t[2] < sz:
+                    if t not in occ and 0 <= t[0] < sx and 0 <= t[1] < sy and zlo <= t[2] < zhi:
                         occ[t] = col; added.append(t)
     if APPLY and added:
-        body = struct.pack('<I', len(occ)) + b''.join(
-            bytes((x, y, z, c)) for (x, y, z), c in occ.items())
-        out = bytearray()
+        # Split the composed grid back into the parts it came from. A voxel belongs to the part whose
+        # z range it falls in, and goes back in that part's LOCAL coordinates - so a weld written
+        # across a seam lands in the right model rather than off the end of the one below it.
+        bodies = [[] for _ in sizes]
+        for (x, y, z), c in occ.items():
+            for pi in range(len(sizes)):
+                if zoff[pi] <= z < zoff[pi] + sizes[pi][2]:
+                    bodies[pi].append(bytes((x, y, z - zoff[pi], c)))
+                    break
+        out, pi = bytearray(), 0
         for cid, o, cs in ch:
-            payload = body if cid == b'XYZI' else bytes(d[o:o+cs])
+            if cid == b'XYZI':
+                payload = struct.pack('<I', len(bodies[pi])) + b''.join(bodies[pi])
+                pi += 1
+            else:
+                payload = bytes(d[o:o+cs])
             out += cid + struct.pack('<II', len(payload), 0) + payload
         final = bytes(d[:8]) + b'MAIN' + struct.pack('<II', 0, len(out)) + bytes(out)
         open(path, 'wb').write(final)
