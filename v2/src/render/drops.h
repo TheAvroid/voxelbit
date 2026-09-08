@@ -202,8 +202,14 @@ class Drops {
     // one resident array.
     // -----------------------------------------------------------------------
     // `handFree` is gone deliberately -- see the pickup below.
+    // True on the frame an item left the ground for the player, which is NOT
+    // the frame it arrives -- see ToolSounds::pickedUp for why the difference
+    // matters. Cleared at the top of every update.
+    bool snatchedNow() const { return snatched_; }
+
     int update(float dt, const WalkWorld &w, const Vec3 &player, const Vec3 &eye) {
         int got = -1;
+        snatched_ = false;
         const float h = minf(dt, 0.25f);
         for (Item &d : items_) {
             if (!d.live) continue;
@@ -347,6 +353,12 @@ class Drops {
                     d.taken = true;
                     d.fly = 0.0f;
                     d.from = d.pos;
+                    // IT IS LEVITATING BY CONSTRUCTION. That engine gates the
+                    // sound on `lev` because it can also grab a rock out of a
+                    // wall or a worm out of the dirt, and neither of those is
+                    // an item hovering off the ground. Everything in THIS list
+                    // hovers -- see kDropFloorM -- so the gate is the list.
+                    snatched_ = true;
                 }
             }
         }
@@ -430,6 +442,7 @@ class Drops {
     }
 
     std::vector<Item> items_ = std::vector<Item>(size_t(kDropSlots));
+    bool snatched_ = false;  // one frame, at the snatch -- see snatchedNow
 };
 
 }  // namespace v2

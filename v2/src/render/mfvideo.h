@@ -137,6 +137,14 @@ class VideoWriter {
         int fpsNum = 60;
         int fpsDen = 1;
         uint32_t bitrate = 25'000'000;
+        // 0 means no audio track at all, which is what every caller got
+        // before the recorder learned to keep the sound.
+        int audioChannels = 0;
+        // The endpoint's own rate, passed through rather than assumed. AAC
+        // takes 44100 or 48000; anything else and the caller disables audio,
+        // because writing 44100 samples and labelling them 48000 does not fail,
+        // it just plays the take back nine per cent fast.
+        int audioRate = 48000;
         // Distance between keyframes, in frames. Short for a recording that is
         // about to be scrubbed, long for an export that is about to be watched.
         int gopFrames = 60;
@@ -220,6 +228,54 @@ class VideoWriter {
         tagColour(inType.Get());
         if (FAILED(writer_->SetInputMediaType(stream_, inType.Get(), nullptr))) return closeFail();
 
+        // -- AND THE SOUND, IF THE TAKE IS BRINGING ANY ----------------------
+        //
+        // Added BEFORE BeginWriting, because a sink writer's streams are fixed
+        // once writing starts -- there is no adding a track to a file already
+        // being written, so the decision has to be made here, from the config.
+        //
+        // AAC AT 48 kHz, which is not a free choice: the AAC encoder MFT
+        // accepts 44100 or 48000 and nothing else, and it wants 16-bit PCM in.
+        // The tap gives floats at whatever the endpoint runs at, so the
+        // recorder converts -- see writeAudio.
+        //
+        // A FAILURE HERE IS NOT FATAL. The take still gets its picture; it just
+        // has no sound, which is what this engine did until now anyway.
+        if (cfg_.audioChannels > 0) {
+            ComPtr<IMFMediaType> aOut;
+            if (SUCCEEDED(::MFCreateMediaType(&aOut))) {
+                aOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+                aOut->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+                aOut->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+                aOut->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, UINT32(cfg_.audioRate));
+                aOut->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, UINT32(cfg_.audioChannels));
+                aOut->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000);  // 128 kbps
+                if (SUCCEEDED(writer_->AddStream(aOut.Get(), &audioStream_))) {
+                    ComPtr<IMFMediaType> aIn;
+                    if (SUCCEEDED(::MFCreateMediaType(&aIn))) {
+                        aIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+                        aIn->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+                        aIn->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+                        aIn->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, UINT32(cfg_.audioRate));
+                        aIn->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, UINT32(cfg_.audioChannels));
+                        aIn->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT,
+                                       UINT32(2 * cfg_.audioChannels));
+                        aIn->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                                       UINT32(cfg_.audioRate * 2 * cfg_.audioChannels));
+                        aIn->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+                        if (FAILED(writer_->SetInputMediaType(audioStream_, aIn.Get(), nullptr)))
+                            audioStream_ = kNoStream;
+                    } else {
+                        audioStream_ = kNoStream;
+                    }
+                } else {
+                    audioStream_ = kNoStream;
+                }
+            }
+            if (audioStream_ == kNoStream)
+                std::fprintf(stderr, "v2: no AAC encoder -- this take will be silent\n");
+        }
+
         applyCodecOptions();
 
         if (FAILED(writer_->BeginWriting())) return closeFail();
@@ -229,6 +285,38 @@ class VideoWriter {
     }
 
     bool isOpen() const { return open_; }
+    bool hasAudio() const { return audioStream_ != kNoStream; }
+
+    // -----------------------------------------------------------------------
+    // One block of PCM at `frames` into the take, in the VIDEO's timeline.
+    //
+    // The presentation time is computed from a running frame COUNT rather than
+    // from a clock, for exactly the reason the picture's is computed from a
+    // slot: the two tracks have to be laid on one ruler or they drift. At 48
+    // kHz a frame is 1/48000 of a second and the arithmetic is exact in 100 ns
+    // units, so audio written from sample zero lines up with video written from
+    // slot zero with nothing to correct.
+    // -----------------------------------------------------------------------
+    bool writeAudio(const int16_t *pcm, int frames, int channels, int64_t frameIndex) {
+        if (audioStream_ == kNoStream || frames <= 0) return false;
+        const DWORD bytes = DWORD(frames) * DWORD(channels) * 2u;
+        ComPtr<IMFMediaBuffer> buf;
+        if (FAILED(::MFCreateMemoryBuffer(bytes, &buf))) return false;
+        BYTE *dst = nullptr;
+        if (FAILED(buf->Lock(&dst, nullptr, nullptr))) return false;
+        std::memcpy(dst, pcm, bytes);
+        buf->Unlock();
+        buf->SetCurrentLength(bytes);
+
+        ComPtr<IMFSample> sample;
+        if (FAILED(::MFCreateSample(&sample))) return false;
+        if (FAILED(sample->AddBuffer(buf.Get()))) return false;
+        const int64_t t0 = frameIndex * 10000000LL / cfg_.audioRate;
+        const int64_t t1 = (frameIndex + frames) * 10000000LL / cfg_.audioRate;
+        sample->SetSampleTime(t0);
+        sample->SetSampleDuration(t1 - t0);
+        return SUCCEEDED(writer_->WriteSample(audioStream_, sample.Get()));
+    }
     bool hasLastFrame() const { return lastBuffer_ != nullptr; }
 
     // Write one picture at slot `slot`. The pixels are copied into a media
@@ -347,6 +435,12 @@ class VideoWriter {
     }
 
     Config cfg_;
+    // AAC's own rate. The encoder takes 44100 or 48000 and nothing else, and
+    // 48000 is what every endpoint this runs on already uses, so choosing it
+    // means the common case needs no resampling at all.
+    static constexpr DWORD kNoStream = DWORD(-1);
+    DWORD audioStream_ = kNoStream;
+
     ComPtr<IMFSinkWriter> writer_;
     ComPtr<IMFMediaBuffer> lastBuffer_;
     DWORD stream_ = 0;

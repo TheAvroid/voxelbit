@@ -48,7 +48,6 @@
 #include <vector>
 
 #include "collide.h"
-#include "edits.h"
 #include "voxelworld.h"
 
 namespace v2 {
@@ -83,7 +82,6 @@ struct Placement {
 // the main thread.
 struct ChunkBuild {
     int cx = 0, cz = 0;
-    uint32_t editVer = 0;  // the overlay this was meshed against -- see EditView::ver
     VoxMesh mesh;
     std::vector<Placement> decor;
 };
@@ -100,16 +98,8 @@ class ChunkMesher {
   public:
     // The terrain is copied, not referenced. It is a handful of floats and the
     // workers must never see it change halfway through a chunk.
-    // The overlay is BORROWED and outlives the pool -- World owns it. Workers
-    // only ever call view(), which is the one entry point that locks.
-    void useEdits(const Edits *e) { edits_ = e; }
-
     void start(const VoxelTerrain &terrain, int threads) {
         terrain_ = terrain;
-        // THE WORKERS' COPY HAS NO OVERLAY POINTER. They read edits through the
-        // EditView meshChunk is handed, which is lock-free by construction --
-        // see VoxelTerrain::edits and scene/edits.h.
-        terrain_.edits = nullptr;
         stop_ = false;
         for (int i = 0; i < threads; ++i) workers_.emplace_back([this] { run(); });
     }
@@ -450,7 +440,6 @@ class ChunkMesher {
 
   private:
     VoxelTerrain terrain_;
-    const Edits *edits_ = nullptr;
     std::vector<std::thread> workers_;
     std::deque<std::pair<int, int>> pending_;
     std::deque<ChunkBuild> done_;
@@ -481,11 +470,7 @@ class ChunkMesher {
             b.cx = job.first;
             b.cz = job.second;
             const auto t0 = std::chrono::steady_clock::now();
-            // ONE VIEW PER JOB, taken before the work starts -- see edits.h
-            // for why a worker must not read the overlay directly.
-            const EditView ev = edits_ ? edits_->view(b.cx, b.cz) : EditView{};
-            b.editVer = ev.ver;
-            b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch, &ev);
+            b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch);
             scatter(&b);
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)

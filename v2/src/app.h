@@ -1208,6 +1208,10 @@ class ForestApp : public SampleApp {
             ambience_.open(audio_, opt_.sound, opt_.ambience);
             toolSfx_.open(audio_, opt_.soundDir);
             toolSfx_.setGain(opt_.sfx);
+            // ...AND THE RECORDER GETS THE SAME MIX THE PLAYER HEARS. The tap
+            // sits on the mastering voice, so what R keeps is the game's own
+            // output after every gain -- and nothing from any other program.
+            recorder_.useAudio(audio_.ring(), [this](bool on) { audio_.armTap(on); });
         }
 
         // -- the axe ---------------------------------------------------------
@@ -1485,6 +1489,11 @@ class ForestApp : public SampleApp {
             // is a fixed drop below the eye rather than a height above the
             // ground. See kAbsorbEyeM.
             const int back = drops_.update(dt, walkWorld(), player_.pos, player_.eyePosition());
+            // THE SOUND GOES WITH THE SNATCH, so it lands on the frame the item
+            // leaves the ground rather than 360 ms later when the flight
+            // arrives -- see ToolSounds::pickedUp for that engine's own note
+            // about having got this the wrong way round first.
+            if (drops_.snatchedNow()) toolSfx_.pickedUp();
             if (back >= 0) {
                 // NAMED BEFORE THE GIVE, and it has to be: give() only changes
                 // what is in the HAND when the hand is empty, so asking name()
@@ -2027,8 +2036,6 @@ class ForestApp : public SampleApp {
                 // thrown from. The toss print above is half a measurement: what
                 // the floor under a dropped item is worth cannot be read off a
                 // screenshot, because the grass stands taller than the gap.
-                std::printf("v2: dug %zu voxels out of %zu chunks, %zu resident tris\n",
-                            world_.editedVoxels(), world_.editedChunks(), world_.residentTris());
                 if (birds_.ready()) {
                     std::printf("v2: flyer band %d slots, %d models\n",
                                 world_.flyerBandSlots(), world_.flyerModelCount());
@@ -4309,38 +4316,6 @@ class ForestApp : public SampleApp {
                 //
                 // The impact frame is where the JS engine takes its bite, and
                 // this is the same moment. What v2 cannot do is make the HOLE:
-                // ...AND THE HOLE IT TAKES OUT OF THE WORLD.
-                //
-                // ONLY IF THE TOOL TAKES SOMETHING. An empty hand and a bow
-                // both reach the impact frame -- the swing clock does not care
-                // what is in the hand -- and neither should break ground. Takes
-                // is the tool's own answer to "what can I get from this", and
-                // it is already what the sound path gates on, so the two agree
-                // by construction.
-                if (held_.takes() != Takes::Nothing) {
-                    if (lastSwing_.kind != Swing::None) {
-                        // -- BITE THE COLUMN, NOT THE GRASS ON TOP OF IT ------
-                        //
-                        // The ball was centred on the hit POINT, and on a
-                        // ground blow that point is wherever the ray stopped --
-                        // which is the top of a grass strand, standing three to
-                        // six voxels proud of the soil. So the whole ball was
-                        // carved out of air: measured, 123 voxels removed and
-                        // the resident triangle count unchanged to the digit.
-                        //
-                        // A ground blow is aimed at the GROUND, so it is
-                        // anchored to that column's own surface. A rock or a
-                        // trunk keeps the hit point, because there the thing
-                        // struck is where the ray stopped.
-                        Vec3 at = lastSwing_.point;
-                        if (lastSwing_.kind == Swing::Ground) {
-                            const int gi = int(floorf(at.x / VOXEL_M));
-                            const int gj = int(floorf(at.z / VOXEL_M));
-                            at.y = float(world_.terrain.heightVox(gi, gj)) * VOXEL_M;
-                        }
-                        world_.carve(at, kCarveVox);
-                    }
-                }
                 if (opt_.swingLog) {
                     static const char *kWhat[] = {"air", "ground", "trunk", "rock"};
                     static const char *kHeard[] = {"silent", "wood", "rock", "knock"};

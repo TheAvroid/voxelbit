@@ -725,81 +725,6 @@ constexpr float CHUNK_M = float(CHUNK_VOX) * VOXEL_M;
 // fold the negative side onto the positive one, which puts a seam through 0.
 inline int floorDiv(int a, int b) { return (a >= 0) ? a / b : -(((-a) + b - 1) / b); }
 
-// What the mutable overlay looks like to the world function.
-//
-// An interface rather than the class, because scene/edits.h -- where the store
-// lives -- includes this file for CHUNK_VOX and floorDiv, so naming Edits here
-// would close a cycle. One virtual call, on a pointer the main thread consults
-// a handful of times a frame. See VoxelTerrain::edits.
-struct EditLookup {
-    virtual ~EditLookup() = default;
-    virtual bool removedAt(int i, int y, int j) const = 0;
-};
-
-// ---------------------------------------------------------------------------
-// THE MUTABLE OVERLAY'S VALUE TYPES.
-//
-// They live HERE rather than in edits.h, which is where the store that manages
-// them lives, and the reason is a cycle: meshChunk below has to resolve an
-// EditView by value, so it needs the definition -- while edits.h needs this
-// file for CHUNK_VOX and floorDiv. Splitting the pair is the smaller evil, and
-// it splits along a real seam: these two are plain data with no policy in them,
-// and Edits is all policy.
-// ---------------------------------------------------------------------------
-// One chunk's worth of removed voxels, keyed by position WITHIN the chunk.
-//
-// x and z are 0..CHUNK_VOX-1 and fit a byte each at the current 256; y is a
-// world row and signed, so it takes the middle sixteen bits. Packed into 32
-// rather than kept as a struct because this set is asked about far more often
-// than it is written, and a hash of a scalar is a hash of a scalar.
-struct ChunkEdit {
-    std::unordered_set<uint32_t> gone;
-
-    static uint32_t key(int lx, int y, int lz) {
-        return (uint32_t(lx & 0xFF) << 24) | (uint32_t(lz & 0xFF) << 16) |
-               uint32_t(uint16_t(int16_t(y)));
-    }
-    bool removed(int lx, int y, int lz) const { return gone.count(key(lx, y, lz)) != 0; }
-    bool empty() const { return gone.empty(); }
-};
-
-using ChunkEditPtr = std::shared_ptr<const ChunkEdit>;
-
-// ---------------------------------------------------------------------------
-// THE 3x3 A MESHER ACTUALLY NEEDS.
-//
-// meshChunk reads two columns PAST its own edges -- a column's material wants
-// its slope and a slope reaches one further again -- so the padding runs into
-// the eight neighbours. One chunk's snapshot cannot answer for those, and
-// asking the map per column would put the lock back in the inner loop.
-//
-// So a job takes nine pointers once and resolves against them. Eight of the
-// nine are usually null, which costs a comparison.
-// ---------------------------------------------------------------------------
-struct EditView {
-    ChunkEditPtr c[9];
-    int cx = 0, cz = 0;
-    // Which edit of the middle chunk this view describes. A mesh built from it
-    // is stamped with this, and a chunk whose stamp no longer matches the
-    // world's is stale -- see World::updateRing.
-    uint32_t ver = 0;
-
-    bool removed(int i, int y, int j) const {
-        const int ax = floorDiv(i, CHUNK_VOX), az = floorDiv(j, CHUNK_VOX);
-        const int dx = ax - cx + 1, dz = az - cz + 1;
-        if (dx < 0 || dx > 2 || dz < 0 || dz > 2) return false;
-        const ChunkEditPtr &p = c[size_t(dz * 3 + dx)];
-        return p && p->removed(i - ax * CHUNK_VOX, y, j - az * CHUNK_VOX);
-    }
-    // Nothing dug anywhere near this chunk: the mesher can skip the whole
-    // consultation, which is the common case and the one that has to stay free.
-    bool any() const {
-        for (const ChunkEditPtr &p : c)
-            if (p && !p->empty()) return true;
-        return false;
-    }
-};
-
 
 inline int floorMod(int a, int b) { const int m = a % b; return m < 0 ? m + b : m; }
 
@@ -1124,39 +1049,6 @@ class VoxelTerrain {
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
-    // -- WHAT THE REST OF THE GAME STANDS ON -------------------------------
-    //
-    // The overlay, for the MAIN THREAD only, and the asymmetry is deliberate.
-    // A mesher worker gets its edits as an immutable EditView handed to
-    // meshChunk -- see edits.h for why -- and must never touch this, because
-    // reading it takes a lock and a worker asks a quarter of a million times a
-    // chunk. ChunkMesher::start clears it on its copy for exactly that reason.
-    //
-    // Everything on the main thread wants the opposite: collision, the swing
-    // ray, the drop that lands, the physics ground tile. All of them ask
-    // heightM a handful of times a frame and all of them were answering from
-    // the untouched function, which is how you got a hole you could see and
-    // could not stand in.
-    // Held as the small interface below rather than as Edits itself, because
-    // edits.h includes THIS file -- naming the concrete class here would be a
-    // cycle. The interface is one virtual on a pointer consulted a handful of
-    // times a frame, which is not a cost worth avoiding.
-    const EditLookup *edits = nullptr;
-
-    // The ground at (x, z) with the digging taken off it. `surfaceVox` is the
-    // one place that consults the overlay, so nothing can consult it by halves.
-    int surfaceVox(int i, int j, TerrainMemo &memo) const {
-        int h = heightVox(i, j, memo);
-        if (!edits) return h;
-        for (int guard = 0; guard < 256 && edits->removedAt(i, h, j); ++guard) --h;
-        return h;
-    }
-    float surfaceM(float x, float z, TerrainMemo &memo) const {
-        if (!edits) return heightM(x, z, memo);
-        const int i = int(floorf(x / VOXEL_M)), j = int(floorf(z / VOXEL_M));
-        return float(surfaceVox(i, j, memo) + 1) * VOXEL_M;
-    }
-
     float heightM(float x, float z) const {
         TerrainMemo memo;
         return heightM(x, z, memo);
@@ -1403,9 +1295,7 @@ class VoxelTerrain {
     // would show as walls -- and because both chunks would do it, the geometry
     // would be doubled there too.
     // -----------------------------------------------------------------------
-    // `ev` is the mutable overlay's view of this chunk and its eight
-    // neighbours, or null for a world nobody has dug in. See scene/edits.h.
-    VoxMesh meshChunk(int cx, int cz, ChunkScratch &scratch, const EditView *ev = nullptr) const {
+    VoxMesh meshChunk(int cx, int cz, ChunkScratch &scratch) const {
         VoxMesh m;
         const int n = CHUNK_VOX;
         // Measured at roughly 1.5 quads per column across this terrain; two is
@@ -1431,35 +1321,9 @@ class VoxelTerrain {
         scratch.h.resize((size_t(n) + 4) * (size_t(n) + 4));
         int16_t *const hp = scratch.h.data();
         auto H = [&](int i, int j) -> int16_t & { return hp[size_t(j + 2) * (n + 4) + size_t(i + 2)]; };
-        // -- AND WHAT HAS BEEN DUG OUT OF IT --------------------------------
-        //
-        // The world is a height field, so an edit reaches the picture by
-        // LOWERING A COLUMN: the surface drops to the first voxel the overlay
-        // has not removed, and everything downstream -- the top faces, the
-        // walls, the material bands, the grass -- follows from H without
-        // knowing anything happened. That is what makes a hole show its own
-        // sides, in soil and then in stone, for free.
-        //
-        // ASKED ONCE, not per column: `any` is false for every chunk nobody has
-        // touched, which is nearly all of them, and this loop runs a quarter of
-        // a million times per chunk.
-        //
-        // WHAT THIS SHAPE CANNOT DO, and it is worth being straight about: a
-        // height field has one surface per column, so a ball carved into the
-        // side of a cliff takes the column down from the top rather than
-        // leaving a cave with a roof on it. Digging DOWN is exact; tunnelling
-        // sideways is not, and needs a representation that can hold two
-        // surfaces in one column.
-        const bool dug = ev && ev->any();
         for (int j = -2; j <= n + 1; ++j)
             for (int i = -2; i <= n + 1; ++i) {
-                int hv = heightVox(I0 + i, J0 + j, memo);
-                if (dug) {
-                    // Bounded, so a corrupt overlay cannot walk a column to the
-                    // bottom of the world -- it stops and leaves a floor.
-                    for (int guard = 0; guard < 256 && ev->removed(I0 + i, hv, J0 + j); ++guard)
-                        --hv;
-                }
+                const int hv = heightVox(I0 + i, J0 + j, memo);
                 assert(hv > -32768 && hv < 32767);  // see the note on int16 in ChunkScratch
                 H(i, j) = int16_t(hv);
             }

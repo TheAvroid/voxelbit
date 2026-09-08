@@ -258,11 +258,6 @@ constexpr int kArrowInstances = 12;
 // and would also mean a butterfly could take a bird's slot mid-flight, which is
 // a motion vector between two unrelated objects -- the one thing this band
 // exists to get right.
-// HOW BIG A BITE A BLOW TAKES, in voxels. It had been derived from the size of
-// the chunk that flew off; that system is gone, so the dig carries its own
-// number. Three voxels of radius is a 30 cm bite, which is a tool's worth.
-constexpr int kCarveVox = 3;
-
 constexpr int kButterflySlots = 64;
 constexpr int kBirdSlots = 48;
 constexpr int kFlyerInstances = kButterflySlots + kBirdSlots;
@@ -420,10 +415,6 @@ class TransientPool {
 // triangle offset; the decor it holds is placed.
 struct Chunk {
     int cx = 0, cz = 0;
-    // Which state of the mutable overlay this mesh was built from. When the
-    // world's version for this chunk moves past it, the mesh is out of date and
-    // updateRing asks for it again -- see World::carve.
-    uint32_t editVer = 0;
     Blas blas;
     uint32_t triOffset = TriPool::kInvalid;
     size_t tris = 0;
@@ -1036,46 +1027,6 @@ class World {
     }
     bool staged() const { return stage_; }
 
-    // -----------------------------------------------------------------------
-    // TAKE A BALL OUT OF THE WORLD, and put the chunks it touched back in the
-    // queue.
-    //
-    // The overlay does the remembering; this does the plumbing. Dropping a
-    // chunk from `chunks_` and from `requested_` is all it takes to have it
-    // rebuilt -- the ring notices it is wanted and missing on its next pass and
-    // asks for it, exactly as it does for a chunk you have walked toward. There
-    // is deliberately no separate "re-mesh" path: one way in means a rebuilt
-    // chunk and a freshly streamed one cannot diverge.
-    //
-    // The hole appears a frame or two later, when that mesh lands. That is the
-    // same latency the wood already has for everything else, and it is why the
-    // CHUNK that flies off the blow is spawned immediately and separately --
-    // the debris covers the rebuild.
-    // -----------------------------------------------------------------------
-    void carve(const Vec3 &at, int radiusVox) {
-        const int ci = int(floorf(at.x / VOXEL_M));
-        const int cy = int(floorf(at.y / VOXEL_M));
-        const int cj = int(floorf(at.z / VOXEL_M));
-        // NOTHING IS EVICTED HERE, and the first cut of this did evict --
-        // dropping the touched chunks from `chunks_` AND from `requested_` so
-        // the ring would notice them missing and ask again.
-        //
-        // That is a request storm. `requested_` is the only thing stopping two
-        // jobs for one chunk being in flight at once, so clearing it while a
-        // mesh was already running let the ring queue a second, and both landed
-        // and both claimed triangle-pool space. Holding the swing button made
-        // it compound: measured, it reached 4.5 GB and stopped responding.
-        //
-        // So a carve only bumps the overlay's version (carveBall does it) and
-        // updateRing compares. One request per chunk at a time, guaranteed by
-        // the mechanism that already guaranteed it.
-        edits_.carveBall(ci, cy, cj, radiusVox);
-        // ...and tell the ring there is something to do. See update().
-        ++carveEpoch_;
-    }
-
-    size_t editedChunks() const { return edits_.chunksTouched(); }
-    size_t editedVoxels() const { return edits_.voxelsRemoved(); }
     double buildMs() const { return buildMs_; }
 
     // -- where the main thread goes while the world streams -------------------
@@ -1171,13 +1122,6 @@ class World {
         mesher_.mushroomBig0 = mushroomBig0;
 
         const int hw = int(std::thread::hardware_concurrency());
-        // BEFORE start, so no worker can ever run without it.
-        mesher_.useEdits(&edits_);
-        // ...and the MAIN THREAD's copy of the terrain gets it too, so
-        // collision, the swing ray and the physics ground answer from the world
-        // as dug rather than as generated. ChunkMesher::start clears it on the
-        // workers' copy -- see VoxelTerrain::edits for why the two differ.
-        terrain.edits = &edits_;
         mesher_.start(terrain, meshThreads > 0 ? meshThreads : maxi(2, hw - 2));
         return true;
     }
@@ -1229,18 +1173,9 @@ class World {
             scratchPool_.trim(cutoff);
             rawPool_.trim(cutoff);
         }
-        // -- ...OR SOMEBODY HAS DUG SINCE THE LAST PASS ---------------------
-        //
-        // rering was gated on CROSSING A CHUNK, which is the only thing that
-        // used to change what the ring should hold. Digging changes it too, and
-        // without this a hole made while standing still was recorded in the
-        // overlay and never reached a mesh -- measured, 123 voxels removed and
-        // the resident triangle count identical to the digit. An epoch rather
-        // than a flag so a carve during a rering cannot be swallowed by it.
-        if (!primed_ || cx != lastCx_ || cz != lastCz_ || carveEpoch_ != reringEpoch_) {
+        if (!primed_ || cx != lastCx_ || cz != lastCz_) {
             lastCx_ = cx;
             lastCz_ = cz;
-            reringEpoch_ = carveEpoch_;
             primed_ = true;
             const auto tr = std::chrono::steady_clock::now();
             changed |= rering(cx, cz);
@@ -1420,11 +1355,6 @@ class World {
     uint32_t waterTriOffset_ = TriPool::kInvalid;
 
     std::map<long long, Chunk> chunks_;
-    // What the player has taken out of the world -- see scene/edits.h. Owned
-    // here because the mesher borrows it and must not outlive it.
-    Edits edits_;
-    // Bumped by carve, consumed by update: what makes a dig re-ring.
-    uint32_t carveEpoch_ = 0, reringEpoch_ = 0;
     std::map<long long, int> wanted_;
     std::set<long long> requested_;
 
@@ -2189,28 +2119,6 @@ class World {
             }
         }
 
-        // -- ...AND WHAT HAS BEEN DUG SINCE IT WAS MESHED --------------------
-        //
-        // A resident chunk whose stamp is behind the overlay's version is out
-        // of date, and this is the ONE place that may act on it -- because it
-        // is the one place that owns `requested_`, which is what keeps a single
-        // job in flight per chunk. Releasing here and falling through to the
-        // request below therefore cannot queue a second job for a chunk that
-        // already has one: the `requested_` test below sees it.
-        if (edits_.any()) {
-            for (int j = -R; j <= R; ++j)
-                for (int i = -R; i <= R; ++i) {
-                    const long long k = chunkKey(cx + i, cz + j);
-                    auto it = chunks_.find(k);
-                    if (it == chunks_.end() || requested_.count(k)) continue;
-                    if (it->second.editVer == edits_.versionOf(cx + i, cz + j)) continue;
-                    pool_.release(it->second.triOffset, it->second.tris);
-                    residentTris_ -= it->second.tris;
-                    chunks_.erase(it);
-                    changed = true;
-                }
-        }
-
         // Nearest first: the chunk you are standing on matters more than the
         // one at the edge of the ring, and at speed you may never reach that.
         std::vector<std::pair<int, std::pair<int, int>>> order;
@@ -2241,7 +2149,6 @@ class World {
             Chunk c;
             c.cx = b.cx;
             c.cz = b.cz;
-            c.editVer = b.editVer;
             c.blas = recordChunkBuild(b.mesh, key);
             c.tris = b.mesh.triCount();
             const auto tp = std::chrono::steady_clock::now();

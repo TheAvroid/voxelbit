@@ -75,6 +75,8 @@
 // is here.
 // ---------------------------------------------------------------------------
 
+#include "audiotap.h"  // vb::AudioRing -- the tap the take keeps
+
 #include <Falcor.h>
 #include <Core/Pass/ComputePass.h>
 
@@ -85,6 +87,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -234,6 +237,13 @@ class Recorder {
     // derived, not asked for, so it always matches the aspect of what is on
     // screen.
     // -----------------------------------------------------------------------
+    // Where the sound comes from. Borrowed for the life of the recorder; the
+    // device owns both the ring and the tap that fills it.
+    void useAudio(vb::AudioRing *ring, std::function<void(bool)> arm) {
+        audio_ = ring;
+        armTap_ = std::move(arm);
+    }
+
     bool start(const std::string &path, int srcW, int srcH, int maxWidth, int fpsNum, int fpsDen,
                double now) {
         if (state_ != State::Idle || srcW <= 0 || srcH <= 0) return false;
@@ -312,6 +322,33 @@ class Recorder {
         cfg.gopFrames = int(std::lround(captureFps()));
         cfg.path = path_;
 
+        // -- AND THE SOUND, IF THERE IS ANY TO KEEP --------------------------
+        //
+        // ONE OR TWO CHANNELS ONLY, and a rate the AAC encoder will take. This
+        // refuses rather than approximates: a surround endpoint handed straight
+        // to a stereo AAC stream, or 44100 samples labelled 48000, both produce
+        // a file that plays -- wrongly -- which is the worst way for this to
+        // fail. Better a silent take and a line saying why.
+        if (audio_) {
+            const int ch = audio_->channels(), hz = audio_->rate();
+            if ((ch == 1 || ch == 2) && (hz == 44100 || hz == 48000)) {
+                cfg.audioChannels = ch;
+                cfg.audioRate = hz;
+            } else {
+                std::fprintf(stderr,
+                             "v2: endpoint is %d ch at %d Hz -- not something AAC takes, "
+                             "so this take is silent\n",
+                             ch, hz);
+            }
+        }
+        // THE TAP OPENS HERE AND NOT BEFORE. It is in the mastering voice's
+        // chain for the whole session but writes nothing until armed, so the
+        // ring holds this take's sound and not the minute before it.
+        if (audio_ && cfg.audioChannels > 0) {
+            audio_->reset(audio_->channels(), audio_->rate());
+            if (armTap_) armTap_(true);
+        }
+
         stopRequested_ = false;
         writerFailed_ = false;
         state_ = State::Recording;
@@ -385,6 +422,9 @@ class Recorder {
     void stop() {
         if (state_ != State::Recording) return;
         state_ = State::Finalizing;
+        // The tap goes quiet FIRST, so the ring stops growing while the encoder
+        // drains what is already in it -- otherwise the tail chases itself.
+        if (armTap_) armTap_(false);
         // Everything already read back still belongs in the file, so drain the
         // ring before telling the encoder to close. This blocks on the GPU,
         // which is fine: the take is over and the panel is about to open.
@@ -531,6 +571,35 @@ class Recorder {
     // The encoder thread. All Media Foundation work happens here and nowhere
     // else, so there is exactly one apartment to think about.
     // -----------------------------------------------------------------------
+    // -- THE SOUND, DRAINED ON THE SAME THREAD AS THE PICTURE ---------------
+    //
+    // Here rather than on the game thread, because every Media Foundation call
+    // in this file happens on this one thread and that is the property worth
+    // keeping -- one apartment, one place to reason about.
+    //
+    // It runs on every frame job, which at sixty is every sixteen milliseconds
+    // against a ring holding four seconds. The margin is deliberate: a stall
+    // while a chunk builds must cost the take nothing.
+    void drainAudio(VideoWriter &writer, int64_t &frames) {
+        if (!audio_ || !writer.hasAudio() || fbuf_.empty()) return;
+        const int ch = audio_->channels();
+        for (;;) {
+            const int got = audio_->read(fbuf_.data(), int(fbuf_.size()) / ch);
+            if (got <= 0) break;
+            const int n = got * ch;
+            // FLOAT TO 16-BIT, clamped. XAudio2 mixes in float and can hand
+            // back values past unity when several voices land together, and
+            // wrapping those instead of clamping is the loudest possible click.
+            for (int i = 0; i < n; ++i) {
+                float v = fbuf_[size_t(i)];
+                v = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
+                pcm_[size_t(i)] = int16_t(v * 32767.0f);
+            }
+            writer.writeAudio(pcm_.data(), got, ch, frames);
+            frames += got;
+        }
+    }
+
     void encodeLoop(VideoWriter::Config cfg) {
         VideoWriter writer;
         if (!writer.open(cfg)) {
@@ -547,6 +616,12 @@ class Recorder {
 
         const size_t bytes = nv12Bytes(cfg.width, cfg.height);
         int64_t written = 0;
+        int64_t audioFrames = 0;
+        if (audio_ && writer.hasAudio()) {
+            const size_t cap = size_t(audio_->channels()) * 4096u;
+            fbuf_.assign(cap, 0.0f);
+            pcm_.assign(cap, 0);
+        }
 
         for (;;) {
             Job job;
@@ -570,7 +645,15 @@ class Recorder {
             // The encoder copied the pixels into its own media buffer, so the
             // ring slot is free the moment writeFrame returns.
             ring_[job.ring].withEncoder.store(false, std::memory_order_release);
+
+            drainAudio(writer, audioFrames);
         }
+
+        // WHAT IS STILL IN THE RING WHEN THE PICTURE STOPS. The tap keeps
+        // running until stop() disarms it, so the last few frames of sound
+        // arrive after the last frame of video -- without this the take ends a
+        // few milliseconds early and the last footstep is clipped.
+        drainAudio(writer, audioFrames);
 
         if (!writer.close() && !abandon_) writerFailed_ = true;
         written_.store(written, std::memory_order_relaxed);
@@ -600,6 +683,13 @@ class Recorder {
     int fpsNum_ = 60, fpsDen_ = 1;
 
     double t0_ = 0.0;
+
+    // The tap's ring, borrowed from AudioDevice. Null when there is no sound --
+    // a --background run, or an endpoint that refused.
+    vb::AudioRing *audio_ = nullptr;
+    std::function<void(bool)> armTap_;
+    std::vector<float> fbuf_;
+    std::vector<int16_t> pcm_;
     int64_t nextSlot_ = 0;
     int64_t dropped_ = 0, held_ = 0, slid_ = 0;
     bool firstFrame_ = true;

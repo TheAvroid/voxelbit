@@ -87,6 +87,11 @@ inline constexpr float kSfxStretchBase = 0.4842f; // bow/stretch.mp4
 inline constexpr float kSfxSwishBase = 0.2042f;   // bow/swish.mp4
 inline constexpr float kSfxImpactBase = 0.1396f;  // bow/impact.mp4
 inline constexpr float kSfxReloadBase = 0.45f;    // bow/reload.mp4 -- absent, see below
+// pick_up.mp4, and 0.0631 is the JS engine's own measured level rather than a
+// guess: "MEASURED with ffmpeg volumedetect, not guessed: base =
+// 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective
+// level". Taking its number keeps this cue level with the rest of the bank.
+inline constexpr float kSfxPickUpBase = 0.0631f;
 
 // Five takes each, and two voices per take. BOTH numbers are that engine's and
 // the second is the one that is easy to think optional: a held swing repeats
@@ -130,11 +135,15 @@ class ToolSounds {
         // Asked for anyway, for exactly the reason its note gives: drop the file
         // back in and the bow speaks again with no code change.
         reload_ = sfx_.load(dir + "/bow/reload.mp4", kSfxReloadBase, 1, /*optional=*/true);
+        // ONE VOICE, and that engine says why: "only one grab flight is ever in
+        // the air". The same rule holds here -- Drops arms one absorb at a time.
+        pickUp_ = sfx_.load(dir + "/pick_up.mp4", kSfxPickUpBase, 1);
         if (block_ >= 0) ++loaded;
         if (stretch_ >= 0) ++loaded;
         if (swish_ >= 0) ++loaded;
         if (impact_ >= 0) ++loaded;
         if (reload_ >= 0) ++loaded;
+        if (pickUp_ >= 0) ++loaded;
         std::printf("v2: tool sounds %d cues from %s%s\n", loaded, dir.c_str(),
                     reload_ < 0 ? "  (no bow/reload -- the re-nock is silent)" : "");
         std::fflush(stdout);
@@ -190,6 +199,21 @@ class ToolSounds {
     void loosed() { sfx_.play(swish_); }
     void nocked() { sfx_.play(reload_); }
 
+    // -- THE SNATCH, NOT THE LANDING ---------------------------------------
+    //
+    // Fired when the item LEAVES THE GROUND, not when it reaches the hand, and
+    // that is the JS engine's own correction rather than a choice made here:
+    //
+    //     if (lev) playPickUp();   // THE SNATCH, NOT THE LANDING (user
+    //     2026-08-08) -- this fired from the two ARRIVAL branches at first,
+    //     which put it a full GRAB_MS (measured: 365 ms) after the grab, and
+    //     the pickup read as late. It belongs HERE: the item leaves the air on
+    //     this frame, the flight is just it travelling to the hand.
+    //
+    // v2's flight is 360 ms, near enough the same, so playing it on arrival
+    // would be late by the same third of a second.
+    void pickedUp() { sfx_.play(pickUp_); }
+
     // -----------------------------------------------------------------------
     // WHERE IT LANDED, and how far off.
     //
@@ -207,7 +231,7 @@ class ToolSounds {
     vb::Sfx sfx_;
     int wood_[kSfxTakes] = {-1, -1, -1, -1, -1};
     int rock_[kSfxTakes] = {-1, -1, -1, -1, -1};
-    int block_ = -1, stretch_ = -1, swish_ = -1, impact_ = -1, reload_ = -1;
+    int block_ = -1, stretch_ = -1, swish_ = -1, impact_ = -1, reload_ = -1, pickUp_ = -1;
     // Seeded apart, or the two sets would walk the same permutation and a
     // chop-then-mine would repeat the same index in both.
     vb::SfxBag woodBag_{kSfxTakes, 0x51ED270Bu};

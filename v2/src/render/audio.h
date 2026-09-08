@@ -61,6 +61,8 @@
 
 #include <xaudio2.h>
 
+#include "audiotap.h"
+
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -216,7 +218,41 @@ class AudioDevice {
             close();
             return false;
         }
+
+        // -- THE RECORDER'S TAP, ON THE MASTER --------------------------------
+        //
+        // Attached here rather than when a take starts, because putting an
+        // effect on a voice takes a lock inside XAudio2 and doing that on the
+        // frame somebody presses R is a click in the take's first moment. It is
+        // in the chain for the whole session and does nothing at all until
+        // armed -- one relaxed atomic load per buffer, which is free.
+        //
+        // A FAILED CHAIN IS NOT FATAL. The game still makes sound; the recorder
+        // just has nothing to keep, and says so once rather than every take.
+        XAUDIO2_VOICE_DETAILS det{};
+        master_->GetVoiceDetails(&det);
+        ring_.reset(int(det.InputChannels), int(det.InputSampleRate));
+        tap_ = new AudioTap(&ring_);
+        XAUDIO2_EFFECT_DESCRIPTOR fx{};
+        fx.pEffect = static_cast<IXAPO *>(tap_);
+        fx.InitialState = TRUE;
+        fx.OutputChannels = det.InputChannels;
+        XAUDIO2_EFFECT_CHAIN chain{};
+        chain.EffectCount = 1;
+        chain.pEffectDescriptors = &fx;
+        if (FAILED(master_->SetEffectChain(&chain))) {
+            std::fprintf(stderr, "v2: audio tap unavailable -- recordings will be silent\n");
+            delete tap_;
+            tap_ = nullptr;
+        }
         return true;
+    }
+
+    // What the mastering voice is playing, for the recorder. Null when the tap
+    // could not be attached.
+    AudioRing *ring() { return tap_ ? &ring_ : nullptr; }
+    void armTap(bool on) {
+        if (tap_) tap_->arm(on);
     }
 
     IXAudio2 *engine() const { return xa_.Get(); }
@@ -226,15 +262,24 @@ class AudioDevice {
     // see the note on Ambience::stop for why that order is not optional.
     void close() {
         if (master_) {
+            // THE CHAIN COMES OFF BEFORE THE VOICE GOES, and the tap after
+            // both: XAudio2 holds a reference to the effect while it is in a
+            // chain, so deleting it first would leave the voice pointing at
+            // freed memory for as long as it takes to destroy.
+            if (tap_) master_->SetEffectChain(nullptr);
             master_->DestroyVoice();
             master_ = nullptr;
         }
         xa_.Reset();
+        delete tap_;
+        tap_ = nullptr;
     }
 
   private:
     ComPtr<IXAudio2> xa_;
     IXAudio2MasteringVoice *master_ = nullptr;  // owned by xa_, destroyed by hand
+    AudioTap *tap_ = nullptr;                   // ...and this one is ours
+    AudioRing ring_;
 };
 
 // ---------------------------------------------------------------------------
