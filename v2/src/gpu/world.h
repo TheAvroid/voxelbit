@@ -1504,8 +1504,13 @@ class World {
             c.decorDesc[size_t(slot)].accelerationStructure = d.blas.as->getGpuAddress();
             c.decorInfo[size_t(slot)].triOffset = d.triOffset;
             for (Solid &sl : c.solids) {
-                if (sl.decorSlot != slot || d.colTop.empty()) continue;
-                sl.col = d.colTop.data();
+                if (sl.decorSlot != slot) continue;
+                if (!d.colTop.empty()) sl.col = d.colTop.data();
+                // THE HOLE HAS TO SURVIVE THE RE-ADOPT TOO. Without this the
+                // instance goes back to answering out of the pristine template
+                // and the rock you broke is whole again to everything that
+                // asks, while still LOOKING broken.
+                if (!d.vol.empty()) sl.vol = d.vol.data();
             }
         }
     }
@@ -1621,20 +1626,22 @@ class World {
         auto it = damaged_.find(key);
         const std::vector<uint8_t> &src = (it == damaged_.end()) ? t.volume : it->second.vol;
 
-        // WALK THE RAY UNTIL IT MEETS THE ROCK, rather than trusting the point
-        // the collider handed back.
+        // WALK THE RAY UNTIL IT MEETS THE ROCK -- the SAME walk the swing made.
         //
-        // That point is where the swing met an elliptic CYLINDER, and a boulder
-        // fills very little of one: over a big rock, only 1.6% of swings that
-        // hit the collider landed on a solid voxel, which is precisely the
-        // "it only breaks in certain spots" this fixes. Standing close enough to
-        // be inside the ellipse is worse still -- swingRay then returns the FAR
-        // root, a point out the other side of the rock.
+        // Literally the same function over literally the same array, which is
+        // the point. The swing decided a rock was hit by marching these voxels;
+        // if the carve then went looking with a different rule it could come
+        // back empty on a blow the player was told had landed, and that is
+        // exactly what "it does not break on every hit" was. One march, one
+        // answer.
         //
-        // Marched from the EYE and bounded by the tool's own reach, so a rock
-        // whose real surface is further away than the tool can stretch is still
-        // a miss, exactly as it should be. Half a voxel a step: a whole voxel
-        // can skip a one-voxel spur diagonally.
+        // A `probe` rather than `so` itself because `so` is a COPY taken when
+        // the ray was cast, and its pointer could in principle be a frame stale;
+        // `src` below is what this function is about to edit. Pointing the march
+        // at that removes the question.
+        //
+        // Bounded by the tool's own reach, so a rock whose real surface is
+        // further away than the tool can stretch is still a miss.
         //
         // Read from whatever this instance currently is, so a second blow
         // marches through the hole the first one made and bites deeper.
@@ -1649,15 +1656,23 @@ class World {
             return src[size_t(*ox) + size_t(*oz) * size_t(t.sx) +
                        size_t(*oy) * size_t(t.sx) * size_t(t.sz)];
         };
+        Solid probe = so;
+        probe.vol = src.data();
+        probe.msx = int16_t(t.sx);
+        probe.msz = int16_t(t.sz);
+        probe.vsy = int16_t(t.sy);
+
         int mx = 0, my = 0, mz = 0;
         bool found = false;
-        const float step = VOXEL_M * 0.5f;
-        const int steps = int(maxf(0.0f, reach) / step);
-        for (int k = 0; k <= steps && !found; ++k) {
-            const float m = float(k) * step;
-            const Vec3 w{eye.x + dir.x * m, eye.y + dir.y * m, eye.z + dir.z * m};
-            int x = 0, y = 0, z = 0;
-            if (voxelOn(w, &x, &y, &z) != mat::AIR) { mx = x; my = y; mz = z; found = true; }
+        {
+            float th = 0.0f;
+            int hv[3] = {0, 0, 0};
+            if (rayModelVoxels(probe, eye, dir, maxf(0.0f, reach), VOXEL_M, &th, hv)) {
+                mx = hv[0];
+                my = hv[1];
+                mz = hv[2];
+                found = true;
+            }
         }
         // EVERY BLOW TAKES SOMETHING. NO EXCEPTIONS.
         //
@@ -1668,9 +1683,11 @@ class World {
         // collider is a coarse cylinder and the disagreement is its fault, not
         // theirs.
         //
-        // So the ray is walked once more with the reach limit lifted -- a tall
-        // boulder read as hit at its crown is still a hit -- and if even that
-        // finds nothing, the bite goes to the nearest solid COLUMN instead.
+        // Since the swing and the carve now walk the same voxels, this should
+        // never fire -- but "should never" is what the last four versions of
+        // this said. So the ray is walked once more with the reach limit lifted
+        // -- a tall boulder read as hit at its crown is still a hit -- and if
+        // even that finds nothing, the bite goes to the nearest solid COLUMN.
         // colTop is the model's own column heightfield, one entry per (x, z)
         // and already loaded, so this is a walk over 40,000 int16s rather than
         // a search through nine million voxels. It cannot fail on a model that
@@ -1680,11 +1697,13 @@ class World {
             // NOT `far`: windows.h still defines that as a 16-bit-era macro that expands to nothing,
             // and the error it causes names the type, not the name.
             const float farM = reach + float(t.sx + t.sy + t.sz) * VOXEL_M;
-            for (int k = 0; k <= int(farM / step) && !found; ++k) {
-                const float m = float(k) * step;
-                const Vec3 w{eye.x + dir.x * m, eye.y + dir.y * m, eye.z + dir.z * m};
-                int x = 0, y = 0, z = 0;
-                if (voxelOn(w, &x, &y, &z) != mat::AIR) { mx = x; my = y; mz = z; found = true; }
+            float th = 0.0f;
+            int hv[3] = {0, 0, 0};
+            if (rayModelVoxels(probe, eye, dir, farM, VOXEL_M, &th, hv)) {
+                mx = hv[0];
+                my = hv[1];
+                mz = hv[2];
+                found = true;
             }
         }
         if (!found && !t.colTop.empty()) {
@@ -3289,6 +3308,20 @@ class World {
                 solidOut->tz = inst.transform[2][3];
                 solidOut->baseY = inst.transform[1][3];
             }
+            // ...AND AT THE VOXELS THEMSELVES, which is what a blow, an arrow
+            // and a body all actually ask. Borrowed exactly as colTop is: the
+            // templates are built once at load and never touched, and a damaged
+            // instance is re-pointed at its own copy -- see refitSolid.
+            if (!t.volume.empty()) {
+                solidOut->vol = t.volume.data();
+                solidOut->msx = int16_t(t.sx);
+                solidOut->msz = int16_t(t.sz);
+                solidOut->vsy = int16_t(t.sy);
+                solidOut->yaw = uint8_t(p.yaw & 3);
+                solidOut->tx = inst.transform[0][3];
+                solidOut->tz = inst.transform[2][3];
+                solidOut->baseY = inst.transform[1][3];
+            }
         }
 
         info->triOffset = t.triOffset;
@@ -3357,13 +3390,20 @@ class World {
             sl.hz = (so.yaw & 1) ? mc.hx : mc.hz;
             sl.top = so.baseY + mc.top;
             sl.col = d.colTop.data();   // ITS OWN, not the template's
+            sl.vol = d.vol.data();      // ...and its own voxels, with the hole
+            sl.vsy = int16_t(t.sy);
         }
     }
 
     // Nothing left to walk into.
     void dropSolid(Chunk &c, const Solid &so) {
         for (Solid &sl : c.solids)
-            if (sl.decorSlot == so.decorSlot) { sl.hx = 0.0f; sl.hz = 0.0f; sl.col = nullptr; }
+            if (sl.decorSlot == so.decorSlot) {
+                sl.hx = 0.0f;
+                sl.hz = 0.0f;
+                sl.col = nullptr;
+                sl.vol = nullptr;
+            }
     }
 
     // A few percent of per-tree hue. Nine models over thousands of trees would

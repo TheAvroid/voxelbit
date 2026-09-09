@@ -5456,11 +5456,24 @@ class ForestApp : public SampleApp {
         // Trunks keep working unchanged: a trunk's top is a canopy twenty
         // metres up, so it fails the height test by a mile, exactly as it
         // failed the standable test before.
+        //
+        // AND THE FOOTPRINT IS THE MODEL'S VOXELS. `touches` is the collider
+        // ellipse -- a circle round the widest part of a model's bottom two
+        // metres -- so it covered several metres of open air beside a big
+        // boulder and pushed a spawn out of ground that was perfectly clear,
+        // while a body under a leaning crown was inside voxels the ellipse did
+        // not reach. Asking the voxels answers both, and answers them about the
+        // body's own height rather than about a shadow on the ground.
         TerrainMemo nm;
         auto blocked = [&](float x, float z) {
             const float g = world_.terrain.heightM(x, z, nm);
             for (const Solid &s : nearby) {
                 if (s.hx <= 0.0f || s.hz <= 0.0f) continue;
+                if (s.vol) {
+                    if (solidBoxOverlap(s, x, g, z, g + kBodyHeightM, player_.halfWidth, VOXEL_M))
+                        return true;
+                    continue;
+                }
                 if (!touches(s, x, z, player_.halfWidth)) continue;
                 if (s.top > g + kSpawnStepM) return true;
             }

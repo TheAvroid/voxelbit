@@ -269,18 +269,14 @@ struct Swing {
     // Meaningless when kind is Ground or None, and never read there.
     Solid solid;
 
-    // THE RAY ITSELF, kept because the hit POINT is not good enough to carve by.
+    // THE RAY ITSELF, kept so the carve and the hit cannot disagree.
     //
-    // A blow against a model is solved against an upright elliptic cylinder --
-    // measureCollider's widest extent -- and a boulder is not a cylinder. It is
-    // narrower at the top and dented at the sides, so the point where the ray
-    // met the cylinder is usually in open air; measured over one big rock, only
-    // 1.6% of swings that hit the collider landed on a solid voxel. Worse,
-    // standing close enough to be INSIDE the ellipse takes the far root, which
-    // puts the point out the other side of the rock entirely.
-    //
-    // So World::carveModel re-walks this ray through the model's own voxels and
-    // takes the first solid one. Same ray, same reach, honest answer.
+    // Both walk the model's voxels now -- swingRayModels to decide THAT the
+    // blow landed, World::carveModel to decide WHICH voxel it landed on -- so
+    // handing the second one the identical ray is what makes the second one
+    // certain to find something. The hit POINT would not do: it is a position
+    // on a face, and a rounding either way puts it in the air outside the
+    // voxel or in the one behind it.
     Vec3 eye{0, 0, 0};
     Vec3 dir{0, 0, 0};
     float reach = 0.0f;
@@ -295,14 +291,16 @@ struct Swing {
 // visits every column the ray truly passes through, in order, and the distance
 // it reports is the true entry distance.
 //
-// THE MODELS ARE NOT MARCHED THE SAME WAY, and that is the one real departure
-// from the original. A tree in v2 exists as an instance transform and a
-// collider -- an upright ellipse the width of the TRUNK, measured off the
-// model's own voxels (see scene/collide.h) -- and not as voxels in a grid this
-// could step through. So a trunk is tested as that cylinder. Doing it any other
-// way would mean disagreeing with the thing that decides what you can walk
-// into, and an axe that bites where a body cannot stand is worse than a coarse
-// one.
+// THE MODELS ARE MARCHED THE SAME WAY, and they did not used to be. A tree or
+// a boulder in v2 is an instance transform over a shared voxel grid, which is
+// not the world's grid this walks -- so for a long time a model was tested as
+// the upright elliptic cylinder its collider describes. That is a different
+// shape from the rock, and every symptom of it was reported as the tool being
+// unreliable: a ray over the shoulder of a dome missed a rock plainly under the
+// crosshair, and a body standing ON a big rock was inside the ellipse, took the
+// far root, and found it twenty metres away and out of reach. See
+// rayModelVoxels in scene/collide.h, which walks the model's OWN grid with the
+// same Amanatides and Woo the terrain gets.
 // ---------------------------------------------------------------------------
 // THE MODELS ALONE, with the terrain left out of it.
 //
@@ -314,7 +312,7 @@ struct Swing {
 // depends on where you stand rather than on the rock.
 //
 // So a tool that has been refused can ask this instead: is there a model under
-// the crosshair at all, within reach. Same ellipses, same reach, same order --
+// the crosshair at all, within reach. Same voxels, same reach, same order --
 // only without the ground winning on distance.
 inline Swing swingRayModels(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
     Swing out;
@@ -335,28 +333,32 @@ inline Swing swingRayModels(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir
     for (int i = 0; i < w.solidCount; ++i) {
         const Solid &s = w.solids[i];
         if (s.hx <= 0.0f || s.hz <= 0.0f) continue;
-        // Ray against the upright elliptic cylinder, solved in the space where
-        // the ellipse is a unit circle: divide both axes by their half extent
-        // and it is an ordinary quadratic.
-        const float ox = (eye.x - s.cx) / s.hx, oz = (eye.z - s.cz) / s.hz;
-        const float dx = dir.x / s.hx, dz = dir.z / s.hz;
-        const float a = dx * dx + dz * dz;
-        if (a < 1e-12f) continue;
-        const float b = 2.0f * (ox * dx + oz * dz);
-        const float c = ox * ox + oz * oz - 1.0f;
-        const float disc = b * b - 4.0f * a * c;
-        if (disc < 0.0f) continue;
-        const float sq = sqrtf(disc);
-        // The near root, or the far one when the eye is already inside the
-        // ellipse -- standing against a trunk still lets you chop it.
-        float t = (-b - sq) / (2.0f * a);
-        if (t < 0.0f) t = (-b + sq) / (2.0f * a);
-        if (t < 0.0f || t >= bestT) continue;
-        const float y = eye.y + dir.y * t;
-        // The cylinder runs from the ground to the model's top. Below the
-        // ground is not a miss -- it is the ground's business, and the march
-        // below will find it.
-        if (y > s.top) continue;
+
+        float t = 0.0f;
+        if (s.vol) {
+            // THE MODEL'S OWN VOXELS. First solid one along the ray, or nothing
+            // -- no roots, no inside-outside case, no shape that is not the
+            // rock. See rayModelVoxels.
+            if (!rayModelVoxels(s, eye, dir, bestT, VOXEL_M, &t)) continue;
+            if (t >= bestT) continue;
+        } else {
+            // NO VOLUME ON THIS ONE, which should not happen for anything the
+            // world places and is kept so a Solid built some other way still
+            // answers. The old elliptic cylinder, unchanged.
+            const float ox = (eye.x - s.cx) / s.hx, oz = (eye.z - s.cz) / s.hz;
+            const float dx = dir.x / s.hx, dz = dir.z / s.hz;
+            const float a = dx * dx + dz * dz;
+            if (a < 1e-12f) continue;
+            const float b = 2.0f * (ox * dx + oz * dz);
+            const float c = ox * ox + oz * oz - 1.0f;
+            const float disc = b * b - 4.0f * a * c;
+            if (disc < 0.0f) continue;
+            const float sq = sqrtf(disc);
+            t = (-b - sq) / (2.0f * a);
+            if (t < 0.0f) t = (-b + sq) / (2.0f * a);
+            if (t < 0.0f || t >= bestT) continue;
+            if (eye.y + dir.y * t > s.top) continue;
+        }
         bestT = t;
         out.hit = true;
         out.kind = s.standable ? Swing::Rock : Swing::Trunk;

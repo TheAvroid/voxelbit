@@ -84,6 +84,11 @@ struct WalkWorld {
 // itself in whatever it meets first (render/arrows.h) and a butterfly turns
 // away from it (render/butterflies.h) -- different verbs, one predicate, and
 // the JS engine's rule under both: ground, trunk or branch alike.
+//
+// THE MODEL HALF IS THE MODEL'S VOXELS. It used to be the collider ellipse,
+// which is a cylinder the width of the widest two metres above a model's base:
+// an arrow stopped in mid-air a metre off the side of a boulder, and a flier
+// turned away from a column of nothing above a rock. See solidAtWorld.
 // ---------------------------------------------------------------------------
 inline bool insideWorld(const WalkWorld &w, const Vec3 &p) {
     if (!w.terrain) return false;
@@ -93,6 +98,10 @@ inline bool insideWorld(const WalkWorld &w, const Vec3 &p) {
     for (int k = 0; k < w.solidCount; ++k) {
         const Solid &s = w.solids[k];
         if (s.hx <= 0.0f || s.hz <= 0.0f || p.y > s.top) continue;
+        if (s.vol) {
+            if (solidAtWorld(s, p.x, p.y, p.z, VOXEL_M)) return true;
+            continue;
+        }
         const float dx = (p.x - s.cx) / s.hx, dz = (p.z - s.cz) / s.hz;
         if (dx * dx + dz * dz < 1.0f) return true;
     }
@@ -455,10 +464,30 @@ class Player {
     // True if the body at (x, z) is inside something that is a wall at every
     // height -- a trunk. Rocks are deliberately not here: they are already
     // walls, by being floors that are too tall to step onto.
+    //
+    // THE TRUNK'S VOXELS, over the body's own height. The ellipse this used to
+    // ask is a circle drawn round the widest part of the bottom two metres, so
+    // it stopped a body short of a birch by the width of its bark and stopped
+    // it dead where a leaning trunk's ellipse covered open air. Neither is a
+    // large error; both are the kind you feel rather than see.
     bool blocked(const WalkWorld &w, float x, float z) const {
+        // THE GROUND UNDER THE SPOT, not the body's current height. This is
+        // asked of places the body is not standing yet -- the next step, and a
+        // spawn point chosen before anything has a height at all -- so anchor
+        // it where a body at (x, z) would actually have its feet.
+        const float feet =
+            w.terrain ? float(w.terrain->heightVox(int(floorf(x / VOXEL_M)),
+                                                   int(floorf(z / VOXEL_M))) + 1) * VOXEL_M
+                      : pos.y;
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
-            if (!s.standable && touches(s, x, z, halfWidth)) return true;
+            if (s.standable) continue;
+            if (s.vol) {
+                if (solidBoxOverlap(s, x, feet, z, feet + kBodyHeightM, halfWidth, VOXEL_M))
+                    return true;
+                continue;
+            }
+            if (touches(s, x, z, halfWidth)) return true;
         }
         return false;
     }

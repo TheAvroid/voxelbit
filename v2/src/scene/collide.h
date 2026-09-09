@@ -174,6 +174,22 @@ struct Solid {
     const int16_t *col = nullptr;
     int16_t msx = 0, msz = 0;
 
+    // ...AND THE VOXELS THEMSELVES.
+    //
+    // A column heightfield answers "how high is the stone here", which is what
+    // a FLOOR needs and all it needs. It cannot answer "is there stone HERE",
+    // which is what a blow, an arrow and a body all need -- and answering that
+    // with the ellipse below is what made a pick miss the top of a big
+    // boulder. Same borrowing rule as `col`: it points at the ModelTemplate,
+    // which lives for the run, and is re-pointed at a damaged instance's own
+    // copy the moment one exists, so a hole knocked in a rock is a hole to
+    // everything that asks.
+    //
+    // VoxAsset (world) layout: x + z*msx + y*msx*msz. Height is vsy; the two
+    // horizontal extents are msx and msz above, shared with `col`.
+    const uint8_t *vol = nullptr;
+    int16_t vsy = 0;
+
     // ---- WHICH INSTANCE THIS IS ------------------------------------------
     //
     // A blow lands on a Solid, but breaking one means editing the INSTANCE it
@@ -226,6 +242,22 @@ inline void solidWorldSpace(const Solid &s, float px, float pz, float *wx, float
     *wz = r[2] * px + r[3] * pz + s.tz;
 }
 
+// A DIRECTION in the model's frame -- the same quarter turn as
+// solidModelSpace, without the translation. A vector is not a point, and
+// putting a ray's direction through the point transform is the kind of mistake
+// that only shows up on the rotated placements.
+inline void solidModelDir(const Solid &s, float wx, float wz, float *px, float *pz) {
+    static const float R[4][4] = {
+        { 1.0f,  0.0f,  0.0f,  1.0f},
+        { 0.0f,  1.0f, -1.0f,  0.0f},
+        {-1.0f,  0.0f,  0.0f, -1.0f},
+        { 0.0f, -1.0f,  1.0f,  0.0f},
+    };
+    const float *r = R[s.yaw & 3];
+    *px = r[0] * wx + r[2] * wz;
+    *pz = r[1] * wx + r[3] * wz;
+}
+
 inline void solidModelSpace(const Solid &s, float wx, float wz, float *px, float *pz) {
     // m0, m2, m6, m8 of kRot, in makeInstance.
     static const float R[4][4] = {
@@ -239,6 +271,173 @@ inline void solidModelSpace(const Solid &s, float wx, float wz, float *px, float
     // Transposed: px uses m0 and m6, pz uses m2 and m8.
     *px = r[0] * dx + r[2] * dz;
     *pz = r[1] * dx + r[3] * dz;
+}
+
+// ---------------------------------------------------------------------------
+// THE MODEL'S OWN VOXELS, WHICH ARE THE SHAPE.
+//
+// Everything below this line exists because the ellipse above is not the rock.
+// measureCollider takes the widest cross-section of the first two metres above
+// a model's base and calls that its footprint, which is a reasonable wall for a
+// body to walk into and is not, in any sense, the boulder. It cannot represent
+// a dome, an overhang, a notch, or the hole a pick just made -- and a blow
+// tested against it lands where the stone is not, or misses where it is.
+//
+// The worst case is the one that gets reported: a body standing ON a big rock
+// is INSIDE that ellipse, so the near root of the ray-cylinder quadratic is
+// behind the eye and the far root is out the other side of a twenty-metre
+// boulder -- past the reach of any tool. The swing then finds no model at all
+// and falls through to the terrain, which is "hits do not register on top of
+// the big rocks". No amount of widening or shrinking an ellipse fixes that; it
+// is the wrong kind of shape.
+//
+// So these ask the voxels. They are the same three questions the terrain
+// already answers exactly -- is this point solid, does this box overlap solid,
+// what does this ray hit first -- asked of a model's grid instead of the
+// world's, and they hug the model however it is shaped because they ARE the
+// model.
+// ---------------------------------------------------------------------------
+
+// One voxel of the model, in the model's own grid. False off the grid.
+inline bool solidVoxel(const Solid &s, int mx, int my, int mz) {
+    if (!s.vol || mx < 0 || my < 0 || mz < 0 || mx >= int(s.msx) || my >= int(s.vsy) ||
+        mz >= int(s.msz))
+        return false;
+    return s.vol[size_t(mx) + size_t(mz) * size_t(s.msx) +
+                 size_t(my) * size_t(s.msx) * size_t(s.msz)] != 0;
+}
+
+// Is this world point inside solid stone (or wood) of this model?
+inline bool solidAtWorld(const Solid &s, float wx, float wy, float wz, float voxel) {
+    if (!s.vol) return false;
+    float px = 0.0f, pz = 0.0f;
+    solidModelSpace(s, wx, wz, &px, &pz);
+    return solidVoxel(s, int(floorf(px / voxel)), int(floorf((wy - s.baseY) / voxel)),
+                      int(floorf(pz / voxel)));
+}
+
+// Does an upright box -- half-width w about (x, z), from feetY to headY --
+// contain any solid voxel of this model?
+//
+// A quarter turn maps a world-axis-aligned box to a model-axis-aligned box, so
+// this is a plain range over the grid and not a rotated-box test. The cheap
+// rejections come first because this is asked of every nearby model on every
+// step, and only the one or two a body is actually near should pay for the
+// range.
+inline bool solidBoxOverlap(const Solid &s, float x, float feetY, float z, float headY, float w,
+                            float voxel) {
+    if (!s.vol) return false;
+    if (headY < s.baseY || feetY > s.top) return false;
+    float px = 0.0f, pz = 0.0f;
+    solidModelSpace(s, x, z, &px, &pz);
+    const float ex = float(s.msx) * voxel, ez = float(s.msz) * voxel;
+    if (px + w < 0.0f || pz + w < 0.0f || px - w > ex || pz - w > ez) return false;
+
+    const int x0 = maxi(0, int(floorf((px - w) / voxel)));
+    const int x1 = mini(int(s.msx) - 1, int(floorf((px + w) / voxel)));
+    const int z0 = maxi(0, int(floorf((pz - w) / voxel)));
+    const int z1 = mini(int(s.msz) - 1, int(floorf((pz + w) / voxel)));
+    const int y0 = maxi(0, int(floorf((feetY - s.baseY) / voxel)));
+    const int y1 = mini(int(s.vsy) - 1, int(floorf((headY - s.baseY) / voxel)));
+    for (int my = y0; my <= y1; ++my)
+        for (int mz = z0; mz <= z1; ++mz)
+            for (int mx = x0; mx <= x1; ++mx)
+                if (s.vol[size_t(mx) + size_t(mz) * size_t(s.msx) +
+                          size_t(my) * size_t(s.msx) * size_t(s.msz)] != 0)
+                    return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// THE FIRST SOLID VOXEL A RAY MEETS, in metres from the eye.
+//
+// Amanatides and Woo through the model's own grid -- the same march the terrain
+// gets in swingRay, and for the same reason its note gives: a fixed-step sample
+// can skip a voxel or land in one twice, and a blow that misses one time in
+// twenty is indistinguishable from a blow that is broken.
+//
+// CLIPPED TO THE MODEL'S BOX FIRST. Without that a ray beginning fifty metres
+// off would walk five hundred empty cells to reach the rock, per rock, per
+// swing. With it, a model the ray does not pass through costs six divisions and
+// nothing else, and one it does costs only the cells inside it.
+//
+// The origin is carried in VOXELS and the direction in voxels-per-metre, so `t`
+// stays in world metres throughout: the caller's reach needs no conversion and
+// the answer can be compared directly against a terrain hit.
+// ---------------------------------------------------------------------------
+// `voxOut`, when given, receives the model voxel that was hit -- three ints,
+// x/y/z in the model's own grid. The carve wants that rather than the distance:
+// re-deriving it from a point on a face is a rounding away from the voxel in
+// front or the one behind, and it is free here because the march already knows.
+inline bool rayModelVoxels(const Solid &s, const Vec3 &eye, const Vec3 &dir, float tMax,
+                           float voxel, float *tHit, int *voxOut = nullptr) {
+    if (!s.vol || s.msx <= 0 || s.vsy <= 0 || s.msz <= 0 || tMax <= 0.0f) return false;
+
+    float mox = 0.0f, moz = 0.0f, mdx = 0.0f, mdz = 0.0f;
+    solidModelSpace(s, eye.x, eye.z, &mox, &moz);
+    solidModelDir(s, dir.x, dir.z, &mdx, &mdz);
+    const float o[3] = {mox / voxel, (eye.y - s.baseY) / voxel, moz / voxel};
+    const float d[3] = {mdx / voxel, dir.y / voxel, mdz / voxel};
+    const int n[3] = {int(s.msx), int(s.vsy), int(s.msz)};
+
+    // ---- the box, so the march starts at the model and not at the eye ------
+    float t0 = 0.0f, t1 = tMax;
+    for (int k = 0; k < 3; ++k) {
+        if (fabsf(d[k]) < 1e-9f) {
+            if (o[k] < 0.0f || o[k] >= float(n[k])) return false;
+            continue;
+        }
+        float a = (0.0f - o[k]) / d[k];
+        float b = (float(n[k]) - o[k]) / d[k];
+        if (a > b) { const float sw = a; a = b; b = sw; }
+        t0 = maxf(t0, a);
+        t1 = minf(t1, b);
+        if (t0 > t1) return false;
+    }
+
+    // A hair past the face, so the entry cell is the one the ray is in rather
+    // than whichever one the boundary rounds to.
+    float t = t0 + 1e-4f;
+    if (t > t1) t = t0;
+
+    int v[3], step[3];
+    float tNext[3], tDelta[3];
+    const float kFar = 1e30f;
+    for (int k = 0; k < 3; ++k) {
+        const float p = o[k] + d[k] * t;
+        v[k] = int(floorf(p));
+        if (v[k] < 0) v[k] = 0;
+        if (v[k] >= n[k]) v[k] = n[k] - 1;
+        if (fabsf(d[k]) < 1e-9f) {
+            step[k] = 0;
+            tDelta[k] = kFar;
+            tNext[k] = kFar;
+        } else {
+            step[k] = d[k] > 0.0f ? 1 : -1;
+            tDelta[k] = 1.0f / fabsf(d[k]);
+            const float bound = (step[k] > 0) ? float(v[k] + 1) : float(v[k]);
+            tNext[k] = t + (bound - p) / d[k];
+        }
+    }
+
+    // The guard is a backstop, not the exit: t1 is the far face of the box, so
+    // the march ends at the model however long the reach is.
+    for (int guard = 0; guard < 8192; ++guard) {
+        if (t > t1) return false;
+        if (s.vol[size_t(v[0]) + size_t(v[2]) * size_t(n[0]) +
+                  size_t(v[1]) * size_t(n[0]) * size_t(n[2])] != 0) {
+            *tHit = maxf(0.0f, t);
+            if (voxOut) { voxOut[0] = v[0]; voxOut[1] = v[1]; voxOut[2] = v[2]; }
+            return true;
+        }
+        const int k = (tNext[0] < tNext[1]) ? ((tNext[0] < tNext[2]) ? 0 : 2)
+                                            : ((tNext[1] < tNext[2]) ? 1 : 2);
+        t = tNext[k];
+        v[k] += step[k];
+        if (v[k] < 0 || v[k] >= n[k]) return false;
+        tNext[k] += tDelta[k];
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
