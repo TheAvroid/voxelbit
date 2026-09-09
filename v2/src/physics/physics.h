@@ -790,6 +790,55 @@ class Physics {
 #endif
     }
 
+    // -----------------------------------------------------------------------
+    // WHERE THE BODY ACTUALLY IS, as opposed to where its origin is.
+    //
+    // The two are the same thing for a chip, whose actor sits at its centre of
+    // mass, and they are nowhere near each other for a felled tree, whose
+    // origin is the model's corner -- metres below the wood and, once the tree
+    // is lying down, metres to one side of it as well. A floor test written
+    // against the origin is the reason a tree that had landed perfectly kept
+    // being hoisted back into the air.
+    //
+    // This is the shapes' own world bounds, which is what any question about
+    // "is it under the ground" has to be asked of.
+    // -----------------------------------------------------------------------
+    bool boundsOf(int h, Vec3 *lo, Vec3 *hi) const {
+#if !V2_HAS_PHYSX
+        (void)h; (void)lo; (void)hi;
+        return false;
+#else
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return false;
+        const physx::PxBounds3 b = bodies_[size_t(h)]->getWorldBounds();
+        if (b.isEmpty()) return false;
+        if (lo) *lo = Vec3{b.minimum.x, b.minimum.y, b.minimum.z};
+        if (hi) *hi = Vec3{b.maximum.x, b.maximum.y, b.maximum.z};
+        return true;
+#endif
+    }
+
+    // ...and lift it bodily by this much, keeping its attitude. Used only by
+    // the backstop below the world -- see World::updateDebris.
+    void liftBy(int h, float dy) {
+#if !V2_HAS_PHYSX
+        (void)h; (void)dy;
+#else
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        physx::PxTransform t = a->getGlobalPose();
+        t.p.y += dy;
+        a->setGlobalPose(t);
+        if (a->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) return;
+        physx::PxVec3 v = a->getLinearVelocity();
+        if (v.y < 0.0f) v.y = 0.0f;
+        a->setLinearVelocity(v);
+        // A body that has just been caught by the floor of the world has no
+        // business still spinning at the rate that took it through.
+        physx::PxVec3 w = a->getAngularVelocity();
+        a->setAngularVelocity(w * 0.3f);
+#endif
+    }
+
     // What it is doing right now, for the hand-over to the absorb.
     bool velocityOf(int h, Vec3 *lin, Vec3 *ang) const {
 #if !V2_HAS_PHYSX

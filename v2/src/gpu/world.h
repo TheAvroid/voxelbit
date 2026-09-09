@@ -523,6 +523,73 @@ constexpr float kTimberDensity = 750.0f;
 // equilibrium -- see Physics::nudgeSpin.
 constexpr float kFellNudge = 0.25f;   // rad/s
 
+// ---- WHAT COUNTS AS HAVING THE GROUND DUG OUT FROM UNDER YOU --------------
+//
+// How far a placement's base may stand above the ground before it is standing
+// on air. A model is SUNK into the terrain when it is placed and its underside
+// is a staircase against a height field, so a centimetre or two either way is
+// meshing rather than daylight. Same 15 cm the rooted-tree probe calls level.
+constexpr float kUndermineTolM = 0.15f;
+// How far below a column's generated top the walk looks for stone before
+// calling it a shaft. 6.4 m is deeper than any bite the pick can take.
+constexpr int kUndermineDepthVox = 64;
+// How far from a blow to go looking for something the blow undermined. A big
+// boulder's centre can be ten metres from the hole its edge is standing over.
+constexpr float kUndermineReachM = 24.0f;
+
+// HOW FAR UNDER THE GROUND THE WHOLE OF A FELLED BODY HAS TO BE before it is
+// treated as having gone through the world rather than as resting in a hollow.
+// A trunk lying in a dip has its underside below the ground at the corners of
+// its own bounding box every frame; nothing that is still partly above the
+// surface is ever touched.
+constexpr float kUnderWorldM = 0.5f;
+
+// ---- EVERYTHING NEARBY IS SOLID, AND THIS IS WHAT THAT COSTS --------------
+//
+// "I saw a tree clip into a rock when it felled." It did, and it had to: a
+// felled tree was given ONE 3.2 m cube of stone to fall against, built at its
+// stump the moment it came down and never moved again -- see buildWindow, which
+// is right for a 30 cm chip and useless for a 26 m trunk. Everything past that
+// cube was empty air to the solver.
+//
+// So a falling body is given the models around it as real colliders: each one's
+// own voxels, coarsened to this cell and merged into boxes, placed by the
+// instance transform. MEASURED per model at 0.4 m -- the same cell the falling
+// side uses, so the two are described at one resolution: 808 boxes for the
+// largest boulder in the set, 696 for the next, 630-754 for a pine, 167 for a
+// mid rock, 7 for a small one. A dozen of those is a few thousand shapes, which
+// is a static actor PhysX carries without noticing.
+constexpr float kStaticCellM = 0.4f;
+// How much of a cell has to be wood before a standing tree is solid there. The
+// boulder rule -- "any voxel" -- turns a canopy into a filled cone, and a
+// felled trunk would come to rest on a needle. Same fraction the falling side
+// uses on itself.
+constexpr float kStaticFillFrac = 0.15f;
+// The ceiling on one window. Past this the window has been asked for somewhere
+// impossible -- a clearing packed with big rock -- and a partial collider is
+// still a collider.
+constexpr size_t kStaticMaxBoxes = 6000;
+// How far past a body's own bounds the window reaches, and how far inside those
+// bounds the body may travel before it is rebuilt. The gap between the two is
+// what stops a rebuild every frame.
+constexpr float kStaticPadM = 3.0f;
+
+// ---- AND THE GROUND ITSELF LEAVES NOTHING HANGING ------------------------
+//
+// How far around a bite to look for terrain the bite cut loose. A hole is a
+// 30 cm sphere, so anything it disconnects is within a voxel or two of it and
+// this is generous; the cost is a flood over the box, once per blow.
+// MEASURED before it existed: 55% of dig sites left terrain standing on air,
+// 448 voxels over 300 sites, the worst site 26.
+constexpr int kHangBoxVox = 13;
+// ...and WIDER for a model, because a model's flood is pure array work while
+// the terrain's evaluates several octaves of noise per column. MEASURED over
+// 1,224 blows on the real models, voxels left hanging per blow: 6.2 with no
+// sweep at all, 1.6 at 13, 0.6 at 19, 0.3 at 25, 0.0 at 33 -- and the cost is
+// the cube of it, so 33 is fifteen times the work of 13 to catch the last
+// needle. 19 is where that curve stops being worth paying.
+constexpr int kHangBoxModelVox = 19;
+
 constexpr double kAbsorbFlyMs = 672.0;
 // Above this many voxels a piece is scenery rather than loot: it stays where it
 // landed until it is broken down. 600 in v1, measured against what a felled
@@ -593,6 +660,38 @@ struct ModelTemplate {
     // the load and every consumer wants an id.
     // ---------------------------------------------------------------------
     std::vector<uint8_t> volume;   // sx*sy*sz, 0 = empty, VoxAsset layout
+
+    // ---------------------------------------------------------------------
+    // HOW MUCH OF THIS MODEL WAS ALREADY LOOSE WHEN IT WAS DRAWN.
+    //
+    // The sever rule asks how many coarse cells are no longer connected to the
+    // model's bottom, and a floor on that count is what makes an undercut
+    // boulder drop its top. That floor was measured against ZERO, and no model
+    // starts at zero: MEASURED with the shipped 2-voxel fill, before any axe
+    // lands, pine_2 is already 21 cells adrift, pine_3 is 51 and pine_9 is 16 --
+    // against a floor of 16. Those three pines were felled by their FIRST blow,
+    // wherever it landed, and pine_8 sat one needle short at 15.
+    //
+    // It is not damage, it is how the models are drawn: a pine is 774 separate
+    // six-connected pieces, most of them needle clusters hanging in air, and
+    // BIG_1_BiG_0 is a boulder resting on its own base plate across a one-voxel
+    // gap -- 95% of it adrift at voxel resolution, which is what the coarse
+    // cells are there to bridge.
+    //
+    // So the floor is measured against THIS, and the question becomes what the
+    // BLOW disconnected rather than what the artist did. Computed once, on the
+    // first blow the model ever takes, and kept for the life of the world.
+    // ---------------------------------------------------------------------
+    mutable int bornLoose = -1;    // < 0 until asked for
+    mutable long bornVoxLoose = -1;   // ...and the same count per voxel, for the probe
+
+    // THIS MODEL AS A COLLIDER, in its own frame, metres from its (0,0,0)
+    // voxel corner. Built once, on the first body that has to fall past one of
+    // these, and then shared by every placement of it -- a quarter turn takes
+    // an axis-aligned box to an axis-aligned box, so an instance is this list
+    // with its centres turned and its half extents swapped. See kStaticCellM.
+    mutable std::vector<VoxBox> staticBoxes;
+    mutable bool staticBuilt = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -1656,6 +1755,221 @@ class World {
     // absent from the collider the way it is absent from the rock. That one
     // sentence is the whole difference from every previous attempt at this.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // A MODEL AS BOXES, IN ITS OWN FRAME.
+    //
+    // The same greedy merge the falling side uses on itself, so a trunk and the
+    // rock it lands on are described to the solver at one resolution and in one
+    // language. Trees need a fill fraction and rocks do not -- see
+    // kStaticFillFrac.
+    // -----------------------------------------------------------------------
+    static void modelBoxes(const std::vector<uint8_t> &vol, int sx, int sy, int sz,
+                           const ModelCollider *trunk, std::vector<VoxBox> *out) {
+        out->clear();
+        if (vol.empty() || sx <= 0 || sy <= 0 || sz <= 0) return;
+        const int q = maxi(1, int(kStaticCellM / VOXEL_M + 0.5f));
+        const int nx = (sx + q - 1) / q, ny = (sy + q - 1) / q, nz = (sz + q - 1) / q;
+        const int need = trunk ? maxi(1, int(float(q * q * q) * kStaticFillFrac)) : 1;
+        // A STANDING TREE IS ITS TRUNK, exactly as a falling one is -- see
+        // kFellFillFrac, which is the same argument from the other side. The
+        // first version of this gave the canopy to the solver on a fill
+        // fraction alone and MEASURED two felled pines in three hanging up at
+        // 26 and 30 degrees, caught on a neighbour's needles. What stops a
+        // falling log is another trunk.
+        float bcx = 0.0f, bcz = 0.0f, bhx = 0.0f, bhz = 0.0f;
+        if (trunk) {
+            bcx = float(sx) * VOXEL_M * 0.5f + trunk->baseCX;
+            bcz = float(sz) * VOXEL_M * 0.5f + trunk->baseCZ;
+            bhx = maxf(kTrunkPadM, float(trunk->baseX) * VOXEL_M * 0.5f + kTrunkPadM);
+            bhz = maxf(kTrunkPadM, float(trunk->baseZ) * VOXEL_M * 0.5f + kTrunkPadM);
+        }
+        greedyBoxes(
+            nx, ny, nz, Vec3{0.0f, 0.0f, 0.0f}, kStaticCellM,
+            [&](int i, int j, int k) {
+                if (trunk) {
+                    const float mx = (float(i) + 0.5f) * kStaticCellM;
+                    const float mz = (float(k) + 0.5f) * kStaticCellM;
+                    if (fabsf(mx - bcx) > bhx || fabsf(mz - bcz) > bhz) return false;
+                }
+                int n = 0;
+                for (int b = 0; b < q; ++b)
+                    for (int c = 0; c < q; ++c)
+                        for (int e = 0; e < q; ++e) {
+                            const int x = i * q + e, y = j * q + b, z = k * q + c;
+                            if (x >= sx || y >= sy || z >= sz) continue;
+                            if (vol[size_t(x) + size_t(z) * size_t(sx) +
+                                    size_t(y) * size_t(sx) * size_t(sz)] != mat::AIR)
+                                if (++n >= need) return true;
+                        }
+                return false;
+            },
+            out, kStaticMaxBoxes);
+    }
+
+    // ...and this instance\'s copy of them, which is the DAMAGED array when
+    // there is one. A rock somebody has been digging into must not put the
+    // stone back for the tree coming down beside it.
+    const std::vector<VoxBox> &boxesFor(const Solid &s) {
+        static const std::vector<VoxBox> none;
+        if (s.modelKind < 0) return none;
+        const ModelTemplate &t = templateFor(s.modelKind, s.modelIndex);
+        if (t.volume.empty()) return none;
+        const auto dit = damaged_.find({s.ownerChunk, int(s.decorSlot)});
+        if (dit != damaged_.end()) {
+            Damaged &dm = dit->second;
+            if (dm.boxSeq != dm.seq) {
+                modelBoxes(dm.vol, t.sx, t.sy, t.sz, s.modelKind == 0 ? &t.col : nullptr,
+                           &dm.boxes);
+                dm.boxSeq = dm.seq;
+            }
+            return dm.boxes;
+        }
+        if (!t.staticBuilt) {
+            modelBoxes(t.volume, t.sx, t.sy, t.sz, s.modelKind == 0 ? &t.col : nullptr,
+                       &t.staticBoxes);
+            t.staticBuilt = true;
+        }
+        return t.staticBoxes;
+    }
+
+    // -----------------------------------------------------------------------
+    // EVERYTHING SOLID INSIDE A BOX, AS ONE STATIC ACTOR.
+    //
+    // For a body big enough that a 3.2 m window is a joke. The models around it
+    // are placed whole rather than resampled onto a world grid: their boxes are
+    // already merged, a quarter turn keeps them axis aligned, and the cost of
+    // an instance is a copy rather than a hundred thousand voxel lookups.
+    // -----------------------------------------------------------------------
+    int buildSolidWindow(Physics &ph, const Vec3 &lo, const Vec3 &hi) {
+        if (!ph.available()) return -1;
+        const Vec3 c{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+        const float reach = 0.5f * maxf(hi.x - lo.x, hi.z - lo.z) + 24.0f;
+        collidersNear(c, reach, &winSolids_);
+        winBoxes_.clear();
+        for (const Solid &sl : winSolids_) {
+            if (!sl.vol || sl.hx <= 0.0f) continue;
+            if (sl.baseY > hi.y || sl.top < lo.y) continue;
+            const std::vector<VoxBox> &mb = boxesFor(sl);
+            const bool swap = (sl.yaw & 1) != 0;
+            for (const VoxBox &b : mb) {
+                VoxBox w;
+                solidWorldSpace(sl, b.cx, b.cz, &w.cx, &w.cz);
+                w.cy = sl.baseY + b.cy;
+                w.hx = swap ? b.hz : b.hx;
+                w.hz = swap ? b.hx : b.hz;
+                w.hy = b.hy;
+                if (w.cx + w.hx < lo.x || w.cx - w.hx > hi.x) continue;
+                if (w.cy + w.hy < lo.y || w.cy - w.hy > hi.y) continue;
+                if (w.cz + w.hz < lo.z || w.cz - w.hz > hi.z) continue;
+                winBoxes_.push_back(w);
+                if (winBoxes_.size() >= kStaticMaxBoxes) break;
+            }
+            if (winBoxes_.size() >= kStaticMaxBoxes) break;
+        }
+        if (winBoxes_.empty()) return -1;
+        return ph.addStaticBoxes(winBoxes_.data(), int(winBoxes_.size()));
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW MUCH OF A FALLEN BODY IS INSIDE SOMETHING IT SHOULD NOT BE.
+    //
+    // "I saw a tree clip into a rock when it felled." This is that question,
+    // asked of the shape the solver was given: every box of the body's own
+    // collider, put where the body is now, and its centre asked of the voxels
+    // of every model nearby. A number greater than zero is a trunk inside a
+    // boulder. Diagnostic only -- --fell-test prints it.
+    // -----------------------------------------------------------------------
+    int debrisClip(int slot) {
+        if (slot < 0 || slot >= kDebrisInstances) return 0;
+        Debris &d = debris_[slot];
+        if (!d.live || d.boxes.empty()) return 0;
+        collidersNear(d.pos, 60.0f, &underSolids_);
+        // The body's rotation, as a matrix, from its quaternion.
+        const float x = d.quat[0], y = d.quat[1], z = d.quat[2], w = d.quat[3];
+        const float m[9] = {1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w),
+                            2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+                            2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)};
+        int inside = 0;
+        for (const VoxBox &b : d.boxes) {
+            const float wx = m[0] * b.cx + m[1] * b.cy + m[2] * b.cz + d.pos.x;
+            const float wy = m[3] * b.cx + m[4] * b.cy + m[5] * b.cz + d.pos.y;
+            const float wz = m[6] * b.cx + m[7] * b.cy + m[8] * b.cz + d.pos.z;
+            for (const Solid &sl : underSolids_) {
+                if (!sl.vol) continue;
+                if (solidAtWorld(sl, wx, wy, wz, VOXEL_M)) {
+                    ++inside;
+                    break;
+                }
+            }
+        }
+        return inside;
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW MANY OF THIS INSTANCE'S VOXELS ARE STANDING ON NOTHING -- per voxel,
+    // and as a DELTA against how the model was drawn.
+    //
+    // Diagnostic, and slow on a big rock by design: it floods the whole model
+    // rather than a box, which is what makes it an independent check on
+    // dropModelHangers rather than a copy of it. Only --float-test calls it.
+    //
+    // The delta matters. BIG_1_BiG_0 is TWO six-connected pieces as authored --
+    // a base plate, a one-voxel gap, and the boulder on top -- so 95% of an
+    // untouched one is "loose" to a per-voxel rule. What a blow DID is the
+    // difference between now and then.
+    // -----------------------------------------------------------------------
+    long looseVoxelsNow(const Solid &s) {
+        if (s.modelKind < 0 || !s.vol) return 0;
+        const ModelTemplate &t = templateFor(s.modelKind, s.modelIndex);
+        if (t.volume.empty()) return 0;
+        const auto dit = damaged_.find({s.ownerChunk, int(s.decorSlot)});
+        const std::vector<uint8_t> &vol = (dit == damaged_.end()) ? t.volume : dit->second.vol;
+        if (t.bornVoxLoose < 0) t.bornVoxLoose = long(fineLoose(t.volume, t.sx, t.sy, t.sz));
+        const long now = long(fineLoose(vol, t.sx, t.sy, t.sz));
+        return now - t.bornVoxLoose;
+    }
+
+    static size_t fineLoose(const std::vector<uint8_t> &vol, int sx, int sy, int sz) {
+        if (vol.empty()) return 0;
+        auto at = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz);
+        };
+        size_t solid = 0;
+        for (uint8_t v : vol)
+            if (v != mat::AIR) ++solid;
+        if (!solid) return 0;
+        std::vector<uint8_t> seen(vol.size(), 0);
+        std::vector<int> st;
+        for (int z = 0; z < sz; ++z)
+            for (int x = 0; x < sx; ++x) {
+                const size_t i = at(x, 0, z);
+                if (vol[i] == mat::AIR || seen[i]) continue;
+                seen[i] = 1;
+                st.push_back(int(i));
+            }
+        size_t reached = st.size();
+        static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                      {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        while (!st.empty()) {
+            const int p = st.back();
+            st.pop_back();
+            const int x = p % sx, z = (p / sx) % sz, y = p / (sx * sz);
+            for (const int *o : off) {
+                const int a = x + o[0], b = y + o[1], c = z + o[2];
+                if (a < 0 || b < 0 || c < 0 || a >= sx || b >= sy || c >= sz) continue;
+                const size_t q = at(a, b, c);
+                if (vol[q] == mat::AIR || seen[q]) continue;
+                seen[q] = 1;
+                ++reached;
+                st.push_back(int(q));
+            }
+        }
+        return solid - reached;
+    }
+
+    // How many boxes the static window round a body is holding -- diagnostic.
+    int debrisWindowBoxes() const { return int(winBoxes_.size()); }
+
     int buildWindow(Physics &ph, const Vec3 &centre) {
         if (!ph.available()) return -1;
         const float span = 0.5f * float(kWindowCells) * VOXEL_M;
@@ -1755,7 +2069,83 @@ class World {
                         ph.poseOf(d.phys, &d.pos, d.quat);
                     }
                 }
-                // NO BACKSTOP FOR A FELLED TREE, AND THE TRACE IS WHY.
+                // ...AND THE SOLID WORLD FOLLOWS IT DOWN.
+                //
+                // A window built once at the stump is a window the far end of
+                // the tree leaves in the first second of the fall. The bounds
+                // are asked every frame -- they are free, PhysX keeps them --
+                // and the window is rebuilt only when the body has actually
+                // reached the edge of what it covers.
+                if (d.felled) {
+                    Vec3 bl{0, 0, 0}, bh{0, 0, 0};
+                    if (ph.boundsOf(d.phys, &bl, &bh) &&
+                        (bl.x < d.winLo.x || bl.y < d.winLo.y || bl.z < d.winLo.z ||
+                         bh.x > d.winHi.x || bh.y > d.winHi.y || bh.z > d.winHi.z)) {
+                        d.winLo = Vec3{bl.x - kStaticPadM, bl.y - kStaticPadM, bl.z - kStaticPadM};
+                        d.winHi = Vec3{bh.x + kStaticPadM, bh.y + kStaticPadM, bh.z + kStaticPadM};
+                        const int nw = buildSolidWindow(ph, d.winLo, d.winHi);
+                        if (d.window >= 0) ph.removeStatic(d.window);
+                        d.window = nw;
+                    }
+                }
+
+                // ...AND A FELLED TREE GETS A FLOOR TEST TOO, MEASURED RIGHT.
+                //
+                // Not the one that was here before -- that one is described
+                // below and it was the bug. This asks the SHAPES where they
+                // are, through their world bounds, instead of asking the
+                // actor's origin: a felled tree's origin is the model's
+                // corner, which is metres below the wood and, once the tree is
+                // down, metres to one side of it as well.
+                //
+                // It fires only when the whole body is under the ground, which
+                // is not a contact the solver has lost -- it is a body that
+                // has gone THROUGH the floor, and the only cure is to put it
+                // back. MEASURED with --float-test: an undermined pine tumbled
+                // to 170 degrees and then fell 40 m in two seconds at 27 m/s.
+                if (terrainAt && d.felled) {
+                    Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+                    if (ph.boundsOf(d.phys, &lo, &hi)) {
+                        // The ground under the body's own footprint, at its
+                        // corners and middle -- a 26 m trunk lies across a lot
+                        // of hillside and the lowest of it is what matters.
+                        float g = terrainAt(lo.x, lo.z);
+                        g = maxf(g, terrainAt(hi.x, lo.z));
+                        g = maxf(g, terrainAt(lo.x, hi.z));
+                        g = maxf(g, terrainAt(hi.x, hi.z));
+                        g = maxf(g, terrainAt((lo.x + hi.x) * 0.5f, (lo.z + hi.z) * 0.5f));
+                        // The TOP of it has to be under the ground, not just
+                        // the bottom: a trunk resting in a hollow has its
+                        // underside below the ground at the corners of its own
+                        // bounding box, every frame, and lifting for that is
+                        // the bobbing all over again.
+                        // ...AND IT COMES BACK OUT, AND THEN IT STAYS PUT.
+                        //
+                        // Two attempts at doing this with forces alone are
+                        // worth recording, because both oscillate. Lifting to
+                        // the TRIGGER height leaves the body buried with its
+                        // top just under the surface, so it fires again the
+                        // next frame -- 4 m/s of rise, forever. Lifting to put
+                        // its UNDERSIDE on the surface throws a 26 m trunk
+                        // nine metres into the air, and it falls through again.
+                        //
+                        // The honest reading is that a body which has gone
+                        // through the floor is one the solver has already lost:
+                        // PhysX's CCD is a linear sweep and says nothing about
+                        // ROTATION, and a 26 m trunk turning at 2.5 rad/s has
+                        // ends moving at thirty metres a second whatever its
+                        // centre is doing. So it is put back on the surface and
+                        // parked there. A felled tree is scenery by then, and
+                        // scenery that lies still beats scenery that tumbles
+                        // through the world.
+                        if (hi.y < g - kUnderWorldM) {
+                            ph.liftBy(d.phys, g - lo.y);
+                            ph.makeKinematic(d.phys);
+                            ph.poseOf(d.phys, &d.pos, d.quat);
+                        }
+                    }
+                }
+                // THE BACKSTOP THAT WAS HERE BEFORE, AND THE TRACE IS WHY NOT.
                 //
                 // There was one: six points down the trunk axis, lift the body
                 // if the worst of them was far enough under the terrain. It was
@@ -1879,7 +2269,8 @@ class World {
     // bottom to fill from, so a dug overhang stays put. That is a different
     // problem and it is worth saying plainly rather than half-solving.
     // -----------------------------------------------------------------------
-    bool fellTree(Physics &ph, const Solid &so, const Vec3 &swingDir, double nowMs) {
+    bool fellTree(Physics &ph, const Solid &so, const Vec3 &swingDir, double nowMs,
+                  bool whole = false) {
         if (so.decorSlot < 0 || so.modelKind < 0) return false;
         const auto ch = chunks_.find(so.ownerChunk);
         if (ch == chunks_.end()) return false;
@@ -1910,8 +2301,24 @@ class World {
         // the user's rule is that nothing floats. The floor under it exists
         // only so that three stray voxels do not each take one of the sixty-four
         // debris slots.
+        // WHAT THIS BLOW DID, and not what the model was drawn like -- see
+        // ModelTemplate::bornLoose, which is what three pines falling over on
+        // their first blow cost to find.
+        if (t.bornLoose < 0) {
+            looseFraction(t.volume, t.sx, t.sy, t.sz);
+            t.bornLoose = sevLooseCells_;
+        }
         looseFraction(vol, t.sx, t.sy, t.sz);
-        if (sevLooseCells_ < kMinLooseCells && sevLooseFrac_ < kFellFraction) return false;
+        if (whole) {
+            // NOTHING IS CONNECTED TO THE GROUND, because the ground is gone --
+            // see dropUndermined. The fill's answer is about the model's own
+            // bottom row, which is exactly the assumption that has stopped
+            // being true, so it is thrown away and all of it falls.
+            sevSeen_.assign(sevSeen_.size(), 0);
+        } else {
+            const int cut = sevLooseCells_ - t.bornLoose;
+            if (cut < kMinLooseCells && sevLooseFrac_ < kFellFraction) return false;
+        }
 
         int slot = -1;
         for (int i = 0; i < kDebrisInstances; ++i)
@@ -1957,6 +2364,11 @@ class World {
         // on its canopy with the trunk in the air. Boxes off its own voxels,
         // coarsened until the count is one a dynamic body can carry -- see
         // kFellCellM, which is measured rather than chosen.
+        // WHAT KIND OF THING THIS IS, asked before the collider rather than
+        // after it: a trunk and a boulder want different shapes out of the same
+        // voxels, and the loop below is where that first matters.
+        const bool isTree = (so.modelKind == 0);
+
         float cell = kFellCellM;
         for (int tries = 0; tries < 4; ++tries) {
             const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
@@ -1975,9 +2387,17 @@ class World {
                 [&](int i, int j, int k) {
                     // Outside the trunk's own column: the canopy, which the
                     // solver is not told about.
-                    const float mx = (float(i) + 0.5f) * cell;
-                    const float mz = (float(k) + 0.5f) * cell;
-                    if (fabsf(mx - bcx) > bhx || fabsf(mz - bcz) > bhz) return false;
+                    //
+                    // A TREE RULE, and only a tree's. A boulder is dense all
+                    // the way out, so clipping one to its base footprint would
+                    // hand the solver a narrow post where a twenty-metre rock
+                    // is -- and the undercut boulder that this same function
+                    // drops would then fall through everything beside it.
+                    if (isTree) {
+                        const float mx = (float(i) + 0.5f) * cell;
+                        const float mz = (float(k) + 0.5f) * cell;
+                        if (fabsf(mx - bcx) > bhx || fabsf(mz - bcz) > bhz) return false;
+                    }
                     int n = 0;
                     for (int b2 = 0; b2 < q; ++b2)
                         for (int a2 = 0; a2 < q; ++a2)
@@ -2001,7 +2421,6 @@ class World {
         // and the frame the mesh is in, so the solver and the renderer describe
         // the same object with the same numbers, and the tree does not jump on
         // the frame it is cut.
-        const bool isTree = (so.modelKind == 0);
         const float yawRad = float(so.yaw & 3) * 1.57079633f;
         const int phys = ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()),
                                             Vec3{so.tx, so.baseY, so.tz}, yawRad,
@@ -2037,6 +2456,7 @@ class World {
         d = Debris{};
         d.live = true;
         d.felled = true;
+        d.boxes = winBoxes_;   // before buildSolidWindow reuses the scratch
         d.phys = phys;
         d.bornMs = nowMs;
         d.lastMs = nowMs;
@@ -2125,11 +2545,22 @@ class World {
         // pulled it back, and the result was a tree glitching up and down as it
         // sank slowly to the ground. Built here it sees the stump and the
         // neighbours, which is what is actually still there.
-        // The stone round the stump, so a tree can come down against a boulder.
-        // TESTED AS A SUSPECT AND CLEARED: with the window removed entirely the
-        // headless trace was identical frame for frame, so it was never what
-        // was throwing the tree about.
-        d.window = buildWindow(ph, Vec3{so.tx + d.halfM[0], so.baseY, so.tz + d.halfM[2]});
+        // EVERYTHING AROUND IT IS SOLID, ALONG ITS WHOLE LENGTH.
+        //
+        // Not the 3.2 m cube buildWindow makes. That is the right window for a
+        // chip and it is a joke for a trunk: a 26 m tree was given stone to
+        // fall against for the first three metres of itself and clipped through
+        // every rock past that, which is exactly what was reported. This covers
+        // the body's own bounds with room to turn in, and updateDebris rebuilds
+        // it as the tree comes down.
+        {
+            Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+            if (ph.boundsOf(phys, &lo, &hi)) {
+                d.winLo = Vec3{lo.x - kStaticPadM, lo.y - kStaticPadM, lo.z - kStaticPadM};
+                d.winHi = Vec3{hi.x + kStaticPadM, hi.y + kStaticPadM, hi.z + kStaticPadM};
+                d.window = buildSolidWindow(ph, d.winLo, d.winHi);
+            }
+        }
         d.winCentre = d.pos;
 
         debrisDirty_ = true;
@@ -2362,6 +2793,9 @@ class World {
         }
         const std::vector<std::pair<int, int>> touched =
             mesher_.edits.carve(ci, cj, cy, radiusVox);
+        groundDirty_ = true;   // the floor the solver stands on has moved
+        // ...AND NOTHING THE BITE CUT LOOSE IS LEFT IN THE AIR.
+        dropTerrainHangers(ci, cj, cy, radiusVox, spoil, spoil && spoilN ? *spoilN : 0);
         size_t asked = 0;
         for (const auto &c : touched) {
             const long long k = chunkKey(c.first, c.second);
@@ -2373,6 +2807,230 @@ class World {
             ++asked;
         }
         return asked;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND THE GROUND THE BITE CUT LOOSE COMES DOWN WITH IT.
+    //
+    // The old note here said the terrain could not be asked this, because a
+    // height field has no bottom to flood from. It has one: everything below
+    // the LOWEST hole in a column is contiguous stone all the way to bedrock,
+    // because that is what a height field with a hole map over it means. So
+    // those voxels are the seeds, the flood runs six ways through the stone
+    // around the bite, and whatever it does not reach is standing on nothing.
+    //
+    // WHAT HAPPENS TO IT. It is taken out of the world and put into the SPOIL
+    // -- the piece the blow already frees, which is a rigid body under gravity
+    // a moment later. That is the honest answer to "subject to gravity" for a
+    // voxel or two of dirt: it comes away with the pick rather than being left
+    // in the air, and it is not worth a body of its own. MEASURED: a dig site
+    // leaves 1.5 such voxels on average, and the worst of 300 left 26.
+    //
+    // BOUNDED, and it has to be: this runs on every blow. The box is
+    // kHangBoxVox around the bite, which is wider than anything a 30 cm sphere
+    // can cut loose.
+    // -----------------------------------------------------------------------
+    void dropTerrainHangers(int ci, int cj, int cy, int radiusVox, std::vector<uint8_t> *spoil,
+                            int spoilN) {
+        const int r = kHangBoxVox;
+        const int n = r * 2 + 1;
+        const int i0 = ci - r, j0 = cj - r, y0 = cy - r;
+        TerrainMemo memo;
+        hangSolid_.assign(size_t(n) * size_t(n) * size_t(n), 0);
+        hangSeen_.assign(hangSolid_.size(), 0);
+        auto ix = [&](int a, int b, int c) {
+            return size_t(a) + size_t(c) * size_t(n) + size_t(b) * size_t(n) * size_t(n);
+        };
+        // THE EDIT SETS ONCE PER CHUNK, NOT ONCE PER VOXEL. EditStore::get
+        // takes a lock, and this box holds 6,859 of them on every blow -- which
+        // would be a new hitch bolted onto the one that was just measured out.
+        // A 1.9 m box touches four chunks at worst.
+        std::shared_ptr<const ChunkEdits> ceCache[4];
+        long long ceKey[4] = {0, 0, 0, 0};
+        int ceN = 0;
+        auto editsAt = [&](int wi, int wj) -> const ChunkEdits * {
+            const int cx = floorDiv(wi, CHUNK_VOX), cz = floorDiv(wj, CHUNK_VOX);
+            const long long k = chunkKey(cx, cz);
+            for (int e = 0; e < ceN; ++e)
+                if (ceKey[e] == k) return ceCache[e].get();
+            if (ceN < 4) {
+                ceKey[ceN] = k;
+                ceCache[ceN] = mesher_.edits.get(cx, cz);
+                return ceCache[ceN++].get();
+            }
+            return mesher_.edits.get(cx, cz).get();   // never reached for this box size
+        };
+        size_t solid = 0;
+        for (int c = 0; c < n; ++c)
+            for (int a = 0; a < n; ++a) {
+                const int wi = i0 + a, wj = j0 + c;
+                const int h = terrain.heightVox(wi, wj, memo);
+                const ChunkEdits *ce = editsAt(wi, wj);
+                for (int b = 0; b < n; ++b) {
+                    const int wy = y0 + b;
+                    if (wy > h) continue;
+                    if (ce) {
+                        uint8_t m = mat::AIR;
+                        if (ce->voxel(wi, wj, wy, &m) && m == mat::AIR) continue;
+                    }
+                    hangSolid_[ix(a, b, c)] = 1;
+                    ++solid;
+                }
+            }
+        if (!solid) return;
+
+        // SEEDED FROM WHAT IS PROVABLY STANDING ON BEDROCK: the lowest solid
+        // voxel of each column inside the box, and the whole floor of the box.
+        // A column that is solid at the bottom of the box is solid from there
+        // down, because nothing above has been dug out below it.
+        hangStack_.clear();
+        for (int c = 0; c < n; ++c)
+            for (int a = 0; a < n; ++a) {
+                if (!hangSolid_[ix(a, 0, c)]) continue;
+                hangSeen_[ix(a, 0, c)] = 1;
+                hangStack_.push_back(int(ix(a, 0, c)));
+            }
+        size_t reached = hangStack_.size();
+        static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                      {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        while (!hangStack_.empty()) {
+            const int p = hangStack_.back();
+            hangStack_.pop_back();
+            const int a = p % n, c = (p / n) % n, b = p / (n * n);
+            for (const int *o : off) {
+                const int x = a + o[0], y = b + o[1], z = c + o[2];
+                if (x < 0 || y < 0 || z < 0 || x >= n || y >= n || z >= n) continue;
+                const size_t q = ix(x, y, z);
+                if (!hangSolid_[q] || hangSeen_[q]) continue;
+                hangSeen_[q] = 1;
+                ++reached;
+                hangStack_.push_back(int(q));
+            }
+        }
+        if (reached == solid) return;   // the ordinary case, and it costs nothing more
+
+        // ...AND OUT THEY COME. A voxel on the box's WALL is not judged: the
+        // flood could not see the stone next to it, so it may be perfectly well
+        // supported from outside. Only the interior is decided here.
+        for (int b = 1; b < n - 1; ++b)
+            for (int c = 1; c < n - 1; ++c)
+                for (int a = 1; a < n - 1; ++a) {
+                    const size_t q = ix(a, b, c);
+                    if (!hangSolid_[q] || hangSeen_[q]) continue;
+                    const int wi = i0 + a, wj = j0 + c, wy = y0 + b;
+                    // Into the spoil, if the piece the blow freed reaches it.
+                    if (spoil && spoilN > 0) {
+                        const int dx = wi - ci + radiusVox, dy = wy - cy + radiusVox,
+                                  dz = wj - cj + radiusVox;
+                        if (dx >= 0 && dy >= 0 && dz >= 0 && dx < spoilN && dy < spoilN &&
+                            dz < spoilN) {
+                            const int h = terrain.heightVox(wi, wj, memo);
+                            const uint8_t top = terrain.topMaterial(wi, wj, h);
+                            const uint8_t m = terrain.materialAt(wi, wj, wy, h, top);
+                            if (m != mat::AIR)
+                                (*spoil)[size_t(dx) + size_t(dz) * size_t(spoilN) +
+                                         size_t(dy) * size_t(spoilN) * size_t(spoilN)] = m;
+                        }
+                    }
+                    for (const auto &t : mesher_.edits.carve(wi, wj, wy, 0)) {
+                        const long long k = chunkKey(t.first, t.second);
+                        if (!chunks_.count(k)) continue;
+                        requested_.insert(k);
+                        mesher_.request(t.first, t.second);
+                    }
+                }
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND THE CHIPS THE BITE CUT LOOSE COME AWAY WITH IT.
+    //
+    // The sever fill is the answer for a piece big enough to be a body: 16
+    // coarse cells, or 40% of the model. Below that the disconnected voxels
+    // were simply left in the air. MEASURED with float_probe over 1,224 blows
+    // on the real models, counting only what each blow itself disconnected:
+    // SIX VOXELS PER BLOW left hanging, nearly all of it needles and leaf
+    // clusters off the trees -- the rocks leave none worth naming.
+    //
+    // Same shape as dropTerrainHangers and for the same reason: a blow can only
+    // cut loose what is near it, so the flood is a box around the bite rather
+    // than the whole model. A boulder is three million voxels and flooding one
+    // per swing would put the hitch straight back.
+    //
+    // ANCHORED IS THE BOX WALL. Anything solid on the surface of the box is
+    // assumed to be held from outside, which is the safe direction: the failure
+    // mode is a chip that stays a moment longer, not a rock that dissolves.
+    // -----------------------------------------------------------------------
+    void dropModelHangers(std::vector<uint8_t> &vol, int sx, int sy, int sz, int mx, int my,
+                          int mz, std::vector<uint8_t> *spoil, int spoilN, int radiusVox) {
+        const int r = kHangBoxModelVox;
+        const int n = r * 2 + 1;
+        const int i0 = mx - r, j0 = mz - r, y0 = my - r;
+        auto at = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz);
+        };
+        auto ix = [&](int a, int b, int c) {
+            return size_t(a) + size_t(c) * size_t(n) + size_t(b) * size_t(n) * size_t(n);
+        };
+        hangSolid_.assign(size_t(n) * size_t(n) * size_t(n), 0);
+        hangSeen_.assign(hangSolid_.size(), 0);
+        size_t solid = 0;
+        for (int b = 0; b < n; ++b)
+            for (int c = 0; c < n; ++c)
+                for (int a = 0; a < n; ++a) {
+                    const int x = i0 + a, y = y0 + b, z = j0 + c;
+                    if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) continue;
+                    if (vol[at(x, y, z)] == mat::AIR) continue;
+                    hangSolid_[ix(a, b, c)] = 1;
+                    ++solid;
+                }
+        if (!solid) return;
+
+        hangStack_.clear();
+        for (int b = 0; b < n; ++b)
+            for (int c = 0; c < n; ++c)
+                for (int a = 0; a < n; ++a) {
+                    if (a && b && c && a < n - 1 && b < n - 1 && c < n - 1) continue;   // wall only
+                    const size_t q = ix(a, b, c);
+                    if (!hangSolid_[q] || hangSeen_[q]) continue;
+                    hangSeen_[q] = 1;
+                    hangStack_.push_back(int(q));
+                }
+        size_t reached = hangStack_.size();
+        static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                      {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        while (!hangStack_.empty()) {
+            const int p = hangStack_.back();
+            hangStack_.pop_back();
+            const int a = p % n, c = (p / n) % n, b = p / (n * n);
+            for (const int *o : off) {
+                const int x = a + o[0], y = b + o[1], z = c + o[2];
+                if (x < 0 || y < 0 || z < 0 || x >= n || y >= n || z >= n) continue;
+                const size_t q = ix(x, y, z);
+                if (!hangSolid_[q] || hangSeen_[q]) continue;
+                hangSeen_[q] = 1;
+                ++reached;
+                hangStack_.push_back(int(q));
+            }
+        }
+        if (reached == solid) return;
+
+        for (int b = 1; b < n - 1; ++b)
+            for (int c = 1; c < n - 1; ++c)
+                for (int a = 1; a < n - 1; ++a) {
+                    const size_t q = ix(a, b, c);
+                    if (!hangSolid_[q] || hangSeen_[q]) continue;
+                    const int x = i0 + a, y = y0 + b, z = j0 + c;
+                    uint8_t &v = vol[at(x, y, z)];
+                    if (spoil && spoilN > 0) {
+                        const int dx = x - mx + radiusVox, dy = y - my + radiusVox,
+                                  dz = z - mz + radiusVox;
+                        if (dx >= 0 && dy >= 0 && dz >= 0 && dx < spoilN && dy < spoilN &&
+                            dz < spoilN)
+                            (*spoil)[size_t(dx) + size_t(dz) * size_t(spoilN) +
+                                     size_t(dy) * size_t(spoilN) * size_t(spoilN)] = v;
+                    }
+                    v = mat::AIR;
+                }
     }
 
     // ---------------------------------------------------------------------
@@ -2556,6 +3214,10 @@ class World {
                     ++removed;
                 }
         if (removed == 0) return false;   // the swing missed the model's own voxels
+
+        // ...AND NOTHING THE BITE CUT LOOSE IS LEFT IN THE AIR EITHER.
+        dropModelHangers(d.vol, t.sx, t.sy, t.sz, mx, my, mz, spoil, spoil && spoilN ? *spoilN : 0,
+                         radiusVox);
 
         // WHERE THE BITE ACTUALLY LANDED, in world metres.
         //
@@ -2847,6 +3509,158 @@ class World {
         return chunks_.find(chunkKey(cx, cz)) != chunks_.end();
     }
 
+    // -----------------------------------------------------------------------
+    // THE TOP OF A COLUMN AS IT IS NOW, which is not what the height field says.
+    //
+    // heightVox is the terrain as generated. The edit layer is the holes people
+    // have dug in it, and a column whose top has been dug away holds nothing up
+    // any more -- so the walk starts at the generated top and steps down past
+    // every voxel the edits have turned to air.
+    //
+    // BOUNDED, because it is asked per column of a footprint and an unbounded
+    // walk down a mine shaft would be paid on every one. Past the cap the
+    // answer is "far below whatever is standing here", which is all any caller
+    // needs to know.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE GROUND PATCH PhysX FALLS ONTO, WITH THE HOLES IN IT.
+    //
+    // The patch was sampled straight from heightVox, which is the terrain as
+    // GENERATED -- so every hole the player has dug was invisible to the
+    // solver. Two things came of that, and both were measured with
+    // --float-test: a chip that rolls into a pit rests on the pit's phantom
+    // lid, and a model whose ground has just been dug away is born INSIDE that
+    // lid and is thrown upward out of it. The undermined pine climbed three
+    // metres in five seconds instead of dropping into its own hole.
+    //
+    // So the patch asks the same question the renderer and the player's feet
+    // ask. The edit set is fetched ONCE PER CHUNK rather than once per column:
+    // EditStore::get takes a lock, and 25,600 of those per rebuild is a
+    // different cost from 25,600 array reads.
+    // -----------------------------------------------------------------------
+    void groundPatch(int16_t *out, int n, int i0, int j0, int step) const {
+        TerrainMemo memo;
+        long long haveKey = 0;
+        bool have = false;
+        std::shared_ptr<const ChunkEdits> ce;
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const int wi = i0 + i * step, wj = j0 + j * step;
+                const int h = terrain.heightVox(wi, wj, memo);
+                const long long k = chunkKey(floorDiv(wi, CHUNK_VOX), floorDiv(wj, CHUNK_VOX));
+                if (!have || k != haveKey) {
+                    ce = mesher_.edits.get(floorDiv(wi, CHUNK_VOX), floorDiv(wj, CHUNK_VOX));
+                    haveKey = k;
+                    have = true;
+                }
+                int y = h;
+                if (ce)
+                    for (int d = 0; d < kUndermineDepthVox; ++d, --y) {
+                        uint8_t m = mat::AIR;
+                        if (!ce->voxel(wi, wj, y, &m) || m != mat::AIR) break;
+                    }
+                out[size_t(i) + size_t(j) * size_t(n)] = int16_t(y);
+            }
+    }
+
+    // Has anything been dug since the patch was last built? Read-and-clear:
+    // the floor the solver stands on has to be rebuilt when the ground under
+    // it changes, and a dig is the only thing that changes it.
+    bool takeGroundDirty() {
+        const bool d = groundDirty_;
+        groundDirty_ = false;
+        return d;
+    }
+
+    // Is there ground at this voxel right now -- generated, then edited.
+    // The one place anything asks that question, so nothing can disagree
+    // about where the holes are.
+    bool terrainSolidAt(int i, int j, int y, TerrainMemo &memo) const {
+        if (y > terrain.heightVox(i, j, memo)) return false;
+        const std::shared_ptr<const ChunkEdits> ce =
+            mesher_.edits.get(floorDiv(i, CHUNK_VOX), floorDiv(j, CHUNK_VOX));
+        if (!ce) return true;
+        uint8_t m = mat::AIR;
+        if (!ce->voxel(i, j, y, &m)) return true;
+        return m != mat::AIR;
+    }
+
+    int terrainTopAt(int i, int j, TerrainMemo &memo) const {
+        const int h = terrain.heightVox(i, j, memo);
+        const std::shared_ptr<const ChunkEdits> ce =
+            mesher_.edits.get(floorDiv(i, CHUNK_VOX), floorDiv(j, CHUNK_VOX));
+        if (!ce) return h;
+        int y = h;
+        for (int n = 0; n < kUndermineDepthVox; ++n, --y) {
+            uint8_t m = mat::AIR;
+            if (!ce->voxel(i, j, y, &m)) return y;   // no edit here: still stone
+            if (m != mat::AIR) return y;            // filled back in
+        }
+        return y;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND WHETHER THIS PLACEMENT STILL HAS ANY OF IT UNDER IT.
+    //
+    // Every column the model's own row zero stands on, against the ground as it
+    // is now. ONE column still holding it up is enough -- so the loop is an
+    // early-out, and in the ordinary case where the player has dug a hole
+    // beside a boulder rather than under it, it costs one lookup.
+    //
+    // The expensive path is the one where the answer is "nothing", and that is
+    // the path where the model is about to become a rigid body anyway.
+    // -----------------------------------------------------------------------
+    bool standsOnNothing(const Solid &s) const {
+        if (!s.vol || s.msx <= 0 || s.msz <= 0) return false;
+        TerrainMemo memo;
+        const float need = s.baseY - kUndermineTolM;
+        for (int mz = 0; mz < s.msz; ++mz)
+            for (int mx = 0; mx < s.msx; ++mx) {
+                if (s.vol[size_t(mx) + size_t(mz) * size_t(s.msx)] == mat::AIR) continue;
+                float wx = 0.0f, wz = 0.0f;
+                solidWorldSpace(s, (float(mx) + 0.5f) * VOXEL_M, (float(mz) + 0.5f) * VOXEL_M, &wx,
+                                &wz);
+                const int top = terrainTopAt(int(std::floor(wx / VOXEL_M)),
+                                             int(std::floor(wz / VOXEL_M)), memo);
+                if (float(top + 1) * VOXEL_M >= need) return false;   // still standing on this
+            }
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // DIG THE GROUND OUT FROM UNDER SOMETHING AND IT COMES DOWN.
+    //
+    // The sever fill answers what a carve left standing on nothing WITHIN one
+    // model, and it seeds from that model's own bottom row -- which quietly
+    // assumes there is ground under that row. Dig the ground away and the
+    // assumption is false, and nothing anywhere asked: MEASURED with
+    // float_probe, digging a metre out from under forty trees left forty of
+    // them hanging, the worst by a full metre, and thirty of thirty-seven
+    // boulders. The model's own rule cannot fire, because the dig never touched
+    // its voxels.
+    //
+    // So a terrain dig asks the placements around it, and any that have nothing
+    // left under them fall as one body -- the same path a felled tree takes,
+    // with the sever step skipped because there is no stump to leave.
+    //
+    // ALL OF IT OR NONE. A half-undermined boulder should lean and topple, and
+    // this does not do that: it waits until the last column under the model has
+    // gone. That is the conservative direction -- a rock stands a little longer
+    // than it might -- and toppling wants a contact model this does not have.
+    // -----------------------------------------------------------------------
+    bool dropUndermined(Physics &ph, const Vec3 &at, double nowMs) {
+        if (!ph.available()) return false;
+        collidersNear(at, kUndermineReachM, &underSolids_);
+        bool any = false;
+        for (const Solid &s : underSolids_) {
+            if (s.decorSlot < 0 || s.modelKind < 0 || !s.vol) continue;
+            if (fellSlots_.count({s.ownerChunk, int(s.decorSlot)})) continue;   // already down
+            if (!standsOnNothing(s)) continue;
+            if (fellTree(ph, s, Vec3{0.0f, 0.0f, 0.0f}, nowMs, true)) any = true;
+        }
+        return any;
+    }
+
     void collidersNear(Vec3 p, float reach, std::vector<Solid> *out) const {
         out->clear();
         const float span = reach + 8.0f;
@@ -3022,6 +3836,14 @@ class World {
 
         int window = -1;
         Vec3 winCentre{0, 0, 0};
+        // WHAT THE STATIC WINDOW ACTUALLY COVERS, for a body too big for a
+        // fixed cube. Rebuilt when the body leaves the inner box -- see
+        // kStaticPadM.
+        Vec3 winLo{0, 0, 0}, winHi{0, 0, 0};
+        // THE BODY'S OWN COLLIDER, kept so "is any of it inside a rock" can be
+        // asked of the shape the solver has rather than of a bounding box.
+        // See debrisClip, and --fell-test, which prints it.
+        std::vector<VoxBox> boxes;
         Vec3 pos{0, 0, 0};
         float quat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     };
@@ -3049,6 +3871,11 @@ class World {
         // has been hit again since, and is dropped.
         uint32_t seq = 0;
         uint32_t meshed = 0;
+        // ...AND ITS OWN COLLIDER BOXES, so a rock with a bite out of it is a
+        // rock with a bite out of it to everything falling past. Rebuilt when
+        // `seq` moves past `boxSeq`.
+        std::vector<VoxBox> boxes;
+        uint32_t boxSeq = 0xffffffffu;
     };
     std::map<std::pair<long long, int>, Damaged> damaged_;
 
@@ -3111,6 +3938,11 @@ class World {
     // Scratch for buildWindow. Members rather than locals: a blow is not the
     // frame to be allocating a thousand boxes and a solid list from scratch.
     std::vector<Solid> winSolids_;
+    std::vector<Solid> underSolids_;
+    bool groundDirty_ = false;
+    // Scratch for dropTerrainHangers, kept so a blow allocates nothing.
+    std::vector<uint8_t> hangSolid_, hangSeen_;
+    std::vector<int> hangStack_;
     std::vector<const Solid *> winNear_;
     std::vector<VoxBox> winBoxes_;
     // Scratch for the sever test, which runs on every axe blow.

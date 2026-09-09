@@ -504,6 +504,9 @@ struct Options {
     bool swingLog = false;
     // Fell a tree headlessly and print the body's trajectory -- see runFellTest.
     bool fellTest = false;
+    // Dig the ground out from under a tree with no window, and report whether
+    // it came down -- see runFloatTest.
+    bool floatTest = false;
     // Hold the swing from the first frame, exactly as --shot-walk holds W. It
     // exists for the same reason that one does: an animation you can only see
     // by holding a mouse button cannot be photographed, measured or regression
@@ -1165,6 +1168,11 @@ class ForestApp : public SampleApp {
         }
         if (opt_.fellTest) {
             runFellTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.floatTest) {
+            runFloatTest();
             shutdown(0);
             return;
         }
@@ -3892,7 +3900,11 @@ class ForestApp : public SampleApp {
     void stepLoose(float dt) {
         simMs_ += double(dt) * 1000.0;
         if (physics_.available()) {
-            if (!physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+            // REBUILT WHEN THE GROUND MOVES, not only when the player does.
+            // A dig changes the shape of the floor under everything that is
+            // falling, and the patch is the only copy of it the solver has.
+            if (world_.takeGroundDirty() ||
+                !physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
                 rebuildGroundPatch();
             physics_.step(dt);
             // Gathered ONCE for the whole band rather than per body: walkWorld
@@ -3947,11 +3959,11 @@ class ForestApp : public SampleApp {
         // the frame the player crosses the boundary. The memo is what the
         // chunk mesher uses for the same reason -- i on the inside, so a
         // lattice cell is reused across a run of columns.
-        TerrainMemo memo;
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i < n; ++i)
-                groundPatch_[size_t(i) + size_t(j) * size_t(n)] =
-                    int16_t(world_.terrain.heightVox(i0 + i * step, j0 + j * step, memo));
+        // ...AND IT HAS THE HOLES IN IT. See World::groundPatch: sampled
+        // from heightVox alone this floor had a lid over every pit the player
+        // had dug, and anything born under that lid was thrown out of it.
+        world_.groundPatch(groundPatch_.data(), n, i0, j0, step);
+        world_.takeGroundDirty();
         physics_.setGroundPatch(groundPatch_.data(), n, i0, j0, VOXEL_M, step);
     }
 
@@ -4708,6 +4720,16 @@ class ForestApp : public SampleApp {
                             felled_ = world_.fellTree(physics_, lastSwing_.solid, lastSwing_.dir,
                                                       simMs_);
 
+                        // ...AND SO DOES WHATEVER WAS STANDING ON THE GROUND
+                        // THAT JUST LEFT. The rule above is about one model's
+                        // own voxels and seeds from its bottom row, which
+                        // assumes there is ground under that row -- so digging
+                        // the ground away instead of the model was the one way
+                        // to leave a tree hanging that nothing ever asked
+                        // about. See World::dropUndermined.
+                        else if (dug && physics_.available())
+                            world_.dropUndermined(physics_, lastSwing_.point, simMs_);
+
                         // ...AND IT DOES NOT SIMPLY VANISH. The piece that came
                         // out becomes a rigid body: thrown a little back toward
                         // the person who swung, tumbling, and -- if it is small
@@ -4926,6 +4948,275 @@ class ForestApp : public SampleApp {
     // degrees over a second or two, y drops once and settles, and the speeds go
     // to nothing.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // DIG THE GROUND OUT FROM UNDER SOMETHING AND WATCH WHETHER IT FALLS.
+    //
+    // float_probe measures the GAP this leaves and proves the hole in the rule;
+    // it cannot run the engine, so it cannot show the rule being obeyed. This
+    // does: the real terrain, the real placements, the real dig, and
+    // World::dropUndermined asked exactly where the swing path asks it.
+    //
+    // The pass condition is the user\'s rule, unedited -- nothing that has lost
+    // the ground under it is still standing there.
+    // -----------------------------------------------------------------------
+    void runFloatTest() {
+        std::printf("\n=== UNDERMINE TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        std::printf("  spawn (%.1f, %.1f, %.1f)\n", player_.pos.x, player_.pos.y,
+                    player_.pos.z);
+
+        // Not named `near`; see the note in runFellTest.
+        std::vector<Solid> around;
+        world_.collidersNear(player_.pos, 120.0f, &around);
+        int tried = 0, fell = 0, stood = 0;
+        for (int kind = 0; kind <= 1; ++kind) {
+            const Solid *pick = nullptr;
+            float best = 1e30f;
+            for (const Solid &s2 : around) {
+                if (s2.modelKind != kind || !s2.vol || s2.hx <= 0.0f) continue;
+                const float dx = s2.cx - player_.pos.x, dz = s2.cz - player_.pos.z;
+                if (dx * dx + dz * dz < best) { best = dx * dx + dz * dz; pick = &s2; }
+            }
+            if (!pick) {
+                std::printf("  no %s within reach of the spawn\n", kind ? "rock" : "tree");
+                continue;
+            }
+            const Solid so = *pick;
+            ++tried;
+            std::printf("\n  %s at (%.1f, %.1f, %.1f)  model %d  %d x %d voxels\n",
+                        kind ? "rock" : "tree", so.tx, so.baseY, so.tz, int(so.modelIndex),
+                        int(so.msx), int(so.msz));
+            // The patch follows the player, and something about to fall needs a
+            // floor -- the same lesson runFellTest paid for.
+            player_.placeOnGround(walkWorld(), so.cx, so.cz);
+            if (world_.takeGroundDirty() ||
+                !physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+                rebuildGroundPatch();
+
+            // ---- dig out every column it is standing on --------------------
+            //
+            // A metre down, with the real brush, one bite per column of the
+            // model\'s own row zero. That is what a player levelling a spot does
+            // and it is what left forty trees hanging in float_probe.
+            long blows = 0;
+            bool down = false;
+            TerrainMemo digMemo;
+            for (int mz = 0; mz < int(so.msz) && !down; ++mz)
+                for (int mx = 0; mx < int(so.msx) && !down; ++mx) {
+                    if (!solidVoxel(so, mx, 0, mz)) continue;
+                    float wx = 0.0f, wz = 0.0f;
+                    solidWorldSpace(so, (float(mx) + 0.5f) * VOXEL_M, (float(mz) + 0.5f) * VOXEL_M,
+                                    &wx, &wz);
+                    // FROM THE SURFACE DOWN, not from the model's base down.
+                    // A placement is SUNK into the terrain, so the ground
+                    // beside its row zero stands well above that row -- digging
+                    // from the base leaves the shoulder in place and the model
+                    // is still standing on it. The first run of this spent 128
+                    // blows and moved nothing for exactly that reason.
+                    const int ci = int(std::floor(wx / VOXEL_M));
+                    const int cj = int(std::floor(wz / VOXEL_M));
+                    const float topY =
+                        float(world_.terrainTopAt(ci, cj, digMemo) + 1) * VOXEL_M;
+                    for (float y = topY; y > so.baseY - 0.4f && !down; y -= 0.25f) {
+                        const Vec3 p{wx, y, wz};
+                        if (!world_.dig(p, kDigRadiusVox)) continue;
+                        ++blows;
+                        down = world_.dropUndermined(physics_, p, simMs_);
+                    }
+                }
+            if (!down) {
+                ++stood;
+                std::printf("  FAIL -- %ld blows took the ground away and it is still there\n",
+                            blows);
+                continue;
+            }
+            ++fell;
+            std::printf("  came down after %ld blows\n", blows);
+
+            // ...and then it is a body like any other. Watch it settle.
+            const float dt = 1.0f / 60.0f;
+            for (int f = 0; f < 300; ++f) {
+                if (!physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+                    rebuildGroundPatch();
+                physics_.step(dt);
+                simMs_ += double(dt) * 1000.0;
+                world_.updateDebris(physics_, player_.eyePosition(), simMs_,
+                                    [&](float x, float z) {
+                                        return float(world_.terrain.heightVox(
+                                                         int(std::floor(x / VOXEL_M)),
+                                                         int(std::floor(z / VOXEL_M))) +
+                                                     1) *
+                                               VOXEL_M;
+                                    });
+                if ((f % 60) != 0 && f != 299) continue;
+                for (int i = 0; i < 512; ++i) {
+                    Vec3 p{0, 0, 0}, lin{0, 0, 0}, ang{0, 0, 0};
+                    float q[4] = {0, 0, 0, 1};
+                    if (!world_.debrisPose(i, &p, q)) continue;
+                    world_.debrisVel(physics_, i, &lin, &ang);
+                    const float uy = 1.0f - 2.0f * (q[0] * q[0] + q[2] * q[2]);
+                    const float pitch =
+                        acosf(uy < -1.0f ? -1.0f : (uy > 1.0f ? 1.0f : uy)) * 57.29578f;
+                    std::printf("    %5.0f ms   y %7.2f   pitch %5.1fd   fall %5.2f m/s\n",
+                                double(f) * dt * 1000.0, p.y, pitch, -lin.y);
+                    break;
+                }
+            }
+        }
+        // ---- ...AND WHAT A BLOW ON A MODEL LEAVES BEHIND -----------------
+        //
+        // Asked of the ENGINE: real swings through World::carveModel, then a
+        // per-voxel flood of the instance that took them, against the same
+        // model as it was drawn. Six voxels a blow before dropModelHangers.
+        std::printf("\n  --- a blow on a model ---\n");
+        long modelBlows = 0, modelLeft = 0;
+        for (int kind = 0; kind <= 1; ++kind) {
+            for (const Solid &s2 : around) {
+                if (s2.modelKind != kind || !s2.vol || s2.hx <= 0.0f) continue;
+                const Solid so2 = s2;
+                for (int b = 0; b < 24; ++b) {
+                    const float ang = float(b) * 0.7853982f;
+                    const Vec3 eye{so2.cx + std::cos(ang) * (so2.hx + 3.0f),
+                                   so2.baseY + 0.6f + float(b % 5) * 0.5f,
+                                   so2.cz + std::sin(ang) * (so2.hz + 3.0f)};
+                    const Vec3 dir{-std::cos(ang), 0.0f, -std::sin(ang)};
+                    if (!world_.carveModel(so2, eye, dir, 12.0f, kDigRadiusVox)) continue;
+                    ++modelBlows;
+                    // THE WHOLE SWING PATH, not half of it. carveModel alone
+                    // leaves a severed limb sitting in the model, because it is
+                    // fellTree that hands a piece that big to the solver -- and
+                    // a test that skips it measures 31,450 voxels of its own
+                    // omission, which is what the first run of this did.
+                    if (world_.fellTree(physics_, so2, dir, simMs_)) break;
+                    const long l = world_.looseVoxelsNow(so2);
+                    if (l > modelLeft) modelLeft = l;
+                }
+                break;   // one of each kind is enough; the flood is the slow part
+            }
+        }
+        std::printf("  %ld blows on a tree and a rock: worst %ld voxels left standing"
+                    " on nothing\n",
+                    modelBlows, modelLeft);
+
+        // ---- ...AND THE GROUND ITSELF ------------------------------------
+        //
+        // Asked of the ENGINE, through the same terrainSolidAt every other
+        // consumer uses, rather than of a reimplementation of it. Dig the way a
+        // player digs, then flood the ground around the hole from what is
+        // provably standing on bedrock and count what the flood cannot reach.
+        std::printf("\n  --- the ground ---\n");
+        world_.collidersNear(player_.pos, 120.0f, &around);   // the set moved on
+        long sites = 0, siteFloat = 0, voxFloat = 0, worstSite = 0;
+        double digNs = 0.0;
+        long digN = 0;
+        uint32_t rs = 20260909u;
+        auto rnd = [&]() {
+            rs ^= rs << 13;
+            rs ^= rs >> 17;
+            rs ^= rs << 5;
+            return rs;
+        };
+        TerrainMemo tmemo;
+        for (int site = 0; site < 40; ++site) {
+            const float sx = player_.pos.x + float(int(rnd() % 400u)) - 200.0f;
+            const float sz = player_.pos.z + float(int(rnd() % 400u)) - 200.0f;
+            const int ci = int(std::floor(sx / VOXEL_M));
+            const int cj = int(std::floor(sz / VOXEL_M));
+            const int h = world_.terrain.heightVox(ci, cj, tmemo);
+            // Thirty blows, clustered, exactly as float_probe's sweep is --
+            // and TIMED, because dropTerrainHangers runs inside every one of
+            // them and hitching on a pick swing is a live complaint.
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int b = 0; b < 30; ++b) {
+                const int px = ci + int(rnd() % 13u) - 6;
+                const int pz = cj + int(rnd() % 13u) - 6;
+                const int py = h + int(rnd() % 13u) - 9;
+                world_.dig(Vec3{(float(px) + 0.5f) * VOXEL_M, (float(py) + 0.5f) * VOXEL_M,
+                                (float(pz) + 0.5f) * VOXEL_M},
+                           kDigRadiusVox);
+            }
+            digNs += double(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - t0)
+                                .count());
+            digN += 30;
+            ++sites;
+            // ...and now count what is left standing on nothing.
+            const int R = 24, n2 = R * 2 + 1;
+            const int i0 = ci - R, j0 = cj - R, y0 = h - R - 6;
+            std::vector<uint8_t> sol(size_t(n2) * n2 * n2, 0), seen(size_t(n2) * n2 * n2, 0);
+            auto ix = [&](int a, int bb, int c) {
+                return size_t(a) + size_t(c) * size_t(n2) + size_t(bb) * size_t(n2) * size_t(n2);
+            };
+            long solid = 0;
+            for (int c = 0; c < n2; ++c)
+                for (int a = 0; a < n2; ++a)
+                    for (int bb = 0; bb < n2; ++bb)
+                        if (world_.terrainSolidAt(i0 + a, j0 + c, y0 + bb, tmemo)) {
+                            sol[ix(a, bb, c)] = 1;
+                            ++solid;
+                        }
+            std::vector<int> st;
+            for (int c = 0; c < n2; ++c)
+                for (int a = 0; a < n2; ++a)
+                    if (sol[ix(a, 0, c)]) {
+                        seen[ix(a, 0, c)] = 1;
+                        st.push_back(int(ix(a, 0, c)));
+                    }
+            long reached = long(st.size());
+            static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                          {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+            while (!st.empty()) {
+                const int p = st.back();
+                st.pop_back();
+                const int a = p % n2, c = (p / n2) % n2, bb = p / (n2 * n2);
+                for (const int *o : off) {
+                    const int x2 = a + o[0], y2 = bb + o[1], z2 = c + o[2];
+                    if (x2 < 0 || y2 < 0 || z2 < 0 || x2 >= n2 || y2 >= n2 || z2 >= n2) continue;
+                    const size_t q = ix(x2, y2, z2);
+                    if (!sol[q] || seen[q]) continue;
+                    seen[q] = 1;
+                    ++reached;
+                    st.push_back(int(q));
+                }
+            }
+            // COUNTED IN THE INTERIOR ONLY. A voxel on this box's own wall may
+            // be held up by stone just outside it, which the flood cannot see,
+            // so counting it would be measuring the ruler rather than the wood.
+            long f2 = 0;
+            for (int bb = 1; bb < n2 - 1; ++bb)
+                for (int c = 1; c < n2 - 1; ++c)
+                    for (int a = 1; a < n2 - 1; ++a)
+                        if (sol[ix(a, bb, c)] && !seen[ix(a, bb, c)]) ++f2;
+            (void)solid;
+            (void)reached;
+            if (f2 > 0) {
+                ++siteFloat;
+                voxFloat += f2;
+                if (f2 > worstSite) worstSite = f2;
+            }
+        }
+        std::printf("  %.3f ms per blow, dig and the hanger sweep together (%ld blows)\n", 
+                    digN ? digNs / double(digN) / 1e6 : 0.0, digN);
+        std::printf("  %ld dig sites, 30 blows each: %ld left ground hanging, %ld voxels,"
+                    " worst %ld\n",
+                    sites, siteFloat, voxFloat, worstSite);
+
+        std::printf("\n=== VERDICT ===\n");
+        std::printf("  %d undermined, %d came down, %d left standing on nothing\n", tried, fell,
+                    stood);
+        std::printf("  models: %ld voxels left hanging over %ld blows\n", modelLeft,
+                    modelBlows);
+        std::printf("  ground: %ld voxels of terrain standing on nothing\n", voxFloat);
+        std::printf("  %s\n", (stood || voxFloat || modelLeft > 0)
+                                     ? "FAIL"
+                                     : "PASS -- nothing is left in the air.");
+    }
+
     void runFellTest() {
         std::printf("\n=== FELL TEST ===\n");
         // WHERE THE SPAWN IS, BEFORE ANYTHING ELSE. This runs before the
@@ -5028,7 +5319,8 @@ class ForestApp : public SampleApp {
         // run of this spent its whole trace proving it.
         const float dt = 1.0f / 60.0f;
         for (int f = 0; f < 900; ++f) {
-            if (!physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+            if (world_.takeGroundDirty() ||
+                !physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
                 rebuildGroundPatch();
             physics_.step(dt);
             simMs_ += double(dt) * 1000.0;
@@ -5050,6 +5342,21 @@ class ForestApp : public SampleApp {
                 break;
             }
         }
+        // ...AND WHETHER IT ENDED UP INSIDE ANYTHING. The reported bug was a
+        // tree clipping into a rock as it felled, and this is that question
+        // asked of the collider the solver was actually given.
+        int clipped = 0, boxes = 0;
+        for (int i = 0; i < 512; ++i) {
+            Vec3 p{0, 0, 0};
+            float q[4] = {0, 0, 0, 1};
+            if (!world_.debrisPose(i, &p, q)) continue;
+            clipped = world_.debrisClip(i);
+            boxes = world_.debrisWindowBoxes();
+            break;
+        }
+        std::printf("\n  collider boxes inside a rock or a trunk at rest: %d"
+                    "   (static window %d boxes)\n",
+                    clipped, boxes);
         std::printf("\n  (pitch 0 = still standing, 90 = flat on the ground)\n");
     }
 
