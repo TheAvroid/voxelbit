@@ -173,6 +173,20 @@ struct Solid {
     // model's own voxel row zero.
     const int16_t *col = nullptr;
     int16_t msx = 0, msz = 0;
+
+    // ---- WHICH INSTANCE THIS IS ------------------------------------------
+    //
+    // A blow lands on a Solid, but breaking one means editing the INSTANCE it
+    // stands for -- giving that one boulder a private copy of its model while
+    // the other twenty-four placements of the same rock keep sharing the
+    // original. These four fields are what turns a hit back into that
+    // instance: which chunk holds it, which decor slot inside that chunk, and
+    // which template it was stamped from.
+    //
+    // decorSlot is -1 for anything that is not a decor instance.
+    long long ownerChunk = 0;
+    int32_t decorSlot = -1;
+    int16_t modelKind = -1, modelIndex = -1;
     uint8_t yaw = 0;
     float tx = 0.0f, tz = 0.0f;
     float baseY = 0.0f;
@@ -195,6 +209,23 @@ struct Solid {
 // A world point in the model's own frame, in metres from its (0,0) voxel
 // corner. Shared by the two tests below so they cannot disagree about where
 // the model is.
+// ...and back again: a point in the model's own frame, in world metres. The
+// same four numbers, transposed -- a quarter turn is orthonormal, so its
+// inverse IS its transpose. Kept beside solidModelSpace because a forward and
+// an inverse that live apart drift apart, and the symptom is a chunk that
+// breaks off somewhere the hole is not.
+inline void solidWorldSpace(const Solid &s, float px, float pz, float *wx, float *wz) {
+    static const float R[4][4] = {
+        { 1.0f,  0.0f,  0.0f,  1.0f},
+        { 0.0f,  1.0f, -1.0f,  0.0f},
+        {-1.0f,  0.0f,  0.0f, -1.0f},
+        { 0.0f, -1.0f,  1.0f,  0.0f},
+    };
+    const float *r = R[s.yaw & 3];
+    *wx = r[0] * px + r[1] * pz + s.tx;
+    *wz = r[2] * px + r[3] * pz + s.tz;
+}
+
 inline void solidModelSpace(const Solid &s, float wx, float wz, float *px, float *pz) {
     // m0, m2, m6, m8 of kRot, in makeInstance.
     static const float R[4][4] = {

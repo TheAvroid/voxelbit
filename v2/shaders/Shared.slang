@@ -79,6 +79,12 @@ static const uint kGrassCount = 6;
 static const uint kSoil0 = 13;
 static const uint kSoilCount = 4;
 static const uint kLitter0 = 17;
+// THE STONE RAMP. One id on the host (kRock), six shades here -- filled at load
+// from the boulder models' own palettes, so dug terrain is the same stone as
+// the rocks lying on it. See mat::STONE_0 and Palette::setStoneBand.
+static const uint kRock = 1;
+static const uint kStone0 = 20;
+static const uint kStoneCount = 6;
 static const uint kLitterCount = 3;
 
 // HOW A TRIANGLE'S WORD IS LAID OUT.

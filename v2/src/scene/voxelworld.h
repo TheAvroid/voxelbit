@@ -42,6 +42,8 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -66,7 +68,11 @@ constexpr uint8_t DIRT = 2;
 constexpr uint8_t MOSS = 3;
 constexpr uint8_t SAND = 4;
 constexpr uint8_t SILT = 5;
-constexpr uint8_t UNUSED_6 = 6;  // was NEEDLE_LITTER, now a ramp of its own below
+// THE FLOOR OF THE WORLD. Below the stone, and the last thing there is: a
+// tool that reaches this finds something it cannot get through. Slot 6 was
+// NEEDLE_LITTER before that became a ramp of its own below, so this is a reuse
+// of a free number rather than a new one.
+constexpr uint8_t BEDROCK = 6;
 
 // GROUND COLOURS BORROWED FROM THE TREES.
 //
@@ -93,7 +99,21 @@ constexpr uint8_t SOIL_COUNT = 4;    // 13..16
 // dark end of it, so the canopy still browns the ground beneath it.
 constexpr uint8_t LITTER_0 = 17;
 constexpr uint8_t LITTER_COUNT = 3;  // 17..19
-constexpr uint8_t TREE_BASE = 20;  // model palette entries are allocated from here up
+// THE STONE RAMP -- the terrain's rock, wearing the BOULDERS' OWN COLOURS.
+//
+// mat::ROCK is a single flat grey, and a single grey is what dug stone used
+// to look like: a slab, beside twenty-seven boulder models carrying half a
+// dozen real stone tones each. These six entries are filled AT LOAD from the
+// rock models' own palettes (see Palette::setStoneBand), so the ground you
+// dig into is made of the same stone as the rocks lying on top of it.
+//
+// THE HOST STILL STORES ONE ID. The mesher writes mat::ROCK and nothing else,
+// which is what keeps a hillside merging into long runs; the device spreads
+// that one id over this ramp per voxel, exactly as it already does for grass
+// and soil. See groundShade().
+constexpr uint8_t STONE_0 = 20;
+constexpr uint8_t STONE_COUNT = 6;   // 20..25
+constexpr uint8_t TREE_BASE = 26;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -209,6 +229,40 @@ class Palette {
     // came out in patches of brown and patches of grey. Recording the boundary
     // is what makes the function's name true.
     void markPinesLoaded() { pineEnd_ = next_; }
+
+    // FILL THE STONE RAMP FROM THE ROCK MODELS THEMSELVES.
+    //
+    // Given every colour the boulder .vox files actually use, this keeps the
+    // stone-looking ones and spreads six of them across the range by
+    // luminance -- darkest first, so the ramp reads as one material lit
+    // differently rather than as six unrelated greys.
+    //
+    // GREEN IS DROPPED. The rocks are grown over with moss at load, and moss
+    // in the middle of a freshly dug hole would be a strange thing to find.
+    void setStoneBand(std::vector<std::array<uint8_t, 4>> cols) {
+        std::vector<std::array<uint8_t, 4>> keep;
+        for (const auto &c : cols) {
+            const int mx = maxi(int(c[0]), maxi(int(c[1]), int(c[2])));
+            const int mn = mini(int(c[0]), mini(int(c[1]), int(c[2])));
+            if (mx < 8) continue;                       // black, not a stone
+            if (mx - mn > mx / 3) continue;             // too saturated: moss or a runic vein
+            keep.push_back(c);
+        }
+        if (keep.size() < size_t(mat::STONE_COUNT)) return;   // leave the defaults
+        std::sort(keep.begin(), keep.end(),
+                  [](const std::array<uint8_t, 4> &a, const std::array<uint8_t, 4> &b) {
+                      return (a[0] * 2 + a[1] * 5 + a[2]) < (b[0] * 2 + b[1] * 5 + b[2]);
+                  });
+        for (int k = 0; k < mat::STONE_COUNT; ++k) {
+            const size_t idx = keep.size() * size_t(k) / size_t(mat::STONE_COUNT);
+            const auto &c = keep[mini(idx, keep.size() - 1)];
+            set(uint8_t(mat::STONE_0 + k), srgbToLinearF(float(c[0]) / 255.0f),
+                srgbToLinearF(float(c[1]) / 255.0f), srgbToLinearF(float(c[2]) / 255.0f),
+                0.88f);
+        }
+        stoneFromRocks_ = int(keep.size());
+    }
+    int stoneSampleCount() const { return stoneFromRocks_; }
 
     const MaterialLook &operator[](uint8_t id) const { return look_[id]; }
     const std::vector<MaterialLook> &table() const { return look_; }
@@ -395,6 +449,18 @@ class Palette {
         set(mat::MOSS, 0.24f, 0.34f, 0.16f, 0.92f);
         set(mat::SAND, 0.68f, 0.61f, 0.45f, 0.85f);
         set(mat::SILT, 0.22f, 0.20f, 0.16f, 0.95f);
+        // Darker and flatter than ROCK, so the change of layer reads as a
+        // change of material rather than a change of light.
+        set(mat::BEDROCK, 0.17f, 0.17f, 0.18f, 0.97f);
+        // A GREY RAMP UNTIL THE ROCKS ARE LOADED. setStoneBand replaces these
+        // with the boulders' real tones; these are only what stone looks like
+        // if that never happens, and they bracket mat::ROCK rather than
+        // wandering off it.
+        for (int k = 0; k < mat::STONE_COUNT; ++k) {
+            const float t = float(k) / float(mat::STONE_COUNT - 1);
+            const float g = 0.34f + 0.16f * t;
+            set(uint8_t(mat::STONE_0 + k), g, g * 0.99f, g * 0.94f, 0.88f);
+        }
 
     }
 
@@ -402,6 +468,7 @@ class Palette {
     std::map<uint32_t, uint8_t> index_;
     uint8_t next_ = mat::TREE_BASE;
     int pineEnd_ = 0;
+    int stoneFromRocks_ = 0;
     int overflow_ = 0;
 };
 
@@ -710,6 +777,52 @@ inline std::vector<Perch> collectPerches(const VoxAsset &a,
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// THE SAME SURFACE EXTRACTION, over a volume of GLOBAL MATERIAL IDS.
+//
+// meshAsset below works on a VoxAsset -- palette entries plus the table that
+// maps them -- which is what a freshly loaded .vox is. A DAMAGED instance is
+// not that: it is ModelTemplate::volume, already resolved to global ids, with
+// the voxels a pick took out set to AIR. Same rule either way, and it is the
+// rule this whole engine runs on: emit a face where solid meets air, and keep
+// everything else.
+// ---------------------------------------------------------------------------
+inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int sz, float scale) {
+    VoxMesh m;
+    const float s = scale;
+    auto at = [&](int x, int y, int z) -> uint8_t {
+        if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) return mat::AIR;
+        // VOXASSET (WORLD) LAYOUT, which is x + z*sx + y*sx*sz and NOT the
+        // x + y*sx + z*sx*sy of the raw model struct beside it in vox.h. The
+        // two differ only by which axis strides furthest, so getting it wrong
+        // does not crash -- it transposes the boulder, which is a great deal
+        // harder to notice. ModelTemplate::volume is filled from VoxAsset.
+        return vol[size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz)];
+    };
+    for (int y = 0; y < sy; ++y)
+        for (int z = 0; z < sz; ++z)
+            for (int x = 0; x < sx; ++x) {
+                const uint8_t id = at(x, y, z);
+                if (id == mat::AIR) continue;
+                const float x0 = float(x) * s, x1 = x0 + s;
+                const float y0 = float(y) * s, y1 = y0 + s;
+                const float z0 = float(z) * s, z1 = z0 + s;
+                if (at(x, y + 1, z) == mat::AIR)
+                    m.addQuad({x0,y1,z0},{x0,y1,z1},{x1,y1,z1},{x1,y1,z0}, id, face::POS_Y);
+                if (at(x, y - 1, z) == mat::AIR)
+                    m.addQuad({x0,y0,z0},{x1,y0,z0},{x1,y0,z1},{x0,y0,z1}, id, face::NEG_Y);
+                if (at(x + 1, y, z) == mat::AIR)
+                    m.addQuad({x1,y0,z0},{x1,y1,z0},{x1,y1,z1},{x1,y0,z1}, id, face::POS_X);
+                if (at(x - 1, y, z) == mat::AIR)
+                    m.addQuad({x0,y0,z0},{x0,y0,z1},{x0,y1,z1},{x0,y1,z0}, id, face::NEG_X);
+                if (at(x, y, z + 1) == mat::AIR)
+                    m.addQuad({x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}, id, face::POS_Z);
+                if (at(x, y, z - 1) == mat::AIR)
+                    m.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, id, face::NEG_Z);
+            }
+    return m;
+}
+
 inline VoxMesh meshAsset(const VoxAsset &a, const std::vector<uint8_t> &idOfEntry, float scale) {
     VoxMesh m;
     const float s = scale;
@@ -851,6 +964,124 @@ enum class Biome : uint8_t {
     Pine,   // the original: high relief, ridges, basins, a needle floor
     Birch,  // low rounded hills, one light green everywhere, beehives
 };
+
+// ---------------------------------------------------------------------------
+// THE EDIT LAYER -- the world is procedural(seed) + edits, and this is the
+// second term.
+//
+// AN UNTOUCHED WORLD IS ZERO BYTES. Only voxels somebody has actually changed
+// are stored, keyed by world voxel coordinate, so a forest nobody has swung at
+// costs nothing at all. That is what makes this affordable where a full mutable
+// grid was not: the previous attempts sized storage by the WORLD, and this one
+// sizes it by the DAMAGE.
+//
+// PUBLISHED BY COPY, NEVER MUTATED IN PLACE. The mesher runs on worker threads
+// and must never observe a half-written edit. A swing builds the chunk's new
+// edit set on the main thread and publishes it as a shared_ptr<const>; a worker
+// takes that pointer under a brief lock and then reads it with no lock at all.
+// An edit is rare and a mesh is not, so the contention sits on the rare side.
+// ---------------------------------------------------------------------------
+struct ChunkEdits {
+    // World voxel -> material. mat::AIR is a hole somebody dug.
+    std::unordered_map<uint64_t, uint8_t> vox;
+    // The columns touched, each with the y span worth re-examining. meshChunk
+    // voxel-meshes exactly these and leaves every other column on the fast
+    // heightmap path -- see the note over the voxel pass.
+    std::unordered_map<uint64_t, std::pair<int, int>> col;
+
+    static uint64_t vkey(int i, int j, int y) {
+        return (uint64_t(uint32_t(i) & 0x1fffffu) << 42) |
+               (uint64_t(uint32_t(j) & 0x1fffffu) << 21) |
+               uint64_t(uint32_t(y) & 0x1fffffu);
+    }
+    static uint64_t ckey(int i, int j) {
+        return (uint64_t(uint32_t(i) & 0x1fffffu) << 21) | uint64_t(uint32_t(j) & 0x1fffffu);
+    }
+    bool voxel(int i, int j, int y, uint8_t *out) const {
+        const auto it = vox.find(vkey(i, j, y));
+        if (it == vox.end()) return false;
+        *out = it->second;
+        return true;
+    }
+    bool column(int i, int j, int *lo, int *hi) const {
+        const auto it = col.find(ckey(i, j));
+        if (it == col.end()) return false;
+        *lo = it->second.first;
+        *hi = it->second.second;
+        return true;
+    }
+};
+
+// The edit sets of every chunk that has any, and the one thing that writes them.
+class EditStore {
+  public:
+    std::shared_ptr<const ChunkEdits> get(int cx, int cz) const {
+        std::lock_guard<std::mutex> lk(mx_);
+        const auto it = byChunk_.find(ChunkEdits::ckey(cx, cz));
+        return it == byChunk_.end() ? nullptr : it->second;
+    }
+
+    // Take a bite of radius r (in voxels) out of the world at a voxel centre,
+    // and report which chunks now need re-meshing. COPY ON WRITE: each touched
+    // chunk's set is copied, added to, and republished, so any worker already
+    // reading the old one keeps a consistent view until it finishes.
+    std::vector<std::pair<int, int>> carve(int ci, int cj, int cy, int r) {
+        std::map<std::pair<int, int>, std::shared_ptr<ChunkEdits>> touched;
+        const int r2 = r * r;
+        std::lock_guard<std::mutex> lk(mx_);
+        for (int dy = -r; dy <= r; ++dy)
+            for (int dj = -r; dj <= r; ++dj)
+                for (int di = -r; di <= r; ++di) {
+                    if (di * di + dj * dj + dy * dy > r2) continue;
+                    const int i = ci + di, j = cj + dj, y = cy + dy;
+                    // A HOLE IS VISIBLE FROM THE CHUNK NEXT DOOR. The rock
+                    // beside it needs a face pointing in, and that rock may
+                    // belong to another chunk -- which has its own edit set and
+                    // would otherwise never learn the hole exists. So each
+                    // carved voxel is published to every chunk whose column
+                    // ring reaches it, and each of those columns is marked for
+                    // the voxel pass. Nine writes at a chunk seam, one anywhere
+                    // else, and no seam left open either way.
+                    for (int rj = -1; rj <= 1; ++rj)
+                        for (int ri = -1; ri <= 1; ++ri) {
+                            const int ni = i + ri, nj = j + rj;
+                            const int cx = floorDiv(ni, CHUNK_VOX), cz = floorDiv(nj, CHUNK_VOX);
+                            auto &slot = touched[{cx, cz}];
+                            if (!slot) {
+                                const auto it = byChunk_.find(ChunkEdits::ckey(cx, cz));
+                                slot = it == byChunk_.end()
+                                           ? std::make_shared<ChunkEdits>()
+                                           : std::make_shared<ChunkEdits>(*it->second);
+                            }
+                            slot->vox[ChunkEdits::vkey(i, j, y)] = mat::AIR;
+                            auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
+                            if (span.first == 0 && span.second == 0) span = {y, y + 1};
+                            else {
+                                span.first = mini(span.first, y);
+                                span.second = maxi(span.second, y + 1);
+                            }
+                        }
+                }
+        std::vector<std::pair<int, int>> out;
+        out.reserve(touched.size());
+        for (auto &kv : touched) {
+            byChunk_[ChunkEdits::ckey(kv.first.first, kv.first.second)] = kv.second;
+            out.push_back(kv.first);
+        }
+        return out;
+    }
+
+    // Floor division: chunk -1 must hold voxel -1, not voxel 0.
+    static int floorDiv(int a, int b) { return (a >= 0) ? (a / b) : -(((-a) + b - 1) / b); }
+
+  private:
+    mutable std::mutex mx_;
+    std::unordered_map<uint64_t, std::shared_ptr<const ChunkEdits>> byChunk_;
+};
+// IS THIS MATERIAL STONE -- the question a pick asks before it bites.
+// BEDROCK is deliberately NOT stone here: it is the floor of the world and
+// nothing is meant to get through it. See mat::BEDROCK.
+inline bool isStoneMat(uint8_t m) { return m == mat::ROCK; }
 
 class VoxelTerrain {
   public:
@@ -1139,6 +1370,12 @@ class VoxelTerrain {
     int grassMinRows = 3, grassMaxRows = 6;
     uint32_t strandSeed = 20260904u;
 
+    // HOW FAR DOWN THE STONE GOES BEFORE THE BEDROCK STARTS, in voxels, from
+    // each column's own surface. 100 voxels is 10 m at VOXEL_M -- deep enough
+    // that digging through it is an undertaking, shallow enough to be reachable
+    // at all. If you meant a hundred METRES, this is the one number to change.
+    int kBedrockVox = 100;
+
     // Voxels of loose soil between the surface and the rock -- see crustVox.
     // The old emit loop had this as a literal 3; two to six reads as a bank
     // that thins and thickens rather than as a stripe ruled along the hill.
@@ -1300,9 +1537,21 @@ class VoxelTerrain {
     // surface row h and what topMaterial put on it. AIR above the surface; the
     // surface keeps its own material; and a rock outcrop is rock the whole way
     // down rather than rock sitting on soil.
+    // THREE LAYERS AND A SURFACE, top to bottom:
+    //
+    //   y == h                     the surface, whatever topMaterial chose
+    //   within crustVox of it      SOIL_0 -- the dirt the grass is rooted in
+    //   down to kBedrockVox        ROCK -- the stone the world is made of
+    //   below that                 BEDROCK -- the floor, and nothing under it
+    //
+    // The depth is measured from the COLUMN'S OWN SURFACE, not from a fixed
+    // altitude, so the bedrock follows the terrain rather than cutting across
+    // it: a valley floor and a hilltop are both the same distance from it. A
+    // flat bedrock plane would surface itself in the valleys.
     uint8_t materialAt(int i, int j, int y, int h, uint8_t top) const {
         if (y > h) return mat::AIR;
         if (y == h) return top;
+        if (h - y >= kBedrockVox) return mat::BEDROCK;
         if (top == mat::ROCK) return mat::ROCK;
         return (h - y <= crustVox(i, j)) ? mat::SOIL_0 : mat::ROCK;
     }
@@ -1339,7 +1588,8 @@ class VoxelTerrain {
     // would show as walls -- and because both chunks would do it, the geometry
     // would be doubled there too.
     // -----------------------------------------------------------------------
-    VoxMesh meshChunk(int cx, int cz, ChunkScratch &scratch) const {
+    VoxMesh meshChunk(int cx, int cz, ChunkScratch &scratch,
+                      const ChunkEdits *ed = nullptr) const {
         VoxMesh m;
         const int n = CHUNK_VOX;
         // Measured at roughly 1.5 quads per column across this terrain; two is
@@ -1391,6 +1641,34 @@ class VoxelTerrain {
         // chunks without a fill: a stale row from the last chunk is overwritten
         // rather than inherited, and the zero goes into a cache line this loop
         // is touching anyway instead of into a separate 66 KB memset.
+        // ------------------------------------------------------------------
+        // WHICH COLUMNS LEAVE THE FAST PATH.
+        //
+        // A column that has been dug cannot be described by a height any more,
+        // so it is meshed voxel by voxel below. ITS NEIGHBOURS GO WITH IT: the
+        // rock beside a hole has a face pointing INTO that hole, and the
+        // heightmap pass cannot know the hole is there. Meshing the ring as
+        // well is what stops a dig leaving a window through the world.
+        //
+        // Everything else -- which is to say all of it, in a world nobody has
+        // touched -- keeps the run-merged heightmap path unchanged.
+        // ------------------------------------------------------------------
+        std::unordered_set<uint64_t> slow;
+        int yEditLo = 0, yEditHi = 0;
+        if (ed && !ed->col.empty()) {
+            bool first = true;
+            for (const auto &kv : ed->col) {
+                const int wi = int(int32_t(uint32_t(kv.first >> 21) & 0x1fffffu) << 11) >> 11;
+                const int wj = int(int32_t(uint32_t(kv.first) & 0x1fffffu) << 11) >> 11;
+                if (first) { yEditLo = kv.second.first; yEditHi = kv.second.second; first = false; }
+                else { yEditLo = mini(yEditLo, kv.second.first); yEditHi = maxi(yEditHi, kv.second.second); }
+                for (int dj = -1; dj <= 1; ++dj)
+                    for (int di = -1; di <= 1; ++di)
+                        slow.insert(ChunkEdits::ckey(wi - I0 + di, wj - J0 + dj));
+            }
+        }
+        auto ED = [&](int i, int j) { return !slow.empty() && slow.count(ChunkEdits::ckey(i, j)) != 0; };
+
         scratch.sr.resize((size_t(n) + 2) * (size_t(n) + 2));
         uint8_t *const srp = scratch.sr.data();
         auto SR = [&](int i, int j) -> uint8_t & {
@@ -1509,10 +1787,11 @@ class VoxelTerrain {
         for (int j = 0; j < n; ++j) {
             int i = 0;
             while (i < n) {
+                if (ED(i, j)) { ++i; continue; }   // voxel-meshed below
                 const int hc = H(i, j);
                 const uint8_t tm = T(i, j);
                 int k = i + 1;
-                while (k < n && H(k, j) == hc && T(k, j) == tm) ++k;
+                while (k < n && !ED(k, j) && H(k, j) == hc && T(k, j) == tm) ++k;
 
                 const float x0 = float(I0 + i) * s, x1 = float(I0 + k) * s;
                 const float z0 = float(J0 + j) * s, z1 = z0 + s;
@@ -1533,7 +1812,7 @@ class VoxelTerrain {
                 // Strands and flowers. Three to six voxels is 30-60 cm --
                 // knee height beside a 22 m pine, which is what keeps it
                 // reading as grass rather than as a hedge.
-                const int rows = SR(i, j);
+                const int rows = ED(i, j) ? 0 : SR(i, j);
                 if (rows > 0) {
                     // The cap used to be a coloured voxel standing in for a
                     // flower. Real models are instanced on the ground now, so a
@@ -1600,6 +1879,7 @@ class VoxelTerrain {
                 while (inner < n) {
                     const int i = alongZ ? outer : inner;
                     const int j = alongZ ? inner : outer;
+                    if (ED(i, j)) { ++inner; continue; }   // voxel-meshed below
                     const int hc = H(i, j);
                     const int nb = H(i + di, j + dj);
                     if (hc - nb <= 0) { ++inner; continue; }
@@ -1617,7 +1897,8 @@ class VoxelTerrain {
                         // neighbours'. Asked only at the columns a run is
                         // trying to grow past, so it costs four hashes at a
                         // boundary and nothing along a uniform bank.
-                        if (H(i2, j2) != hc || H(i2 + di, j2 + dj) != nb || T(i2, j2) != tm ||
+                        if (ED(i2, j2) || H(i2, j2) != hc || H(i2 + di, j2 + dj) != nb ||
+                            T(i2, j2) != tm ||
                             CR(i2, j2) != CR(i, j))
                             break;
                         ++k;
@@ -1640,10 +1921,72 @@ class VoxelTerrain {
                             sideBand(m, i, j, d, soilLo, cursor, mat::SOIL_0, run);
                             cursor = soilLo;
                         }
+                        // ROCK, THEN BEDROCK. The same split materialAt
+                        // makes, walked in runs: stone from the crust down to
+                        // kBedrockVox below this column's surface, and the
+                        // floor of the world under that. A bank deep enough to
+                        // reach it shows it, which is the only way it is ever
+                        // seen until something digs.
+                        const int rockLo = maxi(nb + 1, hc - kBedrockVox + 1);
+                        if (cursor > rockLo) {
+                            sideBand(m, i, j, d, rockLo, cursor, mat::ROCK, run);
+                            cursor = rockLo;
+                        }
                         if (cursor > nb + 1)
-                            sideBand(m, i, j, d, nb + 1, cursor, mat::ROCK, run);
+                            sideBand(m, i, j, d, nb + 1, cursor, mat::BEDROCK, run);
                     }
                     inner = k;
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // THE VOXEL PASS -- the only place in this mesher that walks y.
+        //
+        // The heightmap above can say "this column is solid up to h" and
+        // nothing else, which is exactly why carving never worked: a bite out
+        // of a cliff is an OVERHANG, and a height cannot describe one. So the
+        // handful of columns a swing touched are meshed the honest way --
+        // voxel by voxel, a face wherever solid meets air -- and every other
+        // column in the chunk keeps the run-merged path that makes this
+        // terrain affordable at all.
+        //
+        // This is the "store the volume, draw only the surface" rule in one
+        // loop: the material comes from materialAt (or the edit that covers
+        // it), and geometry appears only where that material borders air.
+        // ------------------------------------------------------------------
+        if (!slow.empty()) {
+            auto matAt = [&](int i, int j, int y) -> uint8_t {
+                uint8_t e;
+                if (ed && ed->voxel(I0 + i, J0 + j, y, &e)) return e;
+                return materialAt(I0 + i, J0 + j, y, H(i, j), T(i, j));
+            };
+            // face:: order: POS_Y, NEG_Y, POS_X, NEG_X, POS_Z, NEG_Z.
+            static const int kD[6][3] = {{0, 0, 1},  {0, 0, -1}, {1, 0, 0},
+                                         {-1, 0, 0}, {0, 1, 0},  {0, -1, 0}};
+            for (const uint64_t key : slow) {
+                const int ci = int(int32_t(uint32_t(key >> 21) & 0x1fffffu) << 11) >> 11;
+                const int cj = int(int32_t(uint32_t(key) & 0x1fffffu) << 11) >> 11;
+                if (ci < 0 || ci >= n || cj < 0 || cj >= n) continue;  // a neighbour chunk owns it
+                const int yTop = H(ci, cj);
+                const int yBot = yEditLo - 2;
+                const float x0 = float(I0 + ci) * s, x1 = x0 + s;
+                const float z0 = float(J0 + cj) * s, z1 = z0 + s;
+                for (int y = yTop; y >= yBot; --y) {
+                    const uint8_t mm = matAt(ci, cj, y);
+                    if (mm == mat::AIR) continue;
+                    const float y0 = float(y) * s, y1 = y0 + s;
+                    for (int d = 0; d < 6; ++d) {
+                        if (matAt(ci + kD[d][0], cj + kD[d][1], y + kD[d][2]) != mat::AIR) continue;
+                        switch (d) {
+                            case 0: m.addQuad({x0,y1,z0},{x0,y1,z1},{x1,y1,z1},{x1,y1,z0}, mm, face::POS_Y); break;
+                            case 1: m.addQuad({x0,y0,z0},{x1,y0,z0},{x1,y0,z1},{x0,y0,z1}, mm, face::NEG_Y); break;
+                            case 2: m.addQuad({x1,y0,z0},{x1,y1,z0},{x1,y1,z1},{x1,y0,z1}, mm, face::POS_X); break;
+                            case 3: m.addQuad({x0,y0,z0},{x0,y0,z1},{x0,y1,z1},{x0,y1,z0}, mm, face::NEG_X); break;
+                            case 4: m.addQuad({x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}, mm, face::POS_Z); break;
+                            default:m.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, mm, face::NEG_Z); break;
+                        }
+                    }
                 }
             }
         }

@@ -437,6 +437,15 @@ class ChunkMesher {
     // stops being either.
     float birchHiveRate = 0.01f;
     uint32_t seed = 20260904u;
+    // V4 SCAFFOLDING, AND OFF IN v2. This was the blank canvas a NanoVDB
+    // world was going to be built into, and it defaulted ON there. v2 has no
+    // VDB and no flag that turns it back on, so leaving it true means the
+    // generator is never asked and the world renders as nothing but sky.
+    bool emptyWorld = false;
+
+    // THE EDIT LAYER. Written on the main thread by a swing, read here by the
+    // workers -- see EditStore, which publishes by copy so the two never race.
+    EditStore edits;
 
   private:
     VoxelTerrain terrain_;
@@ -470,8 +479,21 @@ class ChunkMesher {
             b.cx = job.first;
             b.cz = job.second;
             const auto t0 = std::chrono::steady_clock::now();
-            b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch);
-            scatter(&b);
+            // AN EMPTY WORLD, ON PURPOSE. The terrain generator and the
+            // scatter both still exist and both still work -- they are simply
+            // not asked. This is the blank canvas the VDB world gets built
+            // into, and it is a switch rather than a deletion because the
+            // generator is what will FILL those grids: heightVox, materialAt,
+            // the crust and the bedrock are the source data, not the renderer.
+            //
+            // --world brings it back for comparison.
+            if (!emptyWorld) {
+                // The chunk's edits, if anybody has dug here. Null is the
+                // ordinary case and costs one hash lookup per chunk.
+                const std::shared_ptr<const ChunkEdits> ce = edits.get(b.cx, b.cz);
+                b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch, ce.get());
+                scatter(&b);
+            }
             const double ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
                     .count();

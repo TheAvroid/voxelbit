@@ -39,6 +39,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -781,6 +783,7 @@ class ForestApp : public SampleApp {
                     world_.loadedPines + world_.loadedRocks + world_.loadedFlowers +
                         world_.loadedMushrooms,
                     VOXEL_M * 100.0f);
+        world_.reportVolumes();
 
         // Fill the ring before the first frame, so nobody sees a hole in the
         // ground while the workers catch up.
@@ -1529,6 +1532,11 @@ class ForestApp : public SampleApp {
                 std::fflush(stdout);
             }
         }
+
+        // Everything that has come off the static world: the solver, and the
+        // pieces it is carrying. Before the arrows only because both want the
+        // same frame's dt and this one also owns the clock they are timed on.
+        stepLoose(dt);
 
         // The shafts in the air. AFTER processInput, so one loosed this frame
         // starts moving on the frame it left rather than the next.
@@ -3670,6 +3678,10 @@ class ForestApp : public SampleApp {
     Drops drops_;
     Butterflies flock_;
     // False until the left button has been seen UP once -- see onMouseEvent.
+    // HOW BIG A BITE, in voxels of radius. Six is 60 cm at VOXEL_M -- a
+    // pick-sized hole rather than a crater, and small enough that the voxel
+    // pass touches roughly a dozen columns out of a chunk's 65 536.
+    static constexpr int kDigRadiusVox = 3;
     bool swingArmed_ = false;
     // The last pose the menu's copy row printed, kept so the row can show it
     // back rather than the player having to find the console.
@@ -3829,6 +3841,134 @@ class ForestApp : public SampleApp {
     // gather happens ONCE a tick and the player then moves within it. Anything
     // it misses is something the next tick will pick up long before it is
     // reached at 17 m/s.
+    // -----------------------------------------------------------------------
+    // THE LOOSE WORLD: the solver, the ground it rests on, and the pieces.
+    //
+    // THE GROUND FOLLOWS THE PLAYER AND IS REBUILT ONLY WHEN THEY LEAVE IT.
+    // PhysX needs something to land on, and v2's terrain is a height field by
+    // construction -- one height per column, from a pure function -- which is
+    // exactly PxHeightFieldGeometry's own primitive. Handing it the resident
+    // wood as a mesh would be 91 million triangles and a BVH to cook; handing
+    // it a patch is a memcpy of int16s.
+    //
+    // The margin is what stops it being rebuilt every step at the boundary, and
+    // what guarantees nothing falls off an edge before the next patch exists.
+    // -----------------------------------------------------------------------
+    void stepLoose(float dt) {
+        simMs_ += double(dt) * 1000.0;
+        if (physics_.available()) {
+            if (!physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+                rebuildGroundPatch();
+            physics_.step(dt);
+            // Gathered ONCE for the whole band rather than per body: walkWorld
+            // runs collidersNear, and asking it per chip per frame would be the
+            // expensive part of a feature that is otherwise nearly free.
+            syncModelColliders();
+            world_.updateDebris(
+                physics_, player_.eyePosition(), simMs_, [&](float x, float z) {
+                    // Terrain alone: the one floor nothing may ever be under.
+                    return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
+                                                          int(std::floor(z / VOXEL_M))) +
+                                 1) *
+                           VOXEL_M;
+                });
+            world_.flushDebrisInstances();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // THE BOULDERS NEARBY, AS COLLISION.
+    //
+    // A chip must not pass through the stone it came off, and the only way to
+    // mean that is to put the stone in the solver. A model's colTop is already
+    // a height field -- the top of every voxel column, and the very surface the
+    // player is collided against -- so it goes in as one, shared across every
+    // placement of the same model.
+    //
+    // ONLY WHAT IS NEAR, and diffed rather than rebuilt: a static actor costs
+    // nothing to leave alone and something to create, and the set changes only
+    // when the player walks. Keyed by chunk and decor slot, which is what makes
+    // a DAMAGED boulder -- carrying its own colTop -- replace its own actor
+    // rather than keeping the pristine shape.
+    // -----------------------------------------------------------------------
+    void syncModelColliders() {
+        world_.collidersNear(player_.pos, kRockPhysM, &physSolids_);
+        seen_.clear();
+        for (const Solid &s : physSolids_) {
+            // STANDABLE ONLY. A trunk is not a floor: its colTop is the top of
+            // the CANOPY, twenty metres up, so giving one a height field would
+            // hang an invisible tree-shaped shelf in the air for chips to land
+            // on. groundInfo refuses trunks for exactly this reason.
+            if (!s.standable) continue;
+            if (!s.col || s.msx <= 1 || s.msz <= 1 || s.decorSlot < 0) continue;
+            const RockKey k{s.ownerChunk, s.decorSlot, s.col};
+            seen_.insert(k);
+            if (rockActors_.count(k)) continue;
+            const int h = physics_.addStaticHeightField(
+                s.col, s.msx, s.msz, VOXEL_M, Vec3{s.tx, s.baseY, s.tz},
+                float(s.yaw & 3) * 1.57079633f);
+            if (h >= 0) rockActors_[k] = h;
+        }
+        for (auto it = rockActors_.begin(); it != rockActors_.end();) {
+            if (seen_.count(it->first)) { ++it; continue; }
+            physics_.removeStatic(it->second);
+            it = rockActors_.erase(it);
+        }
+    }
+
+    // Identity of one placed model: which chunk holds it, which slot, and WHICH
+    // SHAPE -- a boulder that has been broken carries its own colTop, and the
+    // pointer changing is what retires the old actor.
+    struct RockKey {
+        long long chunk;
+        int slot;
+        const int16_t *shape;
+        bool operator<(const RockKey &o) const {
+            if (chunk != o.chunk) return chunk < o.chunk;
+            if (slot != o.slot) return slot < o.slot;
+            return shape < o.shape;
+        }
+    };
+    static constexpr float kRockPhysM = 14.0f;
+    std::vector<Solid> physSolids_;
+    std::map<RockKey, int> rockActors_;
+    std::set<RockKey> seen_;
+
+    void rebuildGroundPatch() {
+        const int n = kGroundPatchCols;
+        const int i0 = int(std::floor(player_.pos.x / VOXEL_M)) - n / 2;
+        const int j0 = int(std::floor(player_.pos.z / VOXEL_M)) - n / 2;
+        groundPatch_.resize(size_t(n) * size_t(n));
+        // THE MEMO IS THE WHOLE COST HERE. heightVox is several octaves of
+        // noise; asked cold, 16 384 columns is a chunk's worth of meshing on
+        // the frame the player crosses the boundary. The memo is what the
+        // chunk mesher uses for the same reason -- i on the inside, so a
+        // lattice cell is reused across a run of columns.
+        TerrainMemo memo;
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i)
+                groundPatch_[size_t(i) + size_t(j) * size_t(n)] =
+                    int16_t(world_.terrain.heightVox(i0 + i, j0 + j, memo));
+        physics_.setGroundPatch(groundPatch_.data(), n, i0, j0, VOXEL_M);
+    }
+
+    // 128 columns is 12.8 m of ground around the player, and the margin is a
+    // fifth of it: far enough that a chip cannot reach an edge inside one
+    // crossing, small enough that the rebuild is not felt.
+    static constexpr int kGroundPatchCols = 160;
+    static constexpr float kGroundMarginM = 2.5f;
+    std::vector<int16_t> groundPatch_;
+    // WHAT THE LAST BLOW TOOK OUT, kept as a member so a swing does not
+    // allocate: dig and carveModel fill it with the voxels actually removed,
+    // and the piece that flies at you is meshed from exactly those.
+    std::vector<uint8_t> spoilVol_;
+    int spoilN_ = 0;
+    // Turned once per blow so two chips never tumble the same way.
+    uint32_t swingSalt_ = 0;
+    // Where the last blow actually bit, in world metres.
+    Vec3 spoilAt_{0, 0, 0};
+    double simMs_ = 0.0;
+
     WalkWorld walkWorld() {
         world_.collidersNear(player_.pos, 6.0f, &solids_);
         WalkWorld w;
@@ -4434,12 +4574,153 @@ class ForestApp : public SampleApp {
                 //
                 // The impact frame is where the JS engine takes its bite, and
                 // this is the same moment. What v2 cannot do is make the HOLE:
+                // -- AND A CHUNK COMES OUT OF IT -----------------------------
+                //
+                // Ground and rock are the two that give. A trunk is an
+                // instanced model rather than terrain, so it needs the private
+                // copy the volume was kept for and is not wired here yet.
+                // A TOOL TAKES ITS OWN MATERIAL AND NOTHING ELSE. The pick is
+                // for stone, the axe is for wood, and swinging the wrong one
+                // lands the blow and the sound but moves no voxels. Takes is
+                // declared on the Tool (render/helditem.h) rather than guessed
+                // from its name here, so a new tool states what it bites.
+                //
+                // BEDROCK IS NOT STONE FOR THIS PURPOSE. It is the floor of the
+                // world -- see the note over mat::BEDROCK -- and a pick that
+                // could take it out would open a hole into nothing.
+                size_t dug = 0;
+                // A TOOL THAT WAS REFUSED ASKS AGAIN, WITHOUT THE GROUND.
+                //
+                // swingRay reports the NEAREST thing under the crosshair, and
+                // beside a boulder the terrain frequently is nearer -- stand
+                // against a rock, aim a little down, and the ground march
+                // answers first. The blow comes back as Ground on grass, the
+                // pick refuses it because grass is not stone, and the rock you
+                // were plainly aiming at goes untouched. Which rocks that
+                // happens on depends on where you stand, not on the rock.
+                //
+                // So when the tool has been refused, the models are asked on
+                // their own -- same ellipses, same reach, just without the
+                // ground winning on distance. If one is there, that is what the
+                // blow was for.
+                if (lastSwing_.hit && lastSwing_.kind == Swing::Ground) {
+                    const Takes tk = held_.takes();
+                    const bool wantStone = tk == Takes::Stone && !isStoneMat(lastSwing_.material);
+                    const bool wantWood = tk == Takes::Wood;
+                    if (wantStone || wantWood) {
+                        const Swing ms = swingRayModels(walkWorld(), player_.eyePosition(),
+                                                        forward());
+                        if (ms.hit && ((wantStone && ms.kind == Swing::Rock) ||
+                                       (wantWood && ms.kind == Swing::Trunk)))
+                            lastSwing_ = ms;
+                    }
+                }
+                // Hoisted out of the block below so the log can say WHICH of
+                // these refused the blow -- see the NO BITE line.
+                const bool stone =
+                    lastSwing_.kind == Swing::Rock ||
+                    (lastSwing_.kind == Swing::Ground && isStoneMat(lastSwing_.material));
+                const bool wood = lastSwing_.kind == Swing::Trunk;
+                if (lastSwing_.hit) {
+                    const Takes t = held_.takes();
+                    if ((t == Takes::Stone && stone) || (t == Takes::Wood && wood)) {
+                        // A BOULDER AND A HILLSIDE BREAK DIFFERENTLY. Terrain is
+                        // a chunk to re-mesh; a rock is an INSTANCE that has to
+                        // leave its shared model first. Same swing, same radius,
+                        // two different edit paths -- see World::carveModel.
+                        if (lastSwing_.kind == Swing::Rock || lastSwing_.kind == Swing::Trunk)
+                            dug = world_.carveModel(lastSwing_.solid, lastSwing_.eye,
+                                                    lastSwing_.dir, lastSwing_.reach,
+                                                    kDigRadiusVox, &spoilVol_, &spoilN_,
+                                                    &spoilAt_)
+                                      ? 1u
+                                      : 0u;
+                        else
+                            dug = world_.dig(lastSwing_.point, kDigRadiusVox, &spoilVol_,
+                                             &spoilN_, &spoilAt_);
+
+                        // ...AND IT DOES NOT SIMPLY VANISH. The piece that came
+                        // out becomes a rigid body: thrown a little back toward
+                        // the person who swung, tumbling, and -- if it is small
+                        // enough to carry -- collected a moment later. See
+                        // World::spawnDebris and the absorb note beside it.
+                        if (dug && physics_.available()) {
+                            // IT POPS OUT WHERE IT WAS. It does not fly at you,
+                            // and it is not hurled either -- v1 gives a chip a
+                            // small shove ALONG the swing (away from the person
+                            // who threw it) and lets gravity do the rest, and a
+                            // separated piece gets no launch at all. What makes
+                            // it come to you is the timer, not the throw: it
+                            // tumbles where it fell for kAbsorbWaitMs and only
+                            // then lifts. See World::updateDebris.
+                            //
+                            // JITTERED, because a fixed spin makes every chip
+                            // in the wood tumble identically, which reads as a
+                            // repeated animation rather than as debris.
+                            ++swingSalt_;
+                            auto rnd = [&](uint32_t k) {
+                                return hashUnit(0x51ED2A7u + k, swingSalt_) - 0.5f;
+                            };
+                            // OUT OF THE STONE, NOT INTO IT.
+                            //
+                            // A chip is cut from INSIDE the rock, and a body
+                            // that starts below a height field surface gets no
+                            // contacts to push it out: PhysX generates them
+                            // against the SURFACE, so a body already under it
+                            // falls straight down through the stone. That is
+                            // the clipping -- and pushing it along the swing,
+                            // which points INTO the rock, drove it deeper.
+                            //
+                            // So it is born clear of the face it came out of,
+                            // back along the swing by its own radius, and
+                            // thrown the same way. Same idea as v1 throwing a
+                            // chip "clear of the cut": what matters is that it
+                            // starts OUTSIDE the thing it was cut from.
+                            // BORN IN THE HOLE, not beside it. The piece is
+                            // the voxels that were just removed, in the place
+                            // they were removed from -- it is the same rock,
+                            // made unstatic, and it walks itself out of the
+                            // face over kPopMs rather than being spawned clear.
+                            const Vec3 d3 = lastSwing_.dir;
+                            const Vec3 at = spoilAt_;
+                            // A NUDGE, NOT A LAUNCH. This wants to read as a
+                            // piece coming loose and dropping out of the face,
+                            // not as something fired out of it: barely enough
+                            // to clear the stone, and gravity does the rest.
+                            // Half a metre a second out, less than one up.
+                            const Vec3 vel{-d3.x * 0.45f + rnd(1) * 0.30f, 0.65f + rnd(2) * 0.25f,
+                                           -d3.z * 0.45f + rnd(3) * 0.30f};
+                            // ...and a slow turn rather than a tumble.
+                            const Vec3 spin{rnd(4) * 1.8f, rnd(5) * 1.8f, rnd(6) * 1.8f};
+                            world_.spawnDebris(physics_, spoilVol_, spoilN_, at, vel, spin,
+                                               simMs_);
+                        }
+                    }
+                }
+
                 if (opt_.swingLog) {
                     static const char *kWhat[] = {"air", "ground", "trunk", "rock"};
                     static const char *kHeard[] = {"silent", "wood", "rock", "knock"};
                     std::printf("v2: swing -> %s", kWhat[int(lastSwing_.kind)]);
                     if (lastSwing_.hit) std::printf("  %.2f m", lastSwing_.dist);
                     std::printf("  %s -> %s", held_.name(), kHeard[int(heard)]);
+                    if (dug) std::printf("  DUG %zu chunk(s)", dug);
+                    // WHY NOTHING HAPPENED, when nothing happened. "the pick is
+                    // not working 100% of the time" is three different failures
+                    // wearing one face -- the tool refused the material, the
+                    // carve moved no voxels, or the piece could not be spawned
+                    // -- and they are told apart here rather than guessed at.
+                    else if (lastSwing_.hit)
+                        std::printf("  NO BITE: takes=%d stone=%d wood=%d mat=%u",
+                                    int(held_.takes()), int(stone), int(wood),
+                                    unsigned(lastSwing_.material));
+                    if (dug) {
+                        int solid = 0;
+                        for (uint8_t v : spoilVol_)
+                            if (v != mat::AIR) ++solid;
+                        std::printf("  spoil=%d/%d loose=%d rockcol=%d", solid, spoilN_,
+                                    world_.looseCount(), int(rockActors_.size()));
+                    }
                     std::printf("\n");
                     std::fflush(stdout);
                 }

@@ -262,6 +262,28 @@ struct Swing {
     // for one cap. The audio is the only reader: the engine this came from
     // leaves a mushroom cap silent.
     bool soft = false;
+
+    // THE INSTANCE THE BLOW LANDED ON, on a Trunk or Rock hit and only then.
+    // Carried whole because breaking a model needs its transform to find the
+    // struck voxel and its identity to find the instance -- see World::carveModel.
+    // Meaningless when kind is Ground or None, and never read there.
+    Solid solid;
+
+    // THE RAY ITSELF, kept because the hit POINT is not good enough to carve by.
+    //
+    // A blow against a model is solved against an upright elliptic cylinder --
+    // measureCollider's widest extent -- and a boulder is not a cylinder. It is
+    // narrower at the top and dented at the sides, so the point where the ray
+    // met the cylinder is usually in open air; measured over one big rock, only
+    // 1.6% of swings that hit the collider landed on a solid voxel. Worse,
+    // standing close enough to be INSIDE the ellipse takes the far root, which
+    // puts the point out the other side of the rock entirely.
+    //
+    // So World::carveModel re-walks this ray through the model's own voxels and
+    // takes the first solid one. Same ray, same reach, honest answer.
+    Vec3 eye{0, 0, 0};
+    Vec3 dir{0, 0, 0};
+    float reach = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -282,7 +304,19 @@ struct Swing {
 // into, and an axe that bites where a body cannot stand is worse than a coarse
 // one.
 // ---------------------------------------------------------------------------
-inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
+// THE MODELS ALONE, with the terrain left out of it.
+//
+// swingRay below reports the NEAREST thing under the crosshair, and near a
+// boulder the ground often is nearer: you stand against a rock, aim a little
+// down, and the terrain march answers first. The blow is then classified as
+// Ground on grass or soil, and a pick -- which takes stone and nothing else --
+// refuses it. That is "the pick does not work on all of the rocks", and it
+// depends on where you stand rather than on the rock.
+//
+// So a tool that has been refused can ask this instead: is there a model under
+// the crosshair at all, within reach. Same ellipses, same reach, same order --
+// only without the ground winning on distance.
+inline Swing swingRayModels(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
     Swing out;
     if (!w.terrain) return out;
 
@@ -326,11 +360,33 @@ inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
         bestT = t;
         out.hit = true;
         out.kind = s.standable ? Swing::Rock : Swing::Trunk;
+        out.solid = s;
+        out.eye = eye;
+        out.dir = dir;
+        out.reach = reach;
         out.soft = s.bouncy;
         out.material = mat::AIR;
         out.dist = t;
         out.point = eye + dir * t;
     }
+
+    return out;
+}
+
+inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
+    Swing out;
+    if (!w.terrain) return out;
+
+    // The reach opens up as you look down, so the ground at your feet is always
+    // in range without the horizontal reach having to be long enough to hit a
+    // tree two body lengths away.
+    const float cp = sqrtf(maxf(0.0f, dir.x * dir.x + dir.z * dir.z));
+    const float reach =
+        minf(kReach3dVox, kReachHorizVox / maxf(0.15f, cp)) * VOXEL_M;
+
+    // The models first -- see swingRayModels, which owns that pass now.
+    out = swingRayModels(w, eye, dir);
+    float bestT = out.hit ? out.dist : reach;
 
     // -- the ground ---------------------------------------------------------
     const float ox = eye.x / VOXEL_M, oy = eye.y / VOXEL_M, oz = eye.z / VOXEL_M;

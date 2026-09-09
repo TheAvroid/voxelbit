@@ -279,12 +279,36 @@ class Player {
             const float k = 1.0f - expf(-10.0f * dt);
             hvx_ += (move.x * spd - hvx_) * k;
             hvz_ += (move.z * spd - hvz_) * k;
-            pos.x += hvx_ * dt;
-            pos.z += hvz_ * dt;
-            if (jump) pos.y += spd * dt;
-            if (down) pos.y -= spd * dt;
+
+            // FLYING IS NOT NOCLIP. This used to write straight into pos, so a
+            // trunk, a boulder and the ground itself were all scenery you drifted
+            // through -- and moveAxis already carries a note about a body left
+            // "flown into a tree and dropped out of fly mode", which is the state
+            // that produced.
+            //
+            // So it goes through the SAME two axis moves a walk does. Not a copy
+            // of them: the wall rules, the step tolerance and the stuck-escape
+            // that lets a body trapped inside something walk back out are all one
+            // implementation, and a second one here would be free to disagree.
+            //
+            // onGround is set FIRST because moveAxis branches on it, and flying
+            // is the airborne case: no stepping up, and a surface above the feet
+            // blocks. It stays false afterwards -- see updateBob, where the gait
+            // is already guarded on !fly.
             vy = 0.0f;
             onGround = false;
+            moveAxis(w, 0, hvx_ * dt);
+            moveAxis(w, 2, hvz_ * dt);
+
+            if (jump) pos.y += spd * dt;
+            if (down) pos.y -= spd * dt;
+            // AND THE GROUND IS STILL A FLOOR. Descending is the one direction
+            // the axis moves above cannot speak for, so it is clamped here --
+            // against the same groundInfo a fall lands on, which is the terrain
+            // AND the top of anything standable, so you settle onto a boulder
+            // rather than into it.
+            const Ground g = groundInfo(w, pos.x, pos.z);
+            if (pos.y < g.y) pos.y = g.y;
         } else {
             const float spd =
                 walk * (sprint ? sprintMul : 1.0f) * (crouching ? kCrouchSpeed : 1.0f);
@@ -417,6 +441,13 @@ class Player {
         return g;
     }
 
+    // The same surface a fall lands on -- terrain, and the voxel column of
+    // any standable model over it. Public because the loose bodies need the
+    // identical answer: see World::updateDebris.
+    float surfaceAt(const WalkWorld &w, float x, float z) const {
+        return groundInfo(w, x, z).y;
+    }
+
     float groundHeight(const WalkWorld &w, float x, float z) const {
         return groundInfo(w, x, z).y;
     }
@@ -434,13 +465,52 @@ class Player {
 
     // The nearest spot to (x, z) that is not inside a trunk. In rings outward,
     // so the answer is the closest one and a spawn moves as little as it must.
+    // IS THIS OPEN GROUND -- which is a different question from "can I walk
+    // here", and placement is the one case that has to ask it.
+    //
+    // blocked() refuses TRUNKS and nothing else, because a rock is standable
+    // and walking into one is meant to put you on top of it. But a body PLACED
+    // at a point inside a boulder is not put on top of anything: it takes
+    // whatever height the column under it happens to have, and if that column
+    // is a low one near the model's edge the body ends up in the stone with
+    // the rest of the rock around it. That is the spawn inside a rock.
+    //
+    // So placement also refuses any standable model that stands proud of the
+    // terrain here. Not the model's ellipse -- its actual voxel column, so a
+    // spawn beside a boulder is still allowed.
+    bool occupied(const WalkWorld &w, float x, float z) const {
+        if (blocked(w, x, z)) return true;
+        const float hw = halfWidth;
+        float gy = -1e9f;
+        for (int c = 0; c < 4; ++c) {
+            const float cx = x + ((c & 1) ? hw : -hw);
+            const float cz = z + ((c & 2) ? hw : -hw);
+            gy = maxf(gy, float(w.terrain->heightVox(int(floorf(cx / VOXEL_M)),
+                                                    int(floorf(cz / VOXEL_M))) +
+                                1) *
+                              VOXEL_M);
+        }
+        for (int i = 0; i < w.solidCount; ++i) {
+            const Solid &s = w.solids[i];
+            if (!s.standable) continue;
+            if (s.col ? !overModel(s, x, z, VOXEL_M, hw) : !touches(s, x, z, hw)) continue;
+            float y = 0.0f;
+            if (s.col && solidColumnTop(s, x, z, VOXEL_M, &y)) {
+                if (y > gy + stepUp) return true;
+            } else if (!s.col && s.top > gy + stepUp) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void findClear(const WalkWorld &w, float *x, float *z) const {
-        if (!blocked(w, *x, *z)) return;
+        if (!occupied(w, *x, *z)) return;
         for (float r = 0.4f; r <= 6.0f; r += 0.4f)
             for (int a = 0; a < 16; ++a) {
                 const float th = float(a) * (TWO_PI / 16.0f);
                 const float cx = *x + cosf(th) * r, cz = *z + sinf(th) * r;
-                if (!blocked(w, cx, cz)) {
+                if (!occupied(w, cx, cz)) {
                     *x = cx;
                     *z = cz;
                     return;

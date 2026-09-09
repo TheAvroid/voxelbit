@@ -289,9 +289,17 @@ uint groundShade(uint packed, float3 p, float3 ng)
         base = kLitter0;
         count = kLitterCount;
     }
+    else if (mtl == kRock)
+    {
+        // ROCK IS ONE ID AND SIX SHADES. The mesher writes kRock for a whole
+        // hillside so its faces merge into long runs; the variation is spent
+        // here instead, per voxel, exactly as grass and soil already do it.
+        base = kStone0;
+        count = kStoneCount;
+    }
     else
     {
-        return mtl; // rock, sand, water, and everything a model brought with it
+        return mtl; // sand, water, and everything a model brought with it
     }
 
     // HALF A VOXEL ALONG THE NORMAL, so the sample lands INSIDE the voxel the

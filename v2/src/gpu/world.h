@@ -72,6 +72,9 @@
 #include "../../shaders/Shared.slang"
 #include "../core/noise.h"
 #include "../scene/chunks.h"
+#include <functional>
+
+#include "../physics/physics.h"
 #include "../scene/collide.h"
 #include "../scene/sky.h"
 #include "../scene/vox.h"
@@ -273,6 +276,54 @@ constexpr int kButterflySlots = 64;
 constexpr int kBirdSlots = 48;
 constexpr int kFlyerInstances = kButterflySlots + kBirdSlots;
 
+// ---------------------------------------------------------------------------
+// WHAT HAS COME LOOSE, and how much of it may be loose at once.
+//
+// Everything that breaks away from the static world becomes one of these: a
+// chip off a rock, a bite of hillside, and -- when it is felled -- a tree. They
+// are rigid bodies in PhysX and instances in the top-level structure, and the
+// only thing that separates a chip from a log is its size and what happens at
+// the end of its life. A chip is small enough to pick up and comes to you; a
+// log is not and stays where it fell.
+//
+// A FIXED BAND, like the flyers above and for the same reason: a slot that
+// always exists is a refit, and a slot that appears is a rebuild.
+// ---------------------------------------------------------------------------
+constexpr int kDebrisInstances = 64;
+
+// HOW LONG IT LIES THERE BEFORE IT COMES TO YOU. v1 uses 450 ms (itself halved
+// from 900); a full second is the user's own call, and it is the number that
+// decides whether a chip reads as SETTLING or as being snatched. Long enough
+// that you watch it land first.
+//
+// absorbFly is v1's and is a DURATION rather than a rate: smoothstepped, so a
+// chunk leaves the ground gently and arrives fast.
+constexpr double kAbsorbWaitMs = 1000.0;
+
+// HOW LONG THE PIECE TAKES TO COME OUT OF THE FACE.
+//
+// It is born in the hole it was cut from -- the same voxels, in the same place,
+// because it IS that piece of the rock and not a second one made to look like
+// it. But a body inside a height field gets no contacts to push it out (they
+// are generated against the SURFACE), so if the solver owned it from the first
+// frame it would simply sink through the stone.
+//
+// So for this long it is driven by hand: no gravity, no contacts, drifting out
+// along the swing until it is clear of the face. Then it is handed to the
+// solver with the motion it already had. That is the "static position into an
+// unstatic position" -- the piece does not jump anywhere to become loose.
+constexpr double kPopMs = 260.0;
+constexpr double kAbsorbFlyMs = 672.0;
+// Above this many voxels a piece is scenery rather than loot: it stays where it
+// landed until it is broken down. 600 in v1, measured against what a felled
+// pine actually yields.
+constexpr int kAbsorbSize = 600;
+// The chunk arrives at the chest, not at the eye -- 12 voxels under it.
+constexpr float kAbsorbY = -1.2f;
+// Nothing loose lives forever. A piece too big to absorb still stops being a
+// rigid body eventually, or a morning's chopping is a thousand live actors.
+constexpr double kDebrisLifeMs = 30000.0;
+
 // ...AND WHAT HAS BEEN PUT DOWN. Eight, which is the JS engine's own cap on
 // dropped items, reserved for the same reason every other band here is: an
 // update may not change how many instances there are, so the slots exist from
@@ -306,6 +357,25 @@ struct ModelTemplate {
     std::vector<Perch> hivePerches;
     // The top of every column, for the collider. See columnTops.
     std::vector<int16_t> colTop;
+
+    // ---------------------------------------------------------------------
+    // THE MODEL'S VOXELS, AND ALL OF THEM -- the inside as well as the shell.
+    //
+    // The mesher takes this asset, emits the faces where solid meets air, and
+    // drops everything else on the floor; that is why a rock is a hollow shell
+    // and why breaking into one has nothing to show. The .vox file has always
+    // held the interior. This is simply keeping it.
+    //
+    // ONE ARRAY PER MODEL, NOT PER INSTANCE. Twenty-five pines share one pine.
+    // The last attempt at voxels copied every placement into a world grid --
+    // 28,800 models, 4.58M voxels, re-copied whenever the window moved. An
+    // instance here is a transform and a pointer, and stays that way until
+    // something damages it and it needs a private copy.
+    //
+    // Stored as GLOBAL material ids, not palette entries: idOfEntry is local to
+    // the load and every consumer wants an id.
+    // ---------------------------------------------------------------------
+    std::vector<uint8_t> volume;   // sx*sy*sz, 0 = empty, VoxAsset layout
 };
 
 // ---------------------------------------------------------------------------
@@ -477,6 +547,33 @@ class World {
     const ref<Buffer> &triPool() const { return pool_.buffer(); }
     const ref<Buffer> &instanceBuffer() const { return instanceInfo_; }
     const ref<Buffer> &materialBuffer() const { return materials_; }
+
+    // What the kept volumes cost, per kind. Reported at load rather than
+    // guessed: the rocks are upscaled twice and are the whole budget.
+    void reportVolumes() const {
+        struct Row { const char *name; const std::vector<ModelTemplate> *v; };
+        const Row rows[] = {{"pines/birches", &pines_}, {"rocks", &rocks_},
+                            {"flowers", &flowers_},     {"mushrooms", &mushrooms_},
+                            {"pinecones", &pinecones_}, {"hives", &hives_}};
+        size_t total = 0, solidTotal = 0;
+        for (const Row &r : rows) {
+            size_t bytes = 0, solid = 0;
+            for (const ModelTemplate &m : *r.v) {
+                bytes += m.volume.size();
+                for (uint8_t v : m.volume)
+                    if (v) ++solid;
+            }
+            total += bytes;
+            solidTotal += solid;
+            if (!r.v->empty())
+                std::printf("  volume   %-14s %2zu models %8.2f MB  %4.1f%% solid\n",
+                            r.name, r.v->size(), double(bytes) / 1048576.0,
+                            bytes ? 100.0 * double(solid) / double(bytes) : 0.0);
+        }
+        std::printf("  volume   %-14s          %8.2f MB  (%.1f M solid voxels)\n",
+                    "TOTAL", double(total) / 1048576.0, double(solidTotal) / 1e6);
+        std::fflush(stdout);
+    }
 
     // -----------------------------------------------------------------------
     // THE TOOL IN THE PLAYER'S HAND, as geometry.
@@ -831,6 +928,65 @@ class World {
         flyersDirty_ = true;
     }
 
+    // The loose band, in two writes, once a frame and before the refit.
+    void flushDebrisInstances() {
+        if (!debrisDirty_ || debrisBase_ < 0 || !instanceDescBuf_ || !instanceInfo_) return;
+        debrisDirty_ = false;
+        const size_t base = size_t(debrisBase_);
+        if (base >= instanceDescs_.size()) return;
+        const size_t n = std::min(size_t(kDebrisInstances), instanceDescs_.size() - base);
+        if (n == 0) return;
+        ctx_->updateBuffer(instanceDescBuf_.get(), &instanceDescs_[base],
+                           base * sizeof(RtInstanceDesc), n * sizeof(RtInstanceDesc));
+        ctx_->updateBuffer(instanceInfo_.get(), &instanceInfos_[base], base * sizeof(V6Instance),
+                           n * sizeof(V6Instance));
+    }
+
+    // One loose body's instance: the solver's pose, as a transform.
+    void setDebrisInstance(int slot, const Vec3 &p, const float *q) {
+        if (debrisBase_ < 0 || slot < 0 || slot >= kDebrisInstances) return;
+        const size_t idx = size_t(debrisBase_ + slot);
+        if (idx >= instanceDescs_.size()) return;
+        const Debris &d = debris_[slot];
+        if (!d.live || !d.blas.valid()) {
+            instanceDescs_[idx].instanceMask = 0;
+            debrisDirty_ = true;
+            return;
+        }
+        // A quaternion as a 3x3, row major, which is what place() takes.
+        const float x = q[0], y = q[1], z = q[2], w = q[3];
+        const float m[9] = {1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w),
+                            2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+                            2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)};
+        // THE BODY'S POSE IS ITS CENTRE and the mesh's origin is its corner, so
+        // the translation carries the rotated half-extent back out. Getting this
+        // wrong does not look wrong until the piece spins, and then it orbits.
+        // The mesh's corner, carried out from the centre of mass through the
+        // body's own rotation -- see Debris::originOff.
+        const float ox = d.originOff.x, oy = d.originOff.y, oz = d.originOff.z;
+        const float tx = p.x + (m[0] * ox + m[1] * oy + m[2] * oz);
+        const float ty = p.y + (m[3] * ox + m[4] * oy + m[5] * oz);
+        const float tz = p.z + (m[6] * ox + m[7] * oy + m[8] * oz);
+        place(idx, m, tx, ty, tz, kMaskWorld, true, d.halfM[0], d.halfM[1], d.halfM[2]);
+        instanceDescs_[idx].accelerationStructure = d.blas.as->getGpuAddress();
+        instanceInfos_[idx].triOffset = d.triOffset;
+        instanceInfos_[idx].kind = KIND_TERRAIN;
+        instanceInfos_[idx].tint = float3(1.0f, 1.0f, 1.0f);
+        debrisDirty_ = true;
+    }
+
+    void retireDebris(Physics &ph, int slot) {
+        Debris &d = debris_[slot];
+        if (d.phys >= 0) ph.releaseBody(d.phys);
+        d.phys = -1;
+        d.live = false;
+        d.absorbing = false;
+        d.blas = Blas{};
+        if (debrisBase_ >= 0 && size_t(debrisBase_ + slot) < instanceDescs_.size())
+            instanceDescs_[size_t(debrisBase_ + slot)].instanceMask = 0;
+        debrisDirty_ = true;
+    }
+
     // The whole band, in two writes. Called once a frame, before refitTlas.
     void flushFlyerInstances() {
         if (!flyersDirty_ || flyerBase_ < 0 || !instanceDescBuf_ || !instanceInfo_) return;
@@ -1011,6 +1167,556 @@ class World {
     }
 
     size_t chunkCount() const { return chunks_.size(); }
+
+    int looseCount() const {
+        int k = 0;
+        for (const Debris &d : debris_)
+            if (d.live) ++k;
+        return k;
+    }
+
+    // -----------------------------------------------------------------------
+    // SET A PIECE OF THE WORLD LOOSE.
+    //
+    // A BALL OF ONE MATERIAL, not a copy of the voxels that were removed. What
+    // a swing takes out is a sphere three voxels across of whatever it hit, and
+    // rebuilding the exact removed set would mean carrying a second volume
+    // through the carve for a difference nobody can see on something that is
+    // tumbling and gone in a second. The shade still varies per voxel -- that
+    // happens on the device, in groundShade, from the voxel coordinate.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // ONE BODY PER CONNECTED PIECE OF THE BITE.
+    //
+    // v1 does this and says why (sim/chop.js, phSpawnChunk): "a cut that clips
+    // two branches throws two chunks, which is what it looks like it should
+    // do".
+    //
+    // AND A LONE VOXEL IS NOT A CHUNK. v1 drops any piece under two voxels --
+    // "single brown specks tumbling off every swing read as litter, not
+    // debris".
+    // -----------------------------------------------------------------------
+    int spawnDebris(Physics &ph, const std::vector<uint8_t> &vol, int n, const Vec3 &centre,
+                    const Vec3 &vel, const Vec3 &spin, double nowMs) {
+        if (n < 1 || vol.size() != size_t(n) * size_t(n) * size_t(n)) return -1;
+        const size_t nn = size_t(n) * size_t(n);
+        std::vector<uint8_t> seen(vol.size(), 0);
+        std::vector<int> stack, comp;
+        int made = 0;
+        for (int y = 0; y < n; ++y)
+            for (int z = 0; z < n; ++z)
+                for (int x = 0; x < n; ++x) {
+                    const size_t k0 = size_t(x) + size_t(z) * size_t(n) + size_t(y) * nn;
+                    if (vol[k0] == mat::AIR || seen[k0]) continue;
+                    comp.clear();
+                    stack.clear();
+                    stack.push_back(int(k0));
+                    seen[k0] = 1;
+                    while (!stack.empty()) {
+                        const int k = stack.back();
+                        stack.pop_back();
+                        comp.push_back(k);
+                        const int kx = k % n, kz = (k / n) % n, ky = k / int(nn);
+                        static const int adx[6] = {1, -1, 0, 0, 0, 0};
+                        static const int ady[6] = {0, 0, 1, -1, 0, 0};
+                        static const int adz[6] = {0, 0, 0, 0, 1, -1};
+                        for (int e = 0; e < 6; ++e) {
+                            const int ax = kx + adx[e], ay = ky + ady[e], az = kz + adz[e];
+                            if (ax < 0 || ay < 0 || az < 0 || ax >= n || ay >= n || az >= n)
+                                continue;
+                            const size_t nk =
+                                size_t(ax) + size_t(az) * size_t(n) + size_t(ay) * nn;
+                            if (vol[nk] == mat::AIR || seen[nk]) continue;
+                            seen[nk] = 1;
+                            stack.push_back(int(nk));
+                        }
+                    }
+                    if (comp.size() < 2) continue;   // litter, not a chunk
+                    std::vector<uint8_t> piece(vol.size(), mat::AIR);
+                    for (const int k : comp) piece[size_t(k)] = vol[size_t(k)];
+                    if (spawnPiece(ph, piece, n, int(comp.size()), centre, vel, spin, nowMs) >= 0)
+                        ++made;
+                }
+        return made;
+    }
+
+    // One connected piece, as a body. See spawnDebris for the split above.
+    int spawnPiece(Physics &ph, const std::vector<uint8_t> &vol, int n, int count,
+                   const Vec3 &centre, const Vec3 &vel, const Vec3 &spin, double nowMs) {
+        if (count <= 0) return -1;
+        int slot = -1;
+        for (int i = 0; i < kDebrisInstances; ++i)
+            if (!debris_[i].live) { slot = i; break; }
+        if (slot < 0) return -1;   // the world is already as busy as it is allowed to be
+
+        // -------------------------------------------------------------------
+        // THE TIGHT BOX AND THE CENTRE OF MASS, which is how v1 builds a body
+        // (sim/physics.js, phBuildBody0: com, the folded-in bbox, rMax).
+        //
+        // The carve hands over a (2r+1) cube with the piece somewhere inside
+        // it, and most of that cube is air. Using the CUBE's middle as the
+        // body's centre spins the piece about a point that is not its own --
+        // it orbits instead of tumbling -- and using the cube's extent as the
+        // collider makes a 30 cm chip collide like a 70 cm one.
+        //
+        // So the volume is trimmed to what is actually in it, the body is
+        // placed at the voxels' centre of mass, and the mesh is offset back to
+        // meet it.
+        // -------------------------------------------------------------------
+        int x0 = n, x1 = -1, y0 = n, y1 = -1, z0 = n, z1 = -1;
+        double sxm = 0.0, sym = 0.0, szm = 0.0;
+        for (int y = 0; y < n; ++y)
+            for (int z = 0; z < n; ++z)
+                for (int x = 0; x < n; ++x) {
+                    if (vol[size_t(x) + size_t(z) * size_t(n) + size_t(y) * size_t(n) * size_t(n)]
+                        == mat::AIR)
+                        continue;
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    if (y > y1) y1 = y;
+                    if (z < z0) z0 = z;
+                    if (z > z1) z1 = z;
+                    sxm += double(x) + 0.5;
+                    sym += double(y) + 0.5;
+                    szm += double(z) + 0.5;
+                }
+        if (x1 < 0) return -1;
+        const int tx = x1 - x0 + 1, ty = y1 - y0 + 1, tz = z1 - z0 + 1;
+        std::vector<uint8_t> trimmed(size_t(tx) * size_t(ty) * size_t(tz), mat::AIR);
+        for (int y = 0; y < ty; ++y)
+            for (int z = 0; z < tz; ++z)
+                for (int x = 0; x < tx; ++x)
+                    trimmed[size_t(x) + size_t(z) * size_t(tx) +
+                            size_t(y) * size_t(tx) * size_t(tz)] =
+                        vol[size_t(x + x0) + size_t(z + z0) * size_t(n) +
+                            size_t(y + y0) * size_t(n) * size_t(n)];
+
+        const VoxMesh mesh = meshVolume(trimmed, tx, ty, tz, VOXEL_M);
+        if (mesh.triCount() == 0) return -1;
+        Blas b = recordLooseBuild(mesh);   // NOT buildBlas: see the note there
+        if (!b.valid()) return -1;
+
+        // The centre of mass, in the cube's voxels and then in metres from the
+        // cube's own middle -- which is where the caller said the bite was.
+        const double cmx = sxm / double(count), cmy = sym / double(count),
+                     cmz = szm / double(count);
+        const float half = 0.5f * float(n);
+        const Vec3 comOff{float(cmx - double(half)) * VOXEL_M,
+                          float(cmy - double(half)) * VOXEL_M,
+                          float(cmz - double(half)) * VOXEL_M};
+
+        Debris &d = debris_[slot];
+        d.blas = std::move(b);
+        d.triOffset = pool_.upload(ctx_, mesh.tri);
+        d.voxels = count;
+        d.halfM[0] = 0.5f * float(tx) * VOXEL_M;
+        d.halfM[1] = 0.5f * float(ty) * VOXEL_M;
+        d.halfM[2] = 0.5f * float(tz) * VOXEL_M;
+        // The trimmed mesh's corner, relative to the centre of mass.
+        d.originOff = Vec3{float(double(x0) - cmx) * VOXEL_M, float(double(y0) - cmy) * VOXEL_M,
+                           float(double(z0) - cmz) * VOXEL_M};
+        // ...and the body itself stands at the centre of mass, not at the
+        // middle of the cube the carve happened to hand over.
+        const Vec3 com{centre.x + comOff.x, centre.y + comOff.y, centre.z + comOff.z};
+        d.bornMs = nowMs;
+        d.absorbing = false;
+        d.live = true;
+        // KINEMATIC TO BEGIN WITH -- see kPopMs. It starts exactly in the hole
+        // and is walked out of it before the solver is allowed near it.
+        d.phys = ph.addBox(com, Vec3{d.halfM[0], d.halfM[1], d.halfM[2]}, vel, spin, 900.0f,
+                           true);
+        d.popFrom = com;
+        d.popVel = vel;
+        d.spin = spin;
+        d.popping = true;
+        d.prevY = centre.y;
+        // A piece is born INSIDE whatever it was cut from, so it is not over
+        // anything yet. It has to rise clear of a surface before that surface
+        // can hold it up.
+        d.overModelTop = false;
+        debrisDirty_ = true;
+        return slot;
+    }
+
+    // -----------------------------------------------------------------------
+    // EVERY LOOSE THING, ONCE A FRAME: where the solver put it, and whether it
+    // is time for it to come to the player.
+    //
+    // THE ABSORB TAKES THE BODY OVER RATHER THAN RACING IT. A chunk on its way
+    // to the chest is on a curve, not in a fall, so it goes kinematic and is
+    // driven by hand -- otherwise gravity and the curve argue and the chunk
+    // arrives sagging.
+    // -----------------------------------------------------------------------
+    void updateDebris(Physics &ph, const Vec3 &eye, double nowMs,
+                      const std::function<float(float, float)> &terrainAt) {
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            Debris &d = debris_[i];
+            if (!d.live) continue;
+
+            Vec3 p{0, 0, 0};
+            float q[4] = {0, 0, 0, 1};
+            if (d.phys >= 0) ph.poseOf(d.phys, &p, q);
+
+            // AND IT DOES NOT GO THROUGH THE FLOOR -- BUT A ROCK IS ONLY A
+            // FLOOR FROM ABOVE.
+            //
+            // PhysX knows the height field patch and the loose bodies; the
+            // boulders are not in the scene at all. The engine's own surface
+            // query answers terrain PLUS the voxel column of any standable
+            // model, which is what the player stands on -- and applying that
+            // to a chip cut out of the SIDE of a boulder says "the floor here
+            // is the summit" and throws the chip onto the top of the rock.
+            //
+            // So the two are separated. Terrain is an absolute backstop:
+            // nothing may ever be under it. A model's surface is a floor only
+            // to a body that was ALREADY above it and is coming down -- which
+            // is a chip that landed on the rock, and never one that was carved
+            // out of it.
+            //
+            // Neither applies while it is coming to you: an absorb is a curve
+            // through the air and may cross anything.
+            // THE ROCKS ARE IN THE SOLVER NOW, so the stone stops a chip
+            // properly instead of being approximated by a clamp -- see
+            // Physics::addStaticHeightField. Clamping to a model's column top
+            // was what threw a chip carved out of a rock's SIDE onto its
+            // summit: that query answers "what would the PLAYER stand on
+            // here", and for a point inside a boulder the answer is the
+            // boulder.
+            //
+            // Terrain stays as an absolute backstop -- the solver's height
+            // field is only a patch and nothing may end up under the world.
+            // Not while absorbing: that flight is a curve through the air and
+            // may cross anything.
+            if (d.phys >= 0 && !d.absorbing && !d.popping && terrainAt) {
+                ph.clampAbove(d.phys, terrainAt(p.x, p.z) + d.halfM[1]);
+                ph.poseOf(d.phys, &p, q);
+            }
+            d.prevY = p.y;
+
+            // COMING OUT OF THE FACE, still part of where it was.
+            if (d.popping) {
+                const double e = nowMs - d.bornMs;
+                if (e >= kPopMs) {
+                    d.popping = false;
+                    ph.makeDynamic(d.phys, d.popVel, d.spin);
+                } else {
+                    const float t = float(e * 0.001);
+                    p = Vec3{d.popFrom.x + d.popVel.x * t, d.popFrom.y + d.popVel.y * t,
+                             d.popFrom.z + d.popVel.z * t};
+                    ph.setPose(d.phys, p, q);
+                }
+            }
+
+            if (!d.absorbing && !d.popping && d.voxels <= kAbsorbSize &&
+                nowMs - d.bornMs > kAbsorbWaitMs) {
+                d.absorbing = true;
+                d.absorbT0 = nowMs;
+                d.from = p;
+                ph.makeKinematic(d.phys);
+            }
+
+            if (d.absorbing) {
+                const double kk = (nowMs - d.absorbT0) / kAbsorbFlyMs;
+                const float k = kk >= 1.0 ? 1.0f : (kk <= 0.0 ? 0.0f : float(kk));
+                const float e = k * k * (3.0f - 2.0f * k);   // leaves gently, arrives fast
+                // The target is tracked live so the chunk follows a moving
+                // player, and it is dropped by the body's own half-height so a
+                // big piece does not arrive across the view -- v1 learned that
+                // one from a felled-tree chunk.
+                const Vec3 to{eye.x, eye.y + kAbsorbY - d.halfM[1], eye.z};
+                p.x = d.from.x + (to.x - d.from.x) * e;
+                p.y = d.from.y + (to.y - d.from.y) * e + sinf(e * 3.14159265f) * 0.3f;
+                p.z = d.from.z + (to.z - d.from.z) * e;
+                ph.setPose(d.phys, p, q);
+                if (k >= 1.0f) { retireDebris(ph, i); continue; }
+            } else if (nowMs - d.bornMs > kDebrisLifeMs) {
+                retireDebris(ph, i);
+                continue;
+            }
+
+            setDebrisInstance(i, p, q);
+        }
+    }
+
+    void clearDebris(Physics &ph) {
+        for (int i = 0; i < kDebrisInstances; ++i)
+            if (debris_[i].live) retireDebris(ph, i);
+    }
+
+    // ---------------------------------------------------------------------
+    // TAKE A BITE OUT OF THE WORLD, at a point in world METRES.
+    //
+    // This is the whole edit path, and it is three steps: write the hole into
+    // the edit layer, ask the mesher for the chunks it touched, and let the
+    // ordinary streaming machinery carry the result home. There is no second
+    // renderer and no device-side mutation anywhere in it -- a dig is the
+    // same work the engine already does every time you walk into a new chunk,
+    // triggered by a swing instead of by a footstep.
+    //
+    // The old chunk keeps drawing until the new one lands, which is what
+    // makes this safe to do mid-frame: nothing is torn down here.
+    // ---------------------------------------------------------------------
+    size_t dig(const Vec3 &p, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
+               int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
+        const int ci = int(std::floor(p.x / VOXEL_M));
+        const int cj = int(std::floor(p.z / VOXEL_M));
+        const int cy = int(std::floor(p.y / VOXEL_M));
+        // Snapped to the voxel that was actually carved, so the piece leaves
+        // the hole rather than the point the ray happened to cross.
+        if (spoilAt)
+            *spoilAt = Vec3{(float(ci) + 0.5f) * VOXEL_M, (float(cy) + 0.5f) * VOXEL_M,
+                            (float(cj) + 0.5f) * VOXEL_M};
+
+    // WHAT CAME OUT, AS VOXELS. A chip has to be made of the same cubes the
+    // thing it came off is made of -- the boulders carry their own minted
+    // palette entries, so a chip built out of mat::ROCK is terrain-coloured
+    // stone flying off a rock that is not that colour. Filled with the material
+    // of every voxel actually removed, in the same (2r+1) cube layout
+    // meshVolume reads.
+        // Sampled BEFORE the carve, because after it they are all air.
+        if (spoil && spoilN) {
+            const int n = radiusVox * 2 + 1;
+            const int r2 = radiusVox * radiusVox;
+            *spoilN = n;
+            spoil->assign(size_t(n) * size_t(n) * size_t(n), mat::AIR);
+            for (int dz = -radiusVox; dz <= radiusVox; ++dz)
+                for (int dx = -radiusVox; dx <= radiusVox; ++dx) {
+                    const int i = ci + dx, j = cj + dz;
+                    const int h = terrain.heightVox(i, j);
+                    const uint8_t top = terrain.topMaterial(i, j, h);
+                    for (int dy = -radiusVox; dy <= radiusVox; ++dy) {
+                        if (dx * dx + dy * dy + dz * dz > r2) continue;
+                        const uint8_t m = terrain.materialAt(i, j, cy + dy, h, top);
+                        if (m == mat::AIR) continue;
+                        const size_t x = size_t(dx + radiusVox), y = size_t(dy + radiusVox),
+                                     z = size_t(dz + radiusVox);
+                        (*spoil)[x + z * size_t(n) + y * size_t(n) * size_t(n)] = m;
+                    }
+                }
+        }
+        const std::vector<std::pair<int, int>> touched =
+            mesher_.edits.carve(ci, cj, cy, radiusVox);
+        size_t asked = 0;
+        for (const auto &c : touched) {
+            const long long k = chunkKey(c.first, c.second);
+            // NOT RESIDENT IS NOT A PROBLEM. The edit is already stored, so a
+            // chunk that streams in later meshes WITH the hole in it.
+            if (!chunks_.count(k)) continue;
+            requested_.insert(k);
+            mesher_.request(c.first, c.second);
+            ++asked;
+        }
+        return asked;
+    }
+
+    // ---------------------------------------------------------------------
+    // BREAK ONE BOULDER, AND ONLY THAT ONE.
+    //
+    // A rock is not terrain. Twenty-five placements of the same model share a
+    // single acceleration structure and differ only by a transform, which is
+    // exactly what makes a forest of them affordable -- and exactly what makes
+    // damaging one awkward: editing the template would chip every boulder in
+    // the world in the same place.
+    //
+    // So the instance leaves the template on FIRST DAMAGE and not before. It
+    // takes a private copy of the model's voxels, loses the bite out of that,
+    // is re-meshed on its own, and gets its own structure. Everything nobody
+    // has touched keeps sharing, and the cost is bounded by what the player has
+    // actually broken rather than by the size of the world. This is what
+    // ModelTemplate::volume was kept for.
+    // ---------------------------------------------------------------------
+    bool carveModel(const Solid &so, const Vec3 &eye, const Vec3 &dir, float reach,
+                    int radiusVox, std::vector<uint8_t> *spoil = nullptr,
+                    int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
+        if (so.decorSlot < 0 || so.modelKind < 0) return false;
+        const auto ch = chunks_.find(so.ownerChunk);
+        if (ch == chunks_.end()) return false;
+        Chunk &c = ch->second;
+        if (size_t(so.decorSlot) >= c.decorDesc.size()) return false;
+
+        const ModelTemplate &t = templateFor(so.modelKind, so.modelIndex);
+        if (t.volume.empty() || t.sx <= 0) return false;
+
+        // THE COPY IS NOT MADE YET, and that is deliberate. A big boulder's
+        // volume is nine megabytes; taking it on every swing that turns out to
+        // MISS would spend that on nothing, over and over, for as long as
+        // somebody kept swinging at thin air beside a rock. So the march below
+        // reads whatever this instance already has -- its private copy if it has
+        // been hit before, the shared template if it has not -- and the copy is
+        // only taken once a bite is known to land.
+        const std::pair<long long, int> key{so.ownerChunk, int(so.decorSlot)};
+        auto it = damaged_.find(key);
+        const std::vector<uint8_t> &src = (it == damaged_.end()) ? t.volume : it->second.vol;
+
+        // WALK THE RAY UNTIL IT MEETS THE ROCK, rather than trusting the point
+        // the collider handed back.
+        //
+        // That point is where the swing met an elliptic CYLINDER, and a boulder
+        // fills very little of one: over a big rock, only 1.6% of swings that
+        // hit the collider landed on a solid voxel, which is precisely the
+        // "it only breaks in certain spots" this fixes. Standing close enough to
+        // be inside the ellipse is worse still -- swingRay then returns the FAR
+        // root, a point out the other side of the rock.
+        //
+        // Marched from the EYE and bounded by the tool's own reach, so a rock
+        // whose real surface is further away than the tool can stretch is still
+        // a miss, exactly as it should be. Half a voxel a step: a whole voxel
+        // can skip a one-voxel spur diagonally.
+        //
+        // Read from whatever this instance currently is, so a second blow
+        // marches through the hole the first one made and bites deeper.
+        auto voxelOn = [&](const Vec3 &w, int *ox, int *oy, int *oz) -> uint8_t {
+            float px = 0.0f, pz = 0.0f;
+            solidModelSpace(so, w.x, w.z, &px, &pz);
+            *ox = int(std::floor(px / VOXEL_M));
+            *oz = int(std::floor(pz / VOXEL_M));
+            *oy = int(std::floor((w.y - so.baseY) / VOXEL_M));
+            if (*ox < 0 || *oy < 0 || *oz < 0 || *ox >= t.sx || *oy >= t.sy || *oz >= t.sz)
+                return mat::AIR;
+            return src[size_t(*ox) + size_t(*oz) * size_t(t.sx) +
+                       size_t(*oy) * size_t(t.sx) * size_t(t.sz)];
+        };
+        int mx = 0, my = 0, mz = 0;
+        bool found = false;
+        const float step = VOXEL_M * 0.5f;
+        const int steps = int(maxf(0.0f, reach) / step);
+        for (int k = 0; k <= steps && !found; ++k) {
+            const float m = float(k) * step;
+            const Vec3 w{eye.x + dir.x * m, eye.y + dir.y * m, eye.z + dir.z * m};
+            int x = 0, y = 0, z = 0;
+            if (voxelOn(w, &x, &y, &z) != mat::AIR) { mx = x; my = y; mz = z; found = true; }
+        }
+        // EVERY BLOW TAKES SOMETHING. NO EXCEPTIONS.
+        //
+        // If the march found nothing, the swing still LANDED -- swingRay said
+        // so, the animation played and the tool rang. Refusing to carve then is
+        // the engine arguing with the player about whether they hit the rock
+        // they can see they hit, and it loses that argument every time: the
+        // collider is a coarse cylinder and the disagreement is its fault, not
+        // theirs.
+        //
+        // So the ray is walked once more with the reach limit lifted -- a tall
+        // boulder read as hit at its crown is still a hit -- and if even that
+        // finds nothing, the bite goes to the nearest solid COLUMN instead.
+        // colTop is the model's own column heightfield, one entry per (x, z)
+        // and already loaded, so this is a walk over 40,000 int16s rather than
+        // a search through nine million voxels. It cannot fail on a model that
+        // has any solid voxel at all -- and one that does not has no collider
+        // and was never hittable.
+        if (!found) {
+            // NOT `far`: windows.h still defines that as a 16-bit-era macro that expands to nothing,
+            // and the error it causes names the type, not the name.
+            const float farM = reach + float(t.sx + t.sy + t.sz) * VOXEL_M;
+            for (int k = 0; k <= int(farM / step) && !found; ++k) {
+                const float m = float(k) * step;
+                const Vec3 w{eye.x + dir.x * m, eye.y + dir.y * m, eye.z + dir.z * m};
+                int x = 0, y = 0, z = 0;
+                if (voxelOn(w, &x, &y, &z) != mat::AIR) { mx = x; my = y; mz = z; found = true; }
+            }
+        }
+        if (!found && !t.colTop.empty()) {
+            // Where the swing was pointed, as a column: the ray's closest
+            // approach to the collider's own centre.
+            const float ccx = so.cx, ccz = so.cz;
+            const float ty = ((ccx - eye.x) * dir.x + (ccz - eye.z) * dir.z);
+            const float tc = maxf(0.0f, ty);
+            int ax = 0, ay = 0, az = 0;
+            voxelOn(Vec3{eye.x + dir.x * tc, eye.y + dir.y * tc, eye.z + dir.z * tc}, &ax, &ay,
+                    &az);
+            ax = mini(maxi(ax, 0), t.sx - 1);
+            az = mini(maxi(az, 0), t.sz - 1);
+            int best = -1, bestD = 0;
+            for (int z = 0; z < t.sz; ++z)
+                for (int x = 0; x < t.sx; ++x) {
+                    const int h = int(t.colTop[size_t(x) + size_t(z) * size_t(t.sx)]);
+                    if (h <= 0) continue;
+                    const int d = (x - ax) * (x - ax) + (z - az) * (z - az);
+                    if (best < 0 || d < bestD) { best = x + z * t.sx; bestD = d; mx = x; mz = z; my = h - 1; }
+                }
+            found = best >= 0;
+        }
+        if (!found) return false;   // a model with no solid voxel in it at all
+
+        // IT BITES. Now the instance leaves the template it was sharing.
+        if (it == damaged_.end()) {
+            Damaged nd;
+            nd.vol = t.volume;
+            it = damaged_.emplace(key, std::move(nd)).first;
+        }
+        Damaged &d = it->second;
+
+    // WHAT CAME OUT, AS VOXELS. A chip has to be made of the same cubes the
+    // thing it came off is made of -- the boulders carry their own minted
+    // palette entries, so a chip built out of mat::ROCK is terrain-coloured
+    // stone flying off a rock that is not that colour. Filled with the material
+    // of every voxel actually removed, in the same (2r+1) cube layout
+    // meshVolume reads.
+        const int sn = radiusVox * 2 + 1;
+        if (spoil && spoilN) {
+            *spoilN = sn;
+            spoil->assign(size_t(sn) * size_t(sn) * size_t(sn), mat::AIR);
+        }
+
+        const int r2 = radiusVox * radiusVox;
+        size_t removed = 0;
+        for (int dy = -radiusVox; dy <= radiusVox; ++dy)
+            for (int dz = -radiusVox; dz <= radiusVox; ++dz)
+                for (int dx = -radiusVox; dx <= radiusVox; ++dx) {
+                    if (dx * dx + dy * dy + dz * dz > r2) continue;
+                    const int x = mx + dx, y = my + dy, z = mz + dz;
+                    if (x < 0 || y < 0 || z < 0 || x >= t.sx || y >= t.sy || z >= t.sz) continue;
+                    uint8_t &v = d.vol[size_t(x) + size_t(z) * size_t(t.sx) +
+                                       size_t(y) * size_t(t.sx) * size_t(t.sz)];
+                    if (v == mat::AIR) continue;
+                    if (spoil && spoilN)
+                        (*spoil)[size_t(dx + radiusVox) + size_t(dz + radiusVox) * size_t(sn) +
+                                 size_t(dy + radiusVox) * size_t(sn) * size_t(sn)] = v;
+                    v = mat::AIR;
+                    ++removed;
+                }
+        if (removed == 0) return false;   // the swing missed the model's own voxels
+
+        // WHERE THE BITE ACTUALLY LANDED, in world metres.
+        //
+        // NOT the point the swing reported: that is where the ray met the
+        // collider's CYLINDER, and the march above walked on from there to find
+        // the first real voxel -- which on a big rock is metres further in. A
+        // chunk spawned at the reported point breaks off somewhere the hole is
+        // not, which reads as it teleporting.
+        if (spoilAt) {
+            const float pmx = (float(mx) + 0.5f) * VOXEL_M;
+            const float pmz = (float(mz) + 0.5f) * VOXEL_M;
+            float wx = 0.0f, wz = 0.0f;
+            solidWorldSpace(so, pmx, pmz, &wx, &wz);
+            *spoilAt = Vec3{wx, so.baseY + (float(my) + 0.5f) * VOXEL_M, wz};
+        }
+
+        const VoxMesh mesh = meshVolume(d.vol, t.sx, t.sy, t.sz, VOXEL_M);
+        if (mesh.triCount() == 0) {
+            // BROKEN TO NOTHING. Not an error and not a special case: an empty
+            // mask is how this engine already hides an instance, and rebuilding
+            // a structure for no triangles is what would be the special case.
+            c.decorDesc[size_t(so.decorSlot)].instanceMask = 0;
+            // AND IT STOPS BEING SOMETHING TO WALK INTO. A rock broken to
+            // nothing that still blocks the player is the bug where you stand
+            // against a boulder that is not there any more.
+            dropSolid(c, so);
+            rebuildTlas();
+            return true;
+        }
+        Blas nb = recordLooseBuild(mesh);   // NOT buildBlas: see the note there
+        if (!nb.valid()) return false;
+        d.triOffset = pool_.upload(ctx_, mesh.tri);
+        d.blas = std::move(nb);
+        c.decorDesc[size_t(so.decorSlot)].accelerationStructure = d.blas.as->getGpuAddress();
+        c.decorInfo[size_t(so.decorSlot)].triOffset = d.triOffset;
+        refitSolid(c, so, t, d);
+        // The structure the instance points at has changed, which a refit
+        // cannot express -- see the note over refitTlas.
+        rebuildTlas();
+        return true;
+    }
     size_t instanceCount() const { return instanceDescs_.size(); }
     size_t decorCount(int kind) const {
         size_t n = 0;
@@ -1306,6 +2012,9 @@ class World {
         uint32_t heldGen = 0;
     };
 
+    // A key no chunk can have, for a build whose compacted form nobody wants.
+    static constexpr long long kNoOwner = (-9223372036854775807LL - 1);
+
     // One generation: the builds that share a query pool, and the fence value
     // by which all of them have run.
     struct CompactGroup {
@@ -1366,6 +2075,58 @@ class World {
     uint32_t waterTriOffset_ = TriPool::kInvalid;
 
     std::map<long long, Chunk> chunks_;
+
+    // ONE ENTRY PER BROKEN INSTANCE, and none at all for a world nobody has
+    // swung at. Keyed by the chunk that holds it and its decor slot inside
+    // that chunk -- see Solid::decorSlot.
+    // One loose thing: its own geometry, its own body, and the clock that
+    // decides when it stops being the simulation's problem and becomes loot.
+    struct Debris {
+        Blas blas;
+        uint32_t triOffset = TriPool::kInvalid;
+        int phys = -1;             // the PhysX handle, or -1
+        float halfM[3] = {0, 0, 0};
+        int voxels = 0;
+        double bornMs = 0.0;
+        bool live = false;
+        bool absorbing = false;
+        double absorbT0 = 0.0;
+        Vec3 from{0, 0, 0};
+        // The pop: where it started, which way it is coming out, and the motion
+        // the solver inherits when it takes over.
+        // WHERE THE MESH SITS RELATIVE TO THE BODY. The body's position is
+        // the voxels' CENTRE OF MASS -- see spawnDebris -- and the mesh's own
+        // origin is its corner, so this carries one to the other. Getting it
+        // wrong is not subtle: the piece rotates about a point that is not its
+        // middle, which reads as orbiting rather than tumbling.
+        Vec3 originOff{0, 0, 0};
+        Vec3 popFrom{0, 0, 0};
+        Vec3 popVel{0, 0, 0};
+        Vec3 spin{0, 0, 0};
+        bool popping = false;
+        // Last frame's height, and whether the body was above the model surface
+        // under it. A rock's "floor" is only a floor to something coming DOWN
+        // onto it -- see the clamp in updateDebris.
+        float prevY = 0.0f;
+        bool overModelTop = false;
+    };
+
+    struct Damaged {
+        std::vector<uint8_t> vol;
+        Blas blas;
+        uint32_t triOffset = TriPool::kInvalid;
+        // THE COLLIDER HAS TO BE BROKEN TOO. Solid::col is a bare pointer that
+        // normally borrows the TEMPLATE's column heightfield -- fine while every
+        // instance is identical, and wrong the moment one of them is not. This
+        // is the damaged instance's own, and the Solid points here instead.
+        // It must outlive the Solid, which is why it lives in the map and not
+        // on the stack of the blow that made it.
+        std::vector<int16_t> colTop;
+    };
+    std::map<std::pair<long long, int>, Damaged> damaged_;
+    Debris debris_[kDebrisInstances];
+    int debrisBase_ = -1;        // first instance of the band, -1 while unbuilt
+    bool debrisDirty_ = false;
     std::map<long long, int> wanted_;
     std::set<long long> requested_;
 
@@ -1791,6 +2552,37 @@ class World {
     // The compacted one replaces it whenever the group it belongs to is drained,
     // by the ordinary unforced path, on a frame that can afford it.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // A STRUCTURE FOR SOMETHING THAT CAME LOOSE, BUILT DURING A FRAME.
+    //
+    // buildBlas below CANNOT be called here and says so: it forces a compaction
+    // drain and two blocking submits, and doing that from a running frame while
+    // the streamer had work in flight took the device out -- present returned
+    // E_FAIL after about a hundred rebuilds. A chip off a rock happens several
+    // times a second, so that path was a crash with a fuse on it.
+    //
+    // This records exactly as a chunk does and hands back the UNCOMPACTED
+    // structure, which is a perfectly good structure -- it is what every chunk
+    // draws with for its first few frames. The compaction still happens on a
+    // frame that can afford it, and its result is DROPPED: the item carries no
+    // owner, so the drain finds no chunk for it and releases it, which that
+    // code already treats as ordinary. The cost is a little memory for a body
+    // that is about to be absorbed anyway.
+    // -----------------------------------------------------------------------
+    Blas recordLooseBuild(const VoxMesh &m) {
+        CompactGroup &grp = openGroup();
+        Staged g = recordBuild(m, grp);
+        Blas raw;
+        raw.buffer = g.uncompacted;
+        raw.as = g.as;
+        PendingCompact p;
+        p.staged = std::move(g);
+        p.key = kNoOwner;   // nothing will claim the compacted copy
+        grp.epoch = epoch_;
+        grp.items.push_back(std::move(p));
+        return raw;
+    }
+
     Blas recordHeldBuild(const VoxMesh &m, int index) {
         CompactGroup &grp = openGroup();
         Staged g = recordBuild(m, grp);
@@ -1834,7 +2626,10 @@ class World {
     // ------------------------------------------------------------ templates
     void loadModelSet(const std::vector<std::string> &paths, std::vector<ModelTemplate> *out,
                       bool multiModel, bool quiet, uint32_t mossSeed = 0,
-                      bool perches = false, int upscale = 0) {
+                      bool perches = false, int upscale = 0,
+                      // Every colour these models actually use, for the caller
+                      // that wants to paint something else in the same stone.
+                      std::vector<std::array<uint8_t, 4>> *colourSink = nullptr) {
         for (const std::string &path : paths) {
             std::vector<VoxModel> models;
             std::string err;
@@ -1875,6 +2670,12 @@ class World {
                 // the mesh and the collider below cannot disagree about where
                 // the rock's surface is.
                 growMoss(&a, &idOfEntry, mossSeed);
+                // BEFORE the moss, in spirit: only entries the file itself
+                // used, so an unused palette slot cannot tint the ramp.
+                if (colourSink)
+                    for (int e = 1; e <= 255; ++e)
+                        if (idOfEntry[size_t(e)] != mat::AIR)
+                            colourSink->push_back(mo.pal[size_t(e) - 1]);
 
                 VoxMesh mesh = meshAsset(a, idOfEntry, VOXEL_M);
                 if (mesh.triCount() == 0) continue;
@@ -1890,6 +2691,11 @@ class World {
                         t.hivePerches = collectPerches(a, idOfEntry, 5);
                 }
                 t.colTop = columnTops(a, idOfEntry);
+                // ALWAYS, for every object. `a` goes out of scope with this
+                // loop and is the only place the model's voxels exist.
+                t.volume.assign(a.a.size(), mat::AIR);
+                for (size_t k = 0; k < a.a.size(); ++k)
+                    t.volume[k] = idOfEntry[size_t(a.a[k])];
                 t.sx = a.sx;
                 t.sy = a.sy;
                 t.sz = a.sz;
@@ -2014,9 +2820,18 @@ class World {
         // file format, and the tool clamps to it rather than silently wrapping.
         //
         // The only model set that grows moss -- see mossFace in voxelworld.h.
-        loadModelSet(big, &rocks_, false, false, 0x4D055EEDu);
-        loadModelSet(mid, &rocks_, false, false, 0x4D055EEDu);
-        loadModelSet(rest, &rocks_, false, false, 0x4D055EEDu);
+        // THE STONE THE GROUND IS MADE OF COMES FROM THESE FILES. Terrain rock
+        // used to be one flat grey beside boulders carrying real stone tones,
+        // so every hole dug into a hillside looked like a slab. The ramp is
+        // filled from the same palettes the rocks are drawn with -- see
+        // Palette::setStoneBand and mat::STONE_0.
+        std::vector<std::array<uint8_t, 4>> rockCols;
+        loadModelSet(big, &rocks_, false, false, 0x4D055EEDu, false, 0, &rockCols);
+        loadModelSet(mid, &rocks_, false, false, 0x4D055EEDu, false, 0, &rockCols);
+        loadModelSet(rest, &rocks_, false, false, 0x4D055EEDu, false, 0, &rockCols);
+        palette.setStoneBand(rockCols);
+        std::printf("v2: stone ramp from %zu rock colours (%d usable)\n",
+                    rockCols.size(), palette.stoneSampleCount());
         loadedRocks = int(rocks_.size());
     }
 
@@ -2160,13 +2975,23 @@ class World {
             Chunk c;
             c.cx = b.cx;
             c.cz = b.cz;
-            c.blas = recordChunkBuild(b.mesh, key);
             c.tris = b.mesh.triCount();
-            const auto tp = std::chrono::steady_clock::now();
-            c.triOffset = pool_.upload(ctx_, b.mesh.tri);
-            prof_.poolMs +=
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp)
-                    .count();
+            // A CHUNK OF PURE AIR IS A REAL CHUNK. It has no faces, so there is
+            // no structure to build and nothing to upload -- but it is resident,
+            // and it has to say so or the streamer waits for it forever. That is
+            // exactly what emptying the world exposed: every chunk came back
+            // with no triangles and residency never completed.
+            //
+            // Legitimate long before an empty world, too: fly high enough over
+            // any terrain and the chunks above it are air.
+            if (c.tris > 0) {
+                c.blas = recordChunkBuild(b.mesh, key);
+                const auto tp = std::chrono::steady_clock::now();
+                c.triOffset = pool_.upload(ctx_, b.mesh.tri);
+                prof_.poolMs +=
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp)
+                        .count();
+            }
             ++prof_.adopted;
 
             for (const Placement &p : b.decor) {
@@ -2179,13 +3004,24 @@ class World {
                 // in a crown, so a ground collider for it would be an invisible
                 // wall under the tree.
                 const bool walkThrough = (p.kind == 2 || p.kind == 4 || p.kind == 5);
+                // The slot this instance is about to take, recorded on its
+                // Solid so a blow can find its way back here. solids is a
+                // FILTERED subset of decorDesc, so its own index is no use.
+                s.ownerChunk = key;
+                s.decorSlot = int32_t(c.decorDesc.size());
                 c.decorDesc.push_back(makeInstance(p, &info, walkThrough ? nullptr : &s));
                 c.decorInfo.push_back(info);
                 if (!walkThrough && s.hx > 0.0f) c.solids.push_back(s);
             }
 
             residentTris_ += c.tris;
-            chunks_.emplace(key, std::move(c));
+            // REPLACE, NOT INSERT. emplace() keeps the value already at a key,
+            // so a chunk that came back because it was DUG would have been
+            // built, uploaded and then silently thrown away -- the hole would
+            // never appear and nothing would report an error. The old chunk is
+            // destroyed here, which releases its structure exactly as eviction
+            // does, and the new one draws from the next frame.
+            chunks_.insert_or_assign(key, std::move(c));
 
             // THE VALVE, and it is checked HERE -- with the chunk already in
             // the world -- because a drain hands the compacted structure to
@@ -2271,6 +3107,8 @@ class World {
             // Rocks and mushrooms are floors; a trunk is a wall whose top is a
             // canopy twenty metres up and must never be stood on.
             solidOut->standable = (p.kind == 1 || p.kind == 3);
+            solidOut->modelKind = int16_t(p.kind);
+            solidOut->modelIndex = int16_t(p.index);
             solidOut->bouncy = (p.kind == 3);
 
             // The voxel-accurate surface. `col` is borrowed from the template,
@@ -2306,6 +3144,62 @@ class World {
         // the instance array and that is only known once the array is laid out.
         inst.instanceID = 0;
         return inst;
+    }
+
+    // -----------------------------------------------------------------------
+    // RE-MEASURE A BROKEN INSTANCE'S COLLIDER, so what you can walk into
+    // matches what you can see.
+    //
+    // measureCollider and columnTops both work off nothing but VoxAsset::at and
+    // the three dimensions, and a damaged volume has exactly that shape -- so
+    // they are REUSED over a view of it rather than reimplemented. A second
+    // copy of this measurement would be free to disagree with the one every
+    // undamaged rock in the world is using.
+    // -----------------------------------------------------------------------
+    void refitSolid(Chunk &c, const Solid &so, const ModelTemplate &t, Damaged &d) {
+        VoxAsset view;
+        view.sx = t.sx;
+        view.sy = t.sy;
+        view.sz = t.sz;
+        // BORROWED, NOT COPIED. A big boulder is nine megabytes and this runs on
+        // every blow; swapping it in and back out again costs three pointers.
+        view.a.swap(d.vol);
+        static const std::vector<uint8_t> kIdentity = [] {
+            std::vector<uint8_t> v(256);
+            for (int i = 0; i < 256; ++i) v[size_t(i)] = uint8_t(i);
+            return v;
+        }();
+        d.colTop = columnTops(view, kIdentity);
+        const ModelCollider mc = measureCollider(view, VOXEL_M, kBodyHeightM);
+        view.a.swap(d.vol);   // and back, before anything can observe the gap
+        if (mc.hx <= 0.0f || mc.hz <= 0.0f) { dropSolid(c, so); return; }
+
+        // Rows 0 and 2 of kRot, forward this time -- solidModelSpace is the
+        // transpose of exactly this.
+        static const float R[4][4] = {
+            { 1.0f,  0.0f,  0.0f,  1.0f},
+            { 0.0f,  1.0f, -1.0f,  0.0f},
+            {-1.0f,  0.0f,  0.0f, -1.0f},
+            { 0.0f, -1.0f,  1.0f,  0.0f},
+        };
+        const float *r = R[so.yaw & 3];
+        const float qx = float(t.sx) * VOXEL_M * 0.5f + mc.cx;
+        const float qz = float(t.sz) * VOXEL_M * 0.5f + mc.cz;
+        for (Solid &sl : c.solids) {
+            if (sl.decorSlot != so.decorSlot) continue;
+            sl.cx = r[0] * qx + r[1] * qz + so.tx;
+            sl.cz = r[2] * qx + r[3] * qz + so.tz;
+            sl.hx = (so.yaw & 1) ? mc.hz : mc.hx;
+            sl.hz = (so.yaw & 1) ? mc.hx : mc.hz;
+            sl.top = so.baseY + mc.top;
+            sl.col = d.colTop.data();   // ITS OWN, not the template's
+        }
+    }
+
+    // Nothing left to walk into.
+    void dropSolid(Chunk &c, const Solid &so) {
+        for (Solid &sl : c.solids)
+            if (sl.decorSlot == so.decorSlot) { sl.hx = 0.0f; sl.hz = 0.0f; sl.col = nullptr; }
     }
 
     // A few percent of per-tree hue. Nine models over thousands of trees would
@@ -2521,6 +3415,41 @@ class World {
             flyersDirty_ = true;
         }
 
+        // ---- and the loose band, on the same terms -----------------------
+        //
+        // A SLOT THAT ALWAYS EXISTS IS A REFIT. Debris appears and vanishes
+        // constantly -- every swing makes some -- and growing the instance
+        // array for each one would mean rebuilding the top-level structure
+        // several times a second. So the band is reserved whole, masked off,
+        // and each slot is filled in place.
+        //
+        // The placeholder structure is any real one: a slot with mask 0 is
+        // never traversed, but the address still has to be valid for the build.
+        debrisBase_ = -1;
+        {
+            const Blas *anyBlas = nullptr;
+            if (!rocks_.empty() && rocks_[0].blas.valid()) anyBlas = &rocks_[0].blas;
+            else if (!pines_.empty() && pines_[0].blas.valid()) anyBlas = &pines_[0].blas;
+            else if (!flyers_.empty() && flyers_[0].blas.valid()) anyBlas = &flyers_[0].blas;
+            if (anyBlas) {
+                debrisBase_ = int(instanceDescs_.size());
+                for (int i = 0; i < kDebrisInstances; ++i) {
+                    RtInstanceDesc dd = {};
+                    writeTransform(dd, kI, 0.0f, 0.0f, 0.0f);
+                    dd.instanceMask = 0;
+                    dd.accelerationStructure = anyBlas->as->getGpuAddress();
+                    V6Instance di{};
+                    di.triOffset = 0;
+                    di.kind = KIND_TERRAIN;
+                    di.tint = float3(1.0f, 1.0f, 1.0f);
+                    push(dd, di);
+                }
+                // Whatever the old band held went with it, so the next frame
+                // has to publish whether or not anything moved.
+                debrisDirty_ = true;
+            }
+        }
+
         // THE DYNAMIC PREFIX ENDS HERE, and what follows it -- the water, the
         // chunks, the decor -- is placed once and never again. Kept ACROSS a
         // rebuild when the layout is unchanged, which it is on every ring step:
@@ -2578,6 +3507,16 @@ class World {
 
         for (const auto &kv : chunks_) {
             const Chunk &c = kv.second;
+            // NOTHING TO POINT AT. A chunk of pure air built no structure, so
+            // there is no address to give the instance -- and a TLAS entry with
+            // a null one is not an empty instance, it is a fault. Its decor
+            // below is still placed: a tree stands in the air above a chunk
+            // with no ground in it perfectly well.
+            if (!c.blas.as) {
+                for (size_t di = 0; di < c.decorDesc.size(); ++di)
+                    push(c.decorDesc[di], c.decorInfo[di]);
+                continue;
+            }
             RtInstanceDesc ci = {};
             // Chunk meshes are already in world space, so the transform is
             // identity -- the instance exists to carry the triangle offset, not

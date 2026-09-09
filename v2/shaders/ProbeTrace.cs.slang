@@ -149,6 +149,9 @@ uint groundShade(uint packed, float3 p, float3 ng)
     if (mtl >= kGrass0 && mtl < kGrass0 + kGrassCount) { base = kGrass0; count = kGrassCount; }
     else if (mtl >= kSoil0 && mtl < kSoil0 + kSoilCount) { base = kSoil0; count = kSoilCount; }
     else if (mtl >= kLitter0 && mtl < kLitter0 + kLitterCount) { base = kLitter0; count = kLitterCount; }
+    // Rock is one id and six shades, and the probes must agree with the camera
+    // about which -- see the ramp note in Trace.cs.slang.
+    else if (mtl == kRock) { base = kStone0; count = kStoneCount; }
     else return mtl;
     const int3 v = int3(floor((p - ng * (0.5f * kVoxelM)) / kVoxelM));
     // A blade takes its shade from its height above the soil rather than from
