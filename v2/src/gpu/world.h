@@ -72,6 +72,7 @@
 #include "../../shaders/Shared.slang"
 #include "../core/noise.h"
 #include "../scene/chunks.h"
+#include <cstdio>
 #include <functional>
 
 #include "../physics/physics.h"
@@ -313,6 +314,22 @@ constexpr double kAbsorbWaitMs = 1000.0;
 // solver with the motion it already had. That is the "static position into an
 // unstatic position" -- the piece does not jump anywhere to become loose.
 constexpr double kPopMs = 260.0;
+
+// ...AND IT LEAVES BY DISTANCE, NOT BY THE CLOCK.
+//
+// A time alone does not guarantee anything: at the gentle speed a chip is
+// given, 260 ms covers about 12 cm, and a piece cut out of a face is buried by
+// its own half-extent plus the depth of the bite. If the solver takes it over
+// while any of it is still inside the stone it gets no contacts -- they are
+// generated against the SURFACE -- and it sinks straight through, which is the
+// clipping.
+//
+// So the pop runs until the piece has actually travelled far enough to be
+// clear, and only the CAP is a time. The speed is derived from the distance so
+// that a bigger piece leaves no faster in appearance -- it simply has further
+// to go and takes proportionally longer.
+constexpr double kPopMaxMs = 900.0;
+constexpr float kPopClearM = 0.06f;   // and a little further, so it is not resting on the face
 constexpr double kAbsorbFlyMs = 672.0;
 // Above this many voxels a piece is scenery rather than loot: it stays where it
 // landed until it is broken down. 600 in v1, measured against what a felled
@@ -975,13 +992,43 @@ class World {
         debrisDirty_ = true;
     }
 
+    // Hand a loose structure (and its slice of the triangle pool) over to be
+    // freed once the device is finished with it.
+    void retireLoose(Blas &&b, uint32_t triOffset, size_t tris) {
+        if (!b.valid() && triOffset == TriPool::kInvalid) return;
+        RetiredLoose r;
+        r.blas = std::move(b);
+        r.triOffset = triOffset;
+        r.tris = tris;
+        r.at = epoch_;
+        retiredLoose_.push_back(std::move(r));
+    }
+
+    // ...and actually free the ones it has passed. Once a frame.
+    void sweepLoose() {
+        for (size_t i = 0; i < retiredLoose_.size();) {
+            if (retiredLoose_[i].at > deviceDone_) { ++i; continue; }
+            if (retiredLoose_[i].triOffset != TriPool::kInvalid && retiredLoose_[i].tris)
+                pool_.release(retiredLoose_[i].triOffset, retiredLoose_[i].tris);
+            retiredLoose_[i] = std::move(retiredLoose_.back());
+            retiredLoose_.pop_back();
+        }
+    }
+
+    size_t retiredLooseCount() const { return retiredLoose_.size(); }
+
     void retireDebris(Physics &ph, int slot) {
         Debris &d = debris_[slot];
+        // Structure and triangles both go back, once the device is done with
+        // them -- a chunk that vanished this frame was still being drawn last
+        // frame. See retireLoose.
+        retireLoose(std::move(d.blas), d.triOffset, d.tris);
+        d.triOffset = TriPool::kInvalid;
+        d.tris = 0;
         if (d.phys >= 0) ph.releaseBody(d.phys);
         d.phys = -1;
         d.live = false;
         d.absorbing = false;
-        d.blas = Blas{};
         if (debrisBase_ >= 0 && size_t(debrisBase_ + slot) < instanceDescs_.size())
             instanceDescs_[size_t(debrisBase_ + slot)].instanceMask = 0;
         debrisDirty_ = true;
@@ -1309,6 +1356,7 @@ class World {
         Debris &d = debris_[slot];
         d.blas = std::move(b);
         d.triOffset = pool_.upload(ctx_, mesh.tri);
+        d.tris = mesh.tri.size();
         d.voxels = count;
         d.halfM[0] = 0.5f * float(tx) * VOXEL_M;
         d.halfM[1] = 0.5f * float(ty) * VOXEL_M;
@@ -1330,6 +1378,15 @@ class World {
         d.popVel = vel;
         d.spin = spin;
         d.popping = true;
+        // OUT ALONG THE WAY IT WAS THROWN, which is the outward normal of the
+        // face it came off -- the swing's own direction, reversed, is what the
+        // caller passes as `vel`. Far enough to clear its own half-extent and
+        // the bite behind it.
+        const float vl = sqrtf(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+        d.popDir = (vl > 1e-4f) ? Vec3{vel.x / vl, vel.y / vl, vel.z / vl} : Vec3{0.0f, 1.0f, 0.0f};
+        const float maxHalf = maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2]));
+        d.popNeed = maxHalf + kPopClearM;
+        d.popSpeed = d.popNeed / float(kPopMs * 0.001);
         d.prevY = centre.y;
         // A piece is born INSIDE whatever it was cut from, so it is not over
         // anything yet. It has to rise clear of a surface before that surface
@@ -1350,6 +1407,7 @@ class World {
     // -----------------------------------------------------------------------
     void updateDebris(Physics &ph, const Vec3 &eye, double nowMs,
                       const std::function<float(float, float)> &terrainAt) {
+        sweepLoose();   // free what the device has finished with
         for (int i = 0; i < kDebrisInstances; ++i) {
             Debris &d = debris_[i];
             if (!d.live) continue;
@@ -1397,13 +1455,15 @@ class World {
             // COMING OUT OF THE FACE, still part of where it was.
             if (d.popping) {
                 const double e = nowMs - d.bornMs;
-                if (e >= kPopMs) {
+                const float gone = d.popSpeed * float(e * 0.001);
+                if (gone >= d.popNeed || e >= kPopMaxMs) {
+                    // Clear of the face -- the solver can have it, and now it
+                    // has contacts to be stopped by.
                     d.popping = false;
                     ph.makeDynamic(d.phys, d.popVel, d.spin);
                 } else {
-                    const float t = float(e * 0.001);
-                    p = Vec3{d.popFrom.x + d.popVel.x * t, d.popFrom.y + d.popVel.y * t,
-                             d.popFrom.z + d.popVel.z * t};
+                    p = Vec3{d.popFrom.x + d.popDir.x * gone, d.popFrom.y + d.popDir.y * gone,
+                             d.popFrom.z + d.popDir.z * gone};
                     ph.setPose(d.phys, p, q);
                 }
             }
@@ -1707,7 +1767,12 @@ class World {
         }
         Blas nb = recordLooseBuild(mesh);   // NOT buildBlas: see the note there
         if (!nb.valid()) return false;
+        // The structure this instance was drawn with a moment ago is still
+        // being read by whatever frame is in flight -- see retireLoose. It is
+        // handed over to be freed later, NOT dropped here.
+        retireLoose(std::move(d.blas), d.triOffset, d.tris);
         d.triOffset = pool_.upload(ctx_, mesh.tri);
+        d.tris = mesh.tri.size();
         d.blas = std::move(nb);
         c.decorDesc[size_t(so.decorSlot)].accelerationStructure = d.blas.as->getGpuAddress();
         c.decorInfo[size_t(so.decorSlot)].triOffset = d.triOffset;
@@ -2084,6 +2149,7 @@ class World {
     struct Debris {
         Blas blas;
         uint32_t triOffset = TriPool::kInvalid;
+        size_t tris = 0;           // pool units held, to hand back on retire
         int phys = -1;             // the PhysX handle, or -1
         float halfM[3] = {0, 0, 0};
         int voxels = 0;
@@ -2102,6 +2168,11 @@ class World {
         Vec3 originOff{0, 0, 0};
         Vec3 popFrom{0, 0, 0};
         Vec3 popVel{0, 0, 0};
+        // The way out of the face, how far it has to go, and how fast it is
+        // walking it. See kPopMaxMs.
+        Vec3 popDir{0, 0, 0};
+        float popNeed = 0.0f;
+        float popSpeed = 0.0f;
         Vec3 spin{0, 0, 0};
         bool popping = false;
         // Last frame's height, and whether the body was above the model surface
@@ -2115,6 +2186,13 @@ class World {
         std::vector<uint8_t> vol;
         Blas blas;
         uint32_t triOffset = TriPool::kInvalid;
+        // HOW MUCH OF THE TRIANGLE POOL THIS IS HOLDING, so the previous copy
+        // can be given back before the next one is taken. Without it every blow
+        // on a boulder leaked a whole re-meshed rock -- 151,000 triangles a
+        // swing -- until the pool had to GROW, and growing does a blocking
+        // submit and swaps the buffer the shader is reading from, in the middle
+        // of a frame. That is the device removal.
+        size_t tris = 0;
         // THE COLLIDER HAS TO BE BROKEN TOO. Solid::col is a bare pointer that
         // normally borrows the TEMPLATE's column heightfield -- fine while every
         // instance is identical, and wrong the moment one of them is not. This
@@ -2124,6 +2202,28 @@ class World {
         std::vector<int16_t> colTop;
     };
     std::map<std::pair<long long, int>, Damaged> damaged_;
+    // -----------------------------------------------------------------------
+    // NOTHING LOOSE IS FREED WHILE THE DEVICE MIGHT STILL BE READING IT.
+    //
+    // A structure the top-level acceleration structure pointed at last frame is
+    // still being read for as long as that frame is in flight. Dropping a Blas
+    // the moment it is replaced destroys its buffer underneath the GPU, and the
+    // device goes -- which surfaces later, at whatever API call happens next,
+    // wearing a stack that has nothing to do with the cause.
+    //
+    // That is the same rule the buffer pools already keep with `freeAt >
+    // deviceDone`; loose builds simply do not go through those pools, so they
+    // need their own version of it. Stamped with the epoch they were retired
+    // in and released once the device has passed it.
+    // -----------------------------------------------------------------------
+    struct RetiredLoose {
+        Blas blas;
+        uint32_t triOffset = TriPool::kInvalid;
+        size_t tris = 0;
+        uint64_t at = 0;
+    };
+    std::vector<RetiredLoose> retiredLoose_;
+
     Debris debris_[kDebrisInstances];
     int debrisBase_ = -1;        // first instance of the band, -1 while unbuilt
     bool debrisDirty_ = false;
@@ -2275,7 +2375,10 @@ class World {
         return RtAccelerationStructurePostBuildInfoPool::create(device_.get(), qd);
     }
 
-    Staged recordBuild(const VoxMesh &m, CompactGroup &group) {
+    // `ownResult`: put the finished structure in a buffer of ITS OWN rather
+    // than one from the recycling pool. See recordLooseBuild, which is the only
+    // caller that needs it and explains why.
+    Staged recordBuild(const VoxMesh &m, CompactGroup &group, bool ownResult = false) {
         Staged g;
         g.query = uint32_t(group.items.size());
 
@@ -2320,7 +2423,11 @@ class World {
         const auto pre = RtAccelerationStructure::getPrebuildInfo(device_.get(), inputs);
         g.uncompactedSize = pre.resultDataMaxSize;
         g.scratch = scratchPool_.acquire(pre.scratchDataSize, deviceDone_);
-        g.uncompacted = rawPool_.acquire(pre.resultDataMaxSize, deviceDone_);
+        g.uncompacted =
+            ownResult ? device_->createBuffer(pre.resultDataMaxSize,
+                                              ResourceBindFlags::AccelerationStructure,
+                                              Falcor::MemoryType::DeviceLocal)
+                      : rawPool_.acquire(pre.resultDataMaxSize, deviceDone_);
 
         RtAccelerationStructure::Desc cd;
         cd.setKind(RtAccelerationStructureKind::BottomLevel);
@@ -2571,7 +2678,21 @@ class World {
     // -----------------------------------------------------------------------
     Blas recordLooseBuild(const VoxMesh &m) {
         CompactGroup &grp = openGroup();
-        Staged g = recordBuild(m, grp);
+        // ITS OWN BUFFER, AND THAT IS THE WHOLE POINT.
+        //
+        // recordBuild normally takes the structure's buffer from rawPool_, and
+        // the drain hands it BACK to that pool once the device is done with it
+        // -- which is correct for a chunk or a held model, because compaction
+        // replaces their Blas with the compacted one before that happens.
+        //
+        // A loose build keeps the UNCOMPACTED structure and drops the compacted
+        // copy, so nothing ever replaces it. Taking a pooled buffer meant the
+        // pool reissued it to the next chunk build and wrote a different
+        // structure over the top of a rock that was still being drawn: the
+        // boulder vanished, and reading it took the device out. It showed up as
+        // "I was moving while hitting the rock" because moving is what makes
+        // the streamer build chunks, which is what consumes the pool.
+        Staged g = recordBuild(m, grp, /*ownResult=*/true);
         Blas raw;
         raw.buffer = g.uncompacted;
         raw.as = g.as;
