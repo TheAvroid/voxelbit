@@ -167,6 +167,24 @@ static const uint KIND_HELD = 3;
 static const uint KIND_FLYER = 4;
 
 // ---------------------------------------------------------------------------
+// A PIECE THAT HAS COME LOOSE, and why it needs its own kind.
+//
+// Every other voxel in this world stands still, so its shade can be picked by
+// hashing WHERE IT IS: groundShade turns a material family into one exact
+// shade using floor(p / kVoxelM), and a voxel that never moves always lands in
+// the same cell and always wears the same green.
+//
+// A broken-off chunk moves. The same hash then re-rolls its colours every
+// frame as it drifts across cell boundaries, and a moss voxel straddling one
+// draws two greens at once -- the moss crawls and splits while the piece is in
+// the air.
+//
+// So a loose body's shades are resolved ONCE, on the host, when its mesh is
+// built (see meshVolume), and the material byte it carries is already the
+// final one. This kind is what tells the device not to roll it again.
+static const uint KIND_LOOSE = 5;
+
+// ---------------------------------------------------------------------------
 // THE TWO RAY MASKS, AND WHY A VIEWMODEL NEEDS ONE.
 //
 // A held tool is ten centimetres from the eye and the world comes right up to

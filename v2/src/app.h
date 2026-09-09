@@ -3864,8 +3864,13 @@ class ForestApp : public SampleApp {
             // runs collidersNear, and asking it per chip per frame would be the
             // expensive part of a feature that is otherwise nearly free.
             syncModelColliders();
+            // Gathered ONCE for the whole band: walkWorld runs collidersNear,
+            // and asking it per chip per frame would be the expensive part of
+            // a feature that is otherwise nearly free.
+            const WalkWorld ww = walkWorld();
             world_.updateDebris(
-                physics_, player_.eyePosition(), simMs_, [&](float x, float z) {
+                physics_, player_.eyePosition(), simMs_,
+                [&](float x, float z) {
                     // Terrain alone: the one floor nothing may ever be under.
                     return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
                                                           int(std::floor(z / VOXEL_M))) +
@@ -3904,9 +3909,9 @@ class ForestApp : public SampleApp {
             const RockKey k{s.ownerChunk, s.decorSlot, s.col};
             seen_.insert(k);
             if (rockActors_.count(k)) continue;
-            const int h = physics_.addStaticHeightField(
-                s.col, s.msx, s.msz, VOXEL_M, Vec3{s.tx, s.baseY, s.tz},
-                float(s.yaw & 3) * 1.57079633f);
+            const int h = physics_.addStaticConvex(s.col, s.msx, s.msz, VOXEL_M,
+                                                  Vec3{s.tx, s.baseY, s.tz},
+                                                  float(s.yaw & 3) * 1.57079633f);
             if (h >= 0) rockActors_[k] = h;
         }
         for (auto it = rockActors_.begin(); it != rockActors_.end();) {
@@ -3967,6 +3972,8 @@ class ForestApp : public SampleApp {
     uint32_t swingSalt_ = 0;
     // Where the last blow actually bit, in world metres.
     Vec3 spoilAt_{0, 0, 0};
+    // ...and the quarter turn of whatever it was cut out of.
+    float spoilYaw_ = 0.0f;
     double simMs_ = 0.0;
 
     WalkWorld walkWorld() {
@@ -4603,9 +4610,18 @@ class ForestApp : public SampleApp {
                 // their own -- same ellipses, same reach, just without the
                 // ground winning on distance. If one is there, that is what the
                 // blow was for.
-                if (lastSwing_.hit && lastSwing_.kind == Swing::Ground) {
+                // ...AND IT ASKS WHENEVER IT WOULD OTHERWISE DO NOTHING, not
+                // only when the ground won. A swing can also come back as NO
+                // hit at all -- the collider ellipse is measured over the
+                // bottom two metres of a model, so a ray passing over a
+                // boulder's shoulder misses it entirely while the stone is
+                // plainly under the crosshair. Both cases end the same way,
+                // with the blow doing nothing, so both ask the same question.
+                if (lastSwing_.kind != Swing::Rock && lastSwing_.kind != Swing::Trunk) {
                     const Takes tk = held_.takes();
-                    const bool wantStone = tk == Takes::Stone && !isStoneMat(lastSwing_.material);
+                    const bool wantStone =
+                        tk == Takes::Stone &&
+                        !(lastSwing_.kind == Swing::Ground && isStoneMat(lastSwing_.material));
                     const bool wantWood = tk == Takes::Wood;
                     if (wantStone || wantWood) {
                         const Swing ms = swingRayModels(walkWorld(), player_.eyePosition(),
@@ -4632,12 +4648,20 @@ class ForestApp : public SampleApp {
                             dug = world_.carveModel(lastSwing_.solid, lastSwing_.eye,
                                                     lastSwing_.dir, lastSwing_.reach,
                                                     kDigRadiusVox, &spoilVol_, &spoilN_,
-                                                    &spoilAt_)
+                                                    &spoilAt_, &spoilYaw_)
                                       ? 1u
                                       : 0u;
-                        else
+                        else {
+                            // BRACED, and it matters. Without these the else
+                            // took only the assignment below it, so dig() ran
+                            // on EVERY blow -- a hit on a boulder carved the
+                            // hillside too, and then overwrote the spoil with
+                            // air, which is a rock that breaks and gives back
+                            // nothing.
+                            spoilYaw_ = 0.0f;   // terrain is not turned
                             dug = world_.dig(lastSwing_.point, kDigRadiusVox, &spoilVol_,
                                              &spoilN_, &spoilAt_);
+                        }
 
                         // ...AND IT DOES NOT SIMPLY VANISH. The piece that came
                         // out becomes a rigid body: thrown a little back toward
@@ -4654,46 +4678,32 @@ class ForestApp : public SampleApp {
                             // tumbles where it fell for kAbsorbWaitMs and only
                             // then lifts. See World::updateDebris.
                             //
-                            // JITTERED, because a fixed spin makes every chip
-                            // in the wood tumble identically, which reads as a
-                            // repeated animation rather than as debris.
-                            ++swingSalt_;
-                            auto rnd = [&](uint32_t k) {
-                                return hashUnit(0x51ED2A7u + k, swingSalt_) - 0.5f;
-                            };
-                            // OUT OF THE STONE, NOT INTO IT.
+                            // NO THROW, NO SPIN, NO NUDGE CLEAR.
                             //
-                            // A chip is cut from INSIDE the rock, and a body
-                            // that starts below a height field surface gets no
-                            // contacts to push it out: PhysX generates them
-                            // against the SURFACE, so a body already under it
-                            // falls straight down through the stone. That is
-                            // the clipping -- and pushing it along the swing,
-                            // which points INTO the rock, drove it deeper.
-                            //
-                            // So it is born clear of the face it came out of,
-                            // back along the swing by its own radius, and
-                            // thrown the same way. Same idea as v1 throwing a
-                            // chip "clear of the cut": what matters is that it
-                            // starts OUTSIDE the thing it was cut from.
-                            // BORN IN THE HOLE, not beside it. The piece is
-                            // the voxels that were just removed, in the place
-                            // they were removed from -- it is the same rock,
-                            // made unstatic, and it walks itself out of the
-                            // face over kPopMs rather than being spawned clear.
-                            const Vec3 d3 = lastSwing_.dir;
+                            // It stops being part of the rock and starts being
+                            // a body in the same instant and in the same place,
+                            // and gravity is the only thing that touches it
+                            // after that -- which is what v1 does. Every
+                            // previous version of this line pushed the piece
+                            // somewhere: along the swing (into the stone), back
+                            // out of the face (it walked out along the cut), up
+                            // (it floated at you). All of that was working
+                            // around a collider that could not have the hole in
+                            // it; the piece is stopped by the rock's own voxels
+                            // now, so it needs no help getting clear.
                             const Vec3 at = spoilAt_;
-                            // A NUDGE, NOT A LAUNCH. This wants to read as a
-                            // piece coming loose and dropping out of the face,
-                            // not as something fired out of it: barely enough
-                            // to clear the stone, and gravity does the rest.
-                            // Half a metre a second out, less than one up.
-                            const Vec3 vel{-d3.x * 0.45f + rnd(1) * 0.30f, 0.65f + rnd(2) * 0.25f,
-                                           -d3.z * 0.45f + rnd(3) * 0.30f};
-                            // ...and a slow turn rather than a tumble.
-                            const Vec3 spin{rnd(4) * 1.8f, rnd(5) * 1.8f, rnd(6) * 1.8f};
-                            world_.spawnDebris(physics_, spoilVol_, spoilN_, at, vel, spin,
-                                               simMs_);
+                            const Vec3 kNoVel{0.0f, 0.0f, 0.0f};
+                            const Vec3 kNoSpin{0.0f, 0.0f, 0.0f};
+                            // THE ROCK IT CAME OUT OF, so the piece can be
+                            // stopped by that rock's own voxels -- which have
+                            // the hole in them. See World::updateDebris.
+                            const Solid *srcRock =
+                                (lastSwing_.kind == Swing::Rock ||
+                                 lastSwing_.kind == Swing::Trunk)
+                                    ? &lastSwing_.solid
+                                    : nullptr;
+                            world_.spawnDebris(physics_, spoilVol_, spoilN_, at, kNoVel, kNoSpin,
+                                               simMs_, spoilYaw_, srcRock);
                         }
                     }
                 }
@@ -4718,8 +4728,9 @@ class ForestApp : public SampleApp {
                         int solid = 0;
                         for (uint8_t v : spoilVol_)
                             if (v != mat::AIR) ++solid;
-                        std::printf("  spoil=%d/%d loose=%d rockcol=%d", solid, spoilN_,
-                                    world_.looseCount(), int(rockActors_.size()));
+                        std::printf("  spoil=%d/%d loose=%d rockcol=%d/%d", solid, spoilN_,
+                                    world_.looseCount(), physics_.convexMade(),
+                                    physics_.convexTried());
                     }
                     std::printf("\n");
                     std::fflush(stdout);

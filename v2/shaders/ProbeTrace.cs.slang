@@ -284,7 +284,9 @@ void main(uint3 tid: SV_DispatchThreadID)
         return;
     }
 
-    V6Material L = gMaterials[groundShade(packed, p, ng)];
+    // A loose piece carries its final shade already -- see KIND_LOOSE.
+    V6Material L = gMaterials[(inst.kind == KIND_LOOSE) ? triMaterial(packed)
+                                                       : groundShade(packed, p, ng)];
     float3 albedo = L.albedo;
     if (inst.kind == KIND_TREE) albedo *= inst.tint;
 

@@ -787,9 +787,49 @@ inline std::vector<Perch> collectPerches(const VoxAsset &a,
 // rule this whole engine runs on: emit a face where solid meets air, and keep
 // everything else.
 // ---------------------------------------------------------------------------
-inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int sz, float scale) {
+inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int sz, float scale,
+                          bool resolveShades = false) {
     VoxMesh m;
     const float s = scale;
+    // THE SHADE IS DECIDED HERE, NOT ON THE DEVICE.
+    //
+    // A family id -- grass, soil, litter -- is normally turned into one exact
+    // shade by hashing the voxel's WORLD position, which works because voxels
+    // do not move. This mesh belongs to something that does: the hash re-rolls
+    // as the piece drifts across cell boundaries, and a voxel straddling one
+    // draws two shades at once. That is moss on a broken-off chunk crawling and
+    // splitting while it is in the air.
+    //
+    // Resolved once here, from the piece's OWN coordinates, it is fixed for as
+    // long as the piece exists. KIND_LOOSE is what tells the device not to roll
+    // it again.
+    // ONLY FOR SOMETHING THAT MOVES. A damaged ROCK is re-meshed through here
+    // too, and it does not move -- its shades must keep coming from the world
+    // position hash like every other static voxel, or the moss it still carries
+    // changes colour the moment it is re-meshed. Resolving is for the loose
+    // piece alone. See KIND_LOOSE.
+    auto resolved = [resolveShades](uint8_t id, int x, int y, int z) -> uint8_t {
+        if (!resolveShades) return id;
+        uint8_t base = 0, count = 0;
+        if (id >= mat::GRASS_0 && id < mat::GRASS_0 + mat::GRASS_COUNT) {
+            base = mat::GRASS_0;
+            count = mat::GRASS_COUNT;
+        } else if (id >= mat::SOIL_0 && id < mat::SOIL_0 + mat::SOIL_COUNT) {
+            base = mat::SOIL_0;
+            count = mat::SOIL_COUNT;
+        } else if (id >= mat::LITTER_0 && id < mat::LITTER_0 + mat::LITTER_COUNT) {
+            base = mat::LITTER_0;
+            count = mat::LITTER_COUNT;
+        } else {
+            return id;
+        }
+        // The same avalanche the device uses, on the piece's own voxel.
+        uint32_t h = uint32_t(x) * 374761393u + uint32_t(y) * 1103515245u +
+                     uint32_t(z) * 668265263u;
+        h = (h ^ (h >> 13)) * 1274126177u;
+        h ^= h >> 16;
+        return uint8_t(base + h % uint32_t(count));
+    };
     auto at = [&](int x, int y, int z) -> uint8_t {
         if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) return mat::AIR;
         // VOXASSET (WORLD) LAYOUT, which is x + z*sx + y*sx*sz and NOT the
@@ -802,7 +842,7 @@ inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int s
     for (int y = 0; y < sy; ++y)
         for (int z = 0; z < sz; ++z)
             for (int x = 0; x < sx; ++x) {
-                const uint8_t id = at(x, y, z);
+                const uint8_t id = resolved(at(x, y, z), x, y, z);
                 if (id == mat::AIR) continue;
                 const float x0 = float(x) * s, x1 = x0 + s;
                 const float y0 = float(y) * s, y1 = y0 + s;

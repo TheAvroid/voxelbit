@@ -674,7 +674,10 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // the spot to look up a colour. The neural cache wants the index itself:
     // a discrete identity is a far better network input than the three floats
     // it decodes to -- see the encoding note in Nrc.slang.
-    const uint shade = groundShade(packed, h.p, ng);
+    // A LOOSE PIECE ALREADY KNOWS ITS OWN COLOURS -- see KIND_LOOSE. Asking
+    // the position hash again would re-roll them every frame it moves.
+    const uint shade =
+        (inst.kind == KIND_LOOSE) ? triMaterial(packed) : groundShade(packed, h.p, ng);
     const V6Material L = gMaterials[shade];
     h.mtl = shade;
     h.mat.type = MAT_OPAQUE;

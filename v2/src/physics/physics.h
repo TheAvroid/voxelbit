@@ -52,6 +52,34 @@
 
 namespace v2 {
 
+#if V2_HAS_PHYSX
+// ---------------------------------------------------------------------------
+// A PIECE DOES NOT COLLIDE WITH THE ROCK IT CAME OUT OF.
+//
+// In the engine this comes from, a chunk that breaks off is REMOVED from the
+// world in the same instant it becomes a body -- so the world has a hole
+// exactly where the body is and the two cannot overlap. Here the hole is real
+// in the rock's MESH, but the rock's collider is a convex hull, and a hull
+// cannot have a dent: a 30 cm bite out of a 20 m boulder leaves it completely
+// unchanged. The piece is therefore born inside a collider that does not know
+// the hole exists, and no amount of pushing it out or slowing its fall changes
+// that -- it grinds down through the stone at about seven tenths of free fall.
+//
+// So the pair is suppressed instead, which is what the voxel engine gets for
+// free. word0 on a static is that rock's id; word1 on a loose body is the rock
+// it was cut from. Everything else collides normally -- the ground, the other
+// boulders, other pieces.
+// ---------------------------------------------------------------------------
+inline physx::PxFilterFlags v2LooseFilter(physx::PxFilterObjectAttributes, physx::PxFilterData d0,
+                                          physx::PxFilterObjectAttributes, physx::PxFilterData d1,
+                                          physx::PxPairFlags &pairFlags, const void *, physx::PxU32) {
+    if ((d0.word0 != 0u && d0.word0 == d1.word1) || (d1.word0 != 0u && d1.word0 == d0.word1))
+        return physx::PxFilterFlag::eSUPPRESS;
+    pairFlags = physx::PxPairFlag::eCONTACT_DEFAULT;
+    return physx::PxFilterFlag::eDEFAULT;
+}
+#endif
+
 class Physics {
   public:
     // Off by default. It is the newest moving part in the engine and it changes
@@ -96,7 +124,7 @@ class Physics {
         // same frame, and a character controller is not the load that needs it.
         dispatcher_ = physx::PxDefaultCpuDispatcherCreate(2);
         desc.cpuDispatcher = dispatcher_;
-        desc.filterShader = physx::PxDefaultSimulationFilterShader;
+        desc.filterShader = v2LooseFilter;   // see the note above it
         scene_ = physics_->createScene(desc);
         if (!scene_) {
             status_ = "createScene failed";
@@ -195,18 +223,29 @@ class Physics {
     // trunk IS a box lying down.
     // -----------------------------------------------------------------------
     int addBox(const Vec3 &centre, const Vec3 &half, const Vec3 &vel, const Vec3 &spin,
-               float density = 900.0f, bool kinematic = false) {
+               float density = 900.0f, bool kinematic = false, float yawRad = 0.0f,
+               int ignoreStatic = -1) {
 #if !V2_HAS_PHYSX
         (void)centre; (void)half; (void)vel; (void)spin; (void)density;
         return -1;
 #else
         if (!ready_) return -1;
+        // BORN ALREADY TURNED. A piece cut out of a placed model is stored in
+        // that model's voxel axes, so it lines up with the hole it came from
+        // only if it starts wearing the model's own quarter turn.
         physx::PxRigidDynamic *a = physics_->createRigidDynamic(
-            physx::PxTransform(physx::PxVec3(centre.x, centre.y, centre.z)));
+            physx::PxTransform(physx::PxVec3(centre.x, centre.y, centre.z),
+                               physx::PxQuat(yawRad, physx::PxVec3(0.0f, 1.0f, 0.0f))));
         if (!a) return -1;
         const physx::PxVec3 h(half.x < 0.02f ? 0.02f : half.x, half.y < 0.02f ? 0.02f : half.y,
                               half.z < 0.02f ? 0.02f : half.z);
-        physx::PxRigidActorExt::createExclusiveShape(*a, physx::PxBoxGeometry(h), *material_);
+        physx::PxShape *bs =
+            physx::PxRigidActorExt::createExclusiveShape(*a, physx::PxBoxGeometry(h), *material_);
+        // The rock this came out of, so the pair is suppressed -- see
+        // v2LooseFilter. Everything else it meets is collided with normally.
+        if (bs && ignoreStatic >= 0)
+            bs->setSimulationFilterData(
+                physx::PxFilterData(0, physx::PxU32(ignoreStatic + 1), 0, 0));
         physx::PxRigidBodyExt::updateMassAndInertia(*a, density);
         if (kinematic) {
             a->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC, true);
@@ -217,6 +256,11 @@ class Physics {
         // A chip that has landed should stop looking busy; without this they
         // buzz against the height field for as long as they exist.
         a->setSleepThreshold(0.05f);
+        // BORN INSIDE THE ROCK IT CAME OFF, so depenetration has real work to
+        // do on the first frames. Left at its default the solver evicts the
+        // piece at several metres a second, which reads as the chunk being
+        // spat out. A slow push looks like it is coming loose.
+        a->setMaxDepenetrationVelocity(0.6f);
         scene_->addActor(*a);
         for (size_t k = 0; k < bodies_.size(); ++k)
             if (!bodies_[k]) { bodies_[k] = a; return int(k); }
@@ -391,6 +435,87 @@ class Physics {
 #endif
     }
 
+    // -----------------------------------------------------------------------
+    // A PLACED MODEL AS A CONVEX, WHICH IS WHAT REAL BODIES NEED.
+    //
+    // A height field is a SURFACE. PhysX generates contacts against it, so a
+    // body a little under it is pushed out and a body well under it is not --
+    // and a chip cut from the middle of a boulder's face starts well under it.
+    // That is why every attempt to let the solver own a chip ended with the
+    // chip inside the stone.
+    //
+    // A convex has no inside/outside problem: depenetration pushes a body out
+    // along the nearest face however deep it starts, so a piece born in the
+    // rock it was cut from simply comes out. That is the whole reason to pay
+    // for a cook.
+    //
+    // THE HULL IS BUILT FROM colTop, subsampled. Every column that has
+    // anything in it contributes its top and its base; PhysX takes the hull of
+    // that cloud. A boulder is roughly convex to begin with, so the hull is
+    // close, and the 255-vertex limit is why the columns are strided rather
+    // than all handed over.
+    // -----------------------------------------------------------------------
+    int addStaticConvex(const int16_t *colTop, int sx, int sz, float voxelM, const Vec3 &origin,
+                        float yawRad) {
+#if !V2_HAS_PHYSX
+        (void)colTop; (void)sx; (void)sz; (void)voxelM; (void)origin; (void)yawRad;
+        return -1;
+#else
+        if (!ready_ || !colTop || sx <= 1 || sz <= 1) return -1;
+        // FEED IT PLENTY. The 255-vertex limit is on the HULL PhysX computes,
+        // not on the cloud it is given -- so sampling coarsely to stay under it
+        // was solving a problem that does not exist, and solving it badly: a
+        // boulder 198 voxels across was sampled every 19th column, a 1.9 m grid
+        // over a 20 m rock, and the hull of those few points fell well inside
+        // the stone near its edges. A chip cut there was born OUTSIDE the hull
+        // and fell straight past it. Measured: two bites on one rock, one with
+        // a static under it and one with nothing at all.
+        //
+        // 64 samples a side is a 30 cm grid on the biggest rock here, and PhysX
+        // reduces whatever that yields to its own limit.
+        const int stride = (sx > sz ? sx : sz) / 64 + 1;
+        std::vector<physx::PxVec3> pts;
+        pts.reserve(256);
+        for (int z = 0; z < sz; z += stride)
+            for (int x = 0; x < sx; x += stride) {
+                const int h = int(colTop[size_t(x) + size_t(z) * size_t(sx)]);
+                if (h <= 0) continue;
+                pts.push_back(physx::PxVec3(float(x) * voxelM, float(h) * voxelM, float(z) * voxelM));
+                pts.push_back(physx::PxVec3(float(x) * voxelM, 0.0f, float(z) * voxelM));
+            }
+        if (pts.size() < 8) return -1;   // nothing solid enough to be a shape
+        ++convexTried_;
+
+        physx::PxConvexMeshDesc cd;
+        cd.points.count = physx::PxU32(pts.size());
+        cd.points.stride = sizeof(physx::PxVec3);
+        cd.points.data = pts.data();
+        cd.flags = physx::PxConvexFlag::eCOMPUTE_CONVEX;
+        physx::PxCookingParams cp(physics_->getTolerancesScale());
+        physx::PxConvexMesh *cm =
+            PxCreateConvexMesh(cp, cd, physics_->getPhysicsInsertionCallback());
+        if (!cm) return -1;
+
+        physx::PxRigidStatic *a = physics_->createRigidStatic(physx::PxTransform(
+            physx::PxVec3(origin.x, origin.y, origin.z),
+            physx::PxQuat(yawRad, physx::PxVec3(0.0f, 1.0f, 0.0f))));
+        if (!a) { cm->release(); return -1; }
+        physx::PxShape *sh = physx::PxRigidActorExt::createExclusiveShape(
+            *a, physx::PxConvexMeshGeometry(cm), *material_);
+        // ITS OWN ID, so a piece cut out of it can say which rock to ignore.
+        // Slot+1, because zero means "not a rock" to the filter.
+        const physx::PxU32 rockId = physx::PxU32(statics_.size() + 1);
+        if (sh) sh->setSimulationFilterData(physx::PxFilterData(rockId, 0, 0, 0));
+        scene_->addActor(*a);
+        cm->release();   // the shape holds its own reference now
+        ++convexMade_;
+        for (size_t k = 0; k < statics_.size(); ++k)
+            if (!statics_[k]) { statics_[k] = a; return int(k); }
+        statics_.push_back(a);
+        return int(statics_.size()) - 1;
+#endif
+    }
+
     void removeStatic(int h) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= statics_.size() || !statics_[size_t(h)]) return;
@@ -411,6 +536,66 @@ class Physics {
 #else
         (void)h;
 #endif
+    }
+
+    // How many model hulls were asked for and how many cooked. If these
+    // disagree the cook is failing, and nothing is stopping a falling chip.
+    int convexMade() const { return convexMade_; }
+    int convexTried() const { return convexTried_; }
+
+    // IS THERE ANYTHING SOLID HERE AT ALL? Asked of the scene itself, because
+    // every other way of answering it has been an assumption.
+    int overlapCount(const Vec3 &at, float r) const {
+#if !V2_HAS_PHYSX
+        (void)at; (void)r;
+        return -1;
+#else
+        if (!ready_ || !scene_) return -1;
+        physx::PxOverlapBuffer hit;
+        physx::PxQueryFilterData fd;
+        fd.flags = physx::PxQueryFlag::eSTATIC;
+        const bool any = scene_->overlap(physx::PxSphereGeometry(r),
+                                         physx::PxTransform(physx::PxVec3(at.x, at.y, at.z)), hit,
+                                         fd);
+        return any ? int(hit.getNbAnyHits()) : 0;
+#endif
+    }
+
+    // WHAT IS UNDER THIS POINT, and what KIND of thing is it. The overlap
+    // count could not tell a boulder from the ground patch, and that is
+    // exactly the distinction that matters: 4 = convex (a rock), 5 = height
+    // field (the ground). Returns the geometry type, or -1 for nothing.
+    int typeBelow(const Vec3 &at, float maxDist, float *dist) const {
+#if !V2_HAS_PHYSX
+        (void)at; (void)maxDist; (void)dist;
+        return -1;
+#else
+        if (!ready_ || !scene_) return -1;
+        physx::PxRaycastBuffer hit;
+        // STATICS ONLY -- otherwise this finds the loose piece the caller just
+        // created, at zero distance, and reports a box.
+        physx::PxQueryFilterData fd;
+        fd.flags = physx::PxQueryFlag::eSTATIC;
+        const bool any = scene_->raycast(physx::PxVec3(at.x, at.y, at.z),
+                                         physx::PxVec3(0.0f, -1.0f, 0.0f), maxDist, hit,
+                                         physx::PxHitFlags(physx::PxHitFlag::eDEFAULT), fd);
+        if (!any || !hit.hasBlock) return -1;
+        if (dist) *dist = hit.block.distance;
+        return int(hit.block.shape ? hit.block.shape->getGeometry().getType()
+                                   : physx::PxGeometryType::eINVALID);
+#endif
+    }
+
+    // The id addStaticConvex gave this actor, for a body that must ignore it.
+    int staticIdOf(int h) const { return h; }
+
+    int liveStatics() const {
+        int k = 0;
+#if V2_HAS_PHYSX
+        for (auto *a : statics_)
+            if (a) ++k;
+#endif
+        return k;
     }
 
     int liveBodies() const {
@@ -483,6 +668,7 @@ class Physics {
     std::vector<physx::PxRigidStatic *> statics_;
     std::vector<physx::PxRigidDynamic *> bodies_;
 #endif
+    int convexMade_ = 0, convexTried_ = 0;
     int groundI0_ = 0, groundJ0_ = 0, groundN_ = 0;
     float acc_ = 0.0f;
     bool ready_ = false;
