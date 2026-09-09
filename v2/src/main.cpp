@@ -70,6 +70,8 @@ void usage() {
         "  --no-axe                  open empty-handed; H toggles, the wheel changes tool\n"
         "  --swing-log               print what each swing ran into\n"
         "  --swing-hold              hold the swing, as --shot-walk holds W\n"
+        "  --fell-test               fell a tree with no window and print what the\n"
+        "                            body does, frame by frame, then exit\n"
         "  --tool N                  which tool the hand opens with (0 axe, 1 pick, 2 bow)\n"
         "  --bow PATH --arrow PATH   the bow's draw strip, and what it looses\n"
         "  --draw-hold               hold the draw, as --swing-hold holds the swing\n"
@@ -326,6 +328,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--shot-loose") argInt(argc, argv, i, &o->shotLoose);
         else if (a == "--no-axe") o->axeOn = false;
         else if (a == "--swing-log") o->swingLog = true;
+        else if (a == "--fell-test") o->fellTest = true;
         else if (a == "--swing-hold") o->swingHold = true;
         else if (a == "--time") {
             float h = 7.0f;

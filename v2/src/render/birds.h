@@ -217,6 +217,17 @@ class Birds {
                 const float dx = b.p.x - player.x, dz = b.p.z - player.z;
                 if (dx * dx + dz * dz > kBirdKeepM * kBirdKeepM) b.live = false;
             }
+            // ...AND THE BRANCH HAS TO STILL BE THERE.
+            //
+            // A perch is a position, taken once and then held. When the tree
+            // under it is felled the position does not stop being valid on its
+            // own, so the bird sits in the air where the crown used to be. This
+            // asks the same question tryPerch asked -- is there a solid column
+            // here, at about this height -- of whatever trees exist NOW, and
+            // lets go if the answer has changed. A bird that lets go is not
+            // deleted: the loop below re-perches it on the next tree it can
+            // find, which is what a startled bird does anyway.
+            if (b.live && !stillPerched(b, trees)) b.live = false;
             if (!b.live) tryPerch(&b, trees, player, uint32_t(i));
             if (b.live) tick(&b);
         }
@@ -459,6 +470,22 @@ class Birds {
         b->q = q;
         b->fiWas = fi;
         b->started = true;
+    }
+
+    // Is there still a branch under this bird?
+    //
+    // Half a metre of tolerance, because the perch was taken from a column top
+    // and a crown re-meshed by an axe can lose a voxel without ceasing to be a
+    // branch. A dropped tree has no columns at all -- dropSolid clears col --
+    // so a bird on a felled tree finds nothing anywhere and lets go.
+    bool stillPerched(const Bird &b, const std::vector<Solid> &trees) const {
+        for (const Solid &s : trees) {
+            if (!s.col || s.standable) continue;
+            float y = 0.0f;
+            if (!solidColumnTop(s, b.p.x, b.p.z, VOXEL_M, &y)) continue;
+            if (fabsf(y - b.p.y) < 0.5f) return true;
+        }
+        return false;
     }
 
     // -----------------------------------------------------------------------

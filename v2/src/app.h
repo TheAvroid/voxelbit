@@ -28,6 +28,8 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <chrono>
+#include <thread>
 #include "Core/SampleApp.h"
 #include "Core/API/BlendState.h"
 #include "Core/API/RenderContext.h"
@@ -500,6 +502,8 @@ struct Options {
     // and the blows repeat while the button is held -- but it is the only way
     // to see the reach and the aim without a bite to look at.
     bool swingLog = false;
+    // Fell a tree headlessly and print the body's trajectory -- see runFellTest.
+    bool fellTest = false;
     // Hold the swing from the first frame, exactly as --shot-walk holds W. It
     // exists for the same reason that one does: an animation you can only see
     // by holding a mouse button cannot be photographed, measured or regression
@@ -1159,6 +1163,11 @@ class ForestApp : public SampleApp {
             shutdown(0);
             return;
         }
+        if (opt_.fellTest) {
+            runFellTest();
+            shutdown(0);
+            return;
+        }
         if (opt_.outGiven) {
             tracer_.setDemodulate(opt_.demodulate);
             renderOffline(ctx);
@@ -1421,6 +1430,28 @@ class ForestApp : public SampleApp {
         // the renderer or the streamer.
         const auto tu0 = std::chrono::steady_clock::now();
         if (world_.update(pos_)) tracer_.resetAccumulation();
+
+        // ---- AND THE SPAWN IS CHECKED ONCE THERE IS A WORLD TO CHECK IT
+        // AGAINST ------------------------------------------------------------
+        //
+        // nudgeOutOfSolids runs in onLoad, and onLoad happens BEFORE a single
+        // chunk has been streamed -- world_.update, one line above this, is
+        // what streams them. So the check that is supposed to keep the player
+        // out of a boulder ran against a world with no boulders in it, found
+        // nothing, and passed. That is the whole of "you spawned me inside a
+        // rock": the test was right and it was asked too early.
+        //
+        // Asked again here, the first frame the chunk under the player exists.
+        // placeOnGround runs unconditionally afterwards because the height is
+        // wrong for the same reason the position was: groundInfo could not see
+        // a rock that had not been streamed, so it put the player at terrain
+        // level -- which, under a boulder, is inside it.
+        if (!spawnSettled_ && world_.chunkAt(player_.pos)) {
+            spawnSettled_ = true;
+            nudgeOutOfSolids();
+            player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+            pos_ = player_.eyePosition();
+        }
         const float updateMs =
             float(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tu0)
                       .count());
@@ -3558,6 +3589,9 @@ class ForestApp : public SampleApp {
     static constexpr long kLaunchNudgeUpPx = 20;
 
     void restoreWindowPlacement() {
+        // NO WINDOW, NO WINDOW WORK. --out renders offline and there is no
+        // window to ask; without this the null deref took the whole flag out.
+        if (!getWindow()) return;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         if (!hwnd) return;
 
@@ -3613,6 +3647,7 @@ class ForestApp : public SampleApp {
     void saveWindowPlacement() {
         const std::string path = windowStateFile();
         if (path.empty()) return;
+        if (!getWindow()) return;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         if (!hwnd) return;
         // A minimised or maximised window reports a position that is not the
@@ -3863,7 +3898,11 @@ class ForestApp : public SampleApp {
             // Gathered ONCE for the whole band rather than per body: walkWorld
             // runs collidersNear, and asking it per chip per frame would be the
             // expensive part of a feature that is otherwise nearly free.
-            syncModelColliders();
+            // THE ROCKS ARE NOT HULLS ANY MORE. What a loose piece falls
+            // against is built where the piece is, off the damaged voxels, and
+            // has the hole in it -- see World::buildWindow. A hull of the whole
+            // boulder standing beside that would put back exactly the shape
+            // that buried every previous version of the chunk.
             // Gathered ONCE for the whole band: walkWorld runs collidersNear,
             // and asking it per chip per frame would be the expensive part of
             // a feature that is otherwise nearly free.
@@ -3896,53 +3935,12 @@ class ForestApp : public SampleApp {
     // a DAMAGED boulder -- carrying its own colTop -- replace its own actor
     // rather than keeping the pristine shape.
     // -----------------------------------------------------------------------
-    void syncModelColliders() {
-        world_.collidersNear(player_.pos, kRockPhysM, &physSolids_);
-        seen_.clear();
-        for (const Solid &s : physSolids_) {
-            // STANDABLE ONLY. A trunk is not a floor: its colTop is the top of
-            // the CANOPY, twenty metres up, so giving one a height field would
-            // hang an invisible tree-shaped shelf in the air for chips to land
-            // on. groundInfo refuses trunks for exactly this reason.
-            if (!s.standable) continue;
-            if (!s.col || s.msx <= 1 || s.msz <= 1 || s.decorSlot < 0) continue;
-            const RockKey k{s.ownerChunk, s.decorSlot, s.col};
-            seen_.insert(k);
-            if (rockActors_.count(k)) continue;
-            const int h = physics_.addStaticConvex(s.col, s.msx, s.msz, VOXEL_M,
-                                                  Vec3{s.tx, s.baseY, s.tz},
-                                                  float(s.yaw & 3) * 1.57079633f);
-            if (h >= 0) rockActors_[k] = h;
-        }
-        for (auto it = rockActors_.begin(); it != rockActors_.end();) {
-            if (seen_.count(it->first)) { ++it; continue; }
-            physics_.removeStatic(it->second);
-            it = rockActors_.erase(it);
-        }
-    }
-
-    // Identity of one placed model: which chunk holds it, which slot, and WHICH
-    // SHAPE -- a boulder that has been broken carries its own colTop, and the
-    // pointer changing is what retires the old actor.
-    struct RockKey {
-        long long chunk;
-        int slot;
-        const int16_t *shape;
-        bool operator<(const RockKey &o) const {
-            if (chunk != o.chunk) return chunk < o.chunk;
-            if (slot != o.slot) return slot < o.slot;
-            return shape < o.shape;
-        }
-    };
-    static constexpr float kRockPhysM = 14.0f;
-    std::vector<Solid> physSolids_;
-    std::map<RockKey, int> rockActors_;
-    std::set<RockKey> seen_;
 
     void rebuildGroundPatch() {
         const int n = kGroundPatchCols;
-        const int i0 = int(std::floor(player_.pos.x / VOXEL_M)) - n / 2;
-        const int j0 = int(std::floor(player_.pos.z / VOXEL_M)) - n / 2;
+        const int step = kGroundPatchStep;
+        const int i0 = int(std::floor(player_.pos.x / VOXEL_M)) - (n / 2) * step;
+        const int j0 = int(std::floor(player_.pos.z / VOXEL_M)) - (n / 2) * step;
         groundPatch_.resize(size_t(n) * size_t(n));
         // THE MEMO IS THE WHOLE COST HERE. heightVox is several octaves of
         // noise; asked cold, 16 384 columns is a chunk's worth of meshing on
@@ -3953,15 +3951,27 @@ class ForestApp : public SampleApp {
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i)
                 groundPatch_[size_t(i) + size_t(j) * size_t(n)] =
-                    int16_t(world_.terrain.heightVox(i0 + i, j0 + j, memo));
-        physics_.setGroundPatch(groundPatch_.data(), n, i0, j0, VOXEL_M);
+                    int16_t(world_.terrain.heightVox(i0 + i * step, j0 + j * step, memo));
+        physics_.setGroundPatch(groundPatch_.data(), n, i0, j0, VOXEL_M, step);
     }
 
-    // 128 columns is 12.8 m of ground around the player, and the margin is a
-    // fifth of it: far enough that a chip cannot reach an edge inside one
-    // crossing, small enough that the rebuild is not felt.
+    // SIXTY-FOUR METRES OF GROUND, for the same 25,600 samples the sixteen
+    // metres used to cost -- 160 a side, as before, one every four voxels.
+    //
+    // The width is set by the longest thing that can fall on it. A felled pine
+    // is twenty-six metres, so its crown lands well outside a sixteen-metre
+    // patch and there was nothing under it: the tree went through the world.
+    // Nothing walks on this height field -- the player's ground is answered on
+    // the CPU against the voxel columns -- so trading resolution for reach
+    // costs a chip a few centimetres of accuracy on a slope and buys a tree a
+    // floor to land on.
+    //
+    // And it is CHEAPER in practice than what it replaces: four times the width
+    // means the player leaves it far less often, and leaving it is the only
+    // thing that rebuilds it.
     static constexpr int kGroundPatchCols = 160;
-    static constexpr float kGroundMarginM = 2.5f;
+    static constexpr int kGroundPatchStep = 4;
+    static constexpr float kGroundMarginM = 4.0f;
     std::vector<int16_t> groundPatch_;
     // WHAT THE LAST BLOW TOOK OUT, kept as a member so a swing does not
     // allocate: dig and carveModel fill it with the voxels actually removed,
@@ -3974,6 +3984,12 @@ class ForestApp : public SampleApp {
     Vec3 spoilAt_{0, 0, 0};
     // ...and the quarter turn of whatever it was cut out of.
     float spoilYaw_ = 0.0f;
+    // Whether the last blow was the one that put a tree on the ground. Read by
+    // the swing log and nothing else.
+    bool felled_ = false;
+    // Whether the spawn has been checked against a world that actually exists.
+    // See the note beside it in the frame loop.
+    bool spawnSettled_ = false;
     double simMs_ = 0.0;
 
     WalkWorld walkWorld() {
@@ -4312,6 +4328,7 @@ class ForestApp : public SampleApp {
         if (on == looking_) return;
         looking_ = on;
 
+        if (!getWindow()) return;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         if (on) {
             while (::ShowCursor(FALSE) >= 0) {}
@@ -4324,6 +4341,7 @@ class ForestApp : public SampleApp {
     }
 
     void centreCursor() {
+        if (!getWindow()) return;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         RECT rc{};
         if (!::GetClientRect(hwnd, &rc)) return;
@@ -4368,6 +4386,7 @@ class ForestApp : public SampleApp {
         if (!looking_) return false;
 
         float rx = 0.0f, ry = 0.0f;
+        if (!getWindow()) return false;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
         RECT rc{};
         POINT p{};
@@ -4577,6 +4596,7 @@ class ForestApp : public SampleApp {
                 // rest, exactly as toolTakesFor and playToolHit split the job
                 // in the engine this comes from.
                 const Blow heard = toolSfx_.blow(held_.takes(), lastSwing_);
+                felled_ = false;   // per blow, not per fell -- see the swing log
                 // -- AND A CHUNK COMES OUT OF IT ------------------------------
                 //
                 // The impact frame is where the JS engine takes its bite, and
@@ -4644,24 +4664,49 @@ class ForestApp : public SampleApp {
                         // a chunk to re-mesh; a rock is an INSTANCE that has to
                         // leave its shared model first. Same swing, same radius,
                         // two different edit paths -- see World::carveModel.
-                        if (lastSwing_.kind == Swing::Rock || lastSwing_.kind == Swing::Trunk)
+                        // BOTH ARMS BRACED, AND NOTHING BETWEEN THEM. This
+                        // has now broken twice in the same way and both times
+                        // the symptom was identical -- a rock that breaks and
+                        // gives back no chunk, while the hillside behind it
+                        // gets dug instead.
+                        //
+                        // The first time the else was unbraced and took only
+                        // the assignment. The second time a felling test was
+                        // added BETWEEN the two arms, which quietly re-bound
+                        // the else to that test: every blow on a rock then ran
+                        // dig() as well, which carved the terrain and
+                        // overwrote the spoil with air on its way past.
+                        //
+                        // So the decision is one statement with two braced
+                        // arms, and anything that wants to run afterwards runs
+                        // AFTER it.
+                        if (lastSwing_.kind == Swing::Rock || lastSwing_.kind == Swing::Trunk) {
                             dug = world_.carveModel(lastSwing_.solid, lastSwing_.eye,
                                                     lastSwing_.dir, lastSwing_.reach,
                                                     kDigRadiusVox, &spoilVol_, &spoilN_,
                                                     &spoilAt_, &spoilYaw_)
                                       ? 1u
                                       : 0u;
-                        else {
-                            // BRACED, and it matters. Without these the else
-                            // took only the assignment below it, so dig() ran
-                            // on EVERY blow -- a hit on a boulder carved the
-                            // hillside too, and then overwrote the spoil with
-                            // air, which is a rock that breaks and gives back
-                            // nothing.
+                        } else {
                             spoilYaw_ = 0.0f;   // terrain is not turned
                             dug = world_.dig(lastSwing_.point, kDigRadiusVox, &spoilVol_,
                                              &spoilN_, &spoilAt_);
                         }
+
+                        // ...AND IF THAT BLOW WAS THE ONE THAT CUT THROUGH, THE
+                        // TREE COMES DOWN. Asked of the instance the carve just
+                        // edited -- see World::fellTree, which decides by how
+                        // much of the tree is no longer standing on anything
+                        // rather than by counting blows.
+                        // ...AND WHATEVER THAT LEFT STANDING ON NOTHING COMES
+                        // DOWN. Asked after every carve on a model, rock or
+                        // tree alike -- see World::fellTree, which decides by
+                        // what is still connected to the model's bottom rather
+                        // than by what kind of thing it is.
+                        if (dug && physics_.available() &&
+                            (lastSwing_.kind == Swing::Trunk || lastSwing_.kind == Swing::Rock))
+                            felled_ = world_.fellTree(physics_, lastSwing_.solid, lastSwing_.dir,
+                                                      simMs_);
 
                         // ...AND IT DOES NOT SIMPLY VANISH. The piece that came
                         // out becomes a rigid body: thrown a little back toward
@@ -4715,6 +4760,7 @@ class ForestApp : public SampleApp {
                     if (lastSwing_.hit) std::printf("  %.2f m", lastSwing_.dist);
                     std::printf("  %s -> %s", held_.name(), kHeard[int(heard)]);
                     if (dug) std::printf("  DUG %zu chunk(s)", dug);
+                    if (felled_) std::printf("  TIMBER");
                     // WHY NOTHING HAPPENED, when nothing happened. "the pick is
                     // not working 100% of the time" is three different failures
                     // wearing one face -- the tool refused the material, the
@@ -4855,6 +4901,156 @@ class ForestApp : public SampleApp {
         const bool pass = meanRel < 0.005 && worst < 0.05;
         std::printf("  %s\n", pass ? "PASS -- the split is lossless"
                                     : "FAIL -- demodulation is not inverting");
+    }
+
+    // -----------------------------------------------------------------------
+    // WHAT A FELLED TREE ACTUALLY DOES, PRINTED, WITH NO WINDOW.
+    //
+    // This exists because the felling has now been "fixed" three times by
+    // reasoning about it and has been wrong three times. The renderer cannot be
+    // opened to look at it -- and should not be -- so the body is asked
+    // directly: fell a tree, step the solver, and print where it is and what it
+    // is doing, frame by frame.
+    //
+    // The three failures it is meant to tell apart, which look alike in a
+    // sentence and not at all in a table:
+    //
+    //   IT DOES NOT MOVE          -- the pitch never leaves zero. Something is
+    //                                holding it: a collider it cannot topple
+    //                                off, or a body that never woke.
+    //   IT BOBS                   -- y oscillates while the pitch stays put.
+    //                                That is depenetration fighting gravity.
+    //   IT FALLS AND KEEPS GOING  -- y runs away downward. Nothing under it.
+    //
+    // A fall that works looks like neither: the pitch runs from 0 to about 90
+    // degrees over a second or two, y drops once and settles, and the speeds go
+    // to nothing.
+    // -----------------------------------------------------------------------
+    void runFellTest() {
+        std::printf("\n=== FELL TEST ===\n");
+        // WHERE THE SPAWN IS, BEFORE ANYTHING ELSE. This runs before the
+        // player has been put anywhere, so pos is still the origin -- and
+        // streaming the world round the origin finds a wood nobody is standing
+        // in. The first run of this printed "no tree within 80 m" for exactly
+        // that reason.
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+
+        // The world has to exist before anything can be felled in it, and the
+        // chunks are meshed on worker threads -- so this gives them time rather
+        // than spinning on a queue they have not filled yet.
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        std::printf("  spawn (%.1f, %.1f, %.1f)\n", player_.pos.x, player_.pos.y,
+                    player_.pos.z);
+
+        // NOT NAMED 'near'. windows.h still defines near and far as empty macros
+        // from the segmented-memory era, so `std::vector<Solid> near;` compiles
+        // as `std::vector<Solid> ;` and the errors name neither of them. This
+        // file already carries the same note twice; here is the third time.
+        std::vector<Solid> around;
+        world_.collidersNear(player_.pos, 120.0f, &around);
+        const Solid *tree = nullptr;
+        float best = 1e30f;
+        for (const Solid &s : around) {
+            if (s.modelKind != 0 || !s.vol || s.hx <= 0.0f) continue;
+            const float dx = s.cx - player_.pos.x, dz = s.cz - player_.pos.z;
+            if (dx * dx + dz * dz < best) { best = dx * dx + dz * dz; tree = &s; }
+        }
+        if (!tree) {
+            std::printf("  no tree within 80 m of the spawn -- try another --spawn\n");
+            return;
+        }
+        const Solid so = *tree;
+        std::printf("  tree at (%.1f, %.1f, %.1f)  model %d  %d x %d voxels\n", so.tx, so.baseY,
+                    so.tz, int(so.modelIndex), int(so.msx), int(so.msz));
+        // STAND WHERE THE TREE IS. The ground patch follows the player, and a
+        // player who has just chopped a tree down is next to it -- so the test
+        // has to be too, or it measures a fall over ground that was never
+        // streamed into the scene.
+        player_.placeOnGround(walkWorld(), so.cx, so.cz);
+
+        // ---- cut it through, aiming at the TRUNK from beside it ------------
+        //
+        // NOT THE MIDDLE OF ITS BOX. A birch is a trunk with the crown leaning
+        // off it, so the box centre can be five metres from the wood -- the
+        // same trap the placement fell into. The trunk is where the model is
+        // solid at its own row zero, which is its underside.
+        double bx = 0.0, bz = 0.0;
+        long nb = 0;
+        for (int mz = 0; mz < int(so.msz); ++mz)
+            for (int mx = 0; mx < int(so.msx); ++mx)
+                if (solidVoxel(so, mx, 0, mz)) {
+                    bx += double(mx) + 0.5;
+                    bz += double(mz) + 0.5;
+                    ++nb;
+                }
+        if (!nb) {
+            std::printf("  the model has nothing at its base\n");
+            return;
+        }
+        float wx = 0.0f, wz = 0.0f;
+        solidWorldSpace(so, float(bx / double(nb)) * VOXEL_M, float(bz / double(nb)) * VOXEL_M,
+                        &wx, &wz);
+        std::printf("  trunk at (%.1f, %.1f)\n", wx, wz);
+        // SWEPT ACROSS THE TRUNK, not drilled into it. Every blow from the
+        // same point along the same ray eats a TUNNEL through the wood, and a
+        // tunnel severs nothing -- forty of those left the tree standing. A
+        // player's aim wanders across the cut, so this does too.
+        const float cutY = so.baseY + 1.2f;
+        int blows = 0;
+        bool down = false;
+        for (; blows < 60 && !down; ++blows) {
+            const float off = (float(blows % 11) - 5.0f) * 0.12f;
+            const Vec3 eye{wx + 3.0f, cutY + (float(blows % 3) - 1.0f) * 0.1f, wz + off};
+            const Vec3 dir{-1.0f, 0.0f, 0.0f};
+            if (!world_.carveModel(so, eye, dir, 5.0f, kDigRadiusVox, &spoilVol_, &spoilN_,
+                                   &spoilAt_, &spoilYaw_))
+                continue;
+            down = world_.fellTree(physics_, so, dir, simMs_);
+        }
+        if (!down) {
+            std::printf("  %d blows and it never came down\n", blows);
+            return;
+        }
+        std::printf("  felled after %d blows\n\n", blows);
+        std::printf("  %6s %9s %9s %9s %9s %9s %9s\n", "ms", "x", "y", "z", "pitch", "fall m/s",
+                    "spin r/s");
+
+        // ---- and then watch it -------------------------------------------
+        //
+        // THE GROUND HAS TO BE IN THE SCENE. The frame loop builds the height
+        // field patch when the player leaves the last one; nothing here does,
+        // so without this the tree falls through a world with no floor in it --
+        // which is a fault in the test rather than in the game, and the first
+        // run of this spent its whole trace proving it.
+        const float dt = 1.0f / 60.0f;
+        for (int f = 0; f < 900; ++f) {
+            if (!physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+                rebuildGroundPatch();
+            physics_.step(dt);
+            simMs_ += double(dt) * 1000.0;
+            world_.updateDebris(physics_, player_.eyePosition(), simMs_,
+                                [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
+            if ((f % 30) != 0) continue;
+            for (int i = 0; i < 512; ++i) {
+                Vec3 p{0, 0, 0}, lin{0, 0, 0}, ang{0, 0, 0};
+                float q[4] = {0, 0, 0, 1};
+                if (!world_.debrisPose(i, &p, q)) continue;
+                world_.debrisVel(physics_, i, &lin, &ang);
+                // How far off upright the model's own +Y has been tipped.
+                const float uy = 1.0f - 2.0f * (q[0] * q[0] + q[2] * q[2]);
+                const float pitch = acosf(uy < -1.0f ? -1.0f : (uy > 1.0f ? 1.0f : uy)) *
+                                    57.29578f;
+                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f\n",
+                            double(f) * dt * 1000.0, p.x, p.y, p.z, pitch, -lin.y,
+                            sqrtf(ang.x * ang.x + ang.y * ang.y + ang.z * ang.z));
+                break;
+            }
+        }
+        std::printf("\n  (pitch 0 = still standing, 90 = flat on the ground)\n");
     }
 
     void renderOffline(Falcor::RenderContext *ctx) {

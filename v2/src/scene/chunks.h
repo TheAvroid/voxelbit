@@ -660,7 +660,9 @@ class ChunkMesher {
                             const int bZ = (yaw & 1) ? f.baseX : f.baseZ;
                             if (bX > 0 && bZ > 0) {
                                 const int base = decorSink(0, k, f.sy, seed, cell);
-                                const int drop = groundDrop(ci, cj, h, bX, bZ, memo);
+                                int oi = 0, oj = 0;
+                                baseOffsetVox(f, yaw, &oi, &oj);
+                                const int drop = groundDrop(ci, cj, h, bX, bZ, memo, oi, oj);
                                 extraSink = maxi(0, drop - base);
                             }
                         }
@@ -1076,20 +1078,57 @@ class ChunkMesher {
             }
     }
 
-    int groundDrop(int ci, int cj, int h, int bx, int bz, TerrainMemo &memo) const {
+    // -----------------------------------------------------------------------
+    // HOW FAR THE GROUND FALLS UNDER A MODEL'S BASE.
+    //
+    // WHERE THE BASE IS, NOT WHERE THE BOX IS, and that distinction is the
+    // whole bug this carries the fix for. A model is stood on the terrain
+    // height at its placement column, which is the middle of its BOUNDING BOX
+    // -- and for a birch the bounding box is centred on the CROWN. Birch 7 and
+    // birch 10 have their trunks 5.19 m and 5.40 m from the middle of their own
+    // box, so the ground was being measured five metres from the tree and the
+    // trunk was left standing over whatever the ground did where it actually
+    // is. Measured: 6 trees in 958 hanging in the air, up to 1.10 m of daylight
+    // under them, and every one of them a birch 7 or a birch 10.
+    //
+    // `oi`/`oj` is that offset, in world voxels, already turned by the
+    // placement's quarter turn.
+    //
+    // EVERY COLUMN, not a sample of them. A base footprint is a trunk -- a
+    // couple of dozen columns -- and a five-by-five sample of it can step over
+    // the one that is low. Sampling coarsely to save work on something this
+    // small was buying nothing and could only ever be wrong.
+    // -----------------------------------------------------------------------
+    int groundDrop(int ci, int cj, int h, int bx, int bz, TerrainMemo &memo, int oi = 0,
+                   int oj = 0) const {
         if (bx <= 0 || bz <= 0) return 0;
-        const int nx = maxi(2, mini(6, bx / 4 + 1));
-        const int nz = maxi(2, mini(6, bz / 4 + 1));
+        const int cx = ci + oi, cz = cj + oj;
         const int hx = bx / 2, hz = bz / 2;
+        // A cap, for a footprint big enough that walking it column by column
+        // would cost something -- a boulder, not a trunk. 64 a side is 4,096
+        // lookups, and the stride only ever coarsens something already large.
+        const int stepX = maxi(1, bx / 64), stepZ = maxi(1, bz / 64);
         int lowest = h;
-        for (int sj = 0; sj < nz; ++sj)
-            for (int si = 0; si < nx; ++si) {
-                const int x = ci - hx + (bx * si) / (nx - 1);
-                const int z = cj - hz + (bz * sj) / (nz - 1);
-                const int g = terrain_.heightVox(x, z, memo);
+        for (int dz = 0; dz <= bz; dz += stepZ)
+            for (int dx = 0; dx <= bx; dx += stepX) {
+                const int g = terrain_.heightVox(cx - hx + dx, cz - hz + dz, memo);
                 if (g < lowest) lowest = g;
             }
         return maxi(0, h - lowest);
+    }
+
+    // The offset from a model's box centre to its BASE centre, in world voxels,
+    // turned by the placement's quarter turn. Footprint::cx/cz is that offset
+    // in the model's own frame, in metres -- see ModelCollider::baseCX.
+    static void baseOffsetVox(const Footprint &f, int yaw, int *oi, int *oj) {
+        const int dx = int(lroundf(f.cx / VOXEL_M));
+        const int dz = int(lroundf(f.cz / VOXEL_M));
+        switch (yaw & 3) {
+            case 1: *oi = dz;  *oj = -dx; break;
+            case 2: *oi = -dx; *oj = -dz; break;
+            case 3: *oi = -dz; *oj = dx;  break;
+            default: *oi = dx; *oj = dz;  break;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1505,7 +1544,9 @@ class ChunkMesher {
                     const int footZ = (yaw & 1) ? f.baseX : f.baseZ;
                     if (footX > 0 && footZ > 0) {
                         const int base = decorSink(kind, k, f.sy, seed, cell);
-                        const int drop = groundDrop(ci, cj, h, footX, footZ, memo);
+                        int oi = 0, oj = 0;
+                        baseOffsetVox(f, yaw, &oi, &oj);
+                        const int drop = groundDrop(ci, cj, h, footX, footZ, memo, oi, oj);
                         const int total = maxi(base, drop);
                         if (f.sy > 0 && float(total) > maxBuryFrac * float(f.sy)) continue;
                         extraSink = maxi(0, total - base);

@@ -49,33 +49,35 @@
 #endif
 
 #include "../core/vecmath.h"
+#include "../scene/voxbox.h"
 
 namespace v2 {
 
 #if V2_HAS_PHYSX
 // ---------------------------------------------------------------------------
-// A PIECE DOES NOT COLLIDE WITH THE ROCK IT CAME OUT OF.
+// A PIECE COLLIDES WITH EVERYTHING, INCLUDING THE ROCK IT CAME OUT OF.
 //
-// In the engine this comes from, a chunk that breaks off is REMOVED from the
-// world in the same instant it becomes a body -- so the world has a hole
-// exactly where the body is and the two cannot overlap. Here the hole is real
-// in the rock's MESH, but the rock's collider is a convex hull, and a hull
-// cannot have a dent: a 30 cm bite out of a 20 m boulder leaves it completely
-// unchanged. The piece is therefore born inside a collider that does not know
-// the hole exists, and no amount of pushing it out or slowing its fall changes
-// that -- it grinds down through the stone at about seven tenths of free fall.
+// This used to do the opposite, and the note that stood here explained at
+// length why the pair had to be suppressed: the rock's collider was a convex
+// hull, a hull cannot have a dent, and a piece born in the bite was therefore
+// born inside solid stone and ground down through it. Suppressing the pair was
+// the least bad way to live with a shape that was not the rock.
 //
-// So the pair is suppressed instead, which is what the voxel engine gets for
-// free. word0 on a static is that rock's id; word1 on a loose body is the rock
-// it was cut from. Everything else collides normally -- the ground, the other
-// boulders, other pieces.
+// The shape is the rock now -- scene/voxbox.h, a window of boxes merged off the
+// damaged instance's own voxels, with the hole really in it -- so there is
+// nothing left to suppress and the piece is simply a body among bodies. What
+// this shader still does is ask for CCD on everything dynamic: a 30 cm chip
+// falling off a 20 m boulder passes through more than its own thickness in a
+// frame, and a discrete solver would let it through the face it should have
+// bounced off.
 // ---------------------------------------------------------------------------
-inline physx::PxFilterFlags v2LooseFilter(physx::PxFilterObjectAttributes, physx::PxFilterData d0,
-                                          physx::PxFilterObjectAttributes, physx::PxFilterData d1,
+inline physx::PxFilterFlags v2LooseFilter(physx::PxFilterObjectAttributes a0, physx::PxFilterData,
+                                          physx::PxFilterObjectAttributes a1, physx::PxFilterData,
                                           physx::PxPairFlags &pairFlags, const void *, physx::PxU32) {
-    if ((d0.word0 != 0u && d0.word0 == d1.word1) || (d1.word0 != 0u && d1.word0 == d0.word1))
-        return physx::PxFilterFlag::eSUPPRESS;
     pairFlags = physx::PxPairFlag::eCONTACT_DEFAULT;
+    if (physx::PxFilterObjectIsKinematic(a0) && physx::PxFilterObjectIsKinematic(a1))
+        return physx::PxFilterFlag::eSUPPRESS;
+    pairFlags |= physx::PxPairFlag::eDETECT_CCD_CONTACT;
     return physx::PxFilterFlag::eDEFAULT;
 }
 #endif
@@ -125,6 +127,11 @@ class Physics {
         dispatcher_ = physx::PxDefaultCpuDispatcherCreate(2);
         desc.cpuDispatcher = dispatcher_;
         desc.filterShader = v2LooseFilter;   // see the note above it
+        // CONTINUOUS, because the things falling here are small and the things
+        // they fall past are thin. A chip is 30 cm and reaches 5 m/s inside a
+        // second, which is more than a third of its own size in one 60 Hz step
+        // -- discrete collision lets it pass through the lip it was resting on.
+        desc.flags |= physx::PxSceneFlag::eENABLE_CCD;
         scene_ = physics_->createScene(desc);
         if (!scene_) {
             status_ = "createScene failed";
@@ -132,6 +139,15 @@ class Physics {
         }
 
         material_ = physics_->createMaterial(0.6f, 0.5f, 0.1f);
+        // STONE ON STONE, which is what makes it read as rock rather than as a
+        // prop. High friction so a chip grips the face it lands on and does not
+        // skate down it, and almost no restitution because granite does not
+        // bounce -- a chip that bounces is the single loudest tell that a
+        // physics body is not a rock.
+        stone_ = physics_->createMaterial(0.85f, 0.72f, 0.03f);
+        // WOOD ON EARTH. A felled trunk digs in and stays where it lands; it
+        // does not skid and it certainly does not bounce.
+        timber_ = physics_->createMaterial(0.75f, 0.62f, 0.0f);
         controllers_ = PxCreateControllerManager(*scene_);
         if (!controllers_) {
             status_ = "PxCreateControllerManager failed";
@@ -158,9 +174,23 @@ class Physics {
     // a chip off a rock lives about a second, and a felled tree lands beside
     // the person who felled it. Sized in COLUMNS.
     // -----------------------------------------------------------------------
-    bool setGroundPatch(const int16_t *heightVox, int n, int i0, int j0, float voxelM) {
+    // `stepVox` is how many world voxels lie between two samples. It exists
+    // because a FELLED TREE is twenty-six metres long: a patch at one sample
+    // per voxel is sixteen metres across for 25,600 samples, so the crown end
+    // of a falling pine swings straight off the edge of it and the tree drops
+    // through the world. Sampling every fourth column covers sixty-four metres
+    // for the SAME number of samples -- and because the patch is four times
+    // wider, the player leaves it four times less often, so the rebuild that
+    // was the reason to keep it small happens less than it used to.
+    //
+    // Nothing walks on this. The player's own ground is answered on the CPU by
+    // Player::groundInfo against the voxel columns; this height field exists
+    // only for the loose bodies, and a chip is happy on 40 cm samples of a
+    // surface that was smooth to begin with.
+    bool setGroundPatch(const int16_t *heightVox, int n, int i0, int j0, float voxelM,
+                        int stepVox = 1) {
 #if !V2_HAS_PHYSX
-        (void)heightVox; (void)n; (void)i0; (void)j0; (void)voxelM;
+        (void)heightVox; (void)n; (void)i0; (void)j0; (void)voxelM; (void)stepVox;
         return false;
 #else
         if (!ready_ || !heightVox || n <= 1) return false;
@@ -186,13 +216,15 @@ class Physics {
             groundActor_->release();
             groundActor_ = nullptr;
         }
-        // heightScale turns the int16 sample into metres and the two axis
-        // scales turn a sample index into one. All three are the voxel here,
-        // because the samples ARE voxel heights.
-        const physx::PxHeightFieldGeometry geo(hf, physx::PxMeshGeometryFlags(), voxelM, voxelM,
-                                               voxelM);
+        // heightScale turns the int16 sample into metres; the two axis scales
+        // turn a sample index into one. The heights are still voxels, so that
+        // scale stays the voxel -- but a sample is now `stepVox` of them apart.
+        const float axisM = voxelM * float(stepVox < 1 ? 1 : stepVox);
+        const physx::PxHeightFieldGeometry geo(hf, physx::PxMeshGeometryFlags(), voxelM, axisM,
+                                               axisM);
         groundActor_ = physics_->createRigidStatic(
             physx::PxTransform(physx::PxVec3(float(i0) * voxelM, 0.0f, float(j0) * voxelM)));
+        groundStep_ = (stepVox < 1) ? 1 : stepVox;
         physx::PxRigidActorExt::createExclusiveShape(*groundActor_, geo, *material_);
         scene_->addActor(*groundActor_);
         hf->release();   // the shape holds its own reference now
@@ -207,9 +239,10 @@ class Physics {
     // can fall off the edge of it.
     bool groundCovers(float wx, float wz, float voxelM, float marginM) const {
         if (groundN_ <= 0) return false;
+        const float axisM = voxelM * float(groundStep_);
         const float x0 = float(groundI0_) * voxelM, z0 = float(groundJ0_) * voxelM;
-        const float x1 = x0 + float(groundN_ - 1) * voxelM;
-        const float z1 = z0 + float(groundN_ - 1) * voxelM;
+        const float x1 = x0 + float(groundN_ - 1) * axisM;
+        const float z1 = z0 + float(groundN_ - 1) * axisM;
         return wx > x0 + marginM && wx < x1 - marginM && wz > z0 + marginM && wz < z1 - marginM;
     }
 
@@ -516,6 +549,262 @@ class Physics {
 #endif
     }
 
+    // -----------------------------------------------------------------------
+    // A WINDOW OF STONE, AS BOXES.
+    //
+    // The collider that finally has the hole in it. scene/voxbox.h merges a few
+    // metres cube of the DAMAGED model's own voxels into boxes -- exactly the
+    // solid cells, no more and no less, verified cell by cell in scratch's
+    // window_probe -- and they all go on one static actor.
+    //
+    // NO COOKING. Boxes are the one shape PhysX takes as-is, which is what
+    // makes this affordable on the frame a blow lands: a couple of hundred
+    // shapes created, no BVH built, no mesh cleaned. The actor sits at the
+    // origin and every box carries its own world centre as a local pose, so
+    // there is no transform to get wrong.
+    // -----------------------------------------------------------------------
+    int addStaticBoxes(const VoxBox *boxes, int n) {
+#if !V2_HAS_PHYSX
+        (void)boxes; (void)n;
+        return -1;
+#else
+        if (!ready_ || !boxes || n <= 0) return -1;
+        physx::PxRigidStatic *a = physics_->createRigidStatic(physx::PxTransform(physx::PxIdentity));
+        if (!a) return -1;
+        for (int k = 0; k < n; ++k) {
+            const VoxBox &b = boxes[k];
+            physx::PxShape *sh = physics_->createShape(
+                physx::PxBoxGeometry(b.hx, b.hy, b.hz), *stone_, true);
+            if (!sh) continue;
+            sh->setLocalPose(physx::PxTransform(physx::PxVec3(b.cx, b.cy, b.cz)));
+            a->attachShape(*sh);
+            sh->release();   // the actor holds it now
+        }
+        if (a->getNbShapes() == 0) { a->release(); return -1; }
+        scene_->addActor(*a);
+        for (size_t k = 0; k < statics_.size(); ++k)
+            if (!statics_[k]) { statics_[k] = a; return int(k); }
+        statics_.push_back(a);
+        return int(statics_.size()) - 1;
+#endif
+    }
+
+    // -----------------------------------------------------------------------
+    // THE CHUNK ITSELF, AS THE SHAPE IT ACTUALLY IS.
+    //
+    // A convex hull cooked from the piece's own voxel corners. A box would
+    // tumble like a box -- flat faces, hard stops, a die rolling -- and a bite
+    // is a rough ball, so the hull of its corners rolls and settles the way a
+    // stone does. Cooking a few hundred points is well under a tenth of a
+    // millisecond; this is not the cook that was ever expensive.
+    //
+    // Points come in RELATIVE TO THE CENTRE OF MASS, so the hull is centred on
+    // the body's origin and the inertia PhysX computes is about the right axis.
+    // A piece rotating about a point that is not its middle is the difference
+    // between tumbling and orbiting.
+    // -----------------------------------------------------------------------
+    int addChunkBody(const Vec3 *pts, int n, const Vec3 &centre, float yawRad, float density) {
+#if !V2_HAS_PHYSX
+        (void)pts; (void)n; (void)centre; (void)yawRad; (void)density;
+        return -1;
+#else
+        if (!ready_ || !pts || n < 8) return -1;
+        ++convexTried_;
+        // NOT `cloud(size_t(n))`. That is a function declaration -- the most
+        // vexing parse -- and the error it gives names the subscript below it.
+        std::vector<physx::PxVec3> cloud;
+        cloud.resize(size_t(n));
+        for (int k = 0; k < n; ++k) cloud[size_t(k)] = physx::PxVec3(pts[k].x, pts[k].y, pts[k].z);
+
+        physx::PxConvexMeshDesc cd;
+        cd.points.count = physx::PxU32(cloud.size());
+        cd.points.stride = sizeof(physx::PxVec3);
+        cd.points.data = cloud.data();
+        cd.flags = physx::PxConvexFlag::eCOMPUTE_CONVEX | physx::PxConvexFlag::eFAST_INERTIA_COMPUTATION;
+        // A CHIP DOES NOT NEED A HUNDRED FACES. Twenty-four is enough to roll
+        // convincingly and keeps both the cook and the contact generation
+        // cheap; the shape is a rough ball either way.
+        cd.vertexLimit = 24;
+        physx::PxCookingParams cp(physics_->getTolerancesScale());
+        cp.suppressTriangleMeshRemapTable = true;
+        physx::PxConvexMesh *cm =
+            PxCreateConvexMesh(cp, cd, physics_->getPhysicsInsertionCallback());
+        if (!cm) return -1;
+
+        // BORN ALREADY TURNED, because the hull is in the model's voxel axes
+        // and the hole it has to fit is in the world's. Same quarter turn the
+        // drawn mesh wears.
+        physx::PxRigidDynamic *a = physics_->createRigidDynamic(
+            physx::PxTransform(physx::PxVec3(centre.x, centre.y, centre.z),
+                               physx::PxQuat(yawRad, physx::PxVec3(0.0f, 1.0f, 0.0f))));
+        if (!a) { cm->release(); return -1; }
+        physx::PxShape *sh = physx::PxRigidActorExt::createExclusiveShape(
+            *a, physx::PxConvexMeshGeometry(cm), *stone_);
+        cm->release();
+        if (!sh) { a->release(); return -1; }
+        physx::PxRigidBodyExt::updateMassAndInertia(*a, density);
+        a->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, true);
+        // IT NEVER GOES COMPLETELY STILL. A chip is collected half a second
+        // after it comes loose, and a body that falls asleep in that time sits
+        // frozen for the rest of it -- which is the "wobbles and then stops"
+        // this used to do. Sleeping off, and barely any angular damping, so
+        // what motion the fall gave it stays with it until it is picked up.
+        a->setSleepThreshold(0.0f);
+        a->setAngularDamping(0.02f);
+        a->setLinearDamping(0.01f);
+        // The piece is NOT born penetrating anything -- the window has the hole
+        // in it -- so this is only a guard against a rebuilt window catching it
+        // mid-fall. Slow enough that a correction reads as settling.
+        a->setMaxDepenetrationVelocity(1.5f);
+        a->setSolverIterationCounts(8, 4);
+        scene_->addActor(*a);
+        ++convexMade_;
+        for (size_t k = 0; k < bodies_.size(); ++k)
+            if (!bodies_[k]) { bodies_[k] = a; return int(k); }
+        bodies_.push_back(a);
+        return int(bodies_.size()) - 1;
+#endif
+    }
+
+    // -----------------------------------------------------------------------
+    // A WHOLE TREE, AS SOMETHING THAT CAN FALL OVER.
+    //
+    // A DYNAMIC COMPOUND OF BOXES, and the reason it is not a convex hull is
+    // the shape of a tree: the hull of a pine is a fat cone, so a felled one
+    // would come to rest balanced on its canopy with the trunk in the air. The
+    // boxes are the tree's own voxels, coarsened until the count is affordable
+    // -- see World::fellTree -- so it topples about its butt, lands along its
+    // length, and lies there the way a felled tree does.
+    //
+    // THE BOXES ARE IN THE MODEL'S OWN FRAME, with the actor standing at the
+    // model's origin corner wearing the model's quarter turn. That is exactly
+    // the frame the drawn mesh is in, so the shape the solver holds and the
+    // tree you can see are the same object and no offset has to be kept in step.
+    //
+    // updateMassAndInertia works the mass frame out from the shapes themselves,
+    // which is what makes the fall look right: a tree is nearly all trunk and
+    // the inertia of a twenty-six metre lever is what sets how slowly it goes
+    // over.
+    // -----------------------------------------------------------------------
+    int addCompoundBody(const VoxBox *boxes, int n, const Vec3 &origin, float yawRad,
+                        float density) {
+#if !V2_HAS_PHYSX
+        (void)boxes; (void)n; (void)origin; (void)yawRad; (void)density;
+        return -1;
+#else
+        if (!ready_ || !boxes || n <= 0) return -1;
+        physx::PxRigidDynamic *a = physics_->createRigidDynamic(
+            physx::PxTransform(physx::PxVec3(origin.x, origin.y, origin.z),
+                               physx::PxQuat(yawRad, physx::PxVec3(0.0f, 1.0f, 0.0f))));
+        if (!a) return -1;
+        for (int k = 0; k < n; ++k) {
+            const VoxBox &b = boxes[k];
+            physx::PxShape *sh =
+                physics_->createShape(physx::PxBoxGeometry(b.hx, b.hy, b.hz), *timber_, true);
+            if (!sh) continue;
+            sh->setLocalPose(physx::PxTransform(physx::PxVec3(b.cx, b.cy, b.cz)));
+            a->attachShape(*sh);
+            sh->release();
+        }
+        if (a->getNbShapes() == 0) { a->release(); return -1; }
+        physx::PxRigidBodyExt::updateMassAndInertia(*a, density);
+        a->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, true);
+        a->setSleepThreshold(0.05f);
+        // A THUMP, NOT A CARTWHEEL. Traced landing a felled pine: the impact
+        // put 12.67 rad/s into a body that had been turning at 1.5, and it
+        // cartwheeled for seven seconds before it settled. A trunk is long and
+        // thin, so a hard contact at one end is an enormous lever, and PhysX is
+        // right about all of it -- it is just not what a tree does. Capping the
+        // turn rate and damping it hard is the difference between a tree coming
+        // down and a tree being thrown.
+        a->setMaxAngularVelocity(2.5f);
+        a->setAngularDamping(0.55f);
+        a->setLinearDamping(0.10f);
+        a->setMaxDepenetrationVelocity(1.0f);
+        // MORE ITERATIONS THAN A CHIP GETS. A twenty-six metre body resting on a
+        // height field along its whole length is a long chain of contacts, and
+        // an under-solved one settles by shivering.
+        a->setSolverIterationCounts(16, 8);
+        scene_->addActor(*a);
+        for (size_t k = 0; k < bodies_.size(); ++k)
+            if (!bodies_[k]) { bodies_[k] = a; return int(k); }
+        bodies_.push_back(a);
+        return int(bodies_.size()) - 1;
+#endif
+    }
+
+    // RAISE A BODY BY dy, KEEPING ITS TURN. The backstop for something too
+    // long to be described by one clamp -- see the note in World::updateDebris
+    // on why a felled tree needs its own floor.
+    void nudgeUp(int h, float dy) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)] || dy <= 0.0f) return;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        physx::PxTransform t = a->getGlobalPose();
+        t.p.y += dy;
+        a->setGlobalPose(t);
+        if (!(a->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
+            physx::PxVec3 v = a->getLinearVelocity();
+            if (v.y < 0.0f) v.y = 0.0f;
+            a->setLinearVelocity(v);
+        }
+#else
+        (void)h; (void)dy;
+#endif
+    }
+
+    // WHAT IT WEIGHS, SAID OUTRIGHT RATHER THAN DERIVED FROM ITS SHAPE.
+    //
+    // updateMassAndInertia takes the mass from the VOLUME OF THE SHAPES, which
+    // for a tree is badly wrong twice over: the collider is coarsened, so it is
+    // several times the volume of the wood, and the wood itself is a canopy
+    // that is mostly air being treated as solid timber. Measured on the real
+    // models, that came out at 128 to 297 tonnes for a pine. This sets the mass
+    // to what a tree actually weighs and lets the inertia be scaled to match,
+    // so the shape still says how it turns and only the scale is corrected.
+    void setBodyMass(int h, float kg) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)] || kg <= 0.0f) return;
+        physx::PxRigidBodyExt::setMassAndUpdateInertia(*bodies_[size_t(h)], kg);
+#else
+        (void)h; (void)kg;
+#endif
+    }
+
+    // A NUDGE OFF THE STUMP, and the only force this feature applies.
+    //
+    // A severed trunk standing exactly upright is in equilibrium and PhysX will
+    // quite correctly leave it standing there for ever. A real one goes over
+    // because the cut is deeper on one side and the remaining fibres hinge --
+    // it falls AWAY from the axe. This is that hinge, as a small angular
+    // velocity about the cut. Everything after it is gravity.
+    void nudgeSpin(int h, const Vec3 &axis, float radPerSec) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        a->setAngularVelocity(physx::PxVec3(axis.x * radPerSec, axis.y * radPerSec,
+                                            axis.z * radPerSec));
+        a->wakeUp();
+#else
+        (void)h; (void)axis; (void)radPerSec;
+#endif
+    }
+
+    // What it is doing right now, for the hand-over to the absorb.
+    bool velocityOf(int h, Vec3 *lin, Vec3 *ang) const {
+#if !V2_HAS_PHYSX
+        (void)h; (void)lin; (void)ang;
+        return false;
+#else
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return false;
+        const physx::PxVec3 v = bodies_[size_t(h)]->getLinearVelocity();
+        const physx::PxVec3 w = bodies_[size_t(h)]->getAngularVelocity();
+        if (lin) *lin = Vec3{v.x, v.y, v.z};
+        if (ang) *ang = Vec3{w.x, w.y, w.z};
+        return true;
+#endif
+    }
+
     void removeStatic(int h) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= statics_.size() || !statics_[size_t(h)]) return;
@@ -662,6 +951,8 @@ class Physics {
     physx::PxDefaultCpuDispatcher *dispatcher_ = nullptr;
     physx::PxScene *scene_ = nullptr;
     physx::PxMaterial *material_ = nullptr;
+    physx::PxMaterial *stone_ = nullptr;
+    physx::PxMaterial *timber_ = nullptr;
     physx::PxControllerManager *controllers_ = nullptr;
     physx::PxController *controller_ = nullptr;
     physx::PxRigidStatic *groundActor_ = nullptr;
@@ -669,7 +960,7 @@ class Physics {
     std::vector<physx::PxRigidDynamic *> bodies_;
 #endif
     int convexMade_ = 0, convexTried_ = 0;
-    int groundI0_ = 0, groundJ0_ = 0, groundN_ = 0;
+    int groundI0_ = 0, groundJ0_ = 0, groundN_ = 0, groundStep_ = 1;
     float acc_ = 0.0f;
     bool ready_ = false;
     std::string status_ = "not initialised";

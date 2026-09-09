@@ -778,6 +778,62 @@ inline std::vector<Perch> collectPerches(const VoxAsset &a,
 }
 
 // ---------------------------------------------------------------------------
+// WHAT IS IN EACH BLOCK OF A MODEL: nothing, some of it, or all of it.
+//
+// A COARSE SUMMARY THAT PAYS FOR ITSELF TWICE. Re-meshing a damaged boulder
+// costs 33.8 ms because it walks all 3.2 million of its voxels and asks each
+// one about its six neighbours -- and the answer is the same for almost all of
+// them. A voxel deep inside the rock has six solid neighbours and emits
+// nothing; a voxel out in the air has nothing to emit either. Only the shell
+// matters, and the shell is a few per cent of the model.
+//
+// So the volume is summarised in blocks of kBlockVox, once, and the mesher
+// skips any block that provably cannot emit a face: an EMPTY one, and a FULL
+// one whose six neighbouring blocks are also full. What is left is the
+// boundary, which is what was wanted all along.
+//
+// The same summary answers the connectivity question -- see World::looseFraction
+// -- so a damaged instance keeps one of these and updates only the blocks a
+// bite touched, and neither of the two costs the walk again.
+// ---------------------------------------------------------------------------
+constexpr int kBlockVox = 8;
+
+enum : uint8_t { BLOCK_EMPTY = 0, BLOCK_MIXED = 1, BLOCK_FULL = 2 };
+
+inline void blockDims(int sx, int sy, int sz, int *bx, int *by, int *bz) {
+    *bx = (sx + kBlockVox - 1) / kBlockVox;
+    *by = (sy + kBlockVox - 1) / kBlockVox;
+    *bz = (sz + kBlockVox - 1) / kBlockVox;
+}
+
+inline void blockSummary(const std::vector<uint8_t> &vol, int sx, int sy, int sz,
+                         std::vector<uint8_t> *out) {
+    int bx = 0, by = 0, bz = 0;
+    blockDims(sx, sy, sz, &bx, &by, &bz);
+    out->assign(size_t(bx) * size_t(by) * size_t(bz), BLOCK_EMPTY);
+    // Counted rather than tested, so a block that runs off the edge of the
+    // model is MIXED rather than FULL -- the faces on that edge are real.
+    std::vector<uint32_t> solid(out->size(), 0), total(out->size(), 0);
+    for (int y = 0; y < sy; ++y)
+        for (int z = 0; z < sz; ++z) {
+            const size_t row = size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz);
+            const int bj = y / kBlockVox, bk = z / kBlockVox;
+            for (int x = 0; x < sx; ++x) {
+                const size_t bi = size_t(x / kBlockVox) + size_t(bk) * size_t(bx) +
+                                  size_t(bj) * size_t(bx) * size_t(bz);
+                ++total[bi];
+                if (vol[row + size_t(x)] != mat::AIR) ++solid[bi];
+            }
+        }
+    const int full = kBlockVox * kBlockVox * kBlockVox;
+    for (size_t i = 0; i < out->size(); ++i) {
+        if (solid[i] == 0) (*out)[i] = BLOCK_EMPTY;
+        else if (solid[i] == uint32_t(full) && total[i] == uint32_t(full)) (*out)[i] = BLOCK_FULL;
+        else (*out)[i] = BLOCK_MIXED;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // THE SAME SURFACE EXTRACTION, over a volume of GLOBAL MATERIAL IDS.
 //
 // meshAsset below works on a VoxAsset -- palette entries plus the table that
@@ -788,7 +844,7 @@ inline std::vector<Perch> collectPerches(const VoxAsset &a,
 // everything else.
 // ---------------------------------------------------------------------------
 inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int sz, float scale,
-                          bool resolveShades = false) {
+                          bool resolveShades = false, const std::vector<uint8_t> *blocks = nullptr) {
     VoxMesh m;
     const float s = scale;
     // THE SHADE IS DECIDED HERE, NOT ON THE DEVICE.
@@ -839,9 +895,37 @@ inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int s
         // harder to notice. ModelTemplate::volume is filled from VoxAsset.
         return vol[size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz)];
     };
+    // WHICH BLOCKS CAN EMIT ANYTHING AT ALL -- see blockSummary. Without the
+    // summary every voxel is walked, which on a boulder is 3.2 million of them
+    // to change the nine hundred a pick took out.
+    int bx = 0, by = 0, bz = 0;
+    blockDims(sx, sy, sz, &bx, &by, &bz);
+    auto blockAt = [&](int i, int j, int k) -> uint8_t {
+        if (i < 0 || j < 0 || k < 0 || i >= bx || j >= by || k >= bz) return BLOCK_EMPTY;
+        return (*blocks)[size_t(i) + size_t(k) * size_t(bx) +
+                         size_t(j) * size_t(bx) * size_t(bz)];
+    };
+    auto skipBlock = [&](int i, int j, int k) {
+        if (!blocks) return false;
+        const uint8_t b = blockAt(i, j, k);
+        if (b == BLOCK_EMPTY) return true;   // nothing in it to have a face
+        if (b != BLOCK_FULL) return false;
+        // Solid, and walled in on all six sides by solid: every voxel in it has
+        // six solid neighbours, so not one of them can show a face.
+        return blockAt(i - 1, j, k) == BLOCK_FULL && blockAt(i + 1, j, k) == BLOCK_FULL &&
+               blockAt(i, j - 1, k) == BLOCK_FULL && blockAt(i, j + 1, k) == BLOCK_FULL &&
+               blockAt(i, j, k - 1) == BLOCK_FULL && blockAt(i, j, k + 1) == BLOCK_FULL;
+    };
+
     for (int y = 0; y < sy; ++y)
-        for (int z = 0; z < sz; ++z)
+        for (int z = 0; z < sz; ++z) {
+            const int bj = y / kBlockVox, bk = z / kBlockVox;
             for (int x = 0; x < sx; ++x) {
+                if (blocks && skipBlock(x / kBlockVox, bj, bk)) {
+                    // Straight to the end of this block's run along x.
+                    x = (x / kBlockVox + 1) * kBlockVox - 1;
+                    continue;
+                }
                 const uint8_t id = resolved(at(x, y, z), x, y, z);
                 if (id == mat::AIR) continue;
                 const float x0 = float(x) * s, x1 = x0 + s;
@@ -860,6 +944,7 @@ inline VoxMesh meshVolume(const std::vector<uint8_t> &vol, int sx, int sy, int s
                 if (at(x, y, z - 1) == mat::AIR)
                     m.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, id, face::NEG_Z);
             }
+        }
     return m;
 }
 
