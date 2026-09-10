@@ -67,6 +67,7 @@ void usage() {
         "  --sound PATH              the ambience bed; any file Media Foundation reads\n"
         "  --no-sound                open no audio device at all\n"
         "  --axe PATH --pick PATH    the .vox models the hand carries\n"
+        "  --shovel PATH             ...and the shovel, which takes the loose ground\n"
         "  --no-axe                  open empty-handed; H toggles, the wheel changes tool\n"
         "  --swing-log               print what each swing ran into\n"
         "  --swing-hold              hold the swing, as --shot-walk holds W\n"
@@ -74,7 +75,11 @@ void usage() {
         "                            body does, frame by frame, then exit\n"
         "  --float-test              dig the ground out from under a tree and a rock\n"
         "                            with no window, and report whether they fall\n"
-        "  --tool N                  which tool the hand opens with (0 axe, 1 pick, 2 bow)\n"
+        "  --dig-test                with no window: what a column is made of, which\n"
+        "                            tool takes which band, and twelve swings at one\n"
+        "                            spot to prove a pit is dug rather than repeated\n"
+        "  --tool N                  which tool the hand opens with (0 axe, 1 pick,\n"
+        "                            2 shovel, 3 bow, 4 empty hand)\n"
         "  --bow PATH --arrow PATH   the bow's draw strip, and what it looses\n"
         "  --draw-hold               hold the draw, as --swing-hold holds the swing\n"
         "  --shot-loose N            ...and let go on frame N, so a shot can be filmed\n"
@@ -321,8 +326,23 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--sound") { if (i + 1 < argc) o->sound = argv[++i]; }
         else if (a == "--ambience") argFloat(argc, argv, i, &o->ambience);
         else if (a == "--no-sound") o->soundOn = false;
-        else if (a == "--axe") { if (i + 1 < argc) o->axe = argv[++i]; }
-        else if (a == "--pick") { if (i + 1 < argc) o->pick = argv[++i]; }
+        // THE HAND TOOLS, IN ONE ARM.
+        //
+        // Three flags that differ only in which string they land in, and they are
+        // written as one because MSVC has a HARD LIMIT on how deep an else-if chain
+        // may nest -- 128 links, C1061 -- and this parser was one link under it.
+        // Adding the shovel as a fourth reached it, and the error names a line at
+        // the END of the function rather than the flag that was added, so it reads
+        // like the file is broken rather than like the list is full.
+        //
+        // Folding the family into one arm gives the chain a link back instead of
+        // taking one, so this is where the NEXT tool path goes too.
+        else if (a == "--axe" || a == "--pick" || a == "--shovel") {
+            std::string *dst = (a == "--axe")    ? &o->axe
+                               : (a == "--pick") ? &o->pick
+                                                 : &o->shovel;
+            if (i + 1 < argc) *dst = argv[++i];
+        }
         else if (a == "--tool") argInt(argc, argv, i, &o->tool);
         else if (a == "--bow") { if (i + 1 < argc) o->bow = argv[++i]; }
         else if (a == "--arrow") { if (i + 1 < argc) o->arrow = argv[++i]; }
@@ -332,6 +352,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--swing-log") o->swingLog = true;
         else if (a == "--fell-test") o->fellTest = true;
         else if (a == "--float-test") o->floatTest = true;
+        else if (a == "--dig-test") o->digTest = true;
         else if (a == "--swing-hold") o->swingHold = true;
         else if (a == "--time") {
             float h = 7.0f;

@@ -1208,6 +1208,28 @@ class EditStore {
 // nothing is meant to get through it. See mat::BEDROCK.
 inline bool isStoneMat(uint8_t m) { return m == mat::ROCK; }
 
+// IS THIS MATERIAL SOIL -- the question a shovel asks before it bites.
+//
+// THE LOOSE GROUND, AND EVERY RAMP THAT IS MADE OF IT. Grass, the soil under
+// it, the needle litter a conifer stand drops, the shore sand and the silt
+// below the water are one family to a shovel: they are what a blade moves
+// rather than what a head breaks. That is also exactly the set the tool sounds
+// already call silent (see toolsound.h) -- the same split, arrived at from the
+// other side.
+//
+// THE RAMPS ARE ASKED THROUGH THEIR OWN PREDICATES rather than by comparing
+// against STONE_0 and trusting the numbering never to move. mat::DIRT is in
+// here too: the terrain does not currently place it, but it is the id anything
+// building soil by hand would reach for, and a shovel that could not take it
+// would be a trap for whatever does that next.
+//
+// ROCK AND BEDROCK ARE DELIBERATELY OUT. A shovel that took stone would be a
+// pick, and the two exist to be different. See isStoneMat above.
+inline bool isSoilMat(uint8_t m) {
+    return m == mat::DIRT || m == mat::SAND || m == mat::SILT || isGrass(m) || isSoil(m) ||
+           isLitter(m);
+}
+
 class VoxelTerrain {
   public:
     // ---------------------------------------------------------------------
@@ -2122,6 +2144,101 @@ class VoxelTerrain {
     // The water surface used to be built here, sized to the patch. With no
     // patch there is no size to give it, so GpuScene::buildWater makes one quad
     // larger than any ring will reach -- see scene_gpu.h.
+};
+
+
+// ---------------------------------------------------------------------------
+// THE WORLD AS IT IS NOW: GENERATED, THEN DUG.
+//
+// The terrain is a height field and answers "is there ground here" in one
+// comparison, which is why every gameplay query in this engine was written
+// against it directly. The moment a tool could take a bite that stopped being
+// the whole answer: the second term is the edit layer, and a query that skips
+// it is looking at a world that no longer exists.
+//
+// WHAT THAT COST BEFORE THIS EXISTED. The swing ray marched the height field
+// alone, so a hole was invisible to it -- the ray stopped at the ORIGINAL
+// surface, hanging in the air above the pit, and reported the material that
+// used to be there. One bite per column and every bite after it carved air and
+// handed back a chunk of ground that was not there. A pick chipping a rock
+// face never showed it, because a boulder is a model and models keep their own
+// edited volume; it is the terrain half that was blind, and a shovel -- whose
+// whole job is to dig the same spot until there is a pit -- shows it on the
+// second swing.
+//
+// ONE PLACE THAT KNOWS WHERE THE HOLES ARE. World::terrainSolidAt used to be
+// that place and said so; it is this now, and that one delegates, so there is
+// still exactly one answer.
+//
+// THE CHUNK IS CACHED, NOT THE VOXEL. EditStore::get takes a lock, and a ray
+// march asks up to four thousand times. A ray crosses one or two chunks, so
+// remembering the last one asked for turns those four thousand locks into two
+// -- and an untouched chunk answers nullptr once and costs nothing after that.
+// ---------------------------------------------------------------------------
+struct TerrainProbe {
+    const VoxelTerrain *terrain = nullptr;
+    // Null is legal and means "nobody has dug anything": every answer then
+    // comes from the generator, which is what the world looked like before the
+    // edit layer existed.
+    const EditStore *edits = nullptr;
+
+    TerrainProbe(const VoxelTerrain *t, const EditStore *e) : terrain(t), edits(e), memo_(&own_) {}
+    // ...OR BORROW A MEMO THE CALLER IS ALREADY KEEPING WARM. A probe made per
+    // call inside a loop would throw away the generator's octave cache on every
+    // iteration and recompute the same lattice cells for the same column -- see
+    // TerrainMemo. Handing one in costs nothing and keeps the loop's cache.
+    TerrainProbe(const VoxelTerrain *t, const EditStore *e, TerrainMemo &m)
+        : terrain(t), edits(e), memo_(&m) {}
+    // NOT COPYABLE: memo_ points into own_ for the default constructor, and a
+    // copy would leave the new probe reading the old one's cache.
+    TerrainProbe(const TerrainProbe &) = delete;
+    TerrainProbe &operator=(const TerrainProbe &) = delete;
+
+    // The cheap half, for the step of a march: solid or not, and no material.
+    bool solid(int i, int j, int y) {
+        uint8_t m = mat::AIR;
+        if (edited(i, j, y, &m)) return m != mat::AIR;
+        return terrain && y <= terrain->heightVox(i, j, *memo_);
+    }
+
+    // ...and the whole answer, which is worth asking once, where the ray
+    // stopped. mat::AIR for anything that is not there.
+    //
+    // THE VOXEL, NOT THE COLUMN'S SURFACE. This used to report topMaterial, and
+    // the note beside it argued that the march stops on the top of a column, so
+    // the surface IS what was hit. That holds for a floor and for nothing else:
+    // look at a hillside and the ray stops on the SIDE of a taller column,
+    // metres below its top, where the mesher drew the bands materialAt
+    // describes -- grass over soil over rock. Reporting the grass there told a
+    // pick that a bare rock face was turf, and would tell a shovel that a stone
+    // cliff was diggable. materialAt is what the mesher itself asks, so this
+    // cannot disagree with what is on the screen.
+    uint8_t material(int i, int j, int y) {
+        uint8_t m = mat::AIR;
+        if (edited(i, j, y, &m)) return m;
+        if (!terrain) return mat::AIR;
+        const int h = terrain->heightVox(i, j, *memo_);
+        if (y > h) return mat::AIR;
+        return terrain->materialAt(i, j, y, h, terrain->topMaterial(i, j, h, *memo_));
+    }
+
+  private:
+    bool edited(int i, int j, int y, uint8_t *out) {
+        if (!edits) return false;
+        const int cx = EditStore::floorDiv(i, CHUNK_VOX), cz = EditStore::floorDiv(j, CHUNK_VOX);
+        if (!have_ || cx != cx_ || cz != cz_) {
+            ce_ = edits->get(cx, cz);
+            cx_ = cx;
+            cz_ = cz;
+            have_ = true;
+        }
+        return ce_ && ce_->voxel(i, j, y, out);
+    }
+    std::shared_ptr<const ChunkEdits> ce_;
+    TerrainMemo own_;
+    TerrainMemo *memo_ = nullptr;
+    int cx_ = 0, cz_ = 0;
+    bool have_ = false;
 };
 
 }  // namespace v2

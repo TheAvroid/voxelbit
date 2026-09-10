@@ -468,6 +468,7 @@ struct Options {
     // without anything here changing. --no-axe opens with an empty hand.
     std::string axe = "C:/voxelbit/game/assets/stone_tools/stone_axe.vox";
     std::string pick = "C:/voxelbit/game/assets/stone_tools/stone_pick.vox";
+    std::string shovel = "C:/voxelbit/game/assets/stone_tools/stone_shovel.vox";
     std::string bow = "C:/voxelbit/game/assets/stone_tools/bow_arrow/bow/base.vox";
     std::string arrow = "C:/voxelbit/game/assets/stone_tools/bow_arrow/arrow.vox";
     bool axeOn = true;
@@ -507,6 +508,8 @@ struct Options {
     // Dig the ground out from under a tree with no window, and report whether
     // it came down -- see runFloatTest.
     bool floatTest = false;
+    // ...and the shovel's, which needs no window either. See runDigTest.
+    bool digTest = false;
     // Hold the swing from the first frame, exactly as --shot-walk holds W. It
     // exists for the same reason that one does: an animation you can only see
     // by holding a mouse button cannot be photographed, measured or regression
@@ -1176,6 +1179,11 @@ class ForestApp : public SampleApp {
             shutdown(0);
             return;
         }
+        if (opt_.digTest) {
+            runDigTest();
+            shutdown(0);
+            return;
+        }
         if (opt_.outGiven) {
             tracer_.setDemodulate(opt_.demodulate);
             renderOffline(ctx);
@@ -1293,6 +1301,42 @@ class ForestApp : public SampleApp {
             held_.add(world_, "stone pick", opt_.pick,
                       HeldPose{8.512f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.003f},
                       Takes::Stone);
+            // ...AND THE SHOVEL, THIRD (user 2026-09-10). Same haft, same
+            // swing, so it starts on the PICK's bake for the reason the pick
+            // starts on the axe's -- the pose that was tuned for one is the
+            // right place to begin the next. Tune it live and use the menu's
+            // copy row to bring the numbers back here.
+            //
+            // THIRD RATHER THAN LAST, and neither end was free: slot zero is
+            // what the world opens with and that is the axe's by the
+            // giveStartKit rule, and the last slot is the empty hand, which was
+            // asked for as the thing the wheel reaches after everything else.
+            // Between the pick and the bow is where the hand tools already are.
+            //
+            // AND IT TAKES SOIL, which is the whole of what makes it a shovel:
+            // the loose ground gives to it and stone does not, exactly as wood
+            // gives to the axe. See Takes and isSoilMat.
+            //
+            // ...EXCEPT FOR THE ROLL, AND THE MODEL IS WHY. The axe and the
+            // pick are authored 5x1x9 and 7x1x9 -- long up the Z axis, one
+            // voxel THIN IN Y, so the head lies in the model's XZ plane. The
+            // shovel is 1x3x10: long up Z like the others, but thin in X, with
+            // its blade in the YZ plane. It is the same tool turned a quarter
+            // turn in the file it was drawn in.
+            //
+            // Roll is the innermost rotation -- R = Rx(pitch).Ry(yaw).Rz(roll),
+            // so Rz acts on the model's own axes before anything else -- which
+            // makes it exactly the angle that undoes that. 1.580 - pi/2 puts
+            // the shovel's wide axis where the axe's wide axis already sits,
+            // so the blade faces across the frame instead of edge-on to it.
+            //
+            // THIS IS A STARTING POINT AND NOT A FINISHED ANSWER, like every
+            // pose on this row: a viewmodel is judged by eye. Tune it live in
+            // the settings menu (Y) and use the copy row to bring the numbers
+            // back here.
+            held_.add(world_, "stone shovel", opt_.shovel,
+                      HeldPose{8.512f, -0.910f, 8.730f, 0.040f, -1.420f, 0.009f, 1.003f},
+                      Takes::Soil);
             // THE BOW'S OWN BAKE, from the JS engine's PICK_DEFS for
             // 2026-08-04. It is not the tool family's pose: a bow is held
             // upright across the hand, further out and turned a quarter turn
@@ -4008,6 +4052,10 @@ class ForestApp : public SampleApp {
         world_.collidersNear(player_.pos, 6.0f, &solids_);
         WalkWorld w;
         w.terrain = &world_.terrain;
+        // ...AND WHERE THE HOLES ARE. The ground is the generator plus the
+        // edits, and a swing that asked only the first could not see a pit it
+        // had dug a moment ago -- see TerrainProbe.
+        w.edits = &world_.editStore();
         w.solids = solids_.data();
         w.solidCount = int(solids_.size());
         return w;
@@ -4669,9 +4717,23 @@ class ForestApp : public SampleApp {
                     lastSwing_.kind == Swing::Rock ||
                     (lastSwing_.kind == Swing::Ground && isStoneMat(lastSwing_.material));
                 const bool wood = lastSwing_.kind == Swing::Trunk;
+                // ...AND THE LOOSE GROUND, WHICH IS ONLY EVER TERRAIN. Stone
+                // has two homes -- a boulder and a hillside -- and needs the
+                // Rock arm above to cover both. Soil has one: nothing this
+                // world places as a model is made of it, so there is no second
+                // arm here and a shovel swung at a rock or a trunk simply
+                // knocks. See isSoilMat.
+                const bool soil =
+                    lastSwing_.kind == Swing::Ground && isSoilMat(lastSwing_.material);
                 if (lastSwing_.hit) {
                     const Takes t = held_.takes();
-                    if ((t == Takes::Stone && stone) || (t == Takes::Wood && wood)) {
+                    // ONE RULE, AND THE AUDIO ASKS THE SAME ONE. This was
+                    // three comparisons written out here and three more written
+                    // out in ToolSounds::blow -- see toolTakes in
+                    // render/helditem.h, which is now the only place either of
+                    // them asks. The three bools above survive as the LOG's
+                    // explanation of a refusal, not as the decision.
+                    if (toolTakes(t, lastSwing_)) {
                         // A BOULDER AND A HILLSIDE BREAK DIFFERENTLY. Terrain is
                         // a chunk to re-mesh; a rock is an INSTANCE that has to
                         // leave its shared model first. Same swing, same radius,
@@ -4789,8 +4851,8 @@ class ForestApp : public SampleApp {
                     // carve moved no voxels, or the piece could not be spawned
                     // -- and they are told apart here rather than guessed at.
                     else if (lastSwing_.hit)
-                        std::printf("  NO BITE: takes=%d stone=%d wood=%d mat=%u",
-                                    int(held_.takes()), int(stone), int(wood),
+                        std::printf("  NO BITE: takes=%d stone=%d wood=%d soil=%d mat=%u",
+                                    int(held_.takes()), int(stone), int(wood), int(soil),
                                     unsigned(lastSwing_.material));
                     if (dug) {
                         int solid = 0;
@@ -4959,6 +5021,225 @@ class ForestApp : public SampleApp {
     // The pass condition is the user\'s rule, unedited -- nothing that has lost
     // the ground under it is still standing there.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // === DIG TEST === -- what each tool takes, and what the ground is made of.
+    //
+    // WITH NO WINDOW, for the reason --fell-test and --float-test have none:
+    // the alternative is putting the game on screen and swinging at a hillside
+    // by hand, which proves one spot on one run and cannot be repeated after a
+    // change. This asks the real swing ray, the real toolTakes and the real
+    // World::dig, at a column picked from the terrain rather than chosen.
+    //
+    // THREE THINGS ARE BEING PROVED, and they are the three that were asked for:
+    //
+    //   1. THE PROFILE. A column is turf, then a few voxels of soil, then a
+    //      hundred voxels of stone, then bedrock. Printed as the materials
+    //      actually found down the column, so the depths are read off the world
+    //      rather than off the constants that made it.
+    //
+    //   2. THE TOOLS DISAGREE, AND ABOUT THE RIGHT THING. The shovel takes the
+    //      soil band and refuses the stone under it; the pick does the reverse;
+    //      and neither of them takes bedrock. That is one table, and it is the
+    //      whole of what makes a shovel a different tool from a pick.
+    //
+    //   3. A PIT DOES NOT PAY OUT TWICE. Bite the same spot repeatedly and the
+    //      swing must follow the hole DOWN -- if it cannot see the hole it
+    //      stops on the surface that used to be there and hands back a chunk of
+    //      ground that is no longer under it. Every bite is printed with the
+    //      row it landed on, so a swing that cannot see the hole shows as a row
+    //      that will not fall.
+    // -----------------------------------------------------------------------
+    void runDigTest() {
+        std::printf("\n=== DIG TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        std::printf("  spawn (%.1f, %.1f, %.1f)\n", player_.pos.x, player_.pos.y, player_.pos.z);
+
+        // ---- 1. WHAT A COLUMN IS MADE OF ---------------------------------
+        //
+        // Read through TerrainProbe, which is what the swing reads through too,
+        // so a disagreement between this table and the tools below would be one
+        // bug rather than two separate ideas of the world.
+        const int ci = int(std::floor(player_.pos.x / VOXEL_M));
+        const int cj = int(std::floor(player_.pos.z / VOXEL_M));
+        TerrainProbe probe(&world_.terrain, &world_.editStore());
+        const int h = world_.terrain.heightVox(ci, cj);
+        std::printf("\n  --- the column at the spawn, surface row %d ---\n", h);
+        uint8_t was = 255;
+        int runFrom = 0, soilFloor = h, stoneFloor = h;
+        for (int d = 0; d <= 140; ++d) {
+            const uint8_t m = probe.material(ci, cj, h - d);
+            if (isSoilMat(m)) soilFloor = h - d;
+            if (isStoneMat(m)) stoneFloor = h - d;
+            if (m == was) continue;
+            if (was != 255)
+                std::printf("    %3d..%3d below surface   %s (id %u)\n", runFrom, d - 1,
+                            matFamily(was), unsigned(was));
+            was = m;
+            runFrom = d;
+        }
+        std::printf("    %3d..    below surface   %s (id %u)\n", runFrom, matFamily(was),
+                    unsigned(was));
+        std::printf("    soil reaches %d voxels down, stone %d voxels down\n", h - soilFloor,
+                    h - stoneFloor);
+
+        // ---- 2. WHICH TOOL TAKES WHICH BAND ------------------------------
+        //
+        // The material comes from the probe and the verdict from toolTakes,
+        // which is the same function the blow and the audio both ask.
+        std::printf("\n  --- what each tool takes, by depth ---\n");
+        std::printf("    %-6s %-10s %-6s %-6s %-6s\n", "depth", "material", "axe", "pick",
+                    "shovel");
+        const int kProbeDepths[] = {0, 1, 4, 10, 50, 99, 101, 120};
+        for (const int d : kProbeDepths) {
+            Swing s;
+            s.hit = true;
+            s.kind = Swing::Ground;
+            s.material = probe.material(ci, cj, h - d);
+            std::printf("    %-6d %-10s %-6s %-6s %-6s\n", d, matFamily(s.material),
+                        toolTakes(Takes::Wood, s) ? "yes" : ".",
+                        toolTakes(Takes::Stone, s) ? "yes" : ".",
+                        toolTakes(Takes::Soil, s) ? "yes" : ".");
+        }
+
+        // ---- 3. A PIT, DUG THROUGH BOTH BANDS ----------------------------
+        //
+        // Straight down, from an eye that stays where a player's would. THE EYE
+        // DOES NOT FOLLOW THE HOLE DOWN, and that is the point: every bite
+        // after the first has to find the bottom of the pit through the edit
+        // layer, which is exactly what the swing ray could not do before.
+        //
+        // AND IT CHANGES TOOLS THE WAY A PLAYER WOULD, because a pit through
+        // this ground is two jobs: the shovel takes the turf and the soil under
+        // it, then the soil runs out and only the pick will go on. Digging with
+        // one tool would stop at the band it cannot take and prove nothing
+        // about the ground below it -- which is most of the ground.
+        std::printf("\n  --- twenty swings at one spot, right tool each time ---\n");
+        const Vec3 eye{(float(ci) + 0.5f) * VOXEL_M, float(h + 16) * VOXEL_M,
+                       (float(cj) + 0.5f) * VOXEL_M};
+        const Vec3 down{0.0f, -1.0f, 0.0f};
+        // NOT h + 1. The first bite legitimately lands on the row above the
+        // surface -- a ray stopping on a top face crosses the boundary exactly,
+        // and the floor of that is the voxel above -- so seeding this with the
+        // surface row counts the opening swing as a swing that went nowhere.
+        // The question only means anything from the SECOND bite on.
+        int lastRow = 0;
+        bool haveRow = false;
+        int stuck = 0, bites = 0;
+        for (int b = 0; b < 20; ++b) {
+            const Swing s = swingRay(walkWorld(), eye, down);
+            if (!s.hit) {
+                std::printf("    %2d  the ray found no ground within reach\n", b);
+                break;
+            }
+            const int row = int(std::floor(s.point.y / VOXEL_M));
+            const char *tool = toolTakes(Takes::Soil, s)    ? "shovel"
+                               : toolTakes(Takes::Stone, s) ? "pick"
+                                                            : nullptr;
+            if (!tool) {
+                std::printf("    %2d  row %4d  %-10s NOTHING IN THE KIT TAKES IT"
+                            " -- the floor of the world\n",
+                            b, row, matFamily(s.material));
+                break;
+            }
+            if (haveRow && row >= lastRow) ++stuck;
+            lastRow = row;
+            haveRow = true;
+            ++bites;
+            std::vector<uint8_t> spoil;
+            int n = 0;
+            Vec3 at{0, 0, 0};
+            world_.dig(s.point, kDigRadiusVox, &spoil, &n, &at);
+            int solid = 0;
+            for (uint8_t v : spoil)
+                if (v != mat::AIR) ++solid;
+            std::printf("    %2d  row %4d  %-10s %-6s bit out %3d voxels\n", b, row,
+                        matFamily(s.material), tool, solid);
+        }
+        std::printf("\n  %d bites, %d of them no deeper than the bite before\n", bites, stuck);
+        std::printf("  %s\n", stuck == 0
+                                  ? "PASS -- every bite came out of ground that was still there"
+                                  : "FAIL -- a swing could not see the hole below it");
+
+        // ---- 4. AND NONE OF IT IS DRAWN UNTIL IT IS SEEN -----------------
+        //
+        // ONLY RENDER WHAT THE PLAYER CAN SEE, measured rather than asserted.
+        //
+        // A hundred voxels of stone under every column is a hundred times the
+        // MATTER, and the whole question is whether it is a hundred times the
+        // geometry. It is not, and it cannot be: the heightmap path emits one
+        // top quad per column plus the drop to each neighbour, and the voxel
+        // path a dug column falls back to emits a face only where the voxel
+        // next door is AIR. A voxel with six solid neighbours has no face to
+        // give, so buried stone costs nothing to draw however deep it goes.
+        //
+        // This meshes the chunk the player is standing in -- the real mesher,
+        // through the real edit layer -- and prints the ground it contains
+        // against the triangles that ground turned into. The first number
+        // counts every solid voxel down to bedrock; the second is what the
+        // renderer is actually handed.
+        //
+        // THEN AGAIN, WITH THE PIT IN IT. A hole adds the faces that bound it
+        // and nothing else, so the difference is a pit's worth of wall -- not a
+        // column's worth of depth.
+        std::printf("\n  --- what the mesher emits for this chunk ---\n");
+        const int cx = EditStore::floorDiv(ci, CHUNK_VOX);
+        const int cz = EditStore::floorDiv(cj, CHUNK_VOX);
+        ChunkScratch scratch;
+        const std::shared_ptr<const ChunkEdits> ce = world_.editStore().get(cx, cz);
+        const size_t trisNow = world_.terrain.meshChunk(cx, cz, scratch, ce.get()).triCount();
+        const size_t trisPristine = world_.terrain.meshChunk(cx, cz, scratch, nullptr).triCount();
+
+        // Every solid voxel in the chunk, surface down to the bedrock the
+        // profile above found. Counted from the generator, because the point of
+        // the comparison is how much ground there IS.
+        TerrainMemo cmemo;
+        long long solidVox = 0;
+        for (int j = 0; j < CHUNK_VOX; ++j)
+            for (int i = 0; i < CHUNK_VOX; ++i) {
+                const int hh = world_.terrain.heightVox(cx * CHUNK_VOX + i, cz * CHUNK_VOX + j,
+                                                        cmemo);
+                solidVox += hh;   // rows 0..hh are ground; below kBedrockVox it is bedrock
+            }
+        std::printf("    %lld solid voxels of ground in the chunk\n", solidVox);
+        std::printf("    %zu triangles pristine, %zu with the pit in it (+%lld)\n", trisPristine,
+                    trisNow, (long long)trisNow - (long long)trisPristine);
+        const double perCol = double(trisPristine) / double(size_t(CHUNK_VOX) * CHUNK_VOX);
+        std::printf("    one triangle per %.0f voxels of ground, %.2f triangles per COLUMN\n",
+                    trisPristine ? double(solidVox) / double(trisPristine) : 0.0, perCol);
+        // THE TEST IS WHICH NUMBER IT SCALES WITH. A mesher that drew what is
+        // THERE would emit triangles by the voxel, and this would be in the
+        // hundreds. Drawing only what can be SEEN makes it a property of the
+        // surface instead: a top quad, plus however many bands the drop to a
+        // neighbour has to be split into -- a handful, and flat in the depth of
+        // the stone underneath. Eight is a generous ceiling on a handful; this
+        // terrain measures about three.
+        std::printf("    %s\n", perCol < 8.0
+                                    ? "PASS -- triangles scale with the SURFACE, not the depth,"
+                                      " so buried stone is free until it is cut into"
+                                    : "FAIL -- the buried stone is reaching the renderer");
+    }
+
+    // The family a material id belongs to, for the tables above. Named rather
+    // than numbered because a ramp is six ids that mean one thing, and "13" in
+    // a test report tells nobody the shovel is standing in soil.
+    static const char *matFamily(uint8_t m) {
+        if (m == mat::AIR) return "air";
+        if (m == mat::BEDROCK) return "bedrock";
+        if (m == mat::ROCK) return "stone";
+        if (isGrass(m)) return "grass";
+        if (isSoil(m)) return "soil";
+        if (isLitter(m)) return "litter";
+        if (m == mat::SAND) return "sand";
+        if (m == mat::SILT) return "silt";
+        if (m == mat::DIRT) return "dirt";
+        return "other";
+    }
+
     void runFloatTest() {
         std::printf("\n=== UNDERMINE TEST ===\n");
         player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
@@ -5626,6 +5907,7 @@ class ForestApp : public SampleApp {
         world_.collidersNear(probeAt, 120.0f, &solids_);
         WalkWorld w;
         w.terrain = &world_.terrain;
+        w.edits = &world_.editStore();
         w.solids = solids_.data();
         w.solidCount = int(solids_.size());
         std::printf("collide probe: %d colliders within 120 m\n", w.solidCount);

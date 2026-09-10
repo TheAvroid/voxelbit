@@ -2793,14 +2793,21 @@ class World {
             const int r2 = radiusVox * radiusVox;
             *spoilN = n;
             spoil->assign(size_t(n) * size_t(n) * size_t(n), mat::AIR);
+            // GENERATED, THEN DUG -- and the second term is what stops a pit
+            // paying out twice. The sphere of a second bite overlaps the first,
+            // and asking the generator alone reports those voxels as the soil
+            // they were BORN as rather than the air they are now: the chunk
+            // that came out was bigger than the hole that appeared, and a
+            // shovel working one pit is nothing but overlapping bites. One
+            // probe for the whole sphere, so the generator's octave cache is
+            // shared across the columns -- see TerrainProbe.
+            TerrainProbe probe(&terrain, &mesher_.edits);
             for (int dz = -radiusVox; dz <= radiusVox; ++dz)
                 for (int dx = -radiusVox; dx <= radiusVox; ++dx) {
                     const int i = ci + dx, j = cj + dz;
-                    const int h = terrain.heightVox(i, j);
-                    const uint8_t top = terrain.topMaterial(i, j, h);
                     for (int dy = -radiusVox; dy <= radiusVox; ++dy) {
                         if (dx * dx + dy * dy + dz * dz > r2) continue;
-                        const uint8_t m = terrain.materialAt(i, j, cy + dy, h, top);
+                        const uint8_t m = probe.material(i, j, cy + dy);
                         if (m == mat::AIR) continue;
                         const size_t x = size_t(dx + radiusVox), y = size_t(dy + radiusVox),
                                      z = size_t(dz + radiusVox);
@@ -3617,17 +3624,29 @@ class World {
         return d;
     }
 
+    // WHERE THE HOLES ARE, for anything that has to ask outside this class.
+    //
+    // The swing ray is the caller that made this necessary: it lives in
+    // render/helditem.h, marches the ground itself, and was doing it against
+    // the generator alone -- so it could not see a pit the player had just dug.
+    // It takes this through WalkWorld now and reads it with TerrainProbe.
+    //
+    // CONST, AND THAT IS THE WHOLE CONTRACT. Carving goes through dig() so the
+    // re-mesh and the physics rebuild cannot be skipped; this hands out the
+    // right to LOOK and nothing else.
+    const EditStore &editStore() const { return mesher_.edits; }
+
     // Is there ground at this voxel right now -- generated, then edited.
     // The one place anything asks that question, so nothing can disagree
     // about where the holes are.
+    //
+    // THE ANSWER MOVED to TerrainProbe (scene/voxelworld.h) when the swing ray
+    // needed it too and could not reach into this class for it. This keeps the
+    // signature its callers were written against and delegates, so there is
+    // still one implementation and the sentence above is still true.
     bool terrainSolidAt(int i, int j, int y, TerrainMemo &memo) const {
-        if (y > terrain.heightVox(i, j, memo)) return false;
-        const std::shared_ptr<const ChunkEdits> ce =
-            mesher_.edits.get(floorDiv(i, CHUNK_VOX), floorDiv(j, CHUNK_VOX));
-        if (!ce) return true;
-        uint8_t m = mat::AIR;
-        if (!ce->voxel(i, j, y, &m)) return true;
-        return m != mat::AIR;
+        TerrainProbe probe(&terrain, &mesher_.edits, memo);
+        return probe.solid(i, j, y);
     }
 
     int terrainTopAt(int i, int j, TerrainMemo &memo) const {

@@ -150,6 +150,18 @@ enum class Takes : uint8_t {
     Nothing,  // a bow. It does not swing at all -- see HeldItem::update
     Wood,     // an axe
     Stone,    // a pick
+    // A SHOVEL, and the reason this enum is no longer only about sound.
+    //
+    // The note above was written when v2 had nothing to carve and the tool's
+    // material survived purely as what it sounded like. The world has an inside
+    // now, so this decides the BITE as well: what a tool takes is what comes
+    // out of the ground when it lands, and the sound follows from the same
+    // word rather than from a second table that could disagree with it.
+    //
+    // Soil is the loose ground -- grass, the soil under it, needle litter,
+    // sand, silt. See isSoilMat in scene/voxelworld.h, which is where the list
+    // lives so the swing and the audio cannot hold different opinions of it.
+    Soil,     // a shovel
 };
 
 struct Tool {
@@ -375,6 +387,45 @@ inline Swing swingRayModels(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// DOES THIS TOOL TAKE WHAT THIS SWING RAN INTO -- asked ONCE, by everyone.
+//
+// This is the JS engine's toolTakesFor, and the reason it is one function
+// rather than two is that engine's own note, quoted in toolsound.h: "a sound
+// that disagrees with the swing is worse than no sound, because it teaches the
+// player the wrong thing about their tool."
+//
+// v2 HAD IT AS TWO. The swing decided in App::onFrame and the audio decided
+// again in ToolSounds::blow, and they agreed only because both were edited
+// together every time. That is a promise kept by hand, and adding a third
+// material is exactly the change that breaks one: a shovel that bit the ground
+// while the audio still called the ground unbreakable would play the WRONG-TOOL
+// knock on a blow that worked.
+//
+// SOFTNESS IS NOT ASKED HERE. A mushroom cap is a material nobody recorded a
+// sound for, which is a fact about the audio and not about what a tool can
+// take -- so it stays where it was, as blow()'s own early-out.
+// ---------------------------------------------------------------------------
+inline bool toolTakes(Takes t, const Swing &s) {
+    if (!s.hit) return false;
+    switch (t) {
+        case Takes::Wood:
+            return s.kind == Swing::Trunk;
+        // A BOULDER AND A BARE HILLSIDE ARE ONE MATERIAL TO A PICK. That
+        // engine's pickOnlyTab is about stone, not about whether the stone is a
+        // model or the terrain, and half the stone in this world is terrain.
+        case Takes::Stone:
+            return s.kind == Swing::Rock ||
+                   (s.kind == Swing::Ground && isStoneMat(s.material));
+        // ...AND SOIL HAS ONLY ONE HOME. Nothing this world places as a model
+        // is made of it, so there is no Rock arm to match the one above.
+        case Takes::Soil:
+            return s.kind == Swing::Ground && isSoilMat(s.material);
+        default:
+            return false;   // a bow, and an empty hand
+    }
+}
+
 inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
     Swing out;
     if (!w.terrain) return out;
@@ -408,20 +459,21 @@ inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
     // converting on every step.
     const float maxT = bestT / VOXEL_M;
     float t = 0.0f;
-    TerrainMemo memo;
+    // GENERATED, THEN DUG. The march used to ask the height field alone, which
+    // meant it could not see a hole: every swing after the first stopped on the
+    // surface that used to be there and carved air. See TerrainProbe.
+    TerrainProbe probe(w.terrain, w.edits);
     for (int guard = 0; guard < 4096 && t <= maxT; ++guard) {
-        // The terrain is a height field, so "is this column solid at this
-        // height" is one comparison. heightVox is the topmost solid voxel.
-        if (vy <= w.terrain->heightVox(vx, vz, memo)) {
+        // One comparison in the ordinary case -- the terrain is a height field
+        // -- and one map lookup in a chunk somebody has dug in.
+        if (probe.solid(vx, vz, vy)) {
             out.hit = true;
             out.kind = Swing::Ground;
             out.soft = false;
-            // The column's own surface material, not the voxel the ray stopped
-            // in: the march stops at the topmost solid voxel, which IS the
-            // surface, and topMaterial is the one function that decides what
-            // that surface is made of -- so this cannot disagree with what the
-            // mesher put there to be looked at.
-            out.material = w.terrain->topMaterial(vx, vz, w.terrain->heightVox(vx, vz, memo), memo);
+            // THE VOXEL THE RAY STOPPED IN, which is the one the player is
+            // looking at. See TerrainProbe::material for why it is not the
+            // column's surface any more.
+            out.material = probe.material(vx, vz, vy);
             out.dist = t * VOXEL_M;
             out.point = eye + dir * out.dist;
             return out;

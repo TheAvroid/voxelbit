@@ -25,10 +25,19 @@
 //   the player, and a convincing thud on a material you will never break
 //   implies progress that is not coming.
 //
-//   NOTHING AT ALL, for a whiff, for soil and grass, and for a mushroom cap.
-//   That is deliberate over there and is left deliberate here: "make the hits
-//   silent ... I'll fill it in later with other sounds" (2026-08-26). Three
-//   material families were ever recorded, and everything outside them waits.
+//   NOTHING AT ALL, for a whiff, for a mushroom cap, and for the loose ground
+//   TAKEN BY THE TOOL THAT TAKES IT. That is deliberate over there and is left
+//   deliberate here: "make the hits silent ... I'll fill it in later with other
+//   sounds" (2026-08-26). Three material families were ever recorded, and
+//   everything outside them waits.
+//
+//   THE GROUND MOVED BETWEEN THE SECOND CASE AND THE THIRD when the shovel
+//   arrived, and it is worth being exact about which. Soil and grass used to
+//   KNOCK for every tool, and that was right while nothing in the kit could
+//   break them. Now a shovel can: for the shovel they are silent, in the third
+//   sense above -- a take whose sound has not been recorded -- and for an axe
+//   or a pick they still knock, in the second. Which of the two a blow gets is
+//   decided by toolTakes (render/helditem.h) and nothing else.
 //
 // ---------------------------------------------------------------------------
 // WHAT DID NOT COME ACROSS, AND WHY
@@ -163,28 +172,43 @@ class ToolSounds {
     // -----------------------------------------------------------------------
     Blow blow(Takes takes, const Swing &s) {
         if (!s.hit) return Blow::Silent;  // a whiff is silent over there too
-        // A mushroom cap is one of the materials that engine never recorded.
+        // A mushroom cap is one of the materials that engine never recorded,
+        // and softness is the audio's own question -- see toolTakes, which
+        // deliberately does not ask it.
         if (s.soft) return Blow::Silent;
 
-        const bool wood = (s.kind == Swing::Trunk);
-        // A BOULDER AND A BARE HILLSIDE ARE THE SAME MATERIAL to a pick, which
-        // is why the swing carries the ground's surface id: that engine's
-        // pickOnlyTab is about stone, not about whether the stone is a model or
-        // the terrain, and half the stone in this world is the terrain.
-        const bool stone =
-            (s.kind == Swing::Rock) || (s.kind == Swing::Ground && s.material == mat::ROCK);
-
-        if (wood && takes == Takes::Wood) {
-            sfx_.play(wood_[size_t(woodBag_.next())]);
-            return Blow::Wood;
+        // WHAT THE SWING DECIDED, NOT A SECOND OPINION OF IT. This used to
+        // re-derive "is that wood, is that stone" from the Swing, alongside the
+        // copy App::onFrame kept for the bite -- two answers to one question,
+        // held in step by hand. See toolTakes in helditem.h.
+        if (toolTakes(takes, s)) {
+            switch (takes) {
+                case Takes::Wood:
+                    sfx_.play(wood_[size_t(woodBag_.next())]);
+                    return Blow::Wood;
+                case Takes::Stone:
+                    sfx_.play(rock_[size_t(rockBag_.next())]);
+                    return Blow::Rock;
+                // SOIL, AND ITS SILENCE IS NOT A WHIFF'S.
+                //
+                // The header records grass, soil and needle litter as the
+                // families nobody ever recorded -- "make the hits silent ...
+                // I'll fill it in later with other sounds" -- and until a tool
+                // could take them the knock below was right for every blow that
+                // landed on them, because nothing in the kit could break them.
+                // A shovel can, so falling through would play the WRONG-TOOL
+                // sound on the one tool that is right for the material, which
+                // is precisely what the knock exists to be told apart from.
+                //
+                // The day sound/impact_sounds/soil/ exists this is one `load`
+                // and one bag, exactly like the leaf take above.
+                default:
+                    return Blow::Silent;
+            }
         }
-        if (stone && takes == Takes::Stone) {
-            sfx_.play(rock_[size_t(rockBag_.next())]);
-            return Blow::Rock;
-        }
-        // Grass, soil and needle litter fall here as well as the wrong tool,
-        // and that is right: neither an axe nor a pick can take them, and that
-        // engine answers a tool that cannot break what it hit with the knock.
+        // The wrong tool, and the materials no tool in the kit takes -- rock to
+        // an axe, a trunk to a shovel, bedrock to anything. That engine answers
+        // all of them with the knock.
         sfx_.play(block_);
         return Blow::Knock;
     }

@@ -68,6 +68,13 @@ namespace v2 {
 // because which chunks are resident changes underfoot.
 struct WalkWorld {
     const VoxelTerrain *terrain = nullptr;
+    // WHERE THE HOLES ARE. Null until something has dug one, and null is a
+    // legal answer meaning "the generator's world is the whole world" -- see
+    // TerrainProbe, which is what reads this. It is here beside the terrain
+    // rather than passed alongside it because the two together ARE the ground:
+    // anything holding one and not the other is looking at a world that has
+    // not been dug in.
+    const EditStore *edits = nullptr;
     const Solid *solids = nullptr;
     int solidCount = 0;
 };
