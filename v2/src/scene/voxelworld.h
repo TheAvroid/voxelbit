@@ -113,7 +113,22 @@ constexpr uint8_t LITTER_COUNT = 3;  // 17..19
 // and soil. See groundShade().
 constexpr uint8_t STONE_0 = 20;
 constexpr uint8_t STONE_COUNT = 6;   // 20..25
-constexpr uint8_t TREE_BASE = 26;  // model palette entries are allocated from here up
+// WATER, AND IT IS A VOXEL LIKE ANYTHING ELSE.
+//
+// v1 stores water in the grid -- WATER_T and WATER_B are palette ids there, not
+// a surface someone draws -- and that is what this is. It matters more than
+// tidiness: the previous attempt in this engine gave water its own per-chunk
+// acceleration structure because "a dielectric cannot share one with the
+// ground", and that is what collided in the compaction queue and replaced whole
+// chunks of terrain with a flat sheet. A material needs no second structure. It
+// merges into the same runs, rides the same BLAS, and cannot desynchronise from
+// the ground it sits in because it IS the ground's mesh.
+//
+// ONE ID, not v1's two: which face of a water voxel a ray hit is already packed
+// into the triangle, so the surface ripple keys off the face direction instead
+// of off a second material. See the water branch in Trace.cs.slang.
+constexpr uint8_t WATER = 26;
+constexpr uint8_t TREE_BASE = 27;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -1031,6 +1046,7 @@ struct TerrainMemo {
     // octave having gone with it.
     FbmMemo birchRoll, birchSwell;
     FbmMemo stand, litter, grassMask;                       // topMaterial
+    FbmMemo shelf;                                          // the beach's own relief -- see heightM
 };
 
 // ---------------------------------------------------------------------------
@@ -1071,6 +1087,24 @@ struct ChunkScratch {
     std::vector<int16_t> h;    // padded by two: a slope reaches one past a material
     std::vector<uint8_t> top;  // padded by one
     std::vector<uint8_t> sr;   // padded by one
+    // THE CARVE, DECIDED ONCE. One bit per voxel in the band a cave may occupy,
+    // indexed DOWN FROM EACH COLUMN'S OWN SURFACE (k = h - y) so the band
+    // follows the terrain instead of spanning the chunk's whole relief. The
+    // mesher asks about a voxel roughly seven times -- once for itself and once
+    // per neighbouring face -- and evaluating two 3D fbms on each of those is
+    // what made caves cost 385 ms a chunk against 10.6 without them. Reused
+    // across chunks like every other buffer here.
+    std::vector<uint64_t> carve;
+    // HOW DEEP THE SOIL IS, PER COLUMN, padded by one. crustVox is four hashes
+    // and three lerps and depends on nothing but (i, j) -- and the voxel pass
+    // was calling it once per VOXEL, seven times over for the face tests. It is
+    // filled beside the top material, which walks the same padded grid.
+    std::vector<uint8_t> crust;
+    // THE WATERLINE OVER EACH COLUMN, as a voxel row, or -1 where the column is
+    // dry. Per column and not per chunk because the two woods have different
+    // lines and a chunk is 25.6 m against an 800 m band -- see waterAt.
+    std::vector<int16_t> wet;
+    std::vector<uint8_t> wmerge;  // claimed columns, for the lake surface's 2D merge
 };
 
 // ---------------------------------------------------------------------------
@@ -1292,7 +1326,126 @@ class VoxelTerrain {
     // all. Both woods' trees are loaded whenever the bands are live.
     bool birch() const { return !forced || biome == Biome::Birch; }
 
-    float waterLevel = 2.6f;  // metres
+    // WHERE THE WATER SITS, AND IT HAS TO SIT INSIDE THE TERRAIN.
+    //
+    // This was 2.6 m and it produced NOT ONE WET COLUMN. Measured over a 2 km
+    // square, the uncarved pine field runs:
+    //
+    //     min 20.6   p1 30.4   p5 35.2   p10 38.0   p25 42.8   med 48.5   max 74.6
+    //
+    // -- so a waterline at 2.6 m sat EIGHTEEN METRES BELOW THE LOWEST GROUND
+    // ANYWHERE. Every previous attempt at water in this engine failed on that
+    // one fact, and none of them were rendering bugs: there was no lake to draw
+    // from any angle, so no shading or geometry could ever have shown one.
+    //
+    // 33 m is just under p5 -- read off the distribution rather than picked. It
+    // catches the low country and leaves the wood above it dry.
+    float waterLevel = 33.0f;  // metres -- THE PINE WOOD'S. See waterAt.
+
+    // -----------------------------------------------------------------------
+    // THE WATERLINE IS NOT ONE NUMBER FOR THE WORLD, and assuming it was
+    // drowned half the map.
+    //
+    // The two woods have DISJOINT height ranges:
+    //
+    //     pine    min 20.6   p5 35.1   med 48.6   max 74.8
+    //     birch   min  5.8   p5  9.4   med 13.2   max 19.7
+    //
+    // No single line serves both. One high enough to make lakes in the pine
+    // wood sits TWENTY METRES over the birch wood's median and puts the whole
+    // of it under; one that suits the birch is below the pine floor and is the
+    // original "no lake anywhere" bug. Measured with the bands live, a global
+    // 33 m put 52.56% of the world under water -- which reads in game as
+    // "terrain is missing" plus "terrain that is completely flat", the flat
+    // thing being the lake lying over it.
+    //
+    // So the line is asked PER COLUMN, off the same band function heightM
+    // blends the two landforms with. AND THE SEAM COUNTS AS BIRCH: a column in
+    // the 90 m blend is a hillside falling 35 m between two woods, the last
+    // place a flat sheet of water belongs, so pure pine is required.
+    // -----------------------------------------------------------------------
+    static constexpr float kNoWater = -10000.0f;  // far under any terrain
+    float waterAt(float x) const { return birchMix(x) <= 0.001f ? waterLevel : kNoWater; }
+
+    // -----------------------------------------------------------------------
+    // HOW FAR THIS COLUMN IS FROM THE BIRCH WOOD, AT A LAKE'S SCALE.
+    //
+    // waterAt is a STEP: pure pine gets a waterline, everything else gets none,
+    // and the flip happens at one exact x. A lake that straddles that x is cut
+    // in half along a perfectly straight north-south line, with its side wall
+    // left standing in mid-air -- which is what "the water appears to be cut
+    // off" is. Measured: steps at x = -2313, -1686, -713, -86.5, 887, 1513,
+    // 2487 m, and 4.14% of every wet column in the world sits within five
+    // metres of one.
+    //
+    // A MARGIN ALONE ONLY MOVES THE CUT. Refusing water within R of the step
+    // puts a new step at R, and a basin sitting on THAT is sliced exactly the
+    // same way. The cut has to land where there is no lake to cut.
+    //
+    // So this fades the basin CARVE instead. Basins near the seam get shallower
+    // and shallower until they no longer reach the waterline at all, so the
+    // water simply runs out before the step rather than being sliced by it --
+    // and the terrain stays continuous, because a fading carve is a fading
+    // carve rather than an edge.
+    //
+    // SAMPLED AT +-R SO A BASIN CANNOT STRADDLE THE FADE EITHER: R is larger
+    // than the biggest lake measured (134 m across), so by the time the fade
+    // starts biting, every column of any basin that could hold water is inside
+    // it together.
+    float lakeSeamR = 150.0f;
+    float seamClear(float x) const {
+        const float b = maxf(maxf(birchMix(x - lakeSeamR), birchMix(x)),
+                             birchMix(x + lakeSeamR));
+        return 1.0f - sstep(saturate(b * 20.0f));
+    }
+
+    // ---------------------------------------------------------------------
+    // THE BASIN FIELD -- where a lake is ALLOWED to be.
+    //
+    // Named, not inline, because they are three SEPARATE levers -- area, rim
+    // slope and depth -- that were being tuned as one and fighting each other.
+    //
+    //     config                  wet%   bodies  meanD   dry>1m%   dryMax
+    //     old (0.0160/0.40)       0.00%       0      --     0.69%   10.1 m
+    //     abandoned (18e36ff)     0.07%      11    1.56    17.14%   20.3 m
+    //     this (0.0016/0.22)      2.66%      71    2.50     0.19%    5.2 m
+    //
+    // THE THRESHOLD IS READ OFF THE FIELD'S OWN DISTRIBUTION and cannot be
+    // borrowed. v1 uses BASIN_T = 0.065, which fires on NOTHING here: this fbm
+    // bottoms out at 0.147 and its p20 is 0.345, so the old 0.40 was carving a
+    // fifth of the world and v1's 0.065 would carve none of it. 0.22 is p2.
+    //
+    // THE FREQUENCY WAS THE REAL BUG: 0.0160 with four octaves makes the mask
+    // the POCKETS OF A DETAIL-SCALE SUM, firing in every dip on every hillside
+    // instead of at landform scale. Then the gate has to reach up to catch real
+    // low ground, and widening the gate is what drags hilltops down.
+    //
+    // THE GATE IS ABSOLUTE, AND THAT IS DELIBERATE. It was a fraction of the
+    // landform's range dressed as metres, rescaled every time the terrain grew
+    // -- and rescaling it upward is precisely the move that deletes hills. It
+    // is pinned 14 m over the waterline instead. Anything that moves the floor
+    // must move this WITH it, by hand; v1 carries the same warning on BASIN_LOW.
+    float basinFreq = 0.0016f;      // base frequency of the basin noise
+    int basinOct = 3;               // octaves under it
+    // 0.22 -> 0.30, AND ONLY BECAUSE THE WATER IS GATED ON THIS NOW. While
+    // "under the line" meant "wet", 0.22 was already producing an ocean off the
+    // terrain's own low country and the threshold could not be touched. With
+    // lakeColumn requiring the mask, this number sets LAKE COUNT directly:
+    // measured over 36 km2, 0.22 -> 4 lakes, 0.26 -> 13, 0.30 -> 24. Dry-land
+    // loss over 1 m goes 0.11% -> 0.38% -> 0.74%, against the 17.14% that killed
+    // the abandoned attempt at 18e36ff -- so this is bought cheaply, but it IS
+    // the number that starts dragging hills if it keeps rising.
+    float basinT = 0.30f;           // AREA: the fraction of the field that carves at all
+    float basinRamp = 0.05f;        // RIM: how far below T the pull reaches full strength
+    float basinGate = 47.0f;        // absolute ceiling, in metres, over which no basin cuts
+    float basinGateRamp = 14.0f;    // and how softly that ceiling closes
+    // -3 -> -9: the bed sits nine metres under the line rather than three. A
+    // basin whose floor stops just under the waterline floods a metre deep and
+    // reads as a puddle; measured, this takes the deepest lakes from 6.0 m to
+    // 9.3 m and the largest from 4,428 m2 to 6,804 m2 for almost no extra
+    // dry-land loss (0.72% -> 0.74%), because it deepens basins that were
+    // already carving rather than creating new ones.
+    float basinBed = -9.0f;         // DEPTH: the bed, as an offset from waterLevel
 
     // WORLD COLUMN INDICES, not patch-relative ones.
     //
@@ -1418,9 +1571,10 @@ class VoxelTerrain {
 
         float h = 14.0f + roll * 48.0f + swell * 21.5f;
 
-        const float b = fbm(memo.basin, x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
-        if (b < 0.40f) {
-            const float m = sstep(minf(1.0f, (0.40f - b) / 0.10f));
+        const float b =
+            fbm(memo.basin, x * basinFreq + 311.7f, z * basinFreq + 157.3f, basinOct);
+        if (b < basinT) {
+            const float m = sstep(minf(1.0f, (basinT - b) / basinRamp));
             // Scaled with the terrain, every time it grows. This gate is a
             // FRACTION of the landform's range dressed up as metres: at the
             // original height it was 9, at twice that 18, and at four times it
@@ -1431,8 +1585,40 @@ class VoxelTerrain {
             // THE SMOOTHING DID NOT MOVE IT, and that follows from what the
             // smoothing was fitted to do: the range this is a fraction of is
             // the same range it was.
-            const float lowGate = saturate((36.0f - h) / 28.0f);
-            h -= m * lowGate * (h - (waterLevel - 3.2f));
+            const float lowGate = saturate((basinGate - h) / basinGateRamp);
+            // ...and fades out as the birch band comes within a lake's reach --
+            // see seamClear. This is what stops a lake being sliced by the
+            // waterline's step instead of ending on its own rim.
+            h -= m * lowGate * seamClear(x) * (h - (waterLevel + basinBed));
+        }
+
+        // -------------------------------------------------------------------
+        // A FLUSH SHELF IS AN ARTEFACT, and v1 carries this exact fix.
+        //
+        // The basin's rim pulls a broad apron down to within a voxel or two of
+        // the line, and every column that lands there lands at the SAME
+        // altitude. Measured on a transect through the lake at (-88, -104):
+        // thirty metres of beach varying by thirty centimetres. Under grass and
+        // litter a dead-level plateau is invisible; on bare sand it is a
+        // staircase of perfectly straight treads, which is what the first
+        // headless render of this beach actually showed.
+        //
+        // v1 (world/terrain.js, fillColumn) hit it on arctic snow and fixed it
+        // the same way: give the shelf the coherent relief its own ground
+        // carries, UPWARD ONLY. The max(0, ...) is not a detail -- it is what
+        // preserves the guarantee the whole basin arm exists for, which is that
+        // dry land never sits below the water plane. Raising a column can only
+        // ever make it drier, so this cannot move a shoreline outward or strand
+        // a lake column above the line.
+        //
+        // GATED AT OR ABOVE THE LINE so a lake bed is never touched: those
+        // columns are what holds the water, and lifting one is how a lake
+        // acquires a hole in the middle.
+        {
+            const float wlm = waterAt(x);
+            if (wlm > 0.0f && h >= wlm - 0.05f && h <= wlm + 0.8f)
+                h += maxf(0.0f, (fbm(memo.shelf, x * 0.09f + 3.1f, z * 0.09f + 8.7f, 3) - 0.42f) *
+                                    0.9f);
         }
 
         // AND THE FINE OCTAVE HAS TO STAY. Cutting it entirely was a mistake
@@ -1586,9 +1772,75 @@ class VoxelTerrain {
         if (birchMix(wx(i)) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
             return mat::GRASS_0;
 
-        const int wl = int(waterLevel / VOXEL_M);
+        const int wl = int(waterAt(wx(i)) / VOXEL_M);
+        // -------------------------------------------------------------------
+        // NO BEACH WITHOUT A BASIN TO HOLD THE WATER.
+        //
+        // Sand used to be painted on anything within a few voxels of the
+        // waterline, which was right while every column under the line was wet.
+        // It is not any more: water needs a BASIN now (see lakeColumn), and
+        // without the same gate here the low country came out ringed with sandy
+        // shores around nothing at all -- "areas that are empty of water even
+        // though they have a sandy basin". A beach is the edge of a lake, so it
+        // is allowed exactly where a lake is.
+        // -------------------------------------------------------------------
+        // The gate itself. Everything from here to the end of the beach block
+        // is SKIPPED on a column no lake can reach, and the ordinary ground
+        // arms below it run instead -- which is what a dry hollow should be
+        // made of.
+        // THE HEIGHT TEST FIRST, AND IT IS NOT A MICRO-OPTIMISATION. inBasin is
+        // three octaves of 2D fbm and this runs on EVERY column in the world,
+        // where the question it answers only matters within a few voxels of the
+        // waterline -- a fraction of a percent of them. Asking the cheap integer
+        // question first keeps the noise off every hillside in the wood.
+        const bool basin = (wl >= 0) && (h <= wl + 7) && inBasin(i, j, memo);
+        if (basin) {
+        // UNDER THE LINE: sand near it, silt where it gets deep. A lakebed you
+        // can see through the water is sand; further down it stops mattering and
+        // silt is the darker, duller answer.
         if (h <= wl) return (wl - h <= 8) ? mat::SAND : mat::SILT;
-        if (h <= wl + 8) return mat::SAND;  // the shore band
+
+        // -------------------------------------------------------------------
+        // THE BEACH -- v1's, ported, and it is the DITHER that is being ported
+        // rather than the sand.
+        //
+        // This was `h <= wl + 8`, one hard band that ended on a line, and a
+        // straight contour of sand meeting forest floor is the one shape nothing
+        // else in this terrain has. v1 (world/terrain.js, fillColumn) splits it:
+        //
+        //     solid sand      h1 <= WL + 4      -- five voxel steps
+        //     soft edge       h1 <= WL + 6      -- dithered, thinning out
+        //
+        // FIVE STEPS BECAUSE A STEP IS A VOXEL (v1, user: "make the sand have
+        // more steps.. 3-5"). The count of treads you can see is the number of
+        // voxel levels the sand spans; two levels read as a single step, which
+        // is what made v1's first beach look like a kerb.
+        //
+        // AND THE BLEND SITS ABOVE THE SAND, NEVER THROUGH IT. v1 learned this
+        // from a screenshot of a beach speckled black: the dither used to start
+        // inside the beach, so every MISS fell through to the litter arm below
+        // and painted needle brown across most of a wide beach. The solid band
+        // returns unconditionally here for exactly that reason -- nothing inside
+        // the beach can miss.
+        // -------------------------------------------------------------------
+        if (h <= wl + 5) return mat::SAND;    // the beach proper: five steps, solid
+        if (h <= wl + 7) {
+            // Two levels of soft edge. The probability falls with height, so the
+            // sand thins out INTO the forest floor with no line at either end --
+            // sstep rather than linear so both ends of the fade are corner-free.
+            //
+            // THE DIVISOR IS THREE FOR A BAND OF TWO, and that is not an error.
+            // Over two it reaches 1.0 exactly at the top level, whose sand
+            // probability is then zero -- measured 48.3% at wl+6 and 0.0% at
+            // wl+7, so the band dithered on one level and ended on a hard line
+            // at the other, which is the artefact this whole arm exists to
+            // remove. Three puts both levels strictly inside the fade: 74% then
+            // 26%.
+            const float t = saturate(float(h - wl - 5) / 3.0f);
+            if (hashUnit(0x5A17u, hashU32(uint32_t(i), uint32_t(j))) < 1.0f - sstep(t))
+                return mat::SAND;
+        }
+        }   // ...and the end of the basin gate.
 
         if (slope >= kRockSlope) return mat::ROCK;  // too steep to hold soil
 
@@ -1680,6 +1932,270 @@ class VoxelTerrain {
         return crustMin + mini(span - 1, int(t * float(span)));
     }
 
+    // -----------------------------------------------------------------------
+    // IS THIS COLUMN UNDER WATER -- v1's own rule, ported.
+    //
+    // v1 (world/terrain.js, fillColumn):
+    //     lake = h <= WL - 1 || (h === WL && any neighbour h < WL)
+    //
+    // EVERY BOUND SHIFTS BY ONE COMING ACROSS, because the two engines mean
+    // different things by h: v1's is one PAST the top solid voxel and v2's IS
+    // the top solid voxel. So v1's `h <= WL - 1` is `H <= wl - 2` here. Getting
+    // that wrong is a one-voxel film of water over every shore, which is the
+    // coplanar-with-the-bank artefact the second clause exists to avoid.
+    //
+    // THE SECOND CLAUSE IS WHY SHORES LOOK LIKE SHORES. A column sitting
+    // exactly one voxel under the line is wet only if it JOINS real water --
+    // otherwise a puddle appears in every isolated dip that happens to graze
+    // the waterline, and a wood full of one-voxel puddles reads as wet paint.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE SURFACE IS MADE OF VOXELS, NOT OF GLASS.
+    //
+    // A lake was one flat merged quad at a single row, which in a world built
+    // of 10 cm voxels reads as a pane of glass laid over the ground -- the one
+    // surface in the wood with no voxel structure in it at all.
+    //
+    // This is v1's own Gerstner height field (render/buffers.js, GERSTH_WGSL --
+    // the same four trains the shading normal uses, see waterNormal in
+    // Trace.cs.slang), QUANTISED TO WHOLE VOXELS. The crests come out as steps
+    // because everything here is steps, and the 2D merge below picks them up for
+    // free: it already merges columns of EQUAL waterline, so a stepped surface
+    // becomes a handful of rectangles at different heights instead of one.
+    //
+    // IT RAISES, NEVER LOWERS. Dropping a column would expose the bed through
+    // the surface and put a hole in the lake; adding to it only ever makes the
+    // water deeper, which nothing downstream minds.
+    //
+    // AND IT IS STILL AT ONE MOMENT IN TIME. The mesh is built when a chunk is
+    // adopted and does not move afterwards, so these are FROZEN crests -- the
+    // shape of water, not the motion of it. Animating them means re-meshing the
+    // water every frame, which means water needs its own acceleration structure
+    // again; the shading normal carries the movement in the meantime.
+    int waveCrestVox(float x, float z) const {
+        if (waveCrestMax <= 0) return 0;
+        // v1's GW table: direction, wavelength (m), amplitude (voxels).
+        struct W { float dx, dz, lam, amp; };
+        // ONLY THE TWO LONG TRAINS CARRY GEOMETRY, and this is a cost decision
+        // with a measurement behind it. All four gave 422,810 water triangles
+        // against 7,618 flat -- 55x -- because the finest train is 0.67 m, under
+        // seven voxels, so the crest changes every few columns and the 2D merge
+        // has nothing left to merge. The 5.2 m and 2.3 m trains step over metres
+        // instead, which merges into broad rectangles AND reads better: long
+        // swells rather than chop. The fine detail is not lost -- it lives in the
+        // shading normal, which is per pixel and costs no triangles at all.
+        static const W kW[2] = {{ 0.834f,  0.552f, 5.20f, 1.30f},
+                                {-0.416f,  0.909f, 2.30f, 0.72f}};
+        static const float kPh[2] = {0.0f, 2.1f};
+        float hh = 0.0f;
+        for (int i = 0; i < 2; ++i) {
+            const float k = 6.2831853f / kW[i].lam;
+            hh += kW[i].amp * cosf(k * (kW[i].dx * x + kW[i].dz * z) + kPh[i]);
+        }
+        // The sum runs about +-2.5 voxels; shift it positive and clamp, so the
+        // trough is the true waterline and the crests stand above it.
+        const int c = int(hh + 2.0f);   // the two trains sum to about +-2
+        return c < 0 ? 0 : (c > waveCrestMax ? waveCrestMax : c);
+    }
+    int waveCrestMax = 3;   // how many voxels a crest may stand above the line
+
+    int waterRowAt(float x) const {
+        const float w = waterAt(x);
+        return (w <= 0.0f) ? -1 : int(w / VOXEL_M);   // birch returns kNoWater
+    }
+
+    // THE BASIN FIELD, ASKED DIRECTLY. heightM uses it to decide where to carve;
+    // the water needs the same answer to decide where it is ALLOWED to stand.
+    float basinField(float x, float z, TerrainMemo &memo) const {
+        return fbm(memo.basin, x * basinFreq + 311.7f, z * basinFreq + 157.3f, basinOct);
+    }
+    bool inBasin(int i, int j, TerrainMemo &memo) const {
+        return basinField(wx(i), wx(j), memo) < basinT;
+    }
+
+    // -----------------------------------------------------------------------
+    // A LAKE HAS TO BE IN A BASIN, AND WITHOUT THIS IT IS AN OCEAN.
+    //
+    // "Below the waterline" is NOT the same question as "in a lake", and
+    // treating it as one is what put an endless sheet of water across the wood.
+    // Measured over a 10 km square: 2.68% of pine columns sat under the line,
+    // and only **5.0% of them were anywhere the basin mask had fired**. The
+    // other 95% was plain low ground -- and the lowest few percent of a fractal
+    // landscape is not a scatter of ponds, it is the valley network, which
+    // connects. The largest body came out 22,750 m2 and they run into each
+    // other; from inside it reads as a coastline.
+    //
+    // THE PINE FIELD MAKES THIS INEVITABLE WITHOUT A GATE: its p5 is 35.2 m
+    // against a 33 m line, so a few percent of the world floods on the terrain's
+    // own shape no matter what the basin carve does.
+    //
+    // AND IT IS ALSO THE FIX FOR THE BIRCH BAND LOOKING DROWNED. `waterAt`
+    // already gives birch no water (measured 0.00% wet), but 100% of birch
+    // ground lies below the PINE line -- so a pine lake that reached the band
+    // edge stood as a wall of water over ground twenty metres lower. A basin is
+    // a bounded depression that has to close on its own rim, so it cannot run
+    // to the seam and end in mid-air.
+    // -----------------------------------------------------------------------
+    bool lakeColumn(int i, int j, int h, TerrainMemo &memo) const {
+        const int wl = waterRowAt(wx(i));
+        if (wl < 0) return false;
+        if (h > wl - 1) return false;               // cheap reject before the noise
+        if (!inBasin(i, j, memo)) return false;     // low ground is not a lake
+        if (h <= wl - 2) return true;
+        // A rim column is wet only if it JOINS real water -- otherwise a puddle
+        // appears in every dip that grazes the line.
+        return heightVox(i - 1, j, memo) <= wl - 2 || heightVox(i + 1, j, memo) <= wl - 2 ||
+               heightVox(i, j - 1, memo) <= wl - 2 || heightVox(i, j + 1, memo) <= wl - 2;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE CARVE -- and this is the change that makes the world a VOLUME.
+    //
+    // Solidity used to be `y <= h`: one comparison against a surface. A
+    // comparison against a surface cannot describe a room under it, which is
+    // why this world has never had a cave, an overhang or an arch that the
+    // generator put there -- only ones a player dug. The height field is not
+    // wrong, it is just 2.5D, and every previous attempt to get caves out of it
+    // was arguing with that rather than replacing it.
+    //
+    // TUBES, NOT BLOBS, AND THAT IS THE WHOLE TRICK. A 3D fbm thresholded
+    // directly gives spongework -- isolated bubbles that never connect, which
+    // reads as rot rather than as a cave. |fbm - 0.5| small instead picks out
+    // the field's MID-SURFACE, which is a connected sheet; intersect two such
+    // sheets from decorrelated fields and what survives is their intersection,
+    // which is a LINE. That is a tunnel, it branches where the sheets fold, and
+    // it connects over hundreds of metres for free.
+    //
+    // TWO GATES, AND THEY EXIST FOR DIFFERENT REASONS. caveRegion is 2D and
+    // CHEAP and says where a cave system is at all -- perhaps a tenth of the
+    // world -- so nine columns in ten never evaluate the 3D field. That is a
+    // performance gate. The roof and floor fades are not: they keep a tunnel
+    // from shaving the topsoil off a hillside from underneath, and from cutting
+    // into the bedrock that is supposed to be the floor of the world.
+    //
+    // THE ROOF FADE IS DELIBERATELY LEAKY. A cave system that never reaches the
+    // surface is a cave system nobody finds. Where the region field is strong
+    // the roof requirement relaxes to nothing, so the strongest systems open
+    // their own mouths on a hillside and the rest stay sealed.
+    // -----------------------------------------------------------------------
+    float caveRegionFreq = 0.0035f;  // where cave SYSTEMS are, in x/z
+    float caveRegionT = 0.610f;      // over this, a column may hold one
+    float caveRegionMouth = 0.88f;   // ...and over THIS, it may break the surface
+    float caveFreq = 0.020f;         // the tube field, horizontally
+    // THIS MUST STAY CLOSE TO caveFreq, AND HERE IS THE FAILURE IT PREVENTS.
+    //
+    // At 0.034 (above the horizontal frequency) tunnels come out vertically
+    // THIN: a mean bore of 6.8 voxels, 68 cm against a player 18 tall. A crack.
+    // The obvious correction is to drop it a long way -- 0.013 was tried -- and
+    // that is WRONG in a way no average catches. The carve is the intersection
+    // of two sheets, and a sheet only stays a sheet while the field varies in y:
+    // over the 90-voxel band 0.013 spans barely one lattice unit, so BOTH sheets
+    // go vertically invariant, and the intersection of two vertical sheets is a
+    // PRISM, not a tube. Columns were hollowed from the surface to the bedrock
+    // -- one measured 40+ voxels of unbroken air under the turf, and its chunk
+    // went 74,596 triangles to 484,236.
+    //
+    // THE MEAN BORE LOOKED FINE THROUGHOUT (15.5, better than 6.8). What catches
+    // it is the TAIL: p99 of the carved runs, which went to the full band. Sweep
+    // p99run and maxrun, never the mean alone.
+    //
+    // Isotropic with caveFreq keeps the two sheets transverse, which is the only
+    // reason their intersection is a line. Measured here: p99 run 39 voxels,
+    // breach 0.36%, 2.21% of the band carved.
+    float caveFreqY = 0.020f;        // ...and vertically, at the SAME rate: transverse sheets cut tubes
+    int caveOct = 3;
+    float caveT = 0.062f;            // how near the mid-surface still counts -- the bore
+    int caveRoofVox = 7;             // solid left under the surface, where sealed
+    int caveFloorVox = 10;           // ...and over the bedrock
+    // OFF (user 2026-09-10: "remove caves from the terrain").
+    //
+    // The whole carve is kept rather than deleted, behind this one flag, because
+    // it is not the code that was the problem -- it was tuned on measurement and
+    // the numbers are in [[v2-voxel-volume-and-caves]]: 14.3% of columns holding
+    // cave, 0.36% breaching, p99 bore 39 voxels, and a mesh cost brought from
+    // 385 ms a chunk down to 46. Setting this true restores all of it.
+    //
+    // With it false, `caved` returns false everywhere, the mesher's carve pass
+    // is skipped entirely, and no column leaves the fast heightmap path on its
+    // account -- so the terrain is exactly what it was before caves existed, and
+    // costs exactly what it did.
+    bool cavesOn = false;
+
+    // Cheap, 2D, and the only thing most columns ever pay.
+    float caveRegion(int i, int j, FbmMemo &m) const {
+        return fbm(m, float(i) * caveRegionFreq + 613.1f, float(j) * caveRegionFreq + 271.9f, 3);
+    }
+    float caveRegion(int i, int j) const {
+        FbmMemo m;
+        return caveRegion(i, j, m);
+    }
+
+    // Is the voxel at (i, j, y) cut out of the volume? `reg` is that column's
+    // caveRegion, handed in because a caller walking a column has it already.
+    // The gates alone: integer rules about depth, no noise. Kept separate so the
+    // sampled path in the mesher can apply them EXACTLY while interpolating only
+    // the field -- see caveField.
+    bool cavedGates(int i, int j, int y, int h, float reg) const {
+        if (!cavesOn || reg <= caveRegionT) return false;
+        if (h - y >= kBedrockVox - caveFloorVox) return false;  // never into the bedrock
+        // How much solid the roof owes, relaxed to nothing in the strongest
+        // systems so those open a mouth. sstep so the change is gradual across
+        // the region rather than a ring of columns where the rule flips.
+        const float open = saturate((reg - caveRegionT) / maxf(1e-4f, caveRegionMouth - caveRegionT));
+        const int roof = int(float(caveRoofVox) * (1.0f - sstep(open)) + 0.5f);
+        return h - y >= roof;
+    }
+
+    bool caved(int i, int j, int y, int h, float reg) const {
+        if (!cavedGates(i, j, y, h, reg)) return false;
+        return caveField(i, j, y) < caveT;
+    }
+
+    // HOW FAR THIS VOXEL IS FROM THE TUBE'S CENTRE LINE -- the continuous form
+    // of the test above, so it can be SAMPLED AND INTERPOLATED rather than
+    // evaluated per voxel. That is the whole performance story of this feature:
+    // measured, `caved` at one call per voxel was 228 ms of a cave-heavy chunk
+    // against 6 ms for the heights and 1 ms for the region gate.
+    //
+    // WHY INTERPOLATING IS SOUND HERE and is not merely cheaper. The field is
+    // band-limited by construction: the finest octave has a wavelength of about
+    // twelve voxels horizontally and nineteen vertically, so a four-voxel step
+    // samples it several times per period. Interpolating between those samples
+    // reconstructs it to well inside the noise's own amplitude, and what it
+    // feeds is a THRESHOLD -- a bore edge moving by a fraction of a voxel is
+    // not a difference anyone can see in a cave wall.
+    //
+    // THE EARLY-OUT SURVIVES, which matters because it is most of the saving on
+    // the 87% of voxels that are not carved: max(a, b) >= a, so if the first
+    // sheet alone is already past the threshold the second cannot bring the
+    // maximum back under it, and returning `a` is a correct answer to the only
+    // question asked of this value.
+    float caveField(int i, int j, int y) const {
+        const float fx = float(i) * caveFreq, fy = float(y) * caveFreqY, fz = float(j) * caveFreq;
+        const float a = std::fabs(fbm3(fx, fy, fz, caveOct) - 0.5f);
+        if (a >= caveT) return a;   // the cheaper sheet first: it rejects most voxels alone
+        const float b = std::fabs(fbm3(fx + 41.7f, fy + 13.1f, fz + 77.3f, caveOct) - 0.5f);
+        return maxf(a, b);
+    }
+
+    // How far apart the samples above are taken, down a column. Four is a
+    // quarter of the work and the reconstruction is still several samples per
+    // period of the finest octave; eight starts to round the bores off.
+    int caveStrideY = 4;
+
+    // Does this column hold ANY carved voxel? The mesher asks so it can route
+    // the column to the voxel pass -- the heightmap path assumes solid from h
+    // down and would draw a cave's roof as if the rock under it were still
+    // there. Walks at a stride: the tube field's finest octave has a wavelength
+    // of about fifteen voxels, so a stride of four cannot step over a bore.
+    bool columnHasCave(int i, int j, int h, float reg) const {
+        if (!cavesOn || reg <= caveRegionT) return false;
+        const int lo = maxi(0, h - kBedrockVox + caveFloorVox);
+        for (int y = h - caveRoofVox; y >= lo; y -= 4)
+            if (caved(i, j, y, h, reg)) return true;
+        return false;
+    }
+
     // The material of the voxel at row y in column (i, j), given that column's
     // surface row h and what topMaterial put on it. AIR above the surface; the
     // surface keeps its own material; and a rock outcrop is rock the whole way
@@ -1695,19 +2211,33 @@ class VoxelTerrain {
     // altitude, so the bedrock follows the terrain rather than cutting across
     // it: a valley floor and a hilltop are both the same distance from it. A
     // flat bedrock plane would surface itself in the valleys.
-    uint8_t materialAt(int i, int j, int y, int h, uint8_t top) const {
+    // The profile with NO carve -- what the column would hold if it were solid.
+    // Split out because the mesher decides the carve ONCE into a bitset and must
+    // not pay for it again on every neighbour query; everything else asks
+    // materialAt, which is carve-aware and is still the one answer.
+    uint8_t materialSolid(int i, int j, int y, int h, uint8_t top) const {
         if (y > h) return mat::AIR;
-        if (y == h) return top;
         if (h - y >= kBedrockVox) return mat::BEDROCK;
+        if (y == h) return top;
         if (top == mat::ROCK) return mat::ROCK;
         return (h - y <= crustVox(i, j)) ? mat::SOIL_0 : mat::ROCK;
+    }
+
+    uint8_t materialAt(int i, int j, int y, int h, uint8_t top) const {
+        if (y > h) return mat::AIR;
+        if (h - y >= kBedrockVox) return mat::BEDROCK;
+        // THE CARVE IS ASKED BEFORE THE SURFACE, so a tunnel that reaches a
+        // hillside takes the turf with it and leaves a mouth, rather than a
+        // roof of floating grass over a hollow.
+        if (cavesOn && caved(i, j, y, h, caveRegion(i, j))) return mat::AIR;
+        return materialSolid(i, j, y, h, top);
     }
 
     uint8_t topMaterial(int i, int j, int h, TerrainMemo &memo) const {
         // Only reached from the sparse scatter paths. Below the shore band the
         // slope is never consulted, so it is not worth four height evaluations
         // to compute one that will be discarded.
-        const int wl = int(waterLevel / VOXEL_M);
+        const int wl = int(waterAt(wx(i)) / VOXEL_M);
         if (h <= wl + 8) return topMaterial(i, j, h, 0, memo);
         const int slope = maxi(absi(heightVox(i + 1, j, memo) - heightVox(i - 1, j, memo)),
                                absi(heightVox(i, j + 1, memo) - heightVox(i, j - 1, memo)));
@@ -1774,11 +2304,17 @@ class VoxelTerrain {
         auto T = [&](int i, int j) -> uint8_t & {
             return tp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
         };
+        scratch.crust.resize((size_t(n) + 2) * (size_t(n) + 2));
+        uint8_t *const cp = scratch.crust.data();
+        auto CR8 = [&](int i, int j) -> uint8_t & {
+            return cp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
+        };
         for (int j = -1; j <= n; ++j)
             for (int i = -1; i <= n; ++i) {
                 const int slope =
                     maxi(absi(H(i + 1, j) - H(i - 1, j)), absi(H(i, j + 1) - H(i, j - 1)));
                 T(i, j) = topMaterial(I0 + i, J0 + j, H(i, j), slope, memo);
+                CR8(i, j) = uint8_t(mini(255, crustVox(I0 + i, J0 + j)));
             }
 
         // How tall a strand stands on each column, 0 for none. Computed for the
@@ -1813,6 +2349,126 @@ class VoxelTerrain {
                     for (int di = -1; di <= 1; ++di)
                         slow.insert(ChunkEdits::ckey(wi - I0 + di, wj - J0 + dj));
             }
+        }
+        // ------------------------------------------------------------------
+        // AND THE COLUMNS A CAVE RUNS THROUGH, for exactly the reason above.
+        //
+        // The heightmap path can only say "solid from h down", so over a cave
+        // it draws the roof as though the rock under it were still there --
+        // the tunnel exists in the volume, in the collider and in every query,
+        // and is simply invisible. Same failure as an un-meshed dig, same fix:
+        // route the column to the voxel pass.
+        //
+        // THE RING GOES WITH IT, again. A tunnel wall is a face on the rock
+        // BESIDE the carved column, and that rock may be a column the fast path
+        // owns -- or one in the chunk next door, which is why the padded range
+        // is walked rather than the interior.
+        //
+        // WHAT THIS COSTS is bounded by the region gate, not by the cave field:
+        // measured at 11.4% of columns holding a carve, so seven columns in
+        // eight keep the run-merged path that makes this terrain affordable.
+        // ------------------------------------------------------------------
+        // ------------------------------------------------------------------
+        // THE WATER, AS VOXELS, AND WHY IT GOES THROUGH THE SAME PASS.
+        //
+        // A lake is rows of mat::WATER standing above the ground in a basin, so
+        // the columns holding it cannot be described by "solid up to h" any more
+        // than a cave can -- the fast path would draw the lakebed and stop. They
+        // go to the voxel pass, which already emits a face wherever material
+        // borders air and merges the sides into runs, so a lake's top comes out
+        // as faces on its surface row and its interior costs nothing.
+        //
+        // THIS IS THE WHOLE OF WHAT REPLACED THE SEPARATE WATER STRUCTURE. No
+        // second BLAS, no KIND_WATER instance, no second entry in the compaction
+        // queue under the same chunk key -- which is the collision that put a
+        // flat sheet where a hillside should be.
+        // ------------------------------------------------------------------
+        scratch.wet.assign(size_t(n + 2) * size_t(n + 2), int16_t(-1));
+        int16_t *const wp = scratch.wet.data();
+        auto WET = [&](int i, int j) -> int16_t & {
+            return wp[size_t(j + 1) * (n + 2) + size_t(i + 1)];
+        };
+        {
+            bool anyWet = false;
+            for (int j = -1; j <= n; ++j)
+                for (int i = -1; i <= n; ++i) {
+                    const int wl = waterRowAt(wx(I0 + i));
+                    if (wl < 0) continue;                 // the birch wood has no line
+                    if (H(i, j) > wl - 1) continue;       // well clear of it: cheap reject
+                    if (!lakeColumn(I0 + i, J0 + j, H(i, j), memo)) continue;
+                    // The crest is added to the SURFACE only. lakeColumn above
+                    // decided wetness against the true waterline, so a crest can
+                    // never create a lake -- only stand on one.
+                    WET(i, j) = int16_t(wl + waveCrestVox(wx(I0 + i), wx(J0 + j)));
+                    anyWet = true;
+                    for (int dj = -1; dj <= 1; ++dj)
+                        for (int di = -1; di <= 1; ++di)
+                            slow.insert(ChunkEdits::ckey(i + di, j + dj));
+                }
+            (void)anyWet;
+        }
+
+        // THE CARVE IS DECIDED ONCE, HERE, AND READ AS BITS AFTER THIS.
+        // caveRegion is 3 octaves of 2D fbm and `caved` up to two of 3D fbm;
+        // asking them from inside the face loop meant paying both about seven
+        // times per voxel, which measured 385 ms a chunk against 10.6 with
+        // caves off. One pass down each column, one bit out, and the mesh loop
+        // below touches no noise at all.
+        const int caveBand = maxi(0, kBedrockVox - caveFloorVox);
+        const size_t caveWords = size_t((caveBand + 63) / 64);
+        const size_t caveStride = caveWords;
+        auto CV = [&](int i, int j) -> uint64_t * {
+            return scratch.carve.data() +
+                   (size_t(j + 1) * size_t(n + 2) + size_t(i + 1)) * caveStride;
+        };
+        // k counts DOWN from the column's own surface, so a band that follows
+        // the terrain costs 90 bits a column instead of the chunk's whole relief.
+        auto carvedAt = [&](int i, int j, int y) -> bool {
+            if (!cavesOn || i < -1 || j < -1 || i > n || j > n) return false;
+            const int k = H(i, j) - y;
+            if (k < 0 || k >= caveBand) return false;
+            return ((CV(i, j)[size_t(k >> 6)] >> (k & 63)) & 1ull) != 0ull;
+        };
+        if (cavesOn) {
+            scratch.carve.assign(size_t(n + 2) * size_t(n + 2) * caveStride, 0ull);
+            FbmMemo rm;
+            for (int j = -1; j <= n; ++j)
+                for (int i = -1; i <= n; ++i) {
+                    // The cheap gate, and most columns stop on it. Walking i
+                    // fastest keeps the memo's lattice row warm across the row.
+                    const float reg = caveRegion(I0 + i, J0 + j, rm);
+                    if (reg <= caveRegionT) continue;
+                    const int h = H(i, j);
+                    uint64_t *const w = CV(i, j);
+                    bool any = false;
+                    // Sample the field down the column on the stride, then walk
+                    // every voxel between two samples off the interpolation.
+                    // The roof, floor and bedrock gates stay EXACT -- they are
+                    // integer rules about depth, not noise, and rounding one of
+                    // them would let a tunnel shave the turf off a hillside.
+                    const int st = maxi(1, caveStrideY);
+                    float f0 = caveField(I0 + i, J0 + j, h);
+                    for (int k0 = 0; k0 < caveBand; k0 += st) {
+                        const int k1 = mini(k0 + st, caveBand);
+                        const float f1 = caveField(I0 + i, J0 + j, h - k1);
+                        const float inv = 1.0f / float(k1 - k0);
+                        for (int k = k0; k < k1; ++k) {
+                            const float f = f0 + (f1 - f0) * (float(k - k0) * inv);
+                            if (f >= caveT) continue;
+                            if (!cavedGates(I0 + i, J0 + j, h - k, h, reg)) continue;
+                            w[size_t(k >> 6)] |= 1ull << (k & 63);
+                            any = true;
+                        }
+                        f0 = f1;
+                    }
+                    if (!any) continue;
+                    // THE RING GOES WITH IT: a tunnel wall is a face on the
+                    // rock BESIDE the carved column, and that rock may be one
+                    // the fast path owns.
+                    for (int dj = -1; dj <= 1; ++dj)
+                        for (int di = -1; di <= 1; ++di)
+                            slow.insert(ChunkEdits::ckey(i + di, j + dj));
+                }
         }
         auto ED = [&](int i, int j) { return !slow.empty() && slow.count(ChunkEdits::ckey(i, j)) != 0; };
 
@@ -2106,8 +2762,23 @@ class VoxelTerrain {
             auto matAt = [&](int i, int j, int y) -> uint8_t {
                 uint8_t e;
                 if (ed && ed->voxel(I0 + i, J0 + j, y, &e)) return e;
-                return materialAt(I0 + i, J0 + j, y, H(i, j), T(i, j));
+                if (carvedAt(i, j, y)) return mat::AIR;
+                // materialSolid's body, with the crust read from the grid
+                // instead of hashed again for every one of these calls.
+                const int h = H(i, j);
+                if (y > h) {
+                    // Above the ground: water if this column holds any and the
+                    // row is at or under its line, else sky.
+                    const int wl = int(WET(i, j));
+                    return (wl >= 0 && y <= wl) ? mat::WATER : mat::AIR;
+                }
+                if (h - y >= kBedrockVox) return mat::BEDROCK;
+                const uint8_t tm = T(i, j);
+                if (y == h) return tm;
+                if (tm == mat::ROCK) return mat::ROCK;
+                return (h - y <= int(CR8(i, j))) ? mat::SOIL_0 : mat::ROCK;
             };
+            std::vector<uint8_t> colMat;   // one column's profile, reused across columns
             // face:: order: POS_Y, NEG_Y, POS_X, NEG_X, POS_Z, NEG_Z.
             static const int kD[6][3] = {{0, 0, 1},  {0, 0, -1}, {1, 0, 0},
                                          {-1, 0, 0}, {0, 1, 0},  {0, -1, 0}};
@@ -2115,27 +2786,136 @@ class VoxelTerrain {
                 const int ci = int(int32_t(uint32_t(key >> 21) & 0x1fffffu) << 11) >> 11;
                 const int cj = int(int32_t(uint32_t(key) & 0x1fffffu) << 11) >> 11;
                 if (ci < 0 || ci >= n || cj < 0 || cj >= n) continue;  // a neighbour chunk owns it
-                const int yTop = H(ci, cj);
-                const int yBot = yEditLo - 2;
+                // UP TO THE WATERLINE, not just the ground: the rows a lake
+                // stands in are above H and are exactly what has to be meshed.
+                const int yTop = maxi(int(H(ci, cj)), int(WET(ci, cj)));
+                // DEEP ENOUGH FOR WHICHEVER PUT THIS COLUMN HERE. An edit
+                // names its own y span; a carve does not, so the floor is the
+                // deepest a carve is allowed to reach (see caved). Taking the
+                // lower of the two covers a column that has both.
+                int yBot = yTop - kBedrockVox + caveFloorVox - 2;
+                if (ed && !ed->col.empty()) yBot = mini(yBot, yEditLo - 2);
+                yBot = maxi(yBot, 0);
                 const float x0 = float(I0 + ci) * s, x1 = x0 + s;
                 const float z0 = float(J0 + cj) * s, z1 = z0 + s;
+                // THE COLUMN'S OWN MATERIALS, ONCE. Every face test below asks
+                // about this column and then about a neighbour, and the four
+                // side directions were each re-deriving the same voxel: eleven
+                // lookups a voxel where five will do. One pass down the column
+                // into a scratch strip, and the loops below read it.
+                colMat.assign(size_t(yTop - yBot + 3), mat::AIR);
+                const int cmBase = yBot - 1;
+                auto CM = [&](int y) -> uint8_t {
+                    const int k = y - cmBase;
+                    return (k < 0 || k >= int(colMat.size())) ? mat::AIR : colMat[size_t(k)];
+                };
+                for (int y = yBot - 1; y <= yTop + 1; ++y)
+                    if (y - cmBase >= 0 && y - cmBase < int(colMat.size()))
+                        colMat[size_t(y - cmBase)] = matAt(ci, cj, y);
+
+                // THE TWO HORIZONTAL FACES, per voxel. A floor and a ceiling
+                // are one voxel each in a column and there is nothing to merge
+                // along -- merging THOSE wants a pass over slices, which is a
+                // different loop from this one and buys far less.
                 for (int y = yTop; y >= yBot; --y) {
-                    const uint8_t mm = matAt(ci, cj, y);
+                    const uint8_t mm = CM(y);
                     if (mm == mat::AIR) continue;
                     const float y0 = float(y) * s, y1 = y0 + s;
-                    for (int d = 0; d < 6; ++d) {
-                        if (matAt(ci + kD[d][0], cj + kD[d][1], y + kD[d][2]) != mat::AIR) continue;
-                        switch (d) {
-                            case 0: m.addQuad({x0,y1,z0},{x0,y1,z1},{x1,y1,z1},{x1,y1,z0}, mm, face::POS_Y); break;
-                            case 1: m.addQuad({x0,y0,z0},{x1,y0,z0},{x1,y0,z1},{x0,y0,z1}, mm, face::NEG_Y); break;
-                            case 2: m.addQuad({x1,y0,z0},{x1,y1,z0},{x1,y1,z1},{x1,y0,z1}, mm, face::POS_X); break;
-                            case 3: m.addQuad({x0,y0,z0},{x0,y0,z1},{x0,y1,z1},{x0,y1,z0}, mm, face::NEG_X); break;
-                            case 4: m.addQuad({x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}, mm, face::POS_Z); break;
-                            default:m.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, mm, face::NEG_Z); break;
+                    // THE LAKE SURFACE IS NOT EMITTED HERE. It is one flat
+                    // height over a blob, which is the best case a rectangle
+                    // merge ever gets -- and per column it was 448,962 water
+                    // triangles where the merge gives a few thousand. The only
+                    // water voxel with air above it is the surface row, so
+                    // skipping water here skips exactly that pass's work.
+                    if (CM(y + 1) == mat::AIR && mm != mat::WATER)
+                        m.addQuad({x0,y1,z0},{x0,y1,z1},{x1,y1,z1},{x1,y1,z0}, mm, face::POS_Y);
+                    if (CM(y - 1) == mat::AIR)
+                        m.addQuad({x0,y0,z0},{x1,y0,z0},{x1,y0,z1},{x0,y0,z1}, mm, face::NEG_Y);
+                }
+                // THE FOUR SIDE FACES, AS RUNS. This is where the triangles
+                // were: a tunnel wall is a tall vertical surface, and emitting
+                // it a voxel at a time cost one quad per voxel per direction --
+                // measured 5.88 M triangles against 2.72 M with caves off, most
+                // of it wall. A run of voxels with the same material and air on
+                // the same side is ONE quad however tall it is, which is the
+                // rule the heightmap path already uses for a bank.
+                for (int d = 2; d < 6; ++d) {
+                    int runLo = 0, runHi = 0;
+                    uint8_t runMat = mat::AIR;
+                    // One past the bottom, so a run reaching yBot still closes.
+                    for (int y = yTop; y >= yBot - 1; --y) {
+                        uint8_t mm = mat::AIR;
+                        if (y >= yBot) {
+                            const uint8_t here = CM(y);
+                            if (here != mat::AIR &&
+                                matAt(ci + kD[d][0], cj + kD[d][1], y) == mat::AIR)
+                                mm = here;
                         }
+                        if (mm != mat::AIR && runMat == mm) { runLo = y; continue; }
+                        if (runMat != mat::AIR) {
+                            const float y0 = float(runLo) * s, y1 = float(runHi + 1) * s;
+                            switch (d) {
+                                case 2: m.addQuad({x1,y0,z0},{x1,y1,z0},{x1,y1,z1},{x1,y0,z1}, runMat, face::POS_X); break;
+                                case 3: m.addQuad({x0,y0,z0},{x0,y0,z1},{x0,y1,z1},{x0,y1,z0}, runMat, face::NEG_X); break;
+                                case 4: m.addQuad({x0,y0,z1},{x1,y0,z1},{x1,y1,z1},{x0,y1,z1}, runMat, face::POS_Z); break;
+                                default:m.addQuad({x0,y0,z0},{x0,y1,z0},{x1,y1,z0},{x1,y0,z0}, runMat, face::NEG_Z); break;
+                            }
+                        }
+                        runMat = mm;
+                        runLo = runHi = y;
                     }
                 }
             }
+        }
+
+        // ------------------------------------------------------------------
+        // THE LAKE SURFACE, GREEDILY, IN TWO DIMENSIONS.
+        //
+        // Everything else in this mesher merges along ONE axis because the
+        // terrain's columns are all different heights and a rectangle spanning
+        // two of them would not be flat. A lake is the exception and the best
+        // case there is: one height, one material, over a connected blob. So it
+        // gets the full 2D merge -- widest run on a row, then the tallest block
+        // of rows wet at the same line for that whole width.
+        //
+        // IT GOES IN THE TERRAIN'S OWN MESH, which is the point. This used to be
+        // a second VoxMesh, a second BLAS and a second compaction entry under
+        // the same chunk key; one of the two then overwrote the other and a
+        // hillside became a flat sheet.
+        // ------------------------------------------------------------------
+        {
+            scratch.wmerge.assign(size_t(n) * size_t(n), 0);
+            uint8_t *const um = scratch.wmerge.data();
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < n;) {
+                    const int wl = int(WET(i, j));
+                    if (wl < 0 || um[size_t(j) * n + size_t(i)]) {
+                        ++i;
+                        continue;
+                    }
+                    int w = 1;
+                    while (i + w < n && !um[size_t(j) * n + size_t(i + w)] &&
+                           int(WET(i + w, j)) == wl)
+                        ++w;
+                    int hh = 1;
+                    for (bool ok = true; j + hh < n && ok;) {
+                        for (int k = 0; k < w; ++k)
+                            if (um[size_t(j + hh) * n + size_t(i + k)] ||
+                                int(WET(i + k, j + hh)) != wl) {
+                                ok = false;
+                                break;
+                            }
+                        if (ok) ++hh;
+                    }
+                    for (int jj = j; jj < j + hh; ++jj)
+                        for (int k = 0; k < w; ++k) um[size_t(jj) * n + size_t(i + k)] = 1;
+                    const float x0 = float(I0 + i) * s, x1 = float(I0 + i + w) * s;
+                    const float z0 = float(J0 + j) * s, z1 = float(J0 + j + hh) * s;
+                    const float y1 = float(wl + 1) * s;   // the TOP of the surface row
+                    m.addQuad({x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0},
+                              mat::WATER, face::POS_Y);
+                    i += w;
+                }
         }
 
         return m;

@@ -291,7 +291,10 @@ class Player {
         // creep at four fifths of a walk.
         sprint = sprint && !crouching;
         if (fly) {
-            const float spd = walk * 3.0f * (sprint ? sprintMul : 1.0f);
+            // DOUBLED (user 2026-09-10): 3x a walk to 6x. The world is endless
+            // and lakes are now a landform you go looking for, so crossing it is
+            // something you do on purpose rather than incidentally.
+            const float spd = walk * 6.0f * (sprint ? sprintMul : 1.0f);
             const float k = 1.0f - expf(-10.0f * dt);
             hvx_ += (move.x * spd - hvx_) * k;
             hvz_ += (move.z * spd - hvz_) * k;
@@ -477,15 +480,31 @@ class Player {
     // it stopped a body short of a birch by the width of its bark and stopped
     // it dead where a leaning trunk's ellipse covered open air. Neither is a
     // large error; both are the kind you feel rather than see.
-    bool blocked(const WalkWorld &w, float x, float z) const {
+    // ...AND WHERE THE BODY ACTUALLY IS, WHEN THE CALLER KNOWS. See the note
+    // over the default below: anchoring to the ground is right for a step and
+    // wrong for flight, and passing the real height is the whole fix.
+    static constexpr float kFeetFromGround = -1e30f;
+
+    bool blocked(const WalkWorld &w, float x, float z,
+                 float feetAt = kFeetFromGround) const {
         // THE GROUND UNDER THE SPOT, not the body's current height. This is
         // asked of places the body is not standing yet -- the next step, and a
         // spawn point chosen before anything has a height at all -- so anchor
         // it where a body at (x, z) would actually have its feet.
+        //
+        // BUT A FLYING BODY IS NOT STANDING ANYWHERE, and anchoring it to the
+        // ground is why flight stopped dead in mid-air for no visible reason:
+        // fifty metres up over a wood, this asked whether a body STANDING at
+        // (x, z) would be inside a trunk, and over a pine forest the answer is
+        // often yes. The trunk was thirty metres below the camera. Callers that
+        // know the body's real height pass it and get asked about the body they
+        // actually have.
         const float feet =
-            w.terrain ? float(w.terrain->heightVox(int(floorf(x / VOXEL_M)),
-                                                   int(floorf(z / VOXEL_M))) + 1) * VOXEL_M
-                      : pos.y;
+            (feetAt != kFeetFromGround)
+                ? feetAt
+                : (w.terrain ? float(w.terrain->heightVox(int(floorf(x / VOXEL_M)),
+                                                          int(floorf(z / VOXEL_M))) + 1) * VOXEL_M
+                             : pos.y);
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
             if (s.standable) continue;
@@ -580,8 +599,13 @@ class Player {
         // out of fly mode -- from being welded in place: if standing here is
         // blocked too then moving cannot make it worse, so let it move and walk
         // out. The ground test below is let off on the same grounds.
-        const bool stuck = blocked(w, pos.x, pos.z);
-        if (!stuck && blocked(w, next.x, next.z)) return;
+        // AIRBORNE, THE TESTS ARE ASKED AT THE BODY'S OWN HEIGHT. On the ground
+        // the default is still right -- a step moves onto whatever the next
+        // column's surface is, and that is exactly what the body's feet will be
+        // at once it gets there.
+        const float feetAt = (fly || !onGround) ? pos.y : kFeetFromGround;
+        const bool stuck = blocked(w, pos.x, pos.z, feetAt);
+        if (!stuck && blocked(w, next.x, next.z, feetAt)) return;
 
         const float g = groundHeight(w, next.x, next.z);
 

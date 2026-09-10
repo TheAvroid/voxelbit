@@ -1186,6 +1186,14 @@ class ForestApp : public SampleApp {
         }
         if (opt_.outGiven) {
             tracer_.setDemodulate(opt_.demodulate);
+            // THE OFFLINE PATH SETS THE WATER ITSELF, because it never runs
+            // onFrameRender -- see the note over renderOffline. Without this
+            // every --out render had waterY at its "no water anywhere" default
+            // and waterTime at zero: a submerged camera got no absorption and
+            // the waves stood still. Every verification render taken before this
+            // was quietly lying about both.
+            tracer_.waterY = world_.terrain.waterAt(pos_.x);
+            tracer_.waterTime = 0.0f;
             renderOffline(ctx);
             shutdown(0);
             return;
@@ -1574,6 +1582,18 @@ class ForestApp : public SampleApp {
             // whole days separately from the fraction, so this stays continuous
             // across midnight instead of snapping back at every wrap.
             tracer_.skyTime = float((double(clock_.days) + double(clock_.tday)) * DAY_SECONDS);
+
+            // THE WATERLINE UNDER THE CAMERA, and it is per column because the
+            // two woods do not share one -- see VoxelTerrain::waterAt, which
+            // hands back kNoWater for the birch band. The shader needs it to
+            // know whether a lit point is submerged (caustics) and whether the
+            // eye itself began the frame under the surface.
+            tracer_.waterY = world_.terrain.waterAt(pos_.x);
+            // ...and a WALL clock for the waves. Not the day clock: X plus
+            // scroll runs that at up to forty times speed and backwards, and a
+            // lake that reverses its chop when you scrub the sun is a bug.
+            waveClock_ += dt;
+            tracer_.waterTime = waveClock_;
 
 
             // -- IS IT ACTUALLY SIMULATING? ---------------------------------
@@ -3810,6 +3830,8 @@ class ForestApp : public SampleApp {
     // A command line, the way the browser engine has one. It exists for
     // /locate: the biomes are bands now (see birchWeight in
     // scene/voxelworld.h), so "the birch forest" is somewhere you can be sent.
+    // Seconds of wall time since launch, for the wave field only.
+    float waveClock_ = 0.0f;
     bool consoleOpen_ = false;
     bool consoleFocus_ = false;          // grab the caret on the frame it opens
     bool consoleCapture_ = false;        // was the mouse captured before it opened
@@ -4286,6 +4308,58 @@ class ForestApp : public SampleApp {
         return c + k * period;
     }
 
+    // -----------------------------------------------------------------------
+    // THE NEAREST LAKE, AND ITS SHORE.
+    //
+    // A biome is a band and so has a closed-form centre; a lake is not. It has
+    // to be looked for -- rings outward from wherever you are, asking the
+    // generator's own lakeColumn so the console can never disagree with the
+    // mesher about where water is.
+    //
+    // THE PROBE STEP IS SIX METRES because the smallest body worth walking to
+    // is tens of metres across, and a stride longer than the lake steps over
+    // it. Rings rather than a square spiral so the FIRST hit is the nearest
+    // one; a box search returns a corner before a nearer point on an edge.
+    //
+    // AND IT LANDS YOU ON THE SHORE, not in the lake. placeOnGround puts the
+    // body on the surface under it, and inside a lake that surface is the
+    // BED -- you would arrive underwater, on the bottom, which is not what
+    // "take me to water" means. So the wet column is only the anchor: the spot
+    // handed to the teleport is the nearest DRY column to it.
+    // -----------------------------------------------------------------------
+    bool nearestWater(float *outX, float *outZ) const {
+        const VoxelTerrain &t = world_.terrain;
+        TerrainMemo memo;
+        auto wetAt = [&](float x, float z) {
+            const int vi = int(floorf(x / VOXEL_M)), vj = int(floorf(z / VOXEL_M));
+            return t.lakeColumn(vi, vj, t.heightVox(vi, vj, memo), memo);
+        };
+        float wx = 0.0f, wz = 0.0f;
+        bool found = false;
+        for (float r = 0.0f; r <= 6000.0f && !found; r += 6.0f) {
+            const int steps = (r < 1.0f) ? 1 : maxi(8, int(2.0f * PI * r / 6.0f));
+            for (int k = 0; k < steps; ++k) {
+                const float a = float(k) / float(steps) * 2.0f * PI;
+                const float x = pos_.x + cosf(a) * r, z = pos_.z + sinf(a) * r;
+                if (!wetAt(x, z)) continue;
+                wx = x; wz = z; found = true; break;
+            }
+        }
+        if (!found) return false;
+        // Back out to dry land -- the nearest column that is not in the lake.
+        for (float r = 2.0f; r <= 200.0f; r += 2.0f) {
+            const int steps = maxi(8, int(2.0f * PI * r / 2.0f));
+            for (int k = 0; k < steps; ++k) {
+                const float a = float(k) / float(steps) * 2.0f * PI;
+                const float x = wx + cosf(a) * r, z = wz + sinf(a) * r;
+                if (wetAt(x, z)) continue;
+                *outX = x; *outZ = z; return true;
+            }
+        }
+        *outX = wx; *outZ = wz;   // a lake with no shore within 200 m: stand in it
+        return true;
+    }
+
     void teleportTo(float x, float z) {
         player_.placeOnGround(walkWorld(), x, z);
         pos_ = player_.eyePosition();
@@ -4317,10 +4391,27 @@ class ForestApp : public SampleApp {
 
         if (verb == "locate") {
             if (arg.empty()) {
-                std::string m = "locate what? try: ";
+                std::string m = "locate what? try: water";
                 for (size_t i = 0; i < biomeNames().size(); ++i)
-                    m += (i ? ", " : "") + std::string(biomeNames()[i].name);
+                    m += ", " + std::string(biomeNames()[i].name);
                 return m;
+            }
+            // WATER IS NOT A BIOME, so it is not a row in that table -- it has
+            // no band and no centre, and it is found by searching rather than
+            // by arithmetic. It IS a thing you say "take me to", which is what
+            // the command is for.
+            if (arg == "water" || arg == "lake") {
+                float wx = 0.0f, wz = 0.0f;
+                if (!nearestWater(&wx, &wz))
+                    return std::string("no water within 6 km -- lakes sit in basins, "
+                                       "and this stretch has none");
+                const float d = std::sqrt((wx - pos_.x) * (wx - pos_.x) +
+                                          (wz - pos_.z) * (wz - pos_.z));
+                teleportTo(wx, wz);
+                char buf[160];
+                std::snprintf(buf, sizeof(buf), "lake shore -- %.0f, %.0f  (%.0f m away)", wx, wz,
+                              d);
+                return std::string(buf);
             }
             for (const BiomeName &bn : biomeNames()) {
                 if (arg != bn.name && arg != bn.alias) continue;
@@ -4337,9 +4428,9 @@ class ForestApp : public SampleApp {
                 std::snprintf(buf, sizeof(buf), "%s forest -- %.0f, %.0f", bn.name, tx, pos_.z);
                 return std::string(buf);
             }
-            std::string m = "no biome called '" + arg + "'. try: ";
+            std::string m = "nothing called '" + arg + "'. try: water";
             for (size_t i = 0; i < biomeNames().size(); ++i)
-                m += (i ? ", " : "") + std::string(biomeNames()[i].name);
+                m += ", " + std::string(biomeNames()[i].name);
             return m;
         }
         if (verb == "where") {
@@ -4350,7 +4441,7 @@ class ForestApp : public SampleApp {
             return std::string(buf);
         }
         if (verb == "help")
-            return std::string("/locate <biome>   /where   ENTER runs and closes   ESC cancels");
+            return std::string("/locate water|<biome>   /where   ENTER runs and closes   ESC cancels");
         return std::string("unknown command '" + verb + "' -- try /help");
     }
 

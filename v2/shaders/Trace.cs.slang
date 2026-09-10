@@ -489,6 +489,82 @@ NrcSurfaceAttributes nrcSdkSurface(Hit h, float3 rayDir)
 
 // `mask` is which of the two worlds this ray can see -- see MASK_WORLD and
 // MASK_HELD in Shared.slang. Everything but the primary ray passes both.
+// ---------------------------------------------------------------------------
+// THE WATER SURFACE, PORTED FROM v1.
+//
+// GERSTNER, NOT TWO SINE TRAINS. What was here was sin(x) + sin(z) with no
+// clock in it at all -- a lake frozen mid-chop, and one whose crests ran along
+// the axes because that is what a sum of two axis-aligned trains does. This is
+// v1's own table (render/buffers.js, GW): four trains, their directions
+// deliberately non-parallel, wavelengths 5.2 / 2.3 / 1.1 / 0.67 m.
+//
+// IT CONVERTS EXACTLY. v1 measures in VOXELS and this in METRES, and the term
+// that matters is k * amplitude, which is dimensionless -- (2pi/52) * 1.30 in
+// voxels is (2pi/5.2) * 0.130 in metres, the same 0.157. The dispersion is the
+// deep-water relation w = sqrt(g k) with v1's own 0.21 on the front, which is
+// what halved the speed there ("water 50% slower"); it comes out identical
+// because 98 per voxel IS 9.8 per metre.
+//
+// THE Q TERM PINCHES THE CRESTS. Without it a Gerstner sum is a sine sum with
+// extra steps: Q is what makes the troughs broad and the crests sharp, which is
+// most of what separates water from corrugated iron.
+float3 waterNormal(float2 p, float t)
+{
+    // x, z, wavelength (m), amplitude (m)
+    const float4 W[4] = { float4( 0.834f,  0.552f, 5.20f, 0.130f),
+                          float4(-0.416f,  0.909f, 2.30f, 0.072f),
+                          float4( 0.966f, -0.259f, 1.10f, 0.034f),
+                          float4( 0.309f, -0.951f, 0.67f, 0.020f) };
+    const float Q[4]  = { 0.55f, 0.50f, 0.45f, 0.40f };
+    const float PH[4] = { 0.0f, 2.1f, 4.4f, 1.3f };
+    float nx = 0.0f, nz = 0.0f, ny = 1.0f;
+    [unroll]
+    for (int i = 0; i < 4; ++i)
+    {
+        const float k  = 6.2831853f / W[i].z;
+        const float om = 0.21f * sqrt(9.8f * k);
+        const float ph = k * (W[i].x * p.x + W[i].y * p.y) - om * t + PH[i];
+        const float sn = sin(ph);
+        nx += W[i].x * k * W[i].w * sn;
+        nz += W[i].y * k * W[i].w * sn;
+        ny -= Q[i]   * k * W[i].w * cos(ph);
+    }
+    // max(ny, 0.3) is v1's: a steep enough sum can drive the vertical component
+    // negative, and a surface normal pointing INTO the water refracts inside out.
+    return normalize(float3(nx, max(ny, 0.30f), nz));
+}
+
+// Value noise, for the caustics only. Nothing else in this shader needed one.
+float wHash2(float2 c)
+{
+    uint h = uint(int(c.x)) * 374761393u + uint(int(c.y)) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return float(h ^ (h >> 16)) * 2.3283064e-10f;
+}
+float wNoise2(float2 p)
+{
+    const float2 f = floor(p), t = p - f;
+    const float2 u = t * t * (3.0f - 2.0f * t);
+    const float a = wHash2(f), b = wHash2(f + float2(1, 0));
+    const float c = wHash2(f + float2(0, 1)), d = wHash2(f + float2(1, 1));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+
+// CAUSTICS -- v1's caust(), and it is not a simulation of anything. Two noise
+// fields drifting at different speeds; where they COINCIDE the difference goes
+// to zero, and those coincidence lines form the moving web. The pow(.., 5) is
+// what keeps it webs rather than mist.
+//
+// The frequencies convert like the waves do: v1 samples in voxels at 0.09 and
+// 0.11, which is 0.9 and 1.1 per metre.
+float waterCaustic(float2 p, float t)
+{
+    const float n1 = wNoise2(p * 0.9f + float2( t * 0.275f, t * 0.170f));
+    const float n2 = wNoise2(p * 1.1f + float2(-t * 0.235f, t * 0.145f));
+    return pow(saturate(1.0f - abs(n1 - n2) * 2.6f), 5.0f);
+}
+
+
 Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
 {
     Hit h;
@@ -654,14 +730,30 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
         h.moved.y += rise;
     }
 
-    if (inst.kind == KIND_WATER)
+    // WATER IS A MATERIAL NOW, NOT AN INSTANCE KIND.
+    //
+    // It used to be one world-sized quad in its own KIND_WATER instance, and
+    // then briefly a per-chunk structure of its own -- which is what collided in
+    // the compaction queue and replaced whole chunks of ground with a flat
+    // sheet. A lake is rows of kWater in the terrain's own mesh; this branch is
+    // all that is needed to shade it, and KIND_WATER is kept only so the editor
+    // stage's own quad still works.
+    //
+    // THE RIPPLE KEYS OFF THE FACE, which is the reason one material id is
+    // enough where v1 needed two. A lake's TOP is what has a wave on it; its
+    // edges are vertical and a y-up ripple normal on them would tilt the
+    // surface into the bank and refract sideways.
+    const uint triMat = triMaterial(packed);
+    if (inst.kind == KIND_WATER || triMat == kWater)
     {
-        // A shallow ripple, in the shading normal only. Two crossed wave trains
-        // so it does not read as corduroy.
-        const float3 p = h.p;
-        const float w1 = sin(p.x * 1.7f + p.z * 0.9f) + sin(p.x * 0.6f - p.z * 2.1f) * 0.7f;
-        const float w2 = cos(p.z * 1.9f - p.x * 0.4f) + cos(p.z * 0.8f + p.x * 1.5f) * 0.7f;
-        h.ns = normalize(float3(w1 * 0.014f, 1.0f, w2 * 0.014f));
+        const uint fdir = (packed >> kTriDirShift) & kTriDirMask;
+        const bool topFace = (inst.kind == KIND_WATER) || (fdir == 0u);   // face::POS_Y
+        if (topFace)
+        {
+            // v1's Gerstner field, and it MOVES -- see waterNormal. What was
+            // here was two sine trains of position with no clock in them.
+            h.ns = waterNormal(float2(h.p.x, h.p.z), gParams.waterTime);
+        }
         h.mat.type = MAT_DIELECTRIC;
         h.mat.ior = 1.333f;
         h.mat.roughness = 0.0f;
@@ -682,6 +774,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.mtl = shade;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = L.albedo;
+
     h.mat.roughness = L.roughness;
     h.mat.specular = L.specular;
     h.mat.translucency = L.translucency;
@@ -1200,7 +1293,11 @@ void main(uint3 tid: SV_DispatchThreadID)
     // is the truth for the camera ray, for a specular bounce, and for every
     // frame where sky NEE is switched off.
     float skyPdfPrev = 0.0f;
-    bool inWater = false;
+    // STARTS TRUE IF THE EYE IS ALREADY UNDER. `inWater` could only ever be set
+    // by CROSSING the surface, so swimming looked like standing in air until you
+    // surfaced and dived again. gParams.waterY sits far below the world where
+    // the band has no water, so this is false everywhere it should be.
+    bool inWater = c.pos.y < gParams.waterY;
     float primaryDist = -1.0f;
     // Whether the primary vertex is the tool in the player's hand. Read once,
     // by the motion vector -- see the note where it is used.
@@ -1211,7 +1308,21 @@ void main(uint3 tid: SV_DispatchThreadID)
 
     // Beer-Lambert extinction under water, from the per-metre transmittance the
     // material carries. Hoisted out of the loop: it is three logs of constants.
-    const float3 waterSigma = float3(-log(0.42f), -log(0.62f), -log(0.55f));
+    // v1's RATIO, which is the whole of "make the water more blue".
+    //
+    // What was here -- -log(0.42/0.62/0.55) -- absorbed BLUE harder than green
+    // and was tuned when no lake in this engine was ever visible, so nothing
+    // ever showed it up. Real water, and v1's, kills red first and lets blue
+    // carry: v1 uses (0.24, 0.092, 0.0416) per 10 cm voxel, i.e. (2.4, 0.92,
+    // 0.416) per metre, a 5.8:1 spread from red to blue against the 1.45:1 this
+    // had -- in the wrong direction.
+    //
+    // SCALED TO HALF, AND ONLY THE SCALE. v1's lakes average 2.5 m deep and
+    // these reach 9.4, where v1's coefficients leave 2% of blue and the water
+    // reads as ink. Every channel is halved so the RATIO -- the colour -- is
+    // exactly v1's while the water stays see-through at the depths this world
+    // actually has: at 5 m, red 0.2%, green 10%, blue 35%.
+    const float3 waterSigma = float3(1.20f, 0.46f, 0.208f);
 
     // -- the neural radiance cache: is this a training path? -----------------
     //
@@ -1312,7 +1423,59 @@ void main(uint3 tid: SV_DispatchThreadID)
         }
 
         if (inWater)
-            beta *= exp(waterSigma * -(h.hit ? h.t : 60.0f));
+        {
+            // -----------------------------------------------------------------
+            // ABSORPTION *AND* IN-SCATTER, and the second half is not optional.
+            //
+            // Beer-Lambert alone is a FILTER: it can only ever darken what is
+            // behind it, so over a shaded lakebed it makes black water, which is
+            // exactly what "still not blue" was. The blue of real water is not
+            // mostly the bed seen through a blue filter -- it is light scattered
+            // back out of the water column itself, and a lake over dark mud is
+            // still blue because of it. v1 says the same thing in one line:
+            // "Beer-Lambert with no in-scatter is a black lake, and in-scatter
+            // with no absorption is fog over a perfectly clear one."
+            //
+            // So the segment gets both, in the right order: what the water adds
+            // over this distance is deposited BEFORE beta is attenuated by it,
+            // because the light scattered towards the eye is not itself absorbed
+            // over the same length.
+            //
+            // The colour is v1's scatC (0.018, 0.070, 0.092) -- blue-green,
+            // dimmer than any surface, and scaled by the sun because a lake at
+            // night does not glow.
+            const float wDist = h.hit ? h.t : 60.0f;
+            const float3 wTr = exp(waterSigma * -wDist);
+            const float wSun = saturate(0.25f + gParams.sky.sunDir.y * 2.0f);
+            L += beta * float3(0.018f, 0.070f, 0.092f) * wSun * (float3(1.0f) - wTr);
+            beta *= wTr;
+
+            // -----------------------------------------------------------------
+            // CAUSTICS -- the webs a lake's surface focuses onto its bed.
+            //
+            // NOT TRACED, AND DELIBERATELY. A path tracer finds these honestly,
+            // through specular-to-diffuse paths, and at the sample counts a
+            // moving camera has they arrive as salt-and-pepper fireflies rather
+            // than as webs. v1 draws them instead; waterCaustic is v1's.
+            //
+            // THE GATE IS `inWater`, AND THE FIRST VERSION GOT THIS WRONG. It
+            // asked whether the hit was below gParams.waterY, which is true of
+            // every hillside under 33 m whether or not there is a drop of water
+            // above it -- so the webs appeared across dry ground in the open
+            // wood. Being INSIDE the water is the real question, and it is the
+            // one the path already answers: this segment is under the surface,
+            // so whatever it lands on is being seen through water by definition.
+            //
+            // AND IT NEEDS THE SUN, because caustics are focused SUNLIGHT. Faded
+            // rather than switched, or the webs vanish on a single frame.
+            if (h.hit && h.mat.type == MAT_OPAQUE)
+            {
+                const float sun = saturate(gParams.sky.sunDir.y * 8.0f);
+                if (sun > 0.0f)
+                    h.mat.albedo *= 1.0f + 1.6f * sun *
+                                    waterCaustic(float2(h.p.x, h.p.z), gParams.waterTime);
+            }
+        }
 
         if (!h.hit)
         {

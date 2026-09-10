@@ -529,7 +529,19 @@ class ChunkMesher {
     // -----------------------------------------------------------------------
     void scatter(ChunkBuild *b) {
         const int I0 = b->cx * CHUNK_VOX, J0 = b->cz * CHUNK_VOX;
-        const int wl = int(terrain_.waterLevel / VOXEL_M);
+        // THE CHUNK'S OWN BAND, NOT THE PINE WOOD'S.
+        //
+        // waterLevel is the PINE line, 33 m. The birch wood runs 5.8..19.7 m --
+        // entirely below it -- so every one of these gates ("skip anything at or
+        // under the waterline") rejected EVERY birch column, and the birch
+        // forest came out with no trees, no rocks and no flowers in it at all.
+        // waterAt hands back kNoWater there, which no height is under.
+        //
+        // Asked ONCE per chunk at its centre: a chunk is 25.6 m against an 800 m
+        // band, so the answer cannot change across one except in the seam, and
+        // the seam is birch by that function's own rule anyway.
+        const int wl =
+            int(terrain_.waterAt(float(b->cx) * CHUNK_M + CHUNK_M * 0.5f) / VOXEL_M);
         // The scatter grids are coarse -- 2.4 m for trees, 0.9 for flowers --
         // so a memo hits far less often here than in the mesher. It still hits:
         // the height field's slowest octave is eighty metres across, and these
@@ -923,7 +935,19 @@ class ChunkMesher {
         const bool anyBirch = birchBase < int(pineFoot.size());
         const float tStride = anyBirch ? birchStride : treeStride;
         if (pineFoot.empty()) return;
-        const int wl = int(terrain_.waterLevel / VOXEL_M);
+        // THE CHUNK'S OWN BAND, NOT THE PINE WOOD'S.
+        //
+        // waterLevel is the PINE line, 33 m. The birch wood runs 5.8..19.7 m --
+        // entirely below it -- so every one of these gates ("skip anything at or
+        // under the waterline") rejected EVERY birch column, and the birch
+        // forest came out with no trees, no rocks and no flowers in it at all.
+        // waterAt hands back kNoWater there, which no height is under.
+        //
+        // Asked ONCE per chunk at its centre: a chunk is 25.6 m against an 800 m
+        // band, so the answer cannot change across one except in the seam, and
+        // the seam is birch by that function's own rule anyway.
+        const int wl =
+            int(terrain_.waterAt(float(b->cx) * CHUNK_M + CHUNK_M * 0.5f) / VOXEL_M);
         const int steps = int(CHUNK_M / tStride);
         const int passes = anyBirch ? 1 + int(ceilf(birchExtra)) : 1;
         for (int nz = -1; nz <= 1; ++nz)
@@ -1283,7 +1307,19 @@ class ChunkMesher {
         TerrainMemo memo;
         FbmMemo wobMemo;
         const int I0 = b->cx * CHUNK_VOX, J0 = b->cz * CHUNK_VOX;
-        const int wl = int(terrain_.waterLevel / VOXEL_M);
+        // THE CHUNK'S OWN BAND, NOT THE PINE WOOD'S.
+        //
+        // waterLevel is the PINE line, 33 m. The birch wood runs 5.8..19.7 m --
+        // entirely below it -- so every one of these gates ("skip anything at or
+        // under the waterline") rejected EVERY birch column, and the birch
+        // forest came out with no trees, no rocks and no flowers in it at all.
+        // waterAt hands back kNoWater there, which no height is under.
+        //
+        // Asked ONCE per chunk at its centre: a chunk is 25.6 m against an 800 m
+        // band, so the answer cannot change across one except in the seam, and
+        // the seam is birch by that function's own rule anyway.
+        const int wl =
+            int(terrain_.waterAt(float(b->cx) * CHUNK_M + CHUNK_M * 0.5f) / VOXEL_M);
         const int steps = int(CHUNK_M / stride);
         // A DISTINCT SALT PER KIND, so the hash streams do not line up. Two
         // kinds sharing a salt land on exactly the same cells and every
@@ -1397,6 +1433,15 @@ class ChunkMesher {
                 const int h = terrain_.heightVox(ci, cj, memo);
                 if (h <= wl + 2) continue;
                 const uint8_t top = terrain_.topMaterial(ci, cj, h, memo);
+                // NOTHING GROWS ON A BEACH, and this is a MATERIAL test rather
+                // than a second height gate on purpose. The height gate above is
+                // only a cheap reject for water; the beach reaches wl + 7 now and
+                // its top two levels are dithered, so there is no single height
+                // that describes its edge. Asking what the column is made of
+                // follows the beach automatically if its shape ever changes,
+                // where a number copied from topMaterial falls quietly behind it
+                // and leaves flowers standing in sand.
+                if (top == mat::SAND || top == mat::SILT) continue;
                 if (grassOnly && !isGrass(top)) continue;
 
                 // The species is the COLONY's, not this cell's: that is the

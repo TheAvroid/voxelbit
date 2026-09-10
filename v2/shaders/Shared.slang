@@ -86,6 +86,10 @@ static const uint kRock = 1;
 static const uint kStone0 = 20;
 static const uint kStoneCount = 6;
 static const uint kLitterCount = 3;
+// WATER. A material, not an instance kind -- see mat::WATER in voxelworld.h for
+// why the per-chunk water structure is gone. The shading branch keys off this
+// and off the triangle's FACE, so a lake's top ripples and its edges do not.
+static const uint kWater = 26;
 
 // HOW A TRIANGLE'S WORD IS LAID OUT.
 //
@@ -660,6 +664,26 @@ struct V6Params
     // the tracer then writes the zero it always used to.
     // -----------------------------------------------------------------------
     float4 heldPrev0, heldPrev1, heldPrev2;
+
+    // -----------------------------------------------------------------------
+    // THE WATER, AND THE CLOCK IT MOVES ON.
+    //
+    // waterY is the surface height in METRES, or a long way below the world
+    // when the band under the camera has no water (see VoxelTerrain::waterAt).
+    // The shader had no waterline at all until now, which cost two things: a
+    // camera that STARTS submerged got no absorption on its first segment,
+    // because `inWater` could only be set by crossing the surface; and nothing
+    // could tell whether a lit point was under water, which is what caustics
+    // are drawn on.
+    //
+    // waterTime is seconds, and it exists because the wave field is the only
+    // thing in this renderer that must not be still. The ripple it replaces was
+    // two sine trains of POSITION with no clock in them at all -- a lake frozen
+    // mid-chop.
+    // -----------------------------------------------------------------------
+    float waterY;
+    float waterTime;
+    float2 waterPad;
 };
 
 // ---------------------------------------------------------------------------
@@ -715,7 +739,7 @@ static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
 static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");
 static_assert(sizeof(V6Instance) == 48, "V6Instance must fill whole 16-byte rows");
-static_assert(sizeof(V6Params) == 592, "V6Params must fill whole 16-byte rows");
+static_assert(sizeof(V6Params) == 608, "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2
 #endif

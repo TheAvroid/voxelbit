@@ -357,6 +357,14 @@ class Tracer {
     // taken twice and one that cannot. It also means scrubbing time scrubs the
     // meteors, which is the behaviour anybody scrubbing would expect.
     float skyTime = 0.0f;
+    // THE WATER, for the wave field and for knowing what is under it. waterY is
+    // metres and sits far below the world where the band has no water; waterTime
+    // is a WALL clock, deliberately NOT the day clock -- scrubbing the sun with
+    // the arrow keys must not run the sea at forty times speed, or backwards.
+    // Beside skyTime because it is the same kind of thing: a per-frame value the
+    // app pushes in, not a setting anybody tunes.
+    float waterY = -1.0e4f;
+    float waterTime = 0.0f;
 
     // Auto-exposure and bloom live in their own module because they share a
     // resolution and a number; this is how the command line reaches their
@@ -585,6 +593,8 @@ class Tracer {
 
         V6Params p{};
         p.cam = cam;
+        p.waterY = waterY;
+        p.waterTime = waterTime;
         // On the very first frame there is no previous camera; using this one
         // makes every motion vector zero, which is exactly right -- there is no
         // history for them to point into yet.
