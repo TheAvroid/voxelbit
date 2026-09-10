@@ -510,10 +510,27 @@ constexpr float kFellFraction = 0.40f;
 
 // ...OR, FOR SOMETHING WITHOUT A TRUNK, simply enough of it to see. A boulder
 // undercut at the base sheds a piece that is a small fraction of the rock and
-// is still a rock hanging in the air. Sixteen cells of kSeverCell is about a
-// tenth of a cubic metre -- under that, a body per fleck would empty the debris
-// band on one swing and you could not see the difference anyway.
-constexpr int kMinLooseCells = 16;
+// is still a rock hanging in the air.
+//
+// THIS WAS SIXTEEN CELLS -- about a tenth of a cubic metre -- AND A BRANCH FELL
+// STRAIGHT THROUGH THE GAP. The old floor was reasoned about boulder flecks,
+// where "you could not see the difference anyway" is true. It is not true of a
+// branch: a two-metre limb fifteen centimetres thick is 0.045 m3, about seven
+// cells, so it was under the floor. fellTree declined to give it a body, the
+// hanger sweep only looks in a box around the bite, and nothing else removes
+// it -- so a severed branch HUNG IN THE AIR. Reported twice.
+//
+// Four cells is about a thirty-centimetre cube. That is above a fleck and
+// below any limb worth the name, which is the whole range that has to be
+// separated here. The debris band is still protected: what this floor is for
+// is stopping three stray voxels from each taking one of the sixty-four slots,
+// and three voxels is well under four cells.
+//
+// THE RULE THIS SERVES: anything that can be broken off the static grid is
+// subject to gravity. There is no size at which floating becomes acceptable --
+// only a size below which the piece should be REMOVED rather than given a body
+// of its own.
+constexpr int kMinLooseCells = 4;
 
 // Green timber. Roughly what a living conifer weighs once it is wet.
 constexpr float kTimberDensity = 750.0f;
@@ -2985,11 +3002,39 @@ class World {
                 }
         if (!solid) return;
 
+        // ---- WHAT COUNTS AS SUPPORT, AND THE MODEL'S OWN FLOOR IS SOME -----
+        //
+        // The box wall stands in for "the rest of the model continues out
+        // there, so this is still attached". That is right for a pine, whose
+        // trunk leaves the box in every direction, and it is WRONG for a
+        // mushroom or a pebble: a model smaller than the 39-voxel box never
+        // touches the wall at all, so nothing seeds, every one of its voxels
+        // comes back unsupported, and one tap turns the whole thing to AIR.
+        // It does not fall, it does not break -- it DISAPPEARS.
+        //
+        // The tuning note on kHangBoxModelVox could not see this. It measured
+        // "voxels left hanging per blow", and a model that vanishes entirely
+        // leaves nothing hanging: it scores a perfect zero.
+        //
+        // So the model's own bottom layer -- y == 0 in model space, the part
+        // actually resting on the ground -- seeds as well. For a small model
+        // that is its real anchor and only the piece that was hit comes away.
+        // For a big one it changes nothing, because the wall already seeded
+        // everything the trunk touches.
+        //
+        // NOT a whole-model flood seeded only from the base, which is the
+        // obvious "fix" and is a trap twice over: a pristine pine has foliage
+        // that is not connected to its trunk in voxel space at all (see
+        // ModelTemplate::bornLoose), so it would strip every needle on the
+        // first blow -- and carveModel runs BEFORE fellTree, so it would also
+        // delete a severed branch before fellTree could spawn a body for it.
         hangStack_.clear();
         for (int b = 0; b < n; ++b)
             for (int c = 0; c < n; ++c)
                 for (int a = 0; a < n; ++a) {
-                    if (a && b && c && a < n - 1 && b < n - 1 && c < n - 1) continue;   // wall only
+                    const bool onWall = !(a && b && c && a < n - 1 && b < n - 1 && c < n - 1);
+                    const bool onModelFloor = (y0 + b) == 0;
+                    if (!onWall && !onModelFloor) continue;
                     const size_t q = ix(a, b, c);
                     if (!hangSolid_[q] || hangSeen_[q]) continue;
                     hangSeen_[q] = 1;
