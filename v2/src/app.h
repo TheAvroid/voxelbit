@@ -1190,8 +1190,8 @@ class ForestApp : public SampleApp {
             // onFrameRender -- see the note over renderOffline. Without this
             // every --out render had waterY at its "no water anywhere" default
             // and waterTime at zero: a submerged camera got no absorption and
-            // the waves stood still. Every verification render taken before this
-            // was quietly lying about both.
+            // the waves stood still. Every verification render taken before
+            // this was quietly lying about both.
             tracer_.waterY = world_.terrain.waterAt(pos_.x);
             tracer_.waterTime = 0.0f;
             renderOffline(ctx);
@@ -1594,7 +1594,6 @@ class ForestApp : public SampleApp {
             // lake that reverses its chop when you scrub the sun is a bug.
             waveClock_ += dt;
             tracer_.waterTime = waveClock_;
-
 
             // -- IS IT ACTUALLY SIMULATING? ---------------------------------
             //
@@ -4301,38 +4300,28 @@ class ForestApp : public SampleApp {
     // The centre of the nearest band of `b` to the player, in world x. The
     // bands repeat with period 2 * kBandW, so this is the band centre plus
     // whichever whole period lands closest.
-    float nearestBandX(Biome b) const {
-        const float period = 2.0f * VoxelTerrain::kBandW;
-        const float c = VoxelTerrain::bandCentre(b);
-        const float k = floorf((pos_.x - c) / period + 0.5f);
-        return c + k * period;
-    }
-
     // -----------------------------------------------------------------------
-    // THE NEAREST LAKE, AND ITS SHORE.
+    // THE NEAREST SHORE, for /locate water.
     //
-    // A biome is a band and so has a closed-form centre; a lake is not. It has
-    // to be looked for -- rings outward from wherever you are, asking the
-    // generator's own lakeColumn so the console can never disagree with the
-    // mesher about where water is.
+    // TWO SEARCHES, AND THE SECOND ONE IS THE POINT. Finding a wet column is
+    // easy; arriving ON it drops you on the LAKE BED, underwater, which is not
+    // what "take me to water" means. So the wet column is only an anchor, and
+    // the spot returned is the nearest DRY column to it -- a shore, looking at
+    // the water rather than standing in it.
     //
-    // THE PROBE STEP IS SIX METRES because the smallest body worth walking to
-    // is tens of metres across, and a stride longer than the lake steps over
-    // it. Rings rather than a square spiral so the FIRST hit is the nearest
-    // one; a box search returns a corner before a nearer point on an edge.
-    //
-    // AND IT LANDS YOU ON THE SHORE, not in the lake. placeOnGround puts the
-    // body on the surface under it, and inside a lake that surface is the
-    // BED -- you would arrive underwater, on the bottom, which is not what
-    // "take me to water" means. So the wet column is only the anchor: the spot
-    // handed to the teleport is the nearest DRY column to it.
+    // RINGS RATHER THAN A GRID because the answer wanted is the nearest one,
+    // and a ring search returns it in the order it wants. 6 m steps out to
+    // 6 km: lakes are basin-gated and sparse (0.97% of the world is wet, and
+    // the nearest one to the origin is several hundred metres away), so a
+    // coarse ring is what keeps this from being a second of stalling.
     // -----------------------------------------------------------------------
     bool nearestWater(float *outX, float *outZ) const {
         const VoxelTerrain &t = world_.terrain;
         TerrainMemo memo;
         auto wetAt = [&](float x, float z) {
             const int vi = int(floorf(x / VOXEL_M)), vj = int(floorf(z / VOXEL_M));
-            return t.lakeColumn(vi, vj, t.heightVox(vi, vj, memo), memo);
+            int wy = 0;
+            return t.lakeColumn(vi, vj, memo, &wy);
         };
         float wx = 0.0f, wz = 0.0f;
         bool found = false;
@@ -4356,8 +4345,15 @@ class ForestApp : public SampleApp {
                 *outX = x; *outZ = z; return true;
             }
         }
-        *outX = wx; *outZ = wz;   // a lake with no shore within 200 m: stand in it
+        *outX = wx; *outZ = wz;  // a lake with no shore within 200 m: stand in it
         return true;
+    }
+
+    float nearestBandX(Biome b) const {
+        const float period = 2.0f * VoxelTerrain::kBandW;
+        const float c = VoxelTerrain::bandCentre(b);
+        const float k = floorf((pos_.x - c) / period + 0.5f);
+        return c + k * period;
     }
 
     void teleportTo(float x, float z) {
@@ -4396,21 +4392,17 @@ class ForestApp : public SampleApp {
                     m += ", " + std::string(biomeNames()[i].name);
                 return m;
             }
-            // WATER IS NOT A BIOME, so it is not a row in that table -- it has
-            // no band and no centre, and it is found by searching rather than
-            // by arithmetic. It IS a thing you say "take me to", which is what
-            // the command is for.
+            // WATER IS NOT A BIOME, so it is not a row in that table -- it is
+            // a feature of the landform inside one. Handled before the band
+            // loop, and it works in a pinned world too, unlike the bands.
             if (arg == "water" || arg == "lake") {
                 float wx = 0.0f, wz = 0.0f;
                 if (!nearestWater(&wx, &wz))
                     return std::string("no water within 6 km -- lakes sit in basins, "
-                                       "and this stretch has none");
-                const float d = std::sqrt((wx - pos_.x) * (wx - pos_.x) +
-                                          (wz - pos_.z) * (wz - pos_.z));
+                                       "and the birch wood has none at all");
                 teleportTo(wx, wz);
                 char buf[160];
-                std::snprintf(buf, sizeof(buf), "lake shore -- %.0f, %.0f  (%.0f m away)", wx, wz,
-                              d);
+                std::snprintf(buf, sizeof(buf), "the shore -- %.0f, %.0f", wx, wz);
                 return std::string(buf);
             }
             for (const BiomeName &bn : biomeNames()) {
@@ -4441,7 +4433,8 @@ class ForestApp : public SampleApp {
             return std::string(buf);
         }
         if (verb == "help")
-            return std::string("/locate water|<biome>   /where   ENTER runs and closes   ESC cancels");
+            return std::string(
+                "/locate <biome|water>   /where   ENTER runs and closes   ESC cancels");
         return std::string("unknown command '" + verb + "' -- try /help");
     }
 
@@ -6145,7 +6138,10 @@ class ForestApp : public SampleApp {
         const VoxelTerrain &t = world_.terrain;
         const float x = pos_.x, z = pos_.z;
 
-        const float above = t.heightM(x, z) - (t.waterLevel + 0.8f);
+        // The band's line. A dry band answers kNoWater, so `above` comes out
+        // enormous and the gain saturates -- which is what "nowhere near water"
+        // should mean here.
+        const float above = t.heightM(x, z) - (t.waterAt(x) + 0.8f);
         if (!(above > 0.0f)) return 0.0f;
         const float wet = above < 4.0f ? above * 0.25f : 1.0f;
 
@@ -6165,7 +6161,6 @@ class ForestApp : public SampleApp {
         }
 
         const VoxelTerrain &t = world_.terrain;
-        const float wl = t.waterLevel;
         float bestX = opt_.camX, bestZ = opt_.camZ;
         bool found = false;
 
@@ -6254,7 +6249,9 @@ class ForestApp : public SampleApp {
             // spawn a metre up is a spawn on a beach -- which is the one part
             // of this world with no trees in it and the last place to open a
             // forest in.
-            if (h < wl + 5.0f) continue;
+            // Asked per candidate rather than hoisted: the waterline is per
+            // band now, and a spawn search ranges far enough to cross one.
+            if (h < t.waterAt(x) + 5.0f) continue;
 
             const int ci = int(floorf(x / VOXEL_M)), cj = int(floorf(z / VOXEL_M));
             const int slope = maxi(absi(t.heightVox(ci + 1, cj) - t.heightVox(ci - 1, cj)),

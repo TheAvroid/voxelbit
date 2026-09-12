@@ -95,7 +95,6 @@ static_assert(v2::VOXEL_M == v2::kVoxelM, "voxel size disagrees with the shader"
 static_assert(v2::mat::GRASS_0 == v2::kGrass0, "grass ramp disagrees with the shader");
 static_assert(v2::mat::GRASS_COUNT == v2::kGrassCount, "grass ramp disagrees with the shader");
 static_assert(v2::mat::SOIL_0 == v2::kSoil0, "soil ramp disagrees with the shader");
-static_assert(v2::mat::WATER == v2::kWater, "water id disagrees with the shader");
 static_assert(v2::mat::SOIL_COUNT == v2::kSoilCount, "soil ramp disagrees with the shader");
 static_assert(v2::mat::LITTER_0 == v2::kLitter0, "litter ramp disagrees with the shader");
 static_assert(v2::mat::LITTER_COUNT == v2::kLitterCount, "litter ramp disagrees with the shader");
@@ -3418,6 +3417,7 @@ class World {
         loadPinecones();
         loadHives();
         palette.deriveGroundFromTrees();
+        buildWater();
 
         uploadMaterials();
 
@@ -3841,6 +3841,7 @@ class World {
     // The beehives. One model, and only the birch wood plants it -- see
     // loadHives and the hive pass in scene/chunks.h.
     std::vector<ModelTemplate> hives_;
+    Blas waterBlas_;
     // The editor's floor -- see buildStage.
     static constexpr int kStageVox = 160;          // 16 m square
     static constexpr float kStageAtX = 4096.0f;    // well clear of the wood
@@ -3849,6 +3850,7 @@ class World {
     Blas stageBlas_;
     uint32_t stageTri_ = TriPool::kInvalid;
     bool stage_ = false;
+    uint32_t waterTriOffset_ = TriPool::kInvalid;
 
     std::map<long long, Chunk> chunks_;
 
@@ -4853,6 +4855,37 @@ class World {
     }
 
 
+    void buildWater() {
+        // ---------------------------------------------------------------
+        // THERE IS NO GLOBAL WATER PLANE ANY MORE, and removing it is not a
+        // tidy-up -- leaving it in would put an ocean over the world.
+        //
+        // This built ONE flat quad 16 km across at the waterline. That was
+        // survivable only while the line sat at 2.6 m, below every piece of
+        // ground anywhere, where the quad was buried and nobody saw it. The
+        // line is 33 m in the pine wood now, so the same quad would cut
+        // through the hills and roof the birch wood -- which has no water at
+        // all -- in a sheet of it.
+        //
+        // Water is mat::WATER on the terrain itself now: it exists exactly
+        // where lakeColumn says a lake stands, and nowhere else. A plane
+        // cannot express that, which is the whole reason the design moved.
+        //
+        // The function and its BLAS are kept rather than deleted so the
+        // instance push below has something to test, and so KIND_WATER in
+        // Shared.slang stays where it is -- its value is written into instance
+        // data host-side, and renumbering it shifts KIND_TREE and everything
+        // after it, silently.
+        // ---------------------------------------------------------------
+        if (terrain.anyWater()) return;  // voxel water: no plane
+        VoxMesh wm;
+        const float s = 8000.0f;
+        const float y = terrain.pineWater;
+        wm.addQuad({-s, y, -s}, {-s, y, s}, {s, y, s}, {s, y, -s}, mat::AIR, face::POS_Y);
+        waterTriOffset_ = pool_.upload(ctx_, wm.tri);
+        waterBlas_ = buildBlas(wm);
+    }
+
     // -------------------------------------------------------------- the ring
     bool rering(int cx, int cz) {
         const int R = maxi(1, viewChunks);
@@ -5472,19 +5505,17 @@ class World {
                 push(deck, info);
             }
         } else {
-        // THE WORLD-SIZED WATER QUAD IS GONE, AND IT HAD TO GO.
-        //
-        // It was one 8 km plane at terrain.waterLevel, and it worked only
-        // because that height used to be 2.6 m -- eighteen metres below the
-        // LOWEST ground anywhere, so the plane existed but was never visible
-        // from any point in the world. Raising the waterline into the terrain's
-        // own range turned that invisible plane into an ocean covering
-        // everything, the birch wood included, which is what "there seems to be
-        // an endless ocean" and "birch seems to be underwater" both were.
-        //
-        // Water is per column now: rows of mat::WATER standing in basins, in the
-        // terrain's own mesh. A flat plane cannot express that, and nothing
-        // needs it to.
+        if (waterBlas_.as) {
+            RtInstanceDesc water = {};
+            writeTransform(water, kI, 0.0f, 0.0f, 0.0f);
+            water.instanceMask = kMaskWorld;
+            water.accelerationStructure = waterBlas_.as->getGpuAddress();
+            V6Instance info{};
+            info.triOffset = waterTriOffset_;
+            info.kind = KIND_WATER;
+            info.tint = float3(1.0f, 1.0f, 1.0f);
+            push(water, info);
+        }
 
         for (const auto &kv : chunks_) {
             const Chunk &c = kv.second;

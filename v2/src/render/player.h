@@ -291,9 +291,6 @@ class Player {
         // creep at four fifths of a walk.
         sprint = sprint && !crouching;
         if (fly) {
-            // DOUBLED (user 2026-09-10): 3x a walk to 6x. The world is endless
-            // and lakes are now a landform you go looking for, so crossing it is
-            // something you do on purpose rather than incidentally.
             const float spd = walk * 6.0f * (sprint ? sprintMul : 1.0f);
             const float k = 1.0f - expf(-10.0f * dt);
             hvx_ += (move.x * spd - hvx_) * k;
@@ -480,28 +477,28 @@ class Player {
     // it stopped a body short of a birch by the width of its bark and stopped
     // it dead where a leaning trunk's ellipse covered open air. Neither is a
     // large error; both are the kind you feel rather than see.
-    // ...AND WHERE THE BODY ACTUALLY IS, WHEN THE CALLER KNOWS. See the note
-    // over the default below: anchoring to the ground is right for a step and
-    // wrong for flight, and passing the real height is the whole fix.
-    static constexpr float kFeetFromGround = -1e30f;
-
-    bool blocked(const WalkWorld &w, float x, float z,
-                 float feetAt = kFeetFromGround) const {
+    bool blocked(const WalkWorld &w, float x, float z) const {
         // THE GROUND UNDER THE SPOT, not the body's current height. This is
         // asked of places the body is not standing yet -- the next step, and a
         // spawn point chosen before anything has a height at all -- so anchor
         // it where a body at (x, z) would actually have its feet.
+        // ...EXCEPT WHEN FLYING, WHERE THE BODY REALLY IS WHERE IT IS.
         //
-        // BUT A FLYING BODY IS NOT STANDING ANYWHERE, and anchoring it to the
-        // ground is why flight stopped dead in mid-air for no visible reason:
-        // fifty metres up over a wood, this asked whether a body STANDING at
-        // (x, z) would be inside a trunk, and over a pine forest the answer is
-        // often yes. The trunk was thirty metres below the camera. Callers that
-        // know the body's real height pass it and get asked about the body they
-        // actually have.
+        // Anchoring to the ground is right for a walk and for a spawn probe. It
+        // is badly wrong in the air: it asks whether someone STANDING at (x, z)
+        // would be inside a tree, which has nothing to do with a flier fifty
+        // metres over the canopy. Every tree in the wood was a full-height
+        // column of "blocked" reaching to the sky, so flying across the forest
+        // ran into invisible walls -- reported as "getting stuck in the air,
+        // like running into obstacles".
+        //
+        // Gated on `fly` rather than on `!onGround` deliberately: a JUMP and a
+        // FALL still want the ground anchor, because a body dropping into a
+        // canopy should meet it, and the airborne branch of moveAxis leans on
+        // that. Only free flight has a height of its own that is unrelated to
+        // the ground below it.
         const float feet =
-            (feetAt != kFeetFromGround)
-                ? feetAt
+            fly ? pos.y
                 : (w.terrain ? float(w.terrain->heightVox(int(floorf(x / VOXEL_M)),
                                                           int(floorf(z / VOXEL_M))) + 1) * VOXEL_M
                              : pos.y);
@@ -599,13 +596,8 @@ class Player {
         // out of fly mode -- from being welded in place: if standing here is
         // blocked too then moving cannot make it worse, so let it move and walk
         // out. The ground test below is let off on the same grounds.
-        // AIRBORNE, THE TESTS ARE ASKED AT THE BODY'S OWN HEIGHT. On the ground
-        // the default is still right -- a step moves onto whatever the next
-        // column's surface is, and that is exactly what the body's feet will be
-        // at once it gets there.
-        const float feetAt = (fly || !onGround) ? pos.y : kFeetFromGround;
-        const bool stuck = blocked(w, pos.x, pos.z, feetAt);
-        if (!stuck && blocked(w, next.x, next.z, feetAt)) return;
+        const bool stuck = blocked(w, pos.x, pos.z);
+        if (!stuck && blocked(w, next.x, next.z)) return;
 
         const float g = groundHeight(w, next.x, next.z);
 

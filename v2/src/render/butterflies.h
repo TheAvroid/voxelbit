@@ -654,7 +654,7 @@ class Butterflies {
                 // the JS engine also keeps them off ("a BUTTERFLY never starts
                 // over water"; it may still drift out over one).
                 hm.ground = world.terrain.heightM(hm.x, hm.z, memo);
-                if (hm.ground <= world.terrain.waterLevel + 0.5f) continue;
+                if (hm.ground <= world.terrain.waterAt(hm.x) + 0.5f) continue;
                 hm.ord = homeOrder(cx, cz);
                 cand_.push_back(hm);
             }

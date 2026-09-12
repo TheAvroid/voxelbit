@@ -47,6 +47,7 @@
 #include <thread>
 #include <vector>
 
+#include "../voxel/expand.h"
 #include "collide.h"
 #include "voxelworld.h"
 
@@ -443,6 +444,53 @@ class ChunkMesher {
     // generator is never asked and the world renders as nothing but sky.
     bool emptyWorld = false;
 
+    // ------------------------------------------------------------------
+    // WHICH MESHER BUILDS A CHUNK.
+    //
+    // On: the brick path -- src/voxel, 64^3 bricks merged by bit arithmetic
+    // and expanded back to triangles by expandChunk. Off: VoxelTerrain's
+    // original per-voxel meshChunk.
+    //
+    // BOTH ARE KEPT AND THAT IS DELIBERATE. The two produce the same SURFACE
+    // -- tests/voxel_parity_test.cpp checks every face of it against the
+    // terrain function itself -- but not the same triangles, because the
+    // brick path merges where meshChunk does not. So this flag is the A/B any
+    // future "the world looks wrong" starts from, and it costs one branch per
+    // chunk to keep.
+    //
+    // ------------------------------------------------------------------
+    // ON. The brick path draws everything the old mesher drew, and water
+    // besides.
+    //
+    // It was off while the bricks had no grass: meshChunk drew 51,962 blade
+    // triangles a chunk and the bricks drew none, so turning it on would have
+    // shipped a grassless world -- and, less obviously, made the triangle
+    // saving look twice as good as it was (2.04x, when terrain-for-terrain it
+    // is 1.35x). Blades are in the occupancy column now and mergePlane splits
+    // on the strand code, so the face sets match exactly.
+    //
+    // MEASURED PER KIND at chunk (0,0), because comparing totals is only honest
+    // once both paths draw the same things:
+    //
+    //     terrain   76,086 -> 56,210 tris   1.35x
+    //     blades    51,962 -> 53,200 tris   0.98x   (a blade is 1 voxel wide;
+    //                                                nothing to merge)
+    //     water          0 ->    172 tris   meshChunk cannot draw it
+    //     FACES    178,389 -> 178,389       identical, both directions
+    //
+    // Build time stays at parity (16.3 ms against 15.9) because 14.2 ms of both
+    // is the heightfield noise, which is the same field either way.
+    //
+    // THE ONE PLACE THE TWO DISAGREE IS AROUND A DIG, and the old mesher is the
+    // one that is wrong: 138 ground faces on chunk (-18,-16), mean 11.8 voxels
+    // from the carve, each confirmed present by TerrainProbe and absent from
+    // meshChunk. tests/voxel_ab_test.cpp documents it; voxel_parity_test is the
+    // independent check that the bricks match the terrain function there.
+    //
+    // Set this false to get the old mesher back for an A/B -- it is kept for
+    // exactly that, and costs one branch per chunk.
+    bool useBricks = true;
+
     // THE EDIT LAYER. Written on the main thread by a swing, read here by the
     // workers -- see EditStore, which publishes by copy so the two never race.
     EditStore edits;
@@ -457,12 +505,42 @@ class ChunkMesher {
     bool stop_ = false;
     size_t busy_ = 0;
 
+    // -----------------------------------------------------------------------
+    // One chunk through the brick path, as the VoxMesh the rest of the engine
+    // already knows how to build a BLAS from.
+    //
+    // THE BRICKS ARE DROPPED AGAIN ON PURPOSE. Keeping them is what makes an
+    // edit cost 0.24 ms instead of 16, and it is worth having -- but not HERE.
+    // These stores belong to mesh workers, and a dig happens on the main
+    // thread against a chunk that may be resident in any of them or in none.
+    // Holding them would grow a second copy of the ring per worker (22 bricks
+    // a chunk, 625 chunks, four threads) to serve a lookup that cannot safely
+    // reach it. The edit-side store is its own job; see src/voxel/store.h.
+    //
+    // The stack LRU is NOT dropped, and that is the part worth keeping: it is
+    // the 14 ms of noise, and the next chunk this worker takes is usually
+    // adjacent.
+    VoxMesh meshChunkFromBricks(vox::BrickStore &store, int cx, int cz) {
+        store.buildChunk(cx, cz);
+        VoxMesh m = vox::expandChunk(store, cx, cz);
+        store.evictChunk(cx, cz);
+        return m;
+    }
+
     void run() {
         // ONE PER WORKER, for the life of the thread -- the grids and the noise
         // memo inside it are pure working storage, and rebuilding them per
         // chunk was several hundred kilobytes of allocate-and-zero per job.
         // See ChunkScratch in voxelworld.h for why reuse is safe.
         ChunkScratch scratch;
+        // ONE PER WORKER TOO, for the same reason and one more: the stack LRU
+        // inside it is warm for the chunk NEXT DOOR, whose bricks share a
+        // column footprint at the seam. A store per job would throw that away
+        // on every chunk. It is not shared between workers because it is not
+        // thread-safe by design -- the LRU, the noise memo and the mesh
+        // scratch are all mutable, and a mutex around them would serialise
+        // precisely the work the threads exist to spread.
+        vox::BrickStore bricks(&terrain_, &edits);
 
         for (;;) {
             std::pair<int, int> job;
@@ -491,7 +569,11 @@ class ChunkMesher {
                 // The chunk's edits, if anybody has dug here. Null is the
                 // ordinary case and costs one hash lookup per chunk.
                 const std::shared_ptr<const ChunkEdits> ce = edits.get(b.cx, b.cz);
-                b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch, ce.get());
+                if (useBricks) {
+                    b.mesh = meshChunkFromBricks(bricks, b.cx, b.cz);
+                } else {
+                    b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch, ce.get());
+                }
                 scatter(&b);
             }
             const double ms =
@@ -529,19 +611,15 @@ class ChunkMesher {
     // -----------------------------------------------------------------------
     void scatter(ChunkBuild *b) {
         const int I0 = b->cx * CHUNK_VOX, J0 = b->cz * CHUNK_VOX;
-        // THE CHUNK'S OWN BAND, NOT THE PINE WOOD'S.
-        //
-        // waterLevel is the PINE line, 33 m. The birch wood runs 5.8..19.7 m --
-        // entirely below it -- so every one of these gates ("skip anything at or
-        // under the waterline") rejected EVERY birch column, and the birch
-        // forest came out with no trees, no rocks and no flowers in it at all.
-        // waterAt hands back kNoWater there, which no height is under.
-        //
-        // Asked ONCE per chunk at its centre: a chunk is 25.6 m against an 800 m
-        // band, so the answer cannot change across one except in the seam, and
-        // the seam is birch by that function's own rule anyway.
-        const int wl =
-            int(terrain_.waterAt(float(b->cx) * CHUNK_M + CHUNK_M * 0.5f) / VOXEL_M);
+        // THE BAND'S WATERLINE, ONCE PER CHUNK. These gates keep trees, rocks
+        // and flowers out of the shallows, and the line they measure against is
+        // now per band -- the birch wood has none, so its gate must not reject
+        // anything. Asked at the chunk's CENTRE column rather than per scatter
+        // cell: a chunk is 25.6 m and the band seam is far wider than that, so
+        // the only columns this can answer differently from a per-cell query
+        // are within one chunk of a seam that has no water on one side of it
+        // anyway. kNoWaterVox makes every gate below fall through.
+        const int wl = terrain_.waterVoxAt(terrain_.wx(b->cx * CHUNK_VOX + CHUNK_VOX / 2));
         // The scatter grids are coarse -- 2.4 m for trees, 0.9 for flowers --
         // so a memo hits far less often here than in the mesher. It still hits:
         // the height field's slowest octave is eighty metres across, and these
@@ -935,19 +1013,8 @@ class ChunkMesher {
         const bool anyBirch = birchBase < int(pineFoot.size());
         const float tStride = anyBirch ? birchStride : treeStride;
         if (pineFoot.empty()) return;
-        // THE CHUNK'S OWN BAND, NOT THE PINE WOOD'S.
-        //
-        // waterLevel is the PINE line, 33 m. The birch wood runs 5.8..19.7 m --
-        // entirely below it -- so every one of these gates ("skip anything at or
-        // under the waterline") rejected EVERY birch column, and the birch
-        // forest came out with no trees, no rocks and no flowers in it at all.
-        // waterAt hands back kNoWater there, which no height is under.
-        //
-        // Asked ONCE per chunk at its centre: a chunk is 25.6 m against an 800 m
-        // band, so the answer cannot change across one except in the seam, and
-        // the seam is birch by that function's own rule anyway.
-        const int wl =
-            int(terrain_.waterAt(float(b->cx) * CHUNK_M + CHUNK_M * 0.5f) / VOXEL_M);
+        // The band's waterline, as in scatter() -- see the note there.
+        const int wl = terrain_.waterVoxAt(terrain_.wx(b->cx * CHUNK_VOX + CHUNK_VOX / 2));
         const int steps = int(CHUNK_M / tStride);
         const int passes = anyBirch ? 1 + int(ceilf(birchExtra)) : 1;
         for (int nz = -1; nz <= 1; ++nz)
@@ -1307,19 +1374,8 @@ class ChunkMesher {
         TerrainMemo memo;
         FbmMemo wobMemo;
         const int I0 = b->cx * CHUNK_VOX, J0 = b->cz * CHUNK_VOX;
-        // THE CHUNK'S OWN BAND, NOT THE PINE WOOD'S.
-        //
-        // waterLevel is the PINE line, 33 m. The birch wood runs 5.8..19.7 m --
-        // entirely below it -- so every one of these gates ("skip anything at or
-        // under the waterline") rejected EVERY birch column, and the birch
-        // forest came out with no trees, no rocks and no flowers in it at all.
-        // waterAt hands back kNoWater there, which no height is under.
-        //
-        // Asked ONCE per chunk at its centre: a chunk is 25.6 m against an 800 m
-        // band, so the answer cannot change across one except in the seam, and
-        // the seam is birch by that function's own rule anyway.
-        const int wl =
-            int(terrain_.waterAt(float(b->cx) * CHUNK_M + CHUNK_M * 0.5f) / VOXEL_M);
+        // The band's waterline, as in scatter() -- see the note there.
+        const int wl = terrain_.waterVoxAt(terrain_.wx(b->cx * CHUNK_VOX + CHUNK_VOX / 2));
         const int steps = int(CHUNK_M / stride);
         // A DISTINCT SALT PER KIND, so the hash streams do not line up. Two
         // kinds sharing a salt land on exactly the same cells and every
@@ -1433,15 +1489,6 @@ class ChunkMesher {
                 const int h = terrain_.heightVox(ci, cj, memo);
                 if (h <= wl + 2) continue;
                 const uint8_t top = terrain_.topMaterial(ci, cj, h, memo);
-                // NOTHING GROWS ON A BEACH, and this is a MATERIAL test rather
-                // than a second height gate on purpose. The height gate above is
-                // only a cheap reject for water; the beach reaches wl + 7 now and
-                // its top two levels are dithered, so there is no single height
-                // that describes its edge. Asking what the column is made of
-                // follows the beach automatically if its shape ever changes,
-                // where a number copied from topMaterial falls quietly behind it
-                // and leaves flowers standing in sand.
-                if (top == mat::SAND || top == mat::SILT) continue;
                 if (grassOnly && !isGrass(top)) continue;
 
                 // The species is the COLONY's, not this cell's: that is the
