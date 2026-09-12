@@ -525,24 +525,26 @@ NrcSurfaceAttributes nrcSdkSurface(Hit h, float3 rayDir)
 // drift between them would tilt the shading off the geometry with nothing to
 // catch it.
 //
-// SCALED TO THIS WORLD, NOT v1's. The numbers inherited from v1 summed to
-// 0.256 m of amplitude on wavelengths of 5.2 m and under. At 10 cm voxels,
-// with a lake 50-80 m across seen from 20-50 m away, a quarter-metre ripple is
-// a few pixels -- which is why the voxel crests, the shading normal and the
-// solved analytic surface all looked identical: none of them was visible. The
-// waves were never the problem; their SIZE was.
+// v1'S TABLE, AT v1'S SCALE. Its GW is written in VOXELS -- wavelengths
+// 52/23/11/6.7 and amplitudes 1.30/0.72/0.34/0.20 -- so at 10 cm that is
+// 5.2/2.3/1.1/0.67 m and 0.130/0.072/0.034/0.020 m, summing to 0.256 m.
 //
-// Both wavelength and amplitude are scaled by 2.0, and that pairing matters:
-// steepness is A*k = A*2pi/lambda, so scaling both leaves it at 0.736 -- under
-// the 1.0 where a Gerstner crest cusps and past which the surface folds
-// through itself.
+// THESE WERE DOUBLED, AND THE REASON GIVEN FOR DOUBLING THEM WAS WRONG. The
+// note said a quarter-metre ripple is invisible at this range, so the waves
+// were scaled 2x. But nothing about the swell was visible at the time for a
+// different reason entirely -- the surface was a smooth shading normal on a
+// flat quad, and no amplitude makes a bump map grow a silhouette. The size
+// was never the problem; the missing geometry was. Scaled back, because
+// matching v1 is the point and v1's water is the reference.
 //
-//   x, z, wavelength (m), amplitude (m)   -- 0.512 m total, 1.0 m peak to trough
+// Steepness A*k stays what v1 chose: scaling both together is a no-op on it.
+//
+//   x, z, wavelength (m), amplitude (m)   -- 0.256 m total, v1 exactly
 // ---------------------------------------------------------------------------
-static const float4 kWave[4] = { float4( 0.834f,  0.552f, 10.40f, 0.260f),
-                                 float4(-0.416f,  0.909f,  4.60f, 0.144f),
-                                 float4( 0.966f, -0.259f,  2.20f, 0.068f),
-                                 float4( 0.309f, -0.951f,  1.34f, 0.040f) };
+static const float4 kWave[4] = { float4( 0.834f,  0.552f, 5.20f, 0.130f),
+                                 float4(-0.416f,  0.909f, 2.30f, 0.072f),
+                                 float4( 0.966f, -0.259f, 1.10f, 0.034f),
+                                 float4( 0.309f, -0.951f, 0.67f, 0.020f) };
 static const float kWaveQ[4]  = { 0.55f, 0.50f, 0.45f, 0.40f };
 static const float kWavePH[4] = { 0.0f, 2.1f, 4.4f, 1.3f };
 
@@ -592,63 +594,95 @@ float waterHeight(float2 p, float t)
 // columns or oversamples fat ones; crossing one column boundary at a time is
 // exact and costs two compares an iteration.
 // ---------------------------------------------------------------------------
-static const int kWaveSteps = 28;   // ~2.8 m of surface; grazing rays fall back to the lid
+// HOW MANY COLUMNS THE MARCH MAY WALK. Each is one voxel of LATERAL travel,
+// so this is how far across the water the search reaches -- and a grazing ray
+// crosses a lot of water per unit of drop, which is why 28 (2.8 m) put a hard
+// line across the lake at the distance it gave up. 48 pushes that out; the
+// fallback below is what stops it being a line at all.
+static const int kWaveSteps = 48;
 
-bool marchWaterVoxels(float3 o, float3 d, float meanY, float t,
-                      out float3 hitP, out bool sideFace)
+// HOW FAR BACK ALONG THE RAY THE MARCH STARTS, and how far past the flat hit
+// it is allowed to run, in metres. v1's 3.8 and 34/38 voxels.
+static const float kWaveBackM = 0.38f;
+static const float kWaveFarM  = 3.40f;
+
+bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
+                      out float tOut, out bool sideFace, out float3 sideN)
 {
-    hitP = o;
+    tOut = tHit;
     sideFace = false;
+    sideN = float3(0.0f, 1.0f, 0.0f);
     const float vs = kVoxelM;
 
-    // Position and direction in COLUMN units.
-    float2 p2 = float2(o.x, o.z) / vs;
-    float2 d2 = float2(d.x, d.z) / vs;
-    int2 c = int2(floor(p2));
+    // ---------------------------------------------------------------------
+    // IT STARTS BEHIND THE HIT, AND THAT IS THE WHOLE TRICK.
+    //
+    // This is what I could not see for a whole session. A crest stands ABOVE
+    // the flat water surface, and there is no geometry up there for a ray to
+    // find -- so I built a lid to hold one, and the lid's side faces stood
+    // proud of every beach. v1 has no lid because it never needs one: it
+    // walks BACKWARDS along the ray from the flat hit and marches forward
+    // again, so a crest is found at a SMALLER t than the surface that led the
+    // ray here.
+    //
+    // BACKING UP IS SAFE, and provably so: the water was the CLOSEST hit, so
+    // everything between the ray's origin and it is empty space. Moving the
+    // hit earlier along the same ray cannot pass through anything.
+    //
+    // What it costs is that a crest is not in the acceleration structure, so
+    // it casts no shadow and no other ray can find it. v1 accepts exactly
+    // that, and it is invisible next to having a silhouette at all.
+    // ---------------------------------------------------------------------
+    float tq = max(max(tHit - kWaveBackM / max(abs(rd.y), 0.08f), tHit - kWaveFarM), 0.0f);
+    const float3 pW = ro + rd * tq;
 
-    // Distance along the ray to the next column boundary on each axis.
-    const int2 stp = int2(d2.x >= 0.0 ? 1 : -1, d2.y >= 0.0 ? 1 : -1);
-    const float2 inv = float2(abs(d2.x) < 1e-8 ? 1e30 : 1.0 / d2.x,
-                              abs(d2.y) < 1e-8 ? 1e30 : 1.0 / d2.y);
-    float2 tNext = float2((float(c.x + max(stp.x, 0)) - p2.x) * inv.x,
-                          (float(c.y + max(stp.y, 0)) - p2.y) * inv.y);
-    const float2 tStep = float2(abs(inv.x), abs(inv.y));
-    if (abs(d2.x) < 1e-8) tNext.x = 1e30;
-    if (abs(d2.y) < 1e-8) tNext.y = 1e30;
+    int2 c = int2(floor(float2(pW.x, pW.z) / vs));
+    const float sx = rd.x >= 0.0f ? 1.0f : -1.0f;
+    const float sz = rd.z >= 0.0f ? 1.0f : -1.0f;
+    const float adx = max(abs(rd.x), 1e-5f), adz = max(abs(rd.z), 1e-5f);
+    float tmx = ((float(c.x) + max(sx, 0.0f)) * vs - pW.x) / (sx * adx) + tq;
+    float tmz = ((float(c.y) + max(sz, 0.0f)) * vs - pW.z) / (sz * adz) + tq;
+    const float stepX = vs / adx, stepZ = vs / adz;
 
-    float tEnter = 0.0;
+    // WHICH WALL THE RAY LAST CROSSED, so a step face can be given the normal
+    // it actually has. v1 never needs this -- it shades the hit and moves on --
+    // but v2 REFRACTS through the surface, and a vertical wall wearing a y-up
+    // normal bends the path into the swell and reads as a dark blot.
+    int axis = -1;
+
     for (int i = 0; i < kWaveSteps; ++i)
     {
-        // This column's surface, quantised to the voxel grid exactly as the
-        // host quantises the terrain around it.
-        const float2 cw = (float2(c) + 0.5) * vs;
-        const float hgt = meanY + waterHeight(cw, t);
-        const float surfY = floor(hgt / vs + 0.5) * vs;
+        const float2 cw = (float2(c) + 0.5f) * vs;
+        // THE OFFSET IS QUANTISED, NOT THE ABSOLUTE HEIGHT. v1 writes
+        // `baseTop + floor(wv + 0.5)`, so the surface is always a whole
+        // number of voxels above or below the still waterline and lands on
+        // the same grid the terrain around it does. Flooring the absolute
+        // height instead would let the whole sheet sit half a voxel off.
+        const float wh = baseTop + floor(waterHeight(cw, t) / vs + 0.5f) * vs;
+        const float tNext = min(tmx, tmz);
 
-        const float tExit = min(tNext.x, tNext.y);
-        const float yIn = o.y + d.y * tEnter;
-        const float yOut = o.y + d.y * tExit;
-
-        if (yIn <= surfY)
+        // Already below this column's top: the ray came in through the
+        // vertical step between two crests.
+        if (ro.y + rd.y * tq <= wh)
         {
-            // Entered already below this column's top: the ray came through
-            // the vertical step between two crests.
-            hitP = o + d * tEnter;
+            tOut = tq;
             sideFace = true;
+            // The wall faces back the way the ray came.
+            if (axis == 0) sideN = float3(-sx, 0.0f, 0.0f);
+            else if (axis == 1) sideN = float3(0.0f, 0.0f, -sz);
             return true;
         }
-        if (yOut <= surfY)
+        // Crosses this column's top inside it.
+        if (ro.y + rd.y * tNext <= wh)
         {
-            // Crosses this column's top inside it.
-            const float th = (surfY - o.y) / (abs(d.y) < 1e-8 ? -1e-8 : d.y);
-            hitP = o + d * max(th, 0.0);
+            tOut = (wh - ro.y) / rd.y;
             sideFace = false;
             return true;
         }
 
-        // Step to the next column.
-        if (tNext.x < tNext.y) { c.x += stp.x; tEnter = tNext.x; tNext.x += tStep.x; }
-        else                   { c.y += stp.y; tEnter = tNext.y; tNext.y += tStep.y; }
+        if (tmx < tmz) { tq = tmx; tmx += stepX; c.x += int(sx); axis = 0; }
+        else           { tq = tmz; tmz += stepZ; c.y += int(sz); axis = 1; }
+        if (tq > tHit + kWaveFarM) return false;
     }
     return false;
 }
@@ -918,26 +952,56 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
         // the surface into the bank and refract sideways.
         if (topFace)
         {
-            // THE SURFACE IS WHERE THE MESHER PUT IT. The water is meshed
-            // to the waterline and the terrain is shaped to contain it there,
-            // so there is no slab to solve down through: kWaveSwellM is 0 and
-            // this folds away entirely. See Shared.slang for why, and what a
-            // non-zero value would have to fix first.
-            if (kWaveSwellM > 0.0f)
+            // DOWNWARD RAYS ONLY, which is v1's `rd.y < -0.01`. The march
+            // walks back up the ray to look for a crest standing over the
+            // flat surface, and that only makes sense for a ray coming down
+            // onto the water. A ray leaving from underneath keeps the flat
+            // top it already found.
+            bool marched = false;
+            if (d.y < -0.01f)
             {
-                const float meanY = h.p.y - kWaveSwellM;
-                float3 sp = h.p;
-                if (marchWaterVoxels(h.p, d, meanY, gParams.waterTime, sp, wSide))
+                float wt;
+                bool ws;
+                float3 wn;
+                if (marchWaterVoxels(o, d, h.t, h.p.y, gParams.waterTime, wt, ws, wn))
                 {
-                    h.t += length(sp - h.p);
-                    h.p = sp;
+                    marched = true;
+                    h.t = wt;
+                    h.p = o + d * wt;
+                    wSide = ws;
+                    // A STEP SIDE IS VERTICAL AND MUST SAY SO. Left with the
+                    // quad's y-up normal it refracts sideways into the swell,
+                    // which is what drew the dark blocky blots across the lake.
+                    if (ws) { h.ns = wn; h.ng = wn; }
                 }
             }
-            // A STEP FACE IS VERTICAL, so it must not wear a y-up ripple: that
-            // would tilt it into the swell and refract sideways. It takes the
-            // flat face normal and v1's darkening instead, which is what gives
-            // the swell its silhouette.
-            if (!wSide) { h.ns = waterNormal(float2(h.p.x, h.p.z), gParams.waterTime); }
+            // -----------------------------------------------------------
+            // WHERE THE MARCH FINDS NOTHING, SHADE THE WAVE INSTEAD.
+            //
+            // The search is bounded -- kWaveSteps columns of lateral travel --
+            // and a ray crossing the lake at a grazing angle runs out of them
+            // long before it meets the surface. It then fell back to the flat
+            // meshed quad, which put a hard line across every lake at exactly
+            // the distance the march gave up: near water with voxel steps,
+            // far water a mirror. That is "the water got cut in half".
+            //
+            // Beyond that distance the steps are sub-pixel anyway, so what is
+            // lost is a silhouette nobody can resolve -- and the analytic
+            // normal is exactly the right thing to spend there instead. It
+            // costs four cosines and no march.
+            //
+            // THIS IS WHY waterNormal IS STILL HERE. With the march succeeding
+            // it would argue with real geometry and read as corrugated iron;
+            // with the march having found nothing there is no geometry for it
+            // to argue with.
+            // -----------------------------------------------------------
+            if (!marched)
+                h.ns = waterNormal(float2(h.p.x, h.p.z), gParams.waterTime);
+            // NO SHADING NORMAL. The surface has real voxel steps now, so the
+            // silhouette carries the swell and a smooth Gerstner normal on top
+            // of it would only argue with the geometry -- which is the
+            // corrugated-iron look this replaced. v1 does the same: flat
+            // facets, and the step sides darkened below.
         }
         h.mat.type = MAT_DIELECTRIC;
         h.mat.ior = 1.333f;
@@ -2031,7 +2095,29 @@ void main(uint3 tid: SV_DispatchThreadID)
                 if (dot(wi, wi) < 1e-6f) wi = rdir;      // TIR: follow the mirror
                 else inWater = entering;
 
-                o = offsetRay(h.p, h.ng, wi);
+                // ---------------------------------------------------------
+                // A CREST IS NOT IN THE ACCELERATION STRUCTURE, SO THE RAY
+                // LEAVING IT WOULD MEET THE WATER ALL OVER AGAIN.
+                //
+                // marchWaterVoxels finds crests standing ABOVE the meshed
+                // surface, in air the ray has already crossed -- that is how
+                // v1 gets a swell with no lid. But the meshed quad is still
+                // down there at the waterline, so a ray refracting DOWN from a
+                // crest hits it, takes a second dielectric interface, flips
+                // inWater back, and loses most of its energy. It drew as dark
+                // blocky patches all over the lake, and it is v4's "a ray
+                // inside the water refracted at every voxel face" wearing
+                // different clothes.
+                //
+                // There is ONE interface. Having entered at the crest, the ray
+                // is in water from there down, so it is pushed past the quad
+                // rather than being allowed to meet it.
+                // ---------------------------------------------------------
+                float3 ori = h.p;
+                if (entering && wi.y < -1e-4f && ori.y > gParams.waterY)
+                    ori += wi * ((gParams.waterY - 2e-3f - ori.y) / wi.y);
+
+                o = offsetRay(ori, h.ng, wi);
                 d = wi;
                 specularBounce = true;
                 skyPdfPrev = 0.0f;  // a delta surface: no light sampler drew this

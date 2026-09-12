@@ -97,6 +97,41 @@ struct WalkWorld {
 // an arrow stopped in mid-air a metre off the side of a boulder, and a flier
 // turned away from a column of nothing above a rock. See solidAtWorld.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// THE LAKE OVER ONE COLUMN: its surface, its bed, and whether there is one.
+//
+// v1 asks `waterAt(x, y, z)` once per probe height. On a heightfield that is
+// the same two numbers compared twice, so this answers once and the probes are
+// comparisons -- and it goes through VoxelTerrain's own depth rule, so the
+// body cannot believe in water the mesher did not draw. That mattered: before
+// the depth rule there were columns every predicate called wet that held no
+// water at all, and a swimmer would have floated in them.
+// ---------------------------------------------------------------------------
+struct Lake {
+    bool any = false;
+    float bedM = 0.0f;   // bottom of the first water voxel
+    float topM = 0.0f;   // top of the last one -- the surface you float at
+};
+
+inline Lake lakeAt(const WalkWorld &w, float x, float z) {
+    Lake l;
+    if (!w.terrain) return l;
+    const VoxelTerrain &t = *w.terrain;
+    TerrainMemo memo;
+    const int i = int(floorf(x / VOXEL_M)), j = int(floorf(z / VOXEL_M));
+    const int line = t.lakeLineAt(t.wx(i), t.wx(j), memo);
+    if (line == VoxelTerrain::kNoWaterVox) return l;
+    const int hc = t.heightVox(i, j, memo);
+    if (!t.wetColumn(i, j, hc, line, memo)) return l;
+    l.any = true;
+    l.bedM = float(hc + 1) * VOXEL_M;
+    l.topM = float(line + 1) * VOXEL_M;
+    return l;
+}
+
+// Is this height inside that water?
+inline bool inLake(const Lake &l, float y) { return l.any && y >= l.bedM && y < l.topM; }
+
 inline bool insideWorld(const WalkWorld &w, const Vec3 &p) {
     if (!w.terrain) return false;
     const int i = int(floorf(p.x / VOXEL_M)), j = int(floorf(p.z / VOXEL_M));
@@ -152,6 +187,49 @@ class Player {
     float gravity = 20.0f;    // m/s^2
     float eye = 2.00f;        // 20 voxels -- and the whole of the figure,
                               // since nothing is modelled above the eye
+
+    // -----------------------------------------------------------------------
+    // SWIMMING, PORTED FROM v1. Its numbers are in VOXELS PER SECOND; these
+    // are the same numbers in metres, since both engines are 10 cm voxels.
+    //
+    // THE ONE THING THAT MUST NOT BE "IMPROVED": THERE IS NO BUOYANCY. v1 had
+    // a damped spring on the eye against a float line, which pulls UP from
+    // below and so floats the body automatically -- and its note is explicit
+    // that this was removed on request ("if the player is not pressing
+    // spacebar, just have the player sink all the way to the bottom"), and
+    // that no gain above zero can be a compromise because the spring IS the
+    // mechanism. Space is the only upward force. Release it and you sink.
+    //
+    // GRAVITY IS NOT USED IN WATER. v1: it "winds up to -345 and would drop
+    // the player through 4-5 voxels of lake like a stone through air". The
+    // sink is a plain terminal velocity instead, eased onto.
+    // -----------------------------------------------------------------------
+    float swimUp = 1.8f;      // m/s, the rise ceiling      (v1 SWIM_UP 18)
+    float swimSink = 1.3f;    // m/s, terminal sink         (v1 SWIM_SINK 13)
+    float swimEase = 6.5f;    // 1/s onto either            (v1 SWIM_EASE)
+    // HOW DEEP THE WATER MUST BE OVER THE FEET before the body swims rather
+    // than wades. v1 tried waist height and measured that its lakes are only
+    // 4-5 voxels deep, so a waist test almost never fired; 5 voxels is knee
+    // deep and engages in an ordinary lake. v2's lakes are deeper (median 2.1
+    // m) so this fires readily, and a shallow wade is still walking.
+    float swimDeep = 0.50f;   // m over the feet            (v1 SWIM_DEEP 5)
+    float wadeDeep = 0.30f;   // m -- ankle, gates the drag (v1's inWater probe)
+    // HOW FAR A SWIMMER MAY CLIMB, against stepUp on land. A bank is a step a
+    // treading body should get over without having to find a beach.
+    float swimStepM = 1.20f;  // m                          (v1 SWIM_STEP 12)
+    // The spring, and it only runs while Space is held.
+    float swimK = 2.0f;       // 1/s gain on eye-vs-line    (v1 SWIM_K)
+    float swimRise = 1.10f;   // m the line lifts to        (v1 SWIM_RISE 11)
+    // THE STROKE. It rides on the Space lift only, never idle. v1 doubled this
+    // and SLOWED it together, because a first-order lag tracks a sine at only
+    // K/sqrt(K^2+w^2) of its amplitude -- at K=2 against 9 rad/s that is 0.22,
+    // so a big number on a fast rock came out as a twitch. At 6 rad/s it is
+    // 0.32, and a slower deeper swell reads as water besides.
+    float swimBob = 0.65f;    // m                          (v1 SWIM_BOB 6.5)
+    float swimBobW = 6.0f;    // rad/s            (v1 SWIM_BOBW 0.006 per ms)
+    // Horizontal speed kept while any part of the body is in water. Wading and
+    // swimming share it: v1 scales the moment the body is wet.
+    float waterSpeed = 0.43f;  //                           (v1 WATER_SPD)
     float halfWidth = 0.26f;  // 2.6 voxels, as in the JS engine
 
     // How far up a step can be climbed without jumping, and how far down the
@@ -326,8 +404,23 @@ class Player {
             const Ground g = groundInfo(w, pos.x, pos.z);
             if (pos.y < g.y) pos.y = g.y;
         } else {
-            const float spd =
-                walk * (sprint ? sprintMul : 1.0f) * (crouching ? kCrouchSpeed : 1.0f);
+            // -----------------------------------------------------------
+            // AM I IN WATER, AND AM I SWIMMING? Two different questions, at
+            // two different heights, exactly as v1 asks them: the ankle probe
+            // gates the drag, and a knee-deep probe decides whether the body
+            // swims or wades.
+            //
+            // ANSWERED HERE, ABOVE THE TWO HORIZONTAL MOVES, because moveAxis
+            // reads swimming_ for its step-up. v1 makes the same point: set it
+            // here "so it is this frame's answer and not last frame's".
+            // -----------------------------------------------------------
+            const Lake lake = lakeAt(w, pos.x, pos.z);
+            const bool wading = inLake(lake, pos.y + wadeDeep);
+            swimming_ = inLake(lake, pos.y + swimDeep);
+
+            const float spd = walk * (sprint ? sprintMul : 1.0f) *
+                              (crouching ? kCrouchSpeed : 1.0f) *
+                              (wading ? waterSpeed : 1.0f);
             // Approached exponentially rather than set outright, and far more
             // slowly in the air (3.2 against 14): that difference IS the sense
             // of having weight, and of not being able to change your mind
@@ -341,12 +434,37 @@ class Player {
             moveAxis(w, 0, hvx_ * dt);
             moveAxis(w, 2, hvz_ * dt);
 
-            if (onGround && jump) {
+            // A SWIMMER NEVER GETS A STANDING JUMP. v1 found that with the
+            // shallower probe a held Space re-fired a full jump every time the
+            // body came back down to the surface, which pogos.
+            if (onGround && jump && !swimming_) {
                 vy = jumpVel;
                 onGround = false;
             }
 
-            if (!onGround) {
+            if (swimming_) {
+                swimClock_ += dt;
+                // SPACE IS THE ONLY THING HOLDING YOU UP -- see the constants.
+                // Held, the eye chases a line a little over the surface, with
+                // the stroke rocking it; released, there is no upward term at
+                // all and the body sinks at its terminal speed.
+                const float eyeY = pos.y + eye;
+                const float line =
+                    lake.topM + swimRise + sinf(swimClock_ * swimBobW) * swimBob;
+                const float tgt = jump ? clampf((line - eyeY) * swimK, -swimSink, swimUp)
+                                       : -swimSink;
+                vy += (tgt - vy) * (1.0f - expf(-swimEase * dt));
+                pos.y += vy * dt;
+                // The bed is still ground: sink far enough and you stand on it.
+                const Ground g = groundInfo(w, pos.x, pos.z);
+                if (pos.y <= g.y && vy <= 0.0f) {
+                    pos.y = g.y;
+                    vy = 0.0f;
+                    onGround = true;
+                } else {
+                    onGround = false;
+                }
+            } else if (!onGround) {
                 vy -= gravity * dt;
                 pos.y += vy * dt;
                 const Ground g = groundInfo(w, pos.x, pos.z);
@@ -477,6 +595,11 @@ class Player {
     // it stopped a body short of a birch by the width of its bark and stopped
     // it dead where a leaning trunk's ellipse covered open air. Neither is a
     // large error; both are the kind you feel rather than see.
+    // How far this body may climb right now. A swimmer gets more: v1 sizes it
+    // off a measurement -- float depth plus the steepest bank on a real lake,
+    // plus margin -- so that swimming into a bank does not simply stop.
+    float upMax() const { return swimming_ ? swimStepM : stepUp; }
+
     bool blocked(const WalkWorld &w, float x, float z) const {
         // THE GROUND UNDER THE SPOT, not the body's current height. This is
         // asked of places the body is not standing yet -- the next step, and a
@@ -548,8 +671,8 @@ class Player {
             if (s.col ? !overModel(s, x, z, VOXEL_M, hw) : !touches(s, x, z, hw)) continue;
             float y = 0.0f;
             if (s.col && solidColumnTop(s, x, z, VOXEL_M, &y)) {
-                if (y > gy + stepUp) return true;
-            } else if (!s.col && s.top > gy + stepUp) {
+                if (y > gy + upMax()) return true;
+            } else if (!s.col && s.top > gy + upMax()) {
                 return true;
             }
         }
@@ -572,6 +695,13 @@ class Player {
 
   private:
     float hvx_ = 0.0f, hvz_ = 0.0f;
+    // Whether the body is swimming THIS frame. Resolved at the top of update,
+    // before the horizontal moves, because moveAxis reads it for the step-up.
+    bool swimming_ = false;
+    // The stroke's own clock. A wall clock in seconds and not the day clock:
+    // the same reason VoxelTerrain::waveTime is one -- scrubbing the sun must
+    // not run the swimmer's bob backwards.
+    float swimClock_ = 0.0f;
     // 0 standing, 1 fully crouched, and every value between while it eases.
     float crouchT_ = 0.0f;
 
@@ -603,7 +733,7 @@ class Player {
 
         if (onGround) {
             const float here = groundHeight(w, pos.x, pos.z);
-            if (g > pos.y + stepUp && here <= pos.y + stepUp) return;  // a wall, not a step
+            if (g > pos.y + upMax() && here <= pos.y + upMax()) return;  // a wall, not a step
             pos = next;
             if (g >= pos.y - stepDown) {
                 // STEP, SMOOTHED IN THE EYE ONLY.
@@ -638,7 +768,7 @@ class Player {
             // went nowhere, and a jumping run covered 47.6 m where a walking
             // one covered 55.2 m. It reads as the jump refusing to carry you
             // forward -- you go up, and come down where you started.
-            if (g > pos.y + stepUp) return;  // a wall; a step is not
+            if (g > pos.y + upMax()) return;  // a wall; a step is not
             pos = next;
             if (g > pos.y) {
                 // Rode up onto a step in mid-air. The feet snap to it exactly

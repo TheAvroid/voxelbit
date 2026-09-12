@@ -100,25 +100,19 @@ static const uint kWater = 26;
 // notably that a shadow ray must pass THROUGH it, see traceOccluded.
 static const uint kFoam = 27;
 
-// HOW FAR BELOW THE WATER'S MESHED TOP THE WAVE FIELD SITS, in metres.
+// THE WAVE HAS NO GEOMETRIC BUDGET, because it needs none.
 //
-// ZERO, and that is not a placeholder. The host meshes a lake to the
-// waterline exactly -- no lid over it -- because the terrain is only shaped to
-// contain water at that height: bankShaped flattens the shore to it and the
-// sand band starts a voxel above it. A lid put the water's SIDE faces half a
-// metre over the beach and ringed every lake with a vertical wall of water
-// (4,743 of 4,743 edge faces; see VoxelTerrain::waveVoxMax).
+// There used to be a constant here for how much room the swell was given --
+// first as a lid over the water, then as a downward offset under it. Both
+// were wrong, and in the same way: they tried to give the wave somewhere to
+// live in the ACCELERATION STRUCTURE. A lid stood its side faces half a metre
+// over every beach (4,743 of 4,743 lake edges), and a downward offset just
+// mirrors that, since the sides stay where they were meshed.
 //
-// The swell therefore has nowhere to go. Displacing the surface DOWN from the
-// top instead would only move the wall rather than remove it: the side faces
-// stay where they were meshed, so a dipped surface leaves them standing proud
-// of it -- the same artifact pointing the other way.
-//
-// So the surface IS the meshed top, and the motion is the shading normal,
-// which costs nothing and cannot disagree with geometry. v1 ships `waves: 0`
-// on the same reasoning. marchWaterVoxels is kept and folds away while this
-// is 0; give it a real value and the voxel swell comes back with it.
-static const float kWaveSwellM = 0.0f;
+// v1 needs no budget at all: it backs the ray up from the flat hit and
+// marches, so a crest is found in the empty space the ray already crossed.
+// See marchWaterVoxels in Trace.cs.slang. The water is meshed flush at the
+// waterline and stays there.
 
 // HOW A TRIANGLE'S WORD IS LAID OUT.
 //

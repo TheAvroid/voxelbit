@@ -1475,8 +1475,75 @@ class VoxelTerrain {
     // The sand band follows it automatically -- topMaterial asks bankRiseVox --
     // so the flattened ground and the sand on it are the same band by
     // construction, and cannot drift into half a beach.
-    float bankRiseM = 2.5f;
-    float bankFlat = 0.25f;
+    // 5.0 m, DOUBLED (user 2026-09-12: "flatten the banks out, make the steps
+    // twice as flat"). Halving bankFlat alone did almost nothing -- 70.0% of
+    // shore steps were level before and 70.3% after -- and the reason is worth
+    // writing down, because it is not obvious and it wasted a sweep.
+    //
+    // THE BAND IS DEFINED BY VERTICAL EXTENT, so the shore always climbs about
+    // bankRiseM across whatever plan distance the natural ground takes to rise
+    // that far. k only decides how that climb is DISTRIBUTED inside the band,
+    // never how much of it there is: the overall gradient is the terrain's,
+    // whatever bankFlat says. Flattening reshapes, it does not reduce.
+    //
+    // What does reduce it is making the band TALLER THAN THE SAND. The visible
+    // shore is sandRiseM (1.4 m), and with the band at 5 m that sits in the
+    // ease's flat early portion instead of most of the way up it:
+    //
+    //     at d = 1.4 m    k = 0.692, rise 0.97 m   (flat 0.25, band 2.5)
+    //                     k = 0.292, rise 0.41 m   (flat 0.125, band 5.0)
+    //
+    // 2.4x flatter over the sand, with the acceptance test still clean at
+    // worst 3 voxels and 0 of 4+. The cost is a much larger flattened apron --
+    // 165,649 beach columns against 93,559 -- whose outer part is grass rather
+    // than sand, since the sand band did not move.
+    float bankRiseM = 5.0f;
+    // -----------------------------------------------------------------------
+    // ...AND WHAT A SMALL BODY OF WATER GETS INSTEAD.
+    //
+    // bankRiseM was a single constant, so a 0.4 m2 puddle was given the same
+    // 5 m flattening as a 4,784 m2 lake -- and because a shallow lake sits in
+    // a WEAK basin, which is a gentle slope, that band is enormous in plan.
+    // "Shallow water with large flat banks" is exactly that.
+    //
+    // The band now scales with the basin's carve strength, which is the same
+    // number that decides how big the lake in it is. Measured at the shores of
+    // five bodies:
+    //
+    //     4,784 m2  4.8 m deep   m = 0.682
+    //       301 m2  1.7 m        m = 0.000
+    //       221 m2  4.6 m        m = 0.000
+    //        78 m2  0.3 m        m = 0.000
+    //       0.4 m2  0.2 m        m = 0.386
+    //
+    // So the big lake keeps most of its apron and the small ones fall back to
+    // this minimum. The one false positive is four columns across.
+    //
+    // TWO PROXIES THAT DO NOT WORK, measured, so they are not re-tried: the
+    // same field at TWO octaves instead of four (the 0.4 m2 puddle scored
+    // 0.973, higher than the big lake's 0.839), and water depth probed a fixed
+    // 4 m out, which is zero for everything but the largest body and so
+    // discriminates nothing among the rest.
+    //
+    // A SCALE, NOT A GATE, and the distinction is the whole history of this
+    // file. The basin gate that used to cut the water and the bank produced
+    // walls because it was a threshold; this varies continuously, and
+    // bankShaped is continuous at d == rise for any rise (k reaches 1.0 there,
+    // so the shaped height IS the natural one), so a smoothly varying band
+    // cannot introduce a seam.
+    float bankRiseMinM = 1.5f;
+    // -----------------------------------------------------------------------
+    // 0.125, HALVED FROM 0.25 (user 2026-09-12: "make the steps twice as
+    // flat"). The shore now falls at an EIGHTH of the ground's own slope at
+    // the water's edge rather than a quarter.
+    //
+    // THE COST IS WIDER TREADS, and it is worth stating because it is the
+    // opposite of what "flatter" sounds like it should do. A gentler slope
+    // crossed by a 10 cm quantisation puts more plan distance between one
+    // contour and the next, so each terrace gets WIDER -- the beach reads as
+    // fewer, larger steps rather than as a smooth ramp. bankGrainM is what
+    // keeps their edges from running as clean contour lines; see it below.
+    float bankFlat = 0.125f;
 
     // -----------------------------------------------------------------------
     // THE GRAIN THAT KEEPS THE FLAT BEACH FROM BEING A STAIRCASE.
@@ -1665,25 +1732,52 @@ class VoxelTerrain {
     // gate below used to veto the bank, so a shore whose basin value had run
     // out kept the hillside's slope and its grass. ANY GROUND WITHIN
     // bankRiseM OF THE LINE IS A BANK. Height is the whole test.
-    float bankShaped(float h, float wlm, float x, float z, TerrainMemo &memo) const {
+    // `basin` is the carve's own field value at this column -- see
+    // bankRiseMinM for what it is used for and for the two alternatives that
+    // were measured and rejected.
+    float bankShaped(float h, float wlm, float basin, float x, float z,
+                     TerrainMemo &memo) const {
         if (wlm == kNoWater) return h;
-        // FADED OUT AT THE BASIN'S EDGE, exactly as the carve is.
-        //
-        // A hard gate here is a cliff: a column just inside the basin is
-        // flattened to a quarter of its rise and its neighbour just outside is
-        // untouched, so the two differ by most of the band. At a 2.5 m band
-        // that measured as a SIX-VOXEL step with 185 of them over 4 voxels --
-        // the very failure v4's ease exists to prevent, reintroduced at the
-        // other end of the same function.
-        //
+        // HOW BIG A BANK THIS BODY OF WATER HAS EARNED.
+        // OVER 0.25 OF THE FIELD, NOT THE CARVE'S 0.10. The carve can afford a
+        // tight ramp because it is applied to a height; this one changes the
+        // WIDTH of the band, and a band whose edge moves quickly between
+        // neighbours puts a step where the two edges do not line up. At 0.10
+        // that measured as 6 steps of 4 voxels, against the rule that there be
+        // none. A slower ramp also suits the question -- how big is this lake
+        // is not a decision with a sharp boundary.
+        const float bm =
+            (basin >= basinT) ? 0.0f : sstep(minf(1.0f, (basinT - basin) / 0.25f));
+        const float rise = bankRiseMinM + (bankRiseM - bankRiseMinM) * bm;
         // THE `edge` FADE IS GONE WITH THE GATE IT EXISTED FOR. It ramped the
-        // bank out over the basin mask so the gate's boundary was not a cliff
+        // bank out over the basin mask so that gate's boundary was not a cliff
         // (6-voxel steps, 185 of them over 4 voxels). With no gate there is no
         // boundary to fade, and the band's own ease already carries the bank
         // into the hillside at the hillside's gradient.
         const float d = h - wlm;
-        if (d <= 0.0f || d > bankRiseM) return h;
-        const float u = d / bankRiseM;
+
+        // -------------------------------------------------------------------
+        // FLUSH WITH THE WATER, NOT ONE VOXEL UNDER IT.
+        //
+        // Ground sitting in the last voxel below the line is what made the
+        // water stand proud of its own shore: the wet column beside it tops at
+        // `line`, this one's surface is at `line - 1`, and 10 cm of water shows
+        // above the sand. Measured: 2,538 of 4,687 lake edges.
+        //
+        // Snapping that band UP to the line removes it by construction, and
+        // does more than that -- with no column left at `line - 1` there is no
+        // shallow fringe at all, so the wet test's neighbour clause has nothing
+        // to fire on and the water's edge is simply where the ground reaches
+        // the line. Water top and ground top become the same number.
+        //
+        // It is 10 cm of terrain on a thin band, and it is a pure function of
+        // this column -- no neighbour, so nothing for the gather and the point
+        // path to disagree about.
+        // -------------------------------------------------------------------
+        if (d < 0.0f && d >= -VOXEL_M) return wlm;
+
+        if (d <= 0.0f || d > rise) return h;
+        const float u = d / rise;
         const float ease = u * u * (3.0f - 2.0f * u);
         // NEVER BELOW ONE VOXEL OVER THE LINE, and this clamp is the whole
         // difference between a beach and a drowned one.
@@ -1914,7 +2008,7 @@ class VoxelTerrain {
         // ran on the 11% of columns inside a birch seam and on NONE of the
         // columns that have water, which measured as the bank doing nothing at
         // all whatever bankFlat was set to.
-        if (mix <= 0.001f) return bankShaped(h, wlm, x, z, memo);
+        if (mix <= 0.001f) return bankShaped(h, wlm, b, x, z, memo);
 
         // THE SEAM. Ninety metres of blend between a wood whose median floor is
         // 48 m and one whose median is 13, which is a 35 m drop -- so this is
@@ -1937,8 +2031,8 @@ class VoxelTerrain {
         // a column inside a seam is shaped from the height it actually has.
         // Water only exists where birchMix is ~0, so in practice this is the
         // pine side of the world and the lerp has already collapsed to h.
-        return bankShaped(lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f + fine, mix), wlm, x, z,
-                          memo);
+        return bankShaped(lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f + fine, mix), wlm, b, x,
+                          z, memo);
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
