@@ -87,6 +87,7 @@ struct Truth {
     // The lake line over each padded column, kNoWaterVox where none.
     std::vector<int> wy;
     const EditStore *ed;
+    const VoxelTerrain *terr = nullptr;
     std::shared_ptr<const ChunkEdits> ce;
 
     Truth(const VoxelTerrain &t, const EditStore *edits, int cx, int cz)
@@ -106,6 +107,7 @@ struct Truth {
                 top[idx(lx, lz)] = tm;
                 sr[idx(lx, lz)] = t.strandRows(i0 + lx, j0 + lz, tm);
             }
+        terr = &t;
         if (ed) ce = ed->get(cx, cz);
     }
 
@@ -135,8 +137,14 @@ struct Truth {
         const int line = wy[idx(lx, lz)];
         if (line == VoxelTerrain::kNoWaterVox) return false;
         const int hc = h[idxH(lx, lz)];
-        if (hc > line) return false;
-        if (ly <= hc || ly > line) return false;
+        // THE POINT PATH, DELIBERATELY. ColumnStack resolves the depth rule as
+        // a pass over an array; VoxelTerrain::wetColumn resolves it by asking
+        // four neighbours one at a time. They must agree, and this is the test
+        // that says so -- so it must not borrow the array's answer.
+        TerrainMemo memo;
+        const bool w = terr->wetColumn(i0 + lx, j0 + lz, hc, line, memo);
+        if (ly <= hc || ly > terr->waterTopVox(hc, line, terr->waveCeilVox(), w))
+            return false;
         return !edited(lx, lz, ly);
     }
 
@@ -240,7 +248,10 @@ int main(int argc, char **argv) {
                                     if (truth.solid(terrain, nx, ny, nz)) continue;
                                     if (truth.water(nx, ny, nz)) continue;
                                     want[faceKey(truth.i0 + lx, truth.j0 + lz, wy, d)] =
-                                        mat::WATER;
+                                        terrain.foamColumn(truth.h[truth.idxH(lx, lz)],
+                                                           truth.wy[truth.idx(lx, lz)])
+                                            ? mat::FOAM
+                                            : mat::WATER;
                                 }
                                 continue;
                             }

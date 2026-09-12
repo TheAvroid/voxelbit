@@ -24,6 +24,10 @@
 static const uint MAT_OPAQUE = 0;     // ground, bark, needles
 static const uint MAT_DIELECTRIC = 1; // water
 
+// How much of the physical Fresnel reflection a water surface actually keeps.
+// v1's WATER_BAKE ships reflection: 0.45 -- see the note in sampleDielectric.
+static const float kWaterReflect = 0.45f;
+
 struct Surface
 {
     uint type;
@@ -259,6 +263,26 @@ BsdfSample sampleDielectric(Surface m, float3 wo, bool entering, inout Rng rng)
         const float rp = (m.ior * cosI - cosT) / (m.ior * cosI + cosT);
         F = 0.5f * (rs * rs + rp * rp);
     }
+
+    // ---------------------------------------------------------------------
+    // v1 CAPS THE MIRROR, AND THAT IS MOST OF WHAT ITS WATER LOOKS LIKE.
+    //
+    // A physical dielectric at grazing incidence reflects almost everything --
+    // F goes to 1.0 -- so a lake seen from a walking eye-line is a mirror of
+    // whatever stands around it. In a pine wood that is dark trees, and the
+    // water reads black and dead however good the absorption and in-scatter
+    // underneath it are. Which is exactly how it has been reading.
+    //
+    // v1 does not accept that: it ships a reflection STRENGTH of 0.45 and
+    // mixes `fres * 0.45`, so more than half the surface is always the water's
+    // own colour no matter how grazing the view. Not physical, deliberately --
+    // it is the difference between a lake and a sheet of obsidian.
+    //
+    // ENTERING ONLY. Capping the way out as well would let light escape
+    // through total internal reflection, and a submerged camera would see the
+    // bank through a surface that should be a mirror from below.
+    // ---------------------------------------------------------------------
+    if (entering) F *= kWaterReflect;
 
     if (rng.nextFloat() < F)
     {

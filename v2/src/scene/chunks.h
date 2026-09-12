@@ -85,6 +85,10 @@ struct ChunkBuild {
     int cx = 0, cz = 0;
     VoxMesh mesh;
     std::vector<Placement> decor;
+    // Whether this chunk drew any water. Only these need re-meshing when the
+    // swell moves, and on this world that is under one chunk in a hundred --
+    // which is the entire reason an animated lake is affordable.
+    bool hasWater = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -491,6 +495,21 @@ class ChunkMesher {
     // exactly that, and costs one branch per chunk.
     bool useBricks = true;
 
+    // -----------------------------------------------------------------------
+    // THE WAVE PHASE THE NEXT JOB WILL BE MESHED AT, in seconds.
+    //
+    // Atomic and read once per job rather than per column: a worker copies the
+    // terrain locally and stamps this into it before meshing, so two workers
+    // can be a tick apart without racing and a chunk simply carries whatever
+    // phase it was built at. The alternative -- one shared terrain mutated by
+    // the main thread while workers read it -- is a data race on every float
+    // in the generator.
+    // -----------------------------------------------------------------------
+    std::atomic<float> waveTime{0.0f};
+
+    // So the scheduler can skip the whole cycle when the swell is off.
+    bool waveVoxMaxIsZero() const { return terrain_.waveVoxMax <= 0; }
+
     // THE EDIT LAYER. Written on the main thread by a swing, read here by the
     // workers -- see EditStore, which publishes by copy so the two never race.
     EditStore edits;
@@ -520,8 +539,9 @@ class ChunkMesher {
     // The stack LRU is NOT dropped, and that is the part worth keeping: it is
     // the 14 ms of noise, and the next chunk this worker takes is usually
     // adjacent.
-    VoxMesh meshChunkFromBricks(vox::BrickStore &store, int cx, int cz) {
+    VoxMesh meshChunkFromBricks(vox::BrickStore &store, int cx, int cz, bool *hasWater) {
         store.buildChunk(cx, cz);
+        *hasWater = store.chunkHasWater(cx, cz);
         VoxMesh m = vox::expandChunk(store, cx, cz);
         store.evictChunk(cx, cz);
         return m;
@@ -540,7 +560,11 @@ class ChunkMesher {
         // thread-safe by design -- the LRU, the noise memo and the mesh
         // scratch are all mutable, and a mutex around them would serialise
         // precisely the work the threads exist to spread.
-        vox::BrickStore bricks(&terrain_, &edits);
+        // A WORKER-LOCAL COPY OF THE TERRAIN, so the wave phase can be stamped
+        // per job. It is a handful of floats; the alternative is the main
+        // thread writing waveTime into a generator four workers are reading.
+        VoxelTerrain terr = terrain_;
+        vox::BrickStore bricks(&terr, &edits);
 
         for (;;) {
             std::pair<int, int> job;
@@ -570,7 +594,8 @@ class ChunkMesher {
                 // ordinary case and costs one hash lookup per chunk.
                 const std::shared_ptr<const ChunkEdits> ce = edits.get(b.cx, b.cz);
                 if (useBricks) {
-                    b.mesh = meshChunkFromBricks(bricks, b.cx, b.cz);
+                    terr.waveTime = waveTime.load(std::memory_order_relaxed);
+                    b.mesh = meshChunkFromBricks(bricks, b.cx, b.cz, &b.hasWater);
                 } else {
                     b.mesh = terrain_.meshChunk(b.cx, b.cz, scratch, ce.get());
                 }

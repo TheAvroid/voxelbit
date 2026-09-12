@@ -57,6 +57,9 @@ int main(int argc, char **argv) {
     if (argc > 3) terrain.pineWater = float(std::atof(argv[3]));
     if (argc > 4) terrain.basinBed = float(std::atof(argv[4]));
     if (argc > 5) terrain.basinT = float(std::atof(argv[5]));
+    // 1.0 = no flattening at all, i.e. the shore the basin carve alone leaves.
+    if (argc > 6) terrain.bankFlat = float(std::atof(argv[6]));
+    if (argc > 7) terrain.bankRiseM = float(std::atof(argv[7]));
     std::printf("%d x %d columns at %.1f m (%.0f m square)\n", n, n, step, span);
     std::printf("pineWater %.1f m, birchWater %s, basinT %.2f\n\n", terrain.pineWater,
                 terrain.birchWater == VoxelTerrain::kNoWater ? "dry" : "set", terrain.basinT);
@@ -153,6 +156,78 @@ int main(int argc, char **argv) {
         if (!sizes.empty())
             std::printf("  the largest body is %.1f%% of all the water\n",
                         100.0 * double(sizes[0]) / double(wetAll));
+    }
+
+    // ---- DOES THE BEACH END IN A CLIFF? ------------------------------------
+    //
+    // THE ONE TEST THE BANK NEEDS, AND IT CANNOT BE A SCREENSHOT. A shore that
+    // drops off a step is invisible in a wide shot and obvious the moment you
+    // walk off it, so v4 measured it instead: the step to all four neighbours
+    // over every column within 1.2 m of the waterline. Before its ease, 14,738
+    // steps of exactly 7 voxels; after, zero steps of 4 or more, worst case 2.
+    //
+    // The residual 2 is inherent rather than a fault: the lowest bank column
+    // sits one voxel over the line and the shallowest wet column one under it,
+    // so the water's own edge is a two-voxel step and always will be.
+    std::printf("\n=== the step at the shore (the bank's acceptance test) ===\n");
+    {
+        TerrainMemo m3;
+        const float probe = 1.2f;  // metres either side of the line
+        size_t counts[16] = {0};
+        size_t worst = 0, total = 0, big = 0;
+        const int di[4] = {1, -1, 0, 0}, dj[4] = {0, 0, 1, -1};
+        // ADJACENT COLUMNS, NOT A METRE APART. The first version of this
+        // sampled neighbours ten voxels away and reported a worst step of 62
+        // voxels -- which is the hillside's SLOPE over a metre, not a step, and
+        // says nothing about whether the beach has a cliff in it. A step is
+        // between columns that touch.
+        //
+        // So: every voxel column in a 100 m square on the lake, which is a
+        // million heights and about a second.
+        for (int j = -500; j < 500; ++j)
+            for (int i = -500; i < 500; ++i) {
+                const int vi = -4544 + i, vj = -4269 + j;  // one voxel apart
+                const int wl = terrain.lakeLineAt(terrain.wx(vi), terrain.wx(vj), m3);
+                if (wl == VoxelTerrain::kNoWaterVox) continue;
+                const int h = terrain.heightVox(vi, vj, m3);
+                if (std::abs(h - wl) * VOXEL_M > probe) continue;  // not at the shore
+                for (int d = 0; d < 4; ++d) {
+                    const int nh = terrain.heightVox(vi + di[d], vj + dj[d], m3);
+                    const size_t st = size_t(std::abs(nh - h));
+                    ++total;
+                    if (st > worst) worst = st;
+                    if (st >= 4) ++big;
+                    counts[st < 15 ? st : 15]++;
+                }
+            }
+        std::printf("  %zu shore steps sampled, worst %zu voxels, %zu of 4+\n", total, worst, big);
+        // WHAT THE BANK ACTUALLY CHANGES, which the step histogram cannot see.
+        // Flattening never moves a column out of the band -- the map is
+        // monotonic onto itself -- it lowers the band's lower half toward the
+        // water. So the thing to measure is the PROFILE: the mean rise of the
+        // shore above the line. A beach is a break in slope, and this is the
+        // break.
+        {
+            double sum = 0;
+            size_t n2 = 0;
+            for (int j = -500; j < 500; ++j)
+                for (int i = -500; i < 500; ++i) {
+                    const int vi = -4544 + i, vj = -4269 + j;
+                    const int wl2 = terrain.lakeLineAt(terrain.wx(vi), terrain.wx(vj), m3);
+                    if (wl2 == VoxelTerrain::kNoWaterVox) continue;
+                    const int h2 = terrain.heightVox(vi, vj, m3);
+                    const int d2 = h2 - wl2;
+                    if (d2 <= 0 || d2 > terrain.bankRiseVox()) continue;
+                    sum += double(d2) * VOXEL_M;
+                    ++n2;
+                }
+            if (n2)
+                std::printf("  beach: %zu columns, mean rise %.2f m above the line\n",
+                            n2, sum / double(n2));
+        }
+        for (size_t k = 0; k < 10; ++k)
+            if (counts[k]) std::printf("      %zu voxels : %zu\n", k, counts[k]);
+        if (big == 0 && total > 0) std::printf("  no cliff: nothing steps 4 voxels or more.\n");
     }
 
     // ---- and the sand, which lives or dies with the line -------------------

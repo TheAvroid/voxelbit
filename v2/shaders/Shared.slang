@@ -85,11 +85,40 @@ static const uint kLitter0 = 17;
 static const uint kRock = 1;
 static const uint kStone0 = 20;
 static const uint kStoneCount = 6;
+// THE SAND RAMP, on the same principle as the stone one above: one id on the
+// host so a beach still merges into long runs, four shades here so it does not
+// render as a single flat plane. Mirrors mat::SAND / mat::SAND_0 exactly.
+static const uint kSand = 4;
+static const uint kSand0 = 28;
+static const uint kSandCount = 4;
 static const uint kLitterCount = 3;
 // WATER. A material, not an instance kind -- see mat::WATER in voxelworld.h for
 // why the per-chunk water structure is gone. The shading branch keys off this
 // and off the triangle's FACE, so a lake's top ripples and its edges do not.
 static const uint kWater = 26;
+// Churned shore water. It is water for every purpose a ray cares about --
+// notably that a shadow ray must pass THROUGH it, see traceOccluded.
+static const uint kFoam = 27;
+
+// HOW FAR BELOW THE WATER'S MESHED TOP THE WAVE FIELD SITS, in metres.
+//
+// ZERO, and that is not a placeholder. The host meshes a lake to the
+// waterline exactly -- no lid over it -- because the terrain is only shaped to
+// contain water at that height: bankShaped flattens the shore to it and the
+// sand band starts a voxel above it. A lid put the water's SIDE faces half a
+// metre over the beach and ringed every lake with a vertical wall of water
+// (4,743 of 4,743 edge faces; see VoxelTerrain::waveVoxMax).
+//
+// The swell therefore has nowhere to go. Displacing the surface DOWN from the
+// top instead would only move the wall rather than remove it: the side faces
+// stay where they were meshed, so a dipped surface leaves them standing proud
+// of it -- the same artifact pointing the other way.
+//
+// So the surface IS the meshed top, and the motion is the shading normal,
+// which costs nothing and cannot disagree with geometry. v1 ships `waves: 0`
+// on the same reasoning. marchWaterVoxels is kept and folds away while this
+// is 0; give it a real value and the voxel swell comes back with it.
+static const float kWaveSwellM = 0.0f;
 
 // HOW A TRIANGLE'S WORD IS LAID OUT.
 //

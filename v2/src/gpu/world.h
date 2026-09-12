@@ -631,6 +631,11 @@ constexpr double kFelledLifeMs = 1800000.0;
 // the first build whether or not anything has been thrown.
 constexpr int kDropInstances = 8;
 static_assert(kMaskWorld == uint8_t(MASK_WORLD), "ray masks disagree with the shader");
+// THERE IS NO LID, and the shader is written on that assumption: it takes the
+// hit point as the surface (kWaveSwellM == 0). Water meshed any higher than
+// the waterline stands proud of its own beach -- see VoxelTerrain::waveVoxMax.
+static_assert(v2::VoxelTerrain{}.waveVoxMax == 0,
+              "the water lid is back; the tracer assumes there is none");
 static_assert(kMaskHeld == uint8_t(MASK_HELD), "ray masks disagree with the shader");
 
 // A bottom-level structure and the buffer under it.
@@ -855,6 +860,9 @@ struct Chunk {
     // Placements by kind -- pine, rock, flower. Held per chunk so eviction
     // keeps the totals honest without anything having to be searched.
     int decorKind[6] = {0, 0, 0, 0, 0, 0};  // pine, rock, flower, mushroom, cone, hive
+    // Whether this chunk drew water. The wave scheduler walks only these, and
+    // on this world under one chunk in a hundred is wet.
+    bool hasWater = false;
 };
 
 inline long long chunkKey(int cx, int cz) {
@@ -4461,6 +4469,91 @@ class World {
         return raw;
     }
 
+  public:
+    // -----------------------------------------------------------------------
+    // THE SWELL, ONE CHUNK AT A TIME.
+    //
+    // A wave step re-meshes every water chunk, and the meshing is not the cost:
+    // the heights never move, so a re-mesh reuses the cached ColumnStack and
+    // only recomputes the crests -- two sines a column, about 0.04 ms a brick.
+    // What is expensive is the STRUCTURE. Measured at load, 655 ms to build 625
+    // chunks, so **1.05 ms per chunk BLAS**, and it is main-thread work.
+    //
+    // THAT IS WHY THIS IS STAGGERED RATHER THAN SYNCHRONOUS. A 5,000 m2 lake
+    // covers about eight chunks; re-meshing all of them on one tick is 8.4 ms
+    // of BLAS in a single frame -- half a 60 fps budget, arriving ten times a
+    // second as a visible hitch. Spread over frames at chunksPerTick each, the
+    // same work costs about a millisecond a frame and the whole lake still
+    // completes a step at waveHz.
+    //
+    // The swell then travels across a big lake instead of the entire surface
+    // snapping between two shapes, which is both cheaper and more like water.
+    //
+    // NOT A NEW PATH. A wave tick is exactly a re-request, the same call an
+    // edit makes -- so it inherits the worker pool, the adoption batching, the
+    // compaction queue and every guard those already have.
+    // -----------------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // OFF, AND THE REASON IS NOT THE COST.
+    //
+    // This works and is cheap enough -- 8.17 ms of worker mesh and 1.05 ms of
+    // main-thread BLAS a chunk, about 6% of the main thread staggered at one
+    // chunk a frame. It is off because of how it LOOKS.
+    //
+    // A crest is 0..waveVoxMax voxels, so at 10 cm a column has three
+    // possible heights. Moving the phase does not animate the lake, it cuts
+    // between still frames of it, and no update rate changes that -- the
+    // states are discrete. Worse, staggering across chunks means neighbours
+    // hold different phases, so the surface tears at every chunk seam.
+    //
+    // The continuous motion lives in the shading normal instead (see the
+    // water branch in Trace.cs.slang), which is free and cannot tear. The
+    // geometry's job is the silhouette, and a static crest does that just as
+    // well as a moving one.
+    //
+    // Kept rather than deleted: if the voxels ever get small enough, or an
+    // amplitude of eight-plus voxels is wanted, this is the machinery and it
+    // is measured.
+    // ----------------------------------------------------------------
+    float waveHz = 9.7f;      // v4 derived this from the wave spectrum
+    int chunksPerTick = 1;    // how much BLAS to spend on the swell per frame
+    bool wavesAnimate = false;
+
+    void tickWaves(float dt) {
+        if (!wavesAnimate || mesher_.waveVoxMaxIsZero()) return;
+        waveClock_ += dt;
+        mesher_.waveTime.store(waveClock_, std::memory_order_relaxed);
+
+        // Collect the wet chunks once per cycle rather than every frame: the
+        // set only changes when the ring does.
+        if (waveRing_.empty() || waveCursor_ >= waveRing_.size()) {
+            waveRing_.clear();
+            for (const auto &kv : chunks_)
+                if (kv.second.hasWater) waveRing_.push_back({kv.second.cx, kv.second.cz});
+            waveCursor_ = 0;
+            if (waveRing_.empty()) return;
+        }
+        for (int n = 0; n < chunksPerTick && waveCursor_ < waveRing_.size(); ++n) {
+            const auto cc = waveRing_[waveCursor_++];
+            const long long k = chunkKey(cc.first, cc.second);
+            if (!chunks_.count(k)) continue;
+            if (requested_.count(k)) continue;  // already in flight
+            requested_.insert(k);
+            mesher_.request(cc.first, cc.second);
+        }
+    }
+
+    size_t waterChunks() const {
+        size_t n = 0;
+        for (const auto &kv : chunks_) if (kv.second.hasWater) ++n;
+        return n;
+    }
+
+  private:
+    float waveClock_ = 0.0f;
+    std::vector<std::pair<int, int>> waveRing_;
+    size_t waveCursor_ = 0;
+
     // -----------------------------------------------------------------------
     // A held model's structure, RECORDED RATHER THAN BUILT, so it is legal
     // inside a frame.
@@ -4936,6 +5029,7 @@ class World {
             c.cx = b.cx;
             c.cz = b.cz;
             c.tris = b.mesh.triCount();
+            c.hasWater = b.hasWater;
             // A CHUNK OF PURE AIR IS A REAL CHUNK. It has no faces, so there is
             // no structure to build and nothing to upload -- but it is resident,
             // and it has to say so or the streamer waits for it forever. That is

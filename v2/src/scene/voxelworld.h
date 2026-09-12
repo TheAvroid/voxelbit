@@ -133,7 +133,43 @@ constexpr uint8_t STONE_COUNT = 6;   // 20..25
 // is written into instance data host-side, and renumbering it shifts KIND_TREE
 // and everything after it -- silently, into trees shaded as tools.
 constexpr uint8_t WATER = 26;
-constexpr uint8_t TREE_BASE = 27;  // model palette entries are allocated from here up
+
+// THE CHURNED BAND WHERE WATER MEETS LAND -- v1's shoreSurf, which is the most
+// distinctive thing its lakes have and v2 had nothing of.
+//
+// ITS OWN MATERIAL RATHER THAN A SHADER TEST, because v2 cannot ask the GPU
+// what is next door. v1 probes the voxel grid from the shader (voxAt at +-2 and
+// +-4) and v2 has no grid on the device -- the water is triangles by then. So
+// the decision is made where the knowledge is, on the host, and travels as a
+// material id on the quad.
+constexpr uint8_t FOAM = 27;
+// THE SAND RAMP -- and it is the same fix the stone ramp above was.
+//
+// Sand was the ONLY ground material with no shade family. Grass has six, soil
+// four, litter three, rock six; sand had one flat value, so a beach rendered
+// as an unbroken plane of a single colour. That is exactly the failure the
+// STONE_0 comment describes ("a single grey is what dug stone used to look
+// like: a slab"), and on a beach it is worse, because bankShaped deliberately
+// flattens the shore -- so the plane is not just uniform, it is metres wide
+// and dead level, and it catches the sun square on.
+//
+// THAT IS WHAT "THE WHITE BANK" WAS. Not foam (that is off), and not the
+// palette (mat::SAND is v1's own sRGB 203,183,145 and measures 207,187,151 in
+// frame). It was a flat white-ish plane with one-voxel tan risers striping it,
+// which reads as painted board rather than as sand.
+//
+// FOUR SHADES, AND THEIR MEAN IS EXACTLY mat::SAND, so nothing about the
+// beach's overall colour moves -- only its uniformity. The blue channel swings
+// wider than red and green because that is how sand actually varies: the
+// darker grains are the damp ones and damp sand loses blue fastest, so the
+// ramp runs warm-dark to cool-pale rather than just dim to bright.
+//
+// ONE ID ON THE HOST, exactly as with ROCK. The mesher writes mat::SAND for
+// the whole beach so its faces still merge into long runs, and the device
+// spreads that one id over these four per voxel -- see groundShade().
+constexpr uint8_t SAND_0 = 28;
+constexpr uint8_t SAND_COUNT = 4;  // 28..31
+constexpr uint8_t TREE_BASE = 32;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -467,7 +503,28 @@ class Palette {
         set(mat::ROCK, 0.42f, 0.41f, 0.39f, 0.88f);
         set(mat::DIRT, 0.29f, 0.22f, 0.15f, 0.95f);
         set(mat::MOSS, 0.24f, 0.34f, 0.16f, 0.92f);
-        set(mat::SAND, 0.68f, 0.61f, 0.45f, 0.85f);
+        // v1'S SAND, CONVERTED. Its palette is sRGB (203, 183, 145); this
+        // table is LINEAR (see the note above about decoding twice), so that
+        // is (0.60, 0.47, 0.28).
+        //
+        // What was here -- (0.68, 0.61, 0.45) -- is brighter and much less
+        // saturated, and the blue channel is the tell: 0.45 against 0.28 is
+        // half again as much blue, which is exactly what turns tan into pale
+        // grey. In sunlight it read as a white beach rather than a sandy one.
+        set(mat::SAND, 0.60f, 0.47f, 0.28f, 0.85f);
+        // ...AND THE FOUR GRAINS THE DEVICE SPREADS IT OVER. See mat::SAND_0
+        // for why sand needs a ramp at all. The multipliers average 1.0, so
+        // the beach keeps v1's colour and gains only its variation.
+        {
+            const float k[mat::SAND_COUNT] = {0.86f, 0.95f, 1.05f, 1.14f};
+            for (int i = 0; i < int(mat::SAND_COUNT); ++i) {
+                // Blue moves 1.6x as far as red and green: damp sand is the
+                // dark sand, and what it loses is blue.
+                const float f = k[i];
+                const float fb = 1.0f + (f - 1.0f) * 1.6f;
+                set(uint8_t(mat::SAND_0 + i), 0.60f * f, 0.47f * f, 0.28f * fb, 0.85f);
+            }
+        }
         set(mat::SILT, 0.22f, 0.20f, 0.16f, 0.95f);
         // WATER, AS A PLACEHOLDER TONE AND NOTHING MORE. A lake is a dielectric
         // and wants the delta lobe and the Beer-Lambert depth term that v1 and
@@ -476,6 +533,9 @@ class Palette {
         // shading is still to come -- a deep blue-green, smooth enough to take
         // a specular highlight.
         set(mat::WATER, 0.06f, 0.16f, 0.21f, 0.06f);
+        // Churned water is WHITE and ROUGH -- it is air in water, not a
+        // mirror, so it must not take the dielectric's sheen.
+        set(mat::FOAM, 0.92f, 0.95f, 0.96f, 0.85f);
         // Darker and flatter than ROCK, so the change of layer reads as a
         // change of material rather than a change of light.
         set(mat::BEDROCK, 0.17f, 0.17f, 0.18f, 0.97f);
@@ -1058,6 +1118,7 @@ struct TerrainMemo {
     // octave having gone with it.
     FbmMemo birchRoll, birchSwell;
     FbmMemo stand, litter, grassMask;                       // topMaterial
+    FbmMemo bankGrain;                                      // bankShaped
 };
 
 // ---------------------------------------------------------------------------
@@ -1356,22 +1417,314 @@ class VoxelTerrain {
     float pineWater = 33.0f;          // metres, read off the pine field above
     float birchWater = kNoWater;      // the birch wood is dry -- see above
 
-    // THE BASIN THRESHOLD, DEFINED ONCE. heightM's carve and lakeColumn's wet
-    // test must use the same value and the same field, or the water stands
-    // somewhere the ground was never pulled down to receive it.
+    // THE BASIN THRESHOLD. It decides where heightM CARVES A HOLLOW, and that
+    // is now the only thing it decides -- it used to gate the wet test too,
+    // and see lakeLineAt for the measurement that took that away. Carving and
+    // filling are different questions: this one shapes the bowl, the
+    // waterline says how high the water in it stands.
     float basinT = 0.40f;
 
     // HOW FAR BELOW THE LINE A BASIN IS PULLED, in metres -- the lake's depth
     // where the carve reaches full strength. At 3.2 the median lake was 1.3 m
     // deep, which reads as a wet patch rather than as water; it is swept in
     // tests/water_survey.cpp.
-    float basinBed = 9.0f;
+    // 4.5 puts p95 depth at 4.6 m against v4's stated 5.4 m ceiling. It was
+    // 9.0, which ran p95 8.7 and max 9.3 -- twice v4's water, and absorption is
+    // exponential in depth, so twice the depth is most of what made these lakes
+    // read as ink where v4's read as pale blue. Swept in water_survey.
+    float basinBed = 4.5f;
 
     // How far ABOVE the waterline the carve still reaches, and over how many
     // metres it fades in. Both are relative to the line -- see the note in
     // heightM, which is where getting this wrong cost the lakes their depth.
     float basinGateOver = 14.0f;
     float basinGateRamp = 14.0f;
+
+    // -----------------------------------------------------------------------
+    // THE BANK: how far above the line the shore reaches, and how hard it
+    // flattens AT THE WATER'S EDGE.
+    //
+    // A bank that keeps the hillside's own slope is a hillside that happens to
+    // be yellow. What the eye reads as a shore is the BREAK in slope, so the
+    // break is what gets built -- ported from v4, which had it and v2 never
+    // did. Until now a lake here met the hill at whatever gradient the basin
+    // carve left, with no beach between them.
+    //
+    // EASED, NOT FLATTENED, AND THAT IS THE WHOLE TRAP. A constant multiplier
+    // lowers the band by a constant FRACTION, so its top is lowered most and
+    // the ground just outside it not at all. v4 measured what that costs at
+    // these defaults -- a nine-voxel rise flattened to a quarter puts the last
+    // bank column at waterY+3 against untouched terrain at waterY+10, a
+    // SEVEN-VOXEL CLIFF ringing every lake, which the user reported as "a steep
+    // 5 voxel or so drop off".
+    //
+    // So the multiplier is bankFlat at the water and 1.0 -- the ground's own
+    // slope -- at the top of the band, eased with smoothstep. Smoothstep and
+    // not a linear ramp because its derivative is zero at BOTH ends: the beach
+    // leaves the water flat and joins the hillside at the hillside's gradient,
+    // so neither seam is a crease.
+    // -----------------------------------------------------------------------
+    // 2.5 m, not v4's 0.9. THE BAND HEIGHT IS WHAT MAKES A BEACH READ AS ONE.
+    // Flattening 0.9 m of vertical is a narrow strip on any ground that rises
+    // at all -- measured, 25,438 beach columns against 81,975 at 3.0 m, and a
+    // mean rise that only starts dropping (1.45 -> 1.24 m) once the band is
+    // tall enough for the ease to have room to work in. It reads as a hard
+    // sandy edge rather than a shore, which is what "the sand banks look
+    // terrible" was.
+    //
+    // The sand band follows it automatically -- topMaterial asks bankRiseVox --
+    // so the flattened ground and the sand on it are the same band by
+    // construction, and cannot drift into half a beach.
+    float bankRiseM = 2.5f;
+    float bankFlat = 0.25f;
+
+    // -----------------------------------------------------------------------
+    // THE GRAIN THAT KEEPS THE FLAT BEACH FROM BEING A STAIRCASE.
+    //
+    // Flattening the bank is right and it is what was asked for, but it has a
+    // cost nobody costed: a gentler slope crossed by a 10 cm quantisation
+    // gives WIDER treads. At bankFlat 0.25 the shore falls a quarter as fast
+    // as the ground around it, so each 10 cm contour stretches into a tread
+    // metres across, and the beach renders as a flight of dead-level boards
+    // with one-voxel risers striping it. That is the staircase in the shore
+    // render -- the flattening and the terracing are the same knob.
+    //
+    // A SHADE RAMP WAS NOT ENOUGH. Sand got four shades (mat::SAND_0) for the
+    // same reason rock has six, and it helps, but colour cannot break a
+    // silhouette: the treads were still treads.
+    //
+    // So the height itself gets a little noise, and the terrace edges ravel
+    // instead of running as clean contour lines. This is also what a real
+    // beach does -- the wave-worked sand at the water's edge is the uneven
+    // part -- so the fade below runs the right way round.
+    //
+    // AMPLITUDE IS SET AGAINST THE QUANTISATION, NOT BY EYE. +/-0.06 m is
+    // 1.2 voxels peak to peak: enough for the contour to wander across a
+    // voxel boundary and back, which is what ravels it, and not enough to
+    // invent relief the landform does not have.
+    //
+    // FREQUENCY IS SET AGAINST THE STEP TEST. At ~0.9 m the steepest grain
+    // gradient is 2*pi*0.06/0.9 = 0.42, so neighbouring columns differ by
+    // 0.042 m -- under half a voxel, so it cannot add a step of its own. Take
+    // the wavelength much below this and it starts failing the survey's
+    // "nothing steps 4 voxels or more".
+    // -----------------------------------------------------------------------
+    float bankGrainM = 0.06f;  // metres, plus and minus
+    float bankGrainF = 1.10f;  // ~0.9 m wavelength
+
+    // -----------------------------------------------------------------------
+    // THE WAVES ARE NOT GEOMETRY, AND THE WATER HAS NO LID. BOTH ARE ZERO.
+    //
+    // What this used to be: waveVox raised each water column 0..waveVoxMax so
+    // that crests were real ground, and then -- when that turned out to
+    // animate only by cutting between still frames -- a FLAT lid waveVoxMax
+    // voxels over the line, with the tracer solving the real surface below it.
+    // Both are the same mistake wearing different clothes. They put water
+    // ABOVE the waterline, and the terrain is only shaped to contain water AT
+    // the waterline.
+    //
+    // IT COST A WALL AROUND EVERY LAKE. The tracer's solve runs on the slab's
+    // TOP faces only -- a vertical side face has a horizontal normal and
+    // cannot wear a y-up wave -- so the sides stood at full lid height while
+    // the sand beside them sits one voxel over the line. Measured over
+    // 1200 x 1200 columns: 4,743 of 4,743 lake-edge faces stood proud of the
+    // land next to them, 4,738 of those by exactly 5 voxels. Half a metre of
+    // vertical water, continuous, all the way round. That is the "wall of
+    // water" in the screenshot, and it is not a shading bug -- the geometry
+    // really was up there.
+    //
+    // SO THE WATER ENDS AT THE LINE, which is what commit 9fe31c0 did and
+    // what "fit the water function inside the terrain function" asks for. The
+    // lake tops at waterTopVox == line, bankShaped flattens the ground around
+    // it and the sand band starts a voxel above it, so the ground contains
+    // the lake BY CONSTRUCTION rather than by a constant that has to be kept
+    // in agreement with it. There is no height left for a wall to be made of.
+    //
+    // THE MOTION NEVER LIVED HERE ANYWAY. It is the shading normal -- see
+    // waterNormal in Trace.cs.slang -- which is continuous, free, cannot tear
+    // at a chunk seam and cannot poke through geometry that is not there. v1,
+    // which is the water this is judged against, ships `waves: 0` for exactly
+    // this reason: what makes its lake read right is the Fresnel cap, the
+    // glint and the in-scatter, not swell.
+    //
+    // Kept at 0 rather than deleted: waveVox and the tick machinery in
+    // gpu/world.h are measured and correct, and if the voxels ever get small
+    // enough for a crest to be worth having, this is where it comes back.
+    // Anything above 0 needs the shore solved first.
+    // -----------------------------------------------------------------------
+    int waveVoxMax = 0;  // 0 = the lake tops at the waterline; see above
+
+    // -----------------------------------------------------------------------
+    // THE SHORE BAND: how shallow water has to be to churn, and how far the
+    // foam stands proud of the swell.
+    //
+    // DEPTH, NOT DISTANCE. v1 asks the voxel grid whether land is within two or
+    // four voxels sideways; v2 has no grid to ask on the device and no padding
+    // for a four-voxel probe on the host. Shallow water rings a lake exactly
+    // where land is near, so the depth test finds the same band and costs one
+    // subtraction against eight neighbour fetches.
+    //
+    // THE LIFT IS THE POINT, and v1 is emphatic about why: the band has to be
+    // raised BEFORE the surface is intersected, not after. Lifting a hit that
+    // has already been found only moves that pixel's depth -- "the foam kept
+    // the silhouette of the flat water because the pixels it should have grown
+    // into were never tested against the water at all". Raised here, in the
+    // geometry, it has a real edge standing over the swell.
+    // -----------------------------------------------------------------------
+    // OFF. 0 disables the band entirely -- foamColumn() never fires, so no
+    // FOAM material and no lift.
+    //
+    // WHAT I BUILT WAS NOT v1'S FOAM. v1 mixes foam INTO the water's own
+    // colour, patchily, broken up by a hash and animated:
+    //
+    //     foam   = max(foam, step(0.35, ivhash(...) * (0.55 + 0.45*sin(...))));
+    //     foamK  = clamp(foam, 0, 1) * 0.8;
+    //     albedo = mix(albedo, FOAM_C, foamK);
+    //
+    // ...so it reads as churn: scattered, shifting, and never fully white.
+    // This version made every shallow column a SOLID white material and then
+    // lifted it a voxel to stand proud. A solid white band standing over the
+    // water all the way round a lake is a wall, and that is exactly how it
+    // looked. The lift -- which is right in v1, where it carries a broken-up
+    // band -- is what turned a bad colour into a bad silhouette.
+    //
+    // Doing it properly means the patchy mix, in the shader, on the water
+    // material: not a second material and not geometry. Left in place at 0 so
+    // the machinery is there when that is wanted.
+    int foamDepthVox = 0;  // 0 = no foam band
+    int foamLiftVox = 1;   // ...and how far it would stand proud
+
+    int waveCeilVox() const { return waveVoxMax; }
+
+    // SECONDS, AND A WALL CLOCK. Not the day clock: X plus scroll runs that at
+    // up to forty times speed and backwards, and a lake that reverses its chop
+    // when you scrub the sun is a bug. Set per meshing job -- each worker keeps
+    // its own copy of the terrain so this can differ between them without a
+    // race, and a chunk simply carries whatever phase it was built at.
+    float waveTime = 0.0f;
+
+    int waveVox(float x, float z) const {
+        if (waveVoxMax <= 0) return 0;
+        // THE DEEP-WATER RELATION, so the two trains move at the speeds their
+        // wavelengths demand rather than at one arbitrary rate: w = sqrt(g*k),
+        // which is what stops a short chop and a long swell sliding over each
+        // other like two printed sheets.
+        const float a = sinf(x * 0.86f + z * 0.31f - waveTime * 2.92f);       // ~7.3 m
+        const float b = sinf(x * -0.42f + z * 2.03f + 1.7f - waveTime * 4.5f);  // ~3.1 m
+        const float u = 0.5f + 0.25f * (a + b);               // 0..1
+        const int v = int(u * float(waveVoxMax + 1));
+        return v < 0 ? 0 : (v > waveVoxMax ? waveVoxMax : v);
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW FAR UP THE SHORE THE SAND GOES -- AND IT IS NOT THE FLATTEN BAND.
+    //
+    // These were tied together on the argument that "the flattened ground and
+    // the sand on it are the same band". That is wrong, and the render showed
+    // it: flattening wants a TALL band (2.5 m) so the shore reads as flat,
+    // while sand wants a SHORT one, because sand is a strip at the water's
+    // edge and not a paint job up the hillside. Tied at 2.5 m the bank came
+    // out white -- 85,640 sand faces on one lake chunk against 1,834 of foam --
+    // which reads as a beach swallowing the wood rather than meeting it.
+    //
+    // 0.9 m is v4's, and v4's shore is the reference here.
+    // -----------------------------------------------------------------------
+    // 1.4 m. v4 uses 0.9, but with the bank now flattening 2.5 m the shore is
+    // much broader in PLAN, and 0.9 m of rise across it left barely a strip of
+    // sand visible -- the beach disappeared when the white band was removed.
+    float sandRiseM = 1.4f;
+
+    int bankRiseVox() const { return maxi(1, int(bankRiseM / VOXEL_M)); }
+    int sandRiseVox() const { return maxi(1, int(sandRiseM / VOXEL_M)); }
+
+    // -----------------------------------------------------------------------
+    // The bank, as a function of one column's height alone.
+    //
+    // v4 does this as a pass over a mutable height GRID; v2's terrain is a pure
+    // function of (x, z), so it is expressed continuously here instead of in
+    // quantised voxels. Same curve, and it keeps heightM continuous -- which
+    // the collider, forestGain and the spawn search all depend on.
+    //
+    // MONOTONIC BY CONSTRUCTION, so the bank can never fold back on itself:
+    // d*(bf + (1-bf)*S(d/D)) has derivative bf + (1-bf)*S + d*(1-bf)*S'/D, and
+    // S' = 6u(1-u) >= 0, so the whole thing is never below bf > 0.
+    //
+    // GATED EXACTLY LIKE THE WATER -- band and basin. Flattening a shore where
+    // no lake can stand is the same class of mistake as painting sand there,
+    // and that one put 5,958 dry sand pits in the wood.
+    // -----------------------------------------------------------------------
+    // NO "IS A LAKE NEARBY" TEST, and v4 is explicit about why it removed
+    // its own: "There was one, searching two voxels out, and it produced no
+    // banks at all: the waterline is a global HEIGHT, the slopes here are
+    // gentle, and a column sitting 0.9 m above the line is metres away in
+    // PLAN from one sitting 0.2 m below it. Twenty centimetres of search
+    // found nothing and every lake came out as grass meeting water with no
+    // shore between them."
+    //
+    // v2 reproduced that failure exactly, by a different route: the basin
+    // gate below used to veto the bank, so a shore whose basin value had run
+    // out kept the hillside's slope and its grass. ANY GROUND WITHIN
+    // bankRiseM OF THE LINE IS A BANK. Height is the whole test.
+    float bankShaped(float h, float wlm, float x, float z, TerrainMemo &memo) const {
+        if (wlm == kNoWater) return h;
+        // FADED OUT AT THE BASIN'S EDGE, exactly as the carve is.
+        //
+        // A hard gate here is a cliff: a column just inside the basin is
+        // flattened to a quarter of its rise and its neighbour just outside is
+        // untouched, so the two differ by most of the band. At a 2.5 m band
+        // that measured as a SIX-VOXEL step with 185 of them over 4 voxels --
+        // the very failure v4's ease exists to prevent, reintroduced at the
+        // other end of the same function.
+        //
+        // THE `edge` FADE IS GONE WITH THE GATE IT EXISTED FOR. It ramped the
+        // bank out over the basin mask so the gate's boundary was not a cliff
+        // (6-voxel steps, 185 of them over 4 voxels). With no gate there is no
+        // boundary to fade, and the band's own ease already carries the bank
+        // into the hillside at the hillside's gradient.
+        const float d = h - wlm;
+        if (d <= 0.0f || d > bankRiseM) return h;
+        const float u = d / bankRiseM;
+        const float ease = u * u * (3.0f - 2.0f * u);
+        // NEVER BELOW ONE VOXEL OVER THE LINE, and this clamp is the whole
+        // difference between a beach and a drowned one.
+        //
+        // Without it the flattening pushes the innermost band under the water:
+        // a column 5 cm above the line times a 0.25 multiplier lands AT the
+        // line and turns into lake. So the beach loses its inner strip and
+        // gains nothing at the top (where the ease is already 1.0), and
+        // flattening made the shore NARROWER -- measured, 31,426 beach columns
+        // down to 25,438. A beach that gets thinner the flatter you make it is
+        // the wrong way round, and it is what "the sand banks look terrible"
+        // was.
+        //
+        // v4 never had the bug because it works in integers and writes
+        // `waterY + 1 + int(d * k)`, which floors at one voxel up by
+        // construction. This is the continuous form of that floor.
+        // k is the slope multiplier; `edge` fades it back to 1.0 (the ground's
+        // own slope) as the basin mask falls away.
+        const float k = bankFlat + (1.0f - bankFlat) * ease;
+        // v4's `waterY + 1 + int(d * k)`, in the continuous form -- see the
+        // one-voxel floor note above.
+        const float flat = wlm + maxf(d * k, VOXEL_M);
+
+        // THE GRAIN, FADED AT BOTH ENDS OF THE BAND so it cannot introduce a
+        // seam of its own -- which would be the basin-gate cliff all over
+        // again, at a third boundary.
+        //
+        //   * edge      dies with the basin mask, exactly as the flattening
+        //               and the carve do, so all three boundaries coincide.
+        //   * 1 - ease  dies at the TOP of the band, where k has already
+        //               reached 1.0 and the bank has become ordinary ground.
+        //               Full strength at the water's edge, which is both
+        //               where the treads are widest and where a real beach is
+        //               roughest.
+        //
+        // The one-voxel floor is re-applied afterwards: grain must never be
+        // what pushes a beach column under the line and turns it into lake.
+        // That bug cost 6,000 columns of shore once already.
+        const float g = (fbm(memo.bankGrain, x * bankGrainF, z * bankGrainF, 2) - 0.5f) * 2.0f;
+        return maxf(flat + g * bankGrainM * (1.0f - ease), wlm + VOXEL_M);
+    }
 
     float waterAt(float x) const { return (birchMix(x) <= 0.001f) ? pineWater : birchWater; }
     int waterVoxAt(float x) const {
@@ -1555,7 +1908,13 @@ class VoxelTerrain {
         // staircase. Its own gradient reaches 0.34, which holds the steps to
         // about 30 cm wherever the landform underneath has gone flat.
         h += fine;
-        if (mix <= 0.001f) return h;
+        // THE PINE SIDE RETURNS HERE, and it is where every lake in the world
+        // is -- waterAt hands back kNoWater unless birchMix is under this very
+        // threshold. Shaping the bank only at the blended return below meant it
+        // ran on the 11% of columns inside a birch seam and on NONE of the
+        // columns that have water, which measured as the bank doing nothing at
+        // all whatever bankFlat was set to.
+        if (mix <= 0.001f) return bankShaped(h, wlm, x, z, memo);
 
         // THE SEAM. Ninety metres of blend between a wood whose median floor is
         // 48 m and one whose median is 13, which is a 35 m drop -- so this is
@@ -1574,7 +1933,12 @@ class VoxelTerrain {
         const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
                                       z * 0.0130f, 1.5f, 5);
         const float bSwell = fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-        return lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f + fine, mix);
+        // THE BANK IS APPLIED TO THE FINAL HEIGHT, after the birch blend, so
+        // a column inside a seam is shaped from the height it actually has.
+        // Water only exists where birchMix is ~0, so in practice this is the
+        // pine side of the world and the lerp has already collapsed to h.
+        return bankShaped(lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f + fine, mix), wlm, x, z,
+                          memo);
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
@@ -1698,15 +2062,12 @@ class VoxelTerrain {
         // beach. Asked per column through waterVoxAt, so a dry band gets
         // kNoWaterVox and neither test fires -- no beach in a wood with no
         // lake.
-        // THE SAME GATED LINE THE WATER USES, basin and all. Asking
-        // waterVoxAt here -- the BAND's line, with no basin test -- painted a
-        // bed and a beach on every column under the waterline whether or not a
-        // lake could ever stand there, and lakes need the basin: 0.97% of the
-        // world is wet against a shore band that was being drawn on far more.
-        // The result was sand pits all over the wood with no water in them.
-        //
-        // lakeLineAt returns kNoWaterVox outside a basin, so both tests below
-        // fall through exactly where the water does.
+        // THE SAME LINE THE WATER USES. It is band-only now -- see
+        // lakeLineAt for the measurement that removed the basin gate, and for
+        // why "sand pits all over the wood with no water in them" was the
+        // GATE deleting the water rather than the band painting spare sand.
+        // With the gate gone the band-only rule leaves zero dry sand columns,
+        // measured, which is what v4 has always done.
         const int wl = lakeLineAt(wx(i), wx(j), memo);
         // THE WHOLE BED IS SAND, NOT A SKIN OF IT OVER SILT.
         //
@@ -1723,8 +2084,14 @@ class VoxelTerrain {
         // because a one-voxel skin "shows its brown underside the moment the
         // shore is seen from below the waterline, which through clear water is
         // most of the time".
-        if (h <= wl) return mat::SAND;
-        if (h <= wl + 8) return mat::SAND;  // the shore band
+        // THE BED IS WHAT THE WATER ACTUALLY STANDS ON -- the depth rule, not
+        // `h <= wl`. A ghost column does not become dirt: it falls through to
+        // the shore band below and is BEACH, which is what dry ground at the
+        // waterline is.
+        if (wetColumn(i, j, h, wl, memo)) return mat::SAND;
+        // THE SAME BAND THE BANK FLATTENS. Sand that is not flattened, or a
+        // flattened shore that is not sand, would each be visibly half a beach.
+        if (h <= wl + sandRiseVox()) return mat::SAND;  // the shore band
 
         if (slope >= kRockSlope) return mat::ROCK;  // too steep to hold soil
 
@@ -1861,13 +2228,91 @@ class VoxelTerrain {
     int lakeLineAt(float x, float z, TerrainMemo &memo) const {
         const int wl = waterVoxAt(x);
         if (wl == kNoWaterVox) return kNoWaterVox;
-        return (basinAt(x, z, memo) >= basinT) ? kNoWaterVox : wl;
+        // THERE IS NO BASIN GATE ON THE WATER. THE LINE IS THE LINE.
+        //
+        // There was one, and loosening it (basinWetMargin) was an attempt to
+        // stop it cutting lakes off mid-slope. The honest fix is to delete it,
+        // because MEASUREMENT SAYS IT NEVER HAD A JOB TO DO. Over four
+        // 1200 x 1200 regions, comparing the gate against a plain depth test:
+        //
+        //   lake region    gated: 479,080 wet in 27 bodies, 26 of them
+        //                         puddles under 1 m2
+        //                  plain: 478,014 wet in ONE body, zero puddles
+        //   (12000, 8000)  gated: NO WATER AT ALL
+        //                  plain: one clean 178 m2 lake
+        //   (0,0), (-30000, 25000): both zero
+        //
+        // The gate was added to stop "every shallow dip becoming a one-voxel
+        // puddle". v2's field does not do that -- it is smooth, and a flat
+        // line through a smooth heightfield gives connected regions, not
+        // scatter. Zero puddles at all four sites without it. What the gate
+        // actually did was fragment one lake into 26 scraps and DELETE whole
+        // legitimate lakes elsewhere.
+        //
+        // AND IT IS WHY THE SAND LOOKED BROKEN TWICE. "Empty sand pits
+        // everywhere with no water" was never a sand bug: the band-only sand
+        // was right and the gate had removed the water beside it. Gating the
+        // sand on the same predicate then produced "missing the sandy banks
+        // completely". One cause, two symptoms, and both ends were wrong.
+        //
+        // basinAt still carves the hollows in heightM -- that is what makes
+        // lakes rather than an ocean, and it is a different question from
+        // where water stands once they exist. Water finds its level.
+        return wl;
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW DEEP WATER HAS TO BE TO COUNT, AND THE RULE LIVES HERE ONLY.
+    //
+    // The old test was `h <= line`, and it disagreed with the mesher. The
+    // water span is h+1 .. line, so at h == line that span is EMPTY -- the
+    // column was wet to /locate water, to the sand rule and to the survey,
+    // and held no water at all. Measured: 9,927 such GHOST columns on the big
+    // lake (2.06% of its wet columns) and 2,763 on a small one, where the
+    // fringe is proportionally far bigger -- 12.8%.
+    //
+    // v4's rule, which does not have the failure: a column needs kWetMinVox
+    // of water on its own, and a column ONE voxel shallower than that is wet
+    // only if a NEIGHBOUR is properly wet. v4 calls that second clause "the
+    // whole thing" -- without it every shallow dip becomes a one-voxel
+    // puddle. It also kills the ghosts by construction, because h == line is
+    // two voxels short of the threshold.
+    //
+    // THE NEIGHBOUR CLAUSE IS WHY THIS CANNOT BE A PURE FUNCTION OF (i, j)
+    // ALONE, and it is the one piece of v2's water that genuinely needs to
+    // look sideways. The point path below pays four extra height evaluations
+    // for it, and only on a fringe column; ColumnStack does it as a pass over
+    // an array it already has. THE TWO MUST AGREE, and
+    // tests/voxel_parity_test.cpp is what holds them to it -- it builds the
+    // truth point-wise and compares the brick path against it face by face.
+    // -----------------------------------------------------------------------
+    static constexpr int kWetMinVox = 2;
+
+    // Deep enough to be wet on its own account.
+    bool deepWet(int h, int line) const {
+        return line != kNoWaterVox && h <= line - kWetMinVox;
+    }
+    // Exactly one voxel shallower: wet only with a properly wet neighbour.
+    bool fringeWet(int h, int line) const {
+        return line != kNoWaterVox && h == line - kWetMinVox + 1;
+    }
+
+    // The point path. ColumnStack::wetAt is the same rule over the gather.
+    bool wetColumn(int i, int j, int h, int line, TerrainMemo &memo) const {
+        if (deepWet(h, line)) return true;
+        if (!fringeWet(h, line)) return false;
+        const int di[4] = {1, -1, 0, 0}, dj[4] = {0, 0, 1, -1};
+        for (int d = 0; d < 4; ++d) {
+            const int ni = i + di[d], nj = j + dj[d];
+            if (deepWet(heightVox(ni, nj, memo), lakeLineAt(wx(ni), wx(nj), memo))) return true;
+        }
+        return false;
     }
 
     bool lakeColumn(int i, int j, TerrainMemo &memo, int *waterY) const {
         const int wl = lakeLineAt(wx(i), wx(j), memo);
         if (wl == kNoWaterVox) return false;
-        if (heightVox(i, j, memo) > wl) return false;
+        if (!wetColumn(i, j, heightVox(i, j, memo), wl, memo)) return false;
         *waterY = wl;
         return true;
     }
@@ -1931,18 +2376,46 @@ class VoxelTerrain {
 
     // Water fills from the bed to the line, and only where the bed is under the
     // line at all. A dry column gives hi < lo.
-    static void waterSpan(int h, int line, int *lo, int *hi) {
+    // `crest` is waveVox for this column: the surface ends that many voxels
+    // above the flat line. Whether the column is WET at all is still decided by
+    // the flat line, so the lake's plan does not move with the swell.
+    static void waterSpan(int h, int line, int *lo, int *hi, int crest = 0) {
         *lo = h + 1;
-        *hi = (line == kNoWaterVox || h > line) ? h : line;
+        *hi = (line == kNoWaterVox || h > line) ? h : line + crest;
     }
 
-    static Above aboveAt(int y, int h, int rows, int line) {
+    // Is this column the churned band? Shallow, and wet at all.
+    bool foamColumn(int h, int line) const {
+        // <= 0 means OFF. Without this an unsigned-style read of the depth
+        // test still fires on `line - h == 0` -- the columns whose bed sits
+        // exactly at the waterline -- and leaves a one-voxel white ring all
+        // the way round every lake. Measured: 1,060 foam faces still drawn on
+        // a lake chunk after "disabling" it.
+        if (foamDepthVox <= 0) return false;
+        return line != kNoWaterVox && h <= line && (line - h) <= foamDepthVox;
+    }
+
+    // The water's top for a column, lift included. One definition so the
+    // mesher, the probe and anything that asks later cannot disagree about
+    // where the shore stands.
+    // WET IS AN INPUT, because the depth rule needs a neighbour and this
+    // function has no coordinates to ask one with. `h >= line` rather than
+    // `h > line` is belt and braces: a column with zero voxels of water gets
+    // no water top even if a caller hands in the wrong flag.
+    int waterTopVox(int h, int line, int crest, bool wet) const {
+        if (!wet || line == kNoWaterVox || h >= line) return h;
+        return line + crest + (foamColumn(h, line) ? foamLiftVox : 0);
+    }
+
+    // waterTop is what waterTopVox returned for this column -- the line, the
+    // lid clearance and the shore lift already folded in. Passed rather than
+    // recomputed so a caller cannot use a different rule from the mesher's.
+    static Above aboveAt(int y, int h, int rows, int waterTop) {
         if (y <= h) return Above::None;  // in the ground, not over it
         int lo = 0, hi = 0;
         bladeSpan(h, rows, &lo, &hi);
         if (y >= lo && y <= hi) return Above::Blade;
-        waterSpan(h, line, &lo, &hi);
-        if (y >= lo && y <= hi) return Above::Water;
+        if (y > h && y <= waterTop) return Above::Water;
         return Above::None;
     }
 
@@ -1959,7 +2432,7 @@ class VoxelTerrain {
         // slope is never consulted, so it is not worth four height evaluations
         // to compute one that will be discarded.
         const int wl = lakeLineAt(wx(i), wx(j), memo);
-        if (h <= wl + 8) return topMaterial(i, j, h, 0, memo);
+        if (h <= wl + sandRiseVox()) return topMaterial(i, j, h, 0, memo);
         const int slope = maxi(absi(heightVox(i + 1, j, memo) - heightVox(i - 1, j, memo)),
                                absi(heightVox(i, j + 1, memo) - heightVox(i, j - 1, memo)));
         return topMaterial(i, j, h, slope, memo);
@@ -2468,11 +2941,16 @@ struct TerrainProbe {
         // Composed through VoxelTerrain::aboveAt so the answer cannot drift
         // from the one the mesher draws; tests/voxel_probe_test.cpp checks the
         // two against each other face by face.
-        switch (VoxelTerrain::aboveAt(y, h, terrain->strandRows(i, j, top),
-                                      terrain->lakeLineAt(terrain->wx(i), terrain->wx(j),
-                                                          *memo_))) {
+        const int line = terrain->lakeLineAt(terrain->wx(i), terrain->wx(j), *memo_);
+        const int wTop = terrain->waterTopVox(h, line, terrain->waveCeilVox(),
+                                              terrain->wetColumn(i, j, h, line, *memo_));
+        switch (VoxelTerrain::aboveAt(y, h, terrain->strandRows(i, j, top), wTop)) {
             case VoxelTerrain::Above::Blade: return top;
-            case VoxelTerrain::Above::Water: return mat::WATER;
+            // The churned band is its own material on the quad, so the probe
+            // has to answer with it too or the renderer and the query disagree
+            // about what a voxel of shore is.
+            case VoxelTerrain::Above::Water:
+                return terrain->foamColumn(h, line) ? mat::FOAM : mat::WATER;
             default: return mat::AIR;
         }
     }
@@ -2481,7 +2959,10 @@ struct TerrainProbe {
     // could not be asked at all before. Deliberately not folded into solid():
     // water does not stop a body or a swing, and conflating "there is something
     // here" with "it stops you" is what left the lake with nowhere to live.
-    bool inWater(int i, int j, int y) { return material(i, j, y) == mat::WATER; }
+    bool inWater(int i, int j, int y) {
+        const uint8_t m = material(i, j, y);
+        return m == mat::WATER || m == mat::FOAM;  // foam is water, churned
+    }
 
   private:
     bool edited(int i, int j, int y, uint8_t *out) {

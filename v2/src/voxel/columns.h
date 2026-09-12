@@ -89,7 +89,22 @@ struct ColumnStack {
     // which does not fit in sixteen bits -- that is exactly the overflow the
     // int version of this sentinel exists to avoid.
     static constexpr int16_t kDryLine = -32768;
-    int16_t wy[PAD * PAD];
+    // PADDED BY TWO, like the heights and for a new reason: the depth rule
+    // asks whether a FRINGE column's neighbour is properly wet, so a column
+    // on the padded edge needs a line one further out than itself.
+    int16_t wy[PADH * PADH];
+
+    // WET, RESOLVED ONCE. VoxelTerrain::wetColumn is the same rule for a
+    // caller with no array; this is the pass form, and the parity test holds
+    // the two together.
+    uint8_t wet[PAD * PAD];
+    // The wave crest over each column, in voxels. Padded like the line: the
+    // brick next door needs it to know whether its own water is covered.
+    uint8_t cr[PAD * PAD];
+    // The wave phase these crests were computed at. A gather is expensive and
+    // the heights do not move, so an animated swell must NOT re-gather -- it
+    // recomputes this one array, which is two sines a column.
+    float crestTime = 0.0f;
 
     void gather(const VoxelTerrain &t, TerrainMemo &memo, int bxIn, int bzIn) {
         bx = bxIn;
@@ -100,14 +115,36 @@ struct ColumnStack {
         for (int lz = -2; lz <= BRICK_VOX + 1; ++lz)
             for (int lx = -2; lx <= BRICK_VOX + 1; ++lx) {
                 h[padIdxH(lx, lz)] = t.heightVox(i0 + lx, j0 + lz, memo);
-                if (lx < -1 || lx > BRICK_VOX || lz < -1 || lz > BRICK_VOX) continue;
-                // Band and basin only -- the height test is one comparison in
-                // waterColumn, which already has the height from the line
-                // above. Four octaves a column, against the six fields the
-                // height costs, so this is a few per cent on the gather.
+                // THE LINE OVER THE SAME SPAN AS THE HEIGHTS. Band only now --
+                // one comparison per column and no basin field at all.
                 const int line = t.lakeLineAt(t.wx(i0 + lx), t.wx(j0 + lz), memo);
-                wy[padIdx(lx, lz)] =
+                wy[padIdxH(lx, lz)] =
                     (line == VoxelTerrain::kNoWaterVox) ? kDryLine : int16_t(line);
+                if (lx < -1 || lx > BRICK_VOX || lz < -1 || lz > BRICK_VOX) continue;
+                cr[padIdx(lx, lz)] = uint8_t(t.waveCeilVox());
+            }
+
+        // ------------------------------------------------------------------
+        // THE DEPTH RULE, AS A PASS. See VoxelTerrain::wetColumn -- deep water
+        // is wet on its own, and a column one voxel shallower is wet only if a
+        // neighbour is PROPERLY wet.
+        //
+        // ONE PASS, NOT v4'S TWO, and it is the same answer: the neighbour
+        // test reads deepWet, which depends on nothing but that neighbour's
+        // own height and line, so there is no order for it to cascade through.
+        // v4 needs two passes because it writes its upgrade into the array it
+        // is testing.
+        // ------------------------------------------------------------------
+        for (int lz = -1; lz <= BRICK_VOX; ++lz)
+            for (int lx = -1; lx <= BRICK_VOX; ++lx) {
+                const int hc = h[padIdxH(lx, lz)], ln = lineV(lx, lz);
+                bool w = t.deepWet(hc, ln);
+                if (!w && t.fringeWet(hc, ln))
+                    w = t.deepWet(h[padIdxH(lx - 1, lz)], lineV(lx - 1, lz)) ||
+                        t.deepWet(h[padIdxH(lx + 1, lz)], lineV(lx + 1, lz)) ||
+                        t.deepWet(h[padIdxH(lx, lz - 1)], lineV(lx, lz - 1)) ||
+                        t.deepWet(h[padIdxH(lx, lz + 1)], lineV(lx, lz + 1));
+                wet[padIdx(lx, lz)] = w ? 1u : 0u;
             }
 
         // OVER THE PADDED SPAN, not just the interior. The slope each material
@@ -124,16 +161,36 @@ struct ColumnStack {
                 sr[padIdx(lx, lz)] = t.strandRows(i0 + lx, j0 + lz, tm);
             }
 
+        crestTime = t.waveTime;
         computeBounds();
+    }
+
+    // THE CRESTS ALONE, at a new phase. Everything else in the stack is a
+    // function of (x, z) and does not move; only the wave does. 4,356 columns
+    // of two sines against a gather of six fbm fields each -- which is the
+    // whole reason an animated lake is affordable.
+    void refreshCrest(const VoxelTerrain &t) {
+        if (crestTime == t.waveTime) return;
+        crestTime = t.waveTime;
+        for (int lz = -1; lz <= BRICK_VOX; ++lz)
+            for (int lx = -1; lx <= BRICK_VOX; ++lx)
+                cr[padIdx(lx, lz)] = uint8_t(t.waveCeilVox());
+        computeBounds();  // the lid raises topMax
     }
 
     int heightAt(int lx, int lz) const { return h[padIdxH(lx, lz)]; }
     int rowsAt(int lx, int lz) const { return sr[padIdx(lx, lz)]; }
-    int lineAt(int lx, int lz) const { return wy[padIdx(lx, lz)]; }
-    bool wetAt(int lx, int lz) const {
-        const int line = wy[padIdx(lx, lz)];
-        return line != kDryLine && h[padIdxH(lx, lz)] <= line;
+    int lineAt(int lx, int lz) const { return wy[padIdxH(lx, lz)]; }
+    int crestAt(int lx, int lz) const { return cr[padIdx(lx, lz)]; }
+    // The line in the TERRAIN's domain rather than the stack's int16 one --
+    // kDryLine becomes kNoWaterVox, which is what every VoxelTerrain test
+    // expects. The two sentinels differ because kNoWaterVox does not fit in
+    // sixteen bits; see the note over wy.
+    int lineV(int lx, int lz) const {
+        const int16_t l = wy[padIdxH(lx, lz)];
+        return (l == kDryLine) ? VoxelTerrain::kNoWaterVox : int(l);
     }
+    bool wetAt(int lx, int lz) const { return wet[padIdx(lx, lz)] != 0u; }
     uint8_t topAt(int lx, int lz) const { return top[padIdx(lx, lz)]; }
 
     // -----------------------------------------------------------------------
@@ -192,7 +249,7 @@ struct ColumnStack {
         for (int lz = -1; lz <= BRICK_VOX; ++lz)
             for (int lx = -1; lx <= BRICK_VOX; ++lx) {
                 const int k = padIdx(lx, lz), hc = h[padIdxH(lx, lz)];
-                if (wy[k] != kDryLine && hc <= wy[k]) topMax = std::max<int>(topMax, wy[k]);
+                if (wet[k]) topMax = std::max<int>(topMax, lineV(lx, lz) + cr[k]);
                 if (sr[k]) topMax = std::max<int>(topMax, hc + sr[k]);
             }
     }
@@ -349,18 +406,22 @@ class TerrainColumns {
 // ---------------------------------------------------------------------------
 class WaterColumns {
   public:
-    WaterColumns(const TerrainColumns &ground, const ColumnStack &stack, int by)
-        : g_(ground), s_(stack), y0_(by * BRICK_VOX) {}
+    WaterColumns(const VoxelTerrain &t, const TerrainColumns &ground, const ColumnStack &stack,
+                 int by)
+        : t_(t), g_(ground), s_(stack), y0_(by * BRICK_VOX) {}
 
     Column column(int lx, int lz) const {
-        const int line = s_.lineAt(lx, lz);
         // THE SPAN COMES FROM VoxelTerrain, not from a second copy of the rule
-        // here -- see the note over waterSpan. kDryLine is the stack's int16
-        // sentinel and has to become the terrain's before it is asked.
-        int lo = 0, hi = 0;
-        VoxelTerrain::waterSpan(s_.heightAt(lx, lz),
-                                (line == ColumnStack::kDryLine) ? VoxelTerrain::kNoWaterVox : line,
-                                &lo, &hi);
+        // here -- see the note over waterSpan.
+        const int hc = s_.heightAt(lx, lz);
+        const int wl = s_.lineV(lx, lz);
+        // THE SHORE BAND STANDS PROUD, and it is lifted HERE -- in the geometry,
+        // before anything intersects it. v1 is emphatic about why: raising a hit
+        // that has already been found only moves that pixel's depth, and "the
+        // foam kept the silhouette of the flat water because the pixels it
+        // should have grown into were never tested against the water at all".
+        const int lo = hc + 1;
+        const int hi = t_.waterTopVox(hc, wl, s_.crestAt(lx, lz), s_.wetAt(lx, lz));
         // An edit owns its voxel -- see TerrainColumns::editedMask. Water does
         // not flow into a hole, and it does not paint over one either.
         return columnRange(lo - y0_, hi - y0_) & ~g_.editedMask(lx, lz);
@@ -371,7 +432,11 @@ class WaterColumns {
     bool solidAbove(int lx, int lz) const { return covered(lx, BRICK_VOX, lz); }
     bool solidBelow(int lx, int lz) const { return covered(lx, -1, lz); }
 
-    uint8_t material(int, int, int) const { return mat::WATER; }
+    // THE BAND IS ITS OWN MATERIAL, so the merge splits at its edge and the
+    // shader needs no neighbour test to find it.
+    uint8_t material(int lx, int, int lz) const {
+        return t_.foamColumn(s_.heightAt(lx, lz), s_.lineV(lx, lz)) ? mat::FOAM : mat::WATER;
+    }
     uint8_t strand(int, int, int) const { return 0; }
 
     // Whether this brick holds any water at all, so the store can skip the
@@ -389,12 +454,12 @@ class WaterColumns {
     // the water's face, which is why this asks the union and not the water.
     bool covered(int lx, int ly, int lz) const {
         const int wy = y0_ + ly;
-        const int line = s_.lineAt(lx, lz);
         const int hc = s_.heightAt(lx, lz);
         if (wy <= hc) return true;  // ground
-        return line != ColumnStack::kDryLine && hc <= line && wy <= line;
+        return wy <= t_.waterTopVox(hc, s_.lineV(lx, lz), s_.crestAt(lx, lz), s_.wetAt(lx, lz));
     }
 
+    const VoxelTerrain &t_;
     const TerrainColumns &g_;
     const ColumnStack &s_;
     int y0_;

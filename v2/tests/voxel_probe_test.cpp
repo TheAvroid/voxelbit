@@ -128,7 +128,19 @@ int main(int argc, char **argv) {
             check(depth > 0, "the column really is under water");
             check(wet == size_t(depth), "the WHOLE water body answers as water, not just its top");
             check(blocked == 0, "water does not block a body or a swing");
-            check(probe.material(wi, wj, line + 1) == mat::AIR, "and the air above it is air");
+            // ABOVE THE CREST, not above the line. The surface is voxelised
+            // now -- waveVox raises the water column by up to waveVoxMax at a
+            // crest -- so line+1 is water wherever a wave is standing, and this
+            // check used to assume a flat top.
+            // THE SLAB'S LID, not a per-column crest. The water is meshed to
+            // a flat ceiling now and the true surface is solved analytically
+            // in the tracer -- so what the probe reports is the slab, and the
+            // slab tops out at waveCeilVox.
+            const int crest = terrain.waveCeilVox();
+            check(probe.material(wi, wj, line + crest + 1) == mat::AIR,
+                  "and the air above the crest is air");
+            check(probe.inWater(wi, wj, line + crest),
+                  "the crest itself is water");
             check(probe.material(wi, wj, h) != mat::WATER, "the bed under it is not water");
         }
     }

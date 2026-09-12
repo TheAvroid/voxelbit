@@ -1595,6 +1595,14 @@ class ForestApp : public SampleApp {
             waveClock_ += dt;
             tracer_.waterTime = waveClock_;
 
+            // THE SWELL AS GEOMETRY, staggered a chunk at a time -- see
+            // World::tickWaves. The shader clock above still drives the
+            // caustics; the surface itself is voxels now and moves by being
+            // re-meshed, which is why this is rationed rather than done all at
+            // once: the mesh is 0.04 ms a brick and the BLAS behind it is 1.05
+            // ms a chunk.
+            world_.tickWaves(dt);
+
             // -- IS IT ACTUALLY SIMULATING? ---------------------------------
             //
             // A wiring check with teeth, and the reason it exists is that every

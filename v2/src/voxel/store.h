@@ -160,6 +160,21 @@ class BrickStore {
         return built;
     }
 
+    // DID THIS CHUNK DRAW ANY WATER? Brick::water is where the water pass
+    // begins and Brick::strands where it ends, so this is a subtraction rather
+    // than a scan of materials.
+    bool chunkHasWater(int cx, int cz) const {
+        int byLo = 0, byHi = 0;
+        if (!chunkYRange(cx, cz, &byLo, &byHi)) return false;
+        for (int sz = 0; sz < CHUNK_BRICKS; ++sz)
+            for (int sx = 0; sx < CHUNK_BRICKS; ++sx)
+                for (int by = byLo; by <= byHi; ++by) {
+                    const Brick *b = find(cx * CHUNK_BRICKS + sx, by, cz * CHUNK_BRICKS + sz);
+                    if (b && b->strands > b->water) return true;
+                }
+        return false;
+    }
+
     const Brick *find(int bx, int by, int bz) const {
         const auto it = bricks_.find(brickKey(bx, by, bz));
         return it == bricks_.end() ? nullptr : &it->second;
@@ -292,7 +307,7 @@ class BrickStore {
         // mesh, and it pays: well under one per cent of the world is wet, so
         // almost every brick answers no after a few columns.
         b.water = b.quads.size();
-        WaterColumns wc(tc, st, by);
+        WaterColumns wc(*t_, tc, st, by);
         if (wc.any()) meshBrick(wc, scratch_, &b.quads);
 
         // THE GRASS, AS A THIRD PASS. Same shape as the water and for the same
@@ -347,6 +362,12 @@ class BrickStore {
         const auto it = stacks_.find(k);
         if (it != stacks_.end()) {
             lru_.splice(lru_.begin(), lru_, it->second);  // most recently used
+            // A CACHED STACK CAN STILL BE STALE IN ONE FIELD. The heights are
+            // a function of (x, z) and never move; the wave does. Refreshing
+            // the crests is two sines a column and skips the gather entirely,
+            // which is the difference between an animated lake costing 0.04 ms
+            // a brick and costing 16.
+            it->second->second.refreshCrest(*t_);
             return it->second->second;
         }
         lru_.emplace_front(k, ColumnStack{});
