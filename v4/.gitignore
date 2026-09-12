@@ -1,0 +1,11 @@
+# Build output. 3.5 GB, entirely reproducible from build.bat.
+build/
+
+# v4 has no external/ of its own: it reads Falcor, Slang, DLSS and the packman
+# dependencies BY PATH out of C:\voxelbit\v3\external (override with DEPS before
+# building -- see build.bat and the note v4.bat prints when the exe is missing).
+#
+# WARNING, AND IT IS THE SAME WARNING v2 CARRIES: that fork is HAND-PATCHED and
+# the patches are not captured in this repo. A clone of this alone will not
+# build v4; it needs that tree beside it.
+external/
