@@ -770,8 +770,41 @@ bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
         // kVoxelM, NOT vs. The cell may be a metre wide out at the horizon;
         // the STEP is still one voxel, because that is the grid the water
         // shares with the terrain and a crest rounded to a metre is no crest.
+        //
+        // -------------------------------------------------------------------
+        // AND IT NEVER DIPS BELOW THE STILL SURFACE. THIS IS THE BLACK EDGE.
+        //
+        // The swell is four Gerstner waves summing to about +-0.26 m, and it is
+        // measured from `baseTop` -- the meshed water top. In deep water a
+        // trough 26 cm down is simply water. IN TEN CENTIMETRES OF WATER IT IS
+        // SIXTEEN CENTIMETRES INSIDE THE BED.
+        //
+        // The march has no idea how deep the water is: it is handed the SURFACE
+        // and the wave field and nothing else. So at the shallowest columns it
+        // reported a water surface below the terrain, the refracted ray was
+        // born inside the ground, and the next thing it met was the inside of
+        // the bed -- which shades as an opaque hit with the path already
+        // inside it. Black. It drew as a staircase of black voxels along every
+        // sandy edge, and it appeared the moment one-voxel columns started
+        // counting as wet (see kWetMinVox in voxelworld.h).
+        //
+        // Clamping at `baseTop` costs the trough half of the swell: the water
+        // now rides between the still line and 26 cm above it rather than
+        // either side of it. Rendered side by side that is very hard to see --
+        // the swell's whole character is the stepped CRESTS and those are
+        // untouched -- and it is the half that cannot be right anyway, because
+        // there is no guarantee anywhere in this engine that there is water
+        // below the line to dip into.
+        //
+        // The exact fix would be the DEPTH in the shader, damping the amplitude
+        // as the water shoals the way real waves do. The water quad's strand
+        // field is free and could carry it -- but the greedy merge keys on that
+        // field, so a per-column depth splits every lake's quads by depth band
+        // and buys triangles on all of them to fix 13 cm of mean level nobody
+        // can see. Not worth it.
+        // -------------------------------------------------------------------
         const float wh =
-            baseTop + floor(waterHeight(cw, t) / kVoxelM + 0.5f) * kVoxelM;
+            max(baseTop, baseTop + floor(waterHeight(cw, t) / kVoxelM + 0.5f) * kVoxelM);
         const float tNext = min(tmx, tmz);
 
         // Already below this column's top: the ray came in through the

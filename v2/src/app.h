@@ -293,7 +293,7 @@ struct Options {
     // Everything but the world reflection -- see kWFDefault in Shared.slang,
     // which is where this number is explained. Kept as a literal because
     // app.h does not include the shader header.
-    uint32_t waterFlags = 0x1FBu;  // see kWF* in Shared.slang
+    uint32_t waterFlags = 0x1FFu;  // see kWF* in Shared.slang
     bool groundStats = false;
 
     // -- the built-in recorder, on R -------------------------------------
@@ -3941,11 +3941,11 @@ class ForestApp : public SampleApp {
     // the panel subtracts, it does not build the water up from nothing.
     bool waterPanelOpen_ = false;
     bool captureBeforeWater_ = false;
-    // Index 2 is kWFReflect, and it is the one that starts off -- see
-    // kWFDefault. App::onLoad overwrites all nine from opt_.waterFlags, so
-    // this initialiser and that default cannot drift apart in practice; it is
-    // written out here so reading the member says the same thing.
-    bool waterTerm_[9] = {true, true, false, true, true, true, true, true, true};
+    // ALL NINE ON -- see kWFDefault in Shared.slang. App::onLoad overwrites
+    // every one of them from opt_.waterFlags, so this initialiser and that
+    // default cannot drift apart in practice; it is written out here so reading
+    // the member says the same thing.
+    bool waterTerm_[9] = {true, true, true, true, true, true, true, true, true};
     // ---- the console (T) ---------------------------------------------------
     // A command line, the way the browser engine has one. It exists for
     // /locate: the biomes are bands now (see birchWeight in

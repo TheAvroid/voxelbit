@@ -49,7 +49,7 @@ inline constexpr int kLilyModels = 3;
 // every slot here costs a TLAS entry whether or not anything is in it.
 inline constexpr int kSalmonCount = 10;
 inline constexpr int kLilyCount = 12;
-inline constexpr int kDflyCount = 8;
+inline constexpr int kDflyCount = 4;   // halved (user 2026-09-13)
 
 // ---------------------------------------------------------------------------
 // THE FISH, CONFIG FOR CONFIG FROM THE JS ENGINE'S FISH_CFG.
@@ -97,10 +97,65 @@ inline constexpr float kLilyShoreTurn = 2.6f; // rad/s away from a dry lookahead
 // VERBATIM; only its HOME differs (water, not meadow)". So this is the
 // butterfly's wander with a water home and a tighter leash -- a dragonfly
 // works one stretch of bank rather than a meadow.
-inline constexpr float kDflySpeed = 2.6f;     // m/s
+// DOUBLED, 2.6 -> 5.2 (user 2026-09-13). That puts it just under the
+// butterflies' 5.6, which is about right for the two insects side by side.
+inline constexpr float kDflySpeed = 5.2f;     // m/s
+// -- ...AND THE SAME 2x RULE EVERY OTHER FLYER OBEYS ------------------------
+//
+// The butterflies have had this since they were written -- kFlyThreatM,
+// kFlyFleeHold and kFlyFleeMul in butterflies.h, which are the JS engine's
+// FLY_THREAT_R 30, FLY_FLEE_HOLD 1.2 and FLY_FLEE_MULT 2.0. The dragonfly was
+// ported from the butterfly's flight path and did not get them.
+//
+// THE RADIUS IS THE FLYERS' OWN AND NOT THE FISH'S, and the JS note says why:
+// "a fish cruises at 22 and a butterfly at 56, so the fish's 56-voxel sphere is
+// two and a half seconds of fish travel but one second of butterfly travel --
+// shared, it would leave every butterfly permanently spooked".
+inline constexpr float kDflyThreatM = 3.0f;   // (JS FLY_THREAT_R 30)
+inline constexpr float kDflyFleeHold = 1.2f;  // (JS FLY_FLEE_HOLD)
+inline constexpr float kDflyFleeMul = 2.0f;   // (JS FLY_FLEE_MULT)
 inline constexpr float kDflyLeashM = 9.0f;    // how far from its home it strays
 inline constexpr float kDflyLoM = 0.35f, kDflyHiM = 1.30f;   // height over the water
-inline constexpr float kDflyFps = 30.0f;
+// 24, THE SAME RATE EVERY OTHER STRIP IN THIS ENGINE PLAYS AT -- the
+// butterflies' kFlyFps, the songbirds' kBirdFrameMs, the salmon's animFps and
+// the JS engine's BIRD_FLAP. It was 30 for no reason anyone wrote down.
+inline constexpr float kDflyFps = 24.0f;
+
+// -- HOW LONG A DRAGONFLY MAY BE BLOCKED BEFORE IT GIVES UP ON ITS HEADING ---
+//
+// It got STUCK, and the cause was that a blocked step did not move it: the
+// recovery set an intent toward home and returned, so a dragonfly whose home
+// direction ALSO left the water simply stopped, in the air, for ever. And if it
+// happened to be sitting exactly on its home the direction was atan2(0, 0),
+// which is a constant -- so it could not even turn.
+inline constexpr float kDflyStuckSec = 0.6f;
+
+// ---------------------------------------------------------------------------
+// THE LEAP, FROM THE JS ENGINE'S FISH_CFG.jump.
+//
+// Its units are voxels; both engines are 10 cm voxels, so they divide by ten.
+//
+//     cooldownMin/Max  9 / 31 s between attempts, over the species multiplier
+//                      (salmon is 1.0 -- it is the one that leaps most)
+//     vMin/vMax        65 / 88 vox/s up. The peak is v^2/2g, so 1.3 to 2.4 m
+//                      clear of the surface. Its note records this being
+//                      DOUBLED on request, and that the speed went up by
+//                      sqrt(2) because height scales with the square.
+//     gravity          165 vox/s^2 -- the arc's own fall, not the world's
+//     forward          26 vox/s carried through the arc -> 2.0 to 2.8 m across
+//     minDepth         5 vox. "only water this deep can launch a leap (never
+//                      from a shelf it could land back onto)"
+//
+// THE ARC IS BALLISTIC AND UNSTEERED. v1 validates the splash-down at launch
+// and then holds the line: "airborne is exempt ... a salmon's leap was
+// validated at launch and must fly its arc at full speed", and bending the
+// heading in the air "would curve the arc off its validated splash-down".
+// ---------------------------------------------------------------------------
+inline constexpr float kJumpCoolMin = 9.0f, kJumpCoolMax = 31.0f;
+inline constexpr float kJumpVMin = 6.5f, kJumpVMax = 8.8f;
+inline constexpr float kJumpGrav = 16.5f;
+inline constexpr float kJumpFwd = 2.6f;
+inline constexpr float kJumpMinDepthM = 0.5f;
 
 // How far any of this lives from the player before its slot is recycled, and
 // how far out water is looked for. The BIRDS' own lesson applies (see
@@ -110,6 +165,23 @@ inline constexpr float kDflyFps = 30.0f;
 // creatures in, and the result was exactly what it sounds like -- see the
 // separation rule in fill().
 inline constexpr float kLakePlaceM = 45.0f;
+// -- ...AND NOTHING IS BORN NEARER THAN THIS -------------------------------
+//
+// Reported as "the lillypads seem to just appear in front of me randomly", and
+// that is exactly what was happening: fill() accepted any wet spot inside the
+// place radius, INCLUDING one five metres away, and it runs every frame. Walk
+// along a shore and pads behind you pass the drop radius, free their slots, and
+// the next frame puts them back wherever there happens to be water -- which is
+// as likely to be at your feet as at the far side.
+//
+// A pad drifts at 0.11 m/s, so it is scenery: once placed it stays where it
+// was put, and the only thing that ever moves it is the player walking. That
+// makes the spawn distance the whole of the problem.
+//
+// Thirty metres. Far enough that an arrival is a speck at the edge of
+// attention rather than an event in front of you, and still inside the place
+// radius so there is room to find a spot.
+inline constexpr float kLakeMinPlaceM = 30.0f;
 // -- NOTHING SPAWNS ON TOP OF ANYTHING ELSE --------------------------------
 //
 // v1 does this and its note says why it had to: "sometimes the fish cluster up
@@ -124,8 +196,27 @@ inline constexpr float kLakePlaceM = 45.0f;
 // intersecting, and a dragonfly over a pad is a picture rather than a fault.
 inline constexpr float kLakeApartM = 5.0f;      // between two of a kind
 inline constexpr float kLakeApartAnyM = 1.8f;   // between any two things
-inline constexpr float kLakeDropM = 60.0f;
-inline constexpr float kLakeFieldM = 80.0f;   // the sampled square, per side
+// -- HOW FAR IT MAY GET BEFORE ITS SLOT IS TAKEN BACK -----------------------
+//
+// 60 m was visible, and it was reported: "the salmon, lillypads, and
+// dragonflies disappear when flown out of distance. dont let them disappear."
+// 100 m is the same number the perched songbirds settled on for the same
+// reason -- see v2-birds-popped-and-flickered, where one radius doing three
+// jobs produced exactly this.
+inline constexpr float kLakeDropM = 100.0f;
+// -- ...AND THE FIELD HAS TO BE WIDER THAN THAT -----------------------------
+//
+// THIS IS THE HALF THAT IS EASY TO MISS. A fish steers by WaterField::at, and
+// outside the field that answers "no water" -- so a fish beyond the sampled
+// square does not merely lose its bearings, it turns hard every frame and
+// stops. Raising the drop radius without raising this would trade a
+// disappearing fish for a frozen one.
+//
+// 220 m against a 100 m drop, so a live creature is always well inside the
+// data. It is 48,400 columns a rebuild against 6,400 -- and the rebuild only
+// happens when the PLAYER leaves the trustworthy middle, which at this size is
+// every sixty metres of walking.
+inline constexpr float kLakeFieldM = 220.0f;  // the sampled square, per side
 
 // ---------------------------------------------------------------------------
 // WHERE THE WATER IS, SAMPLED ONCE.
@@ -149,11 +240,26 @@ class WaterField {
     static constexpr float kCellM = 1.0f;
     static constexpr int kN = int(kLakeFieldM / kCellM);   // 80 x 80 = 6,400 columns
 
-    // Has the player left the part of the field that is trustworthy?
+    // -----------------------------------------------------------------------
+    // HAS THE PLAYER LEFT THE PART OF THE FIELD THAT IS TRUSTWORTHY?
+    //
+    // The condition that has to hold is that EVERY LIVE CREATURE is inside the
+    // sampled square -- a creature may be kLakeDropM from the player, so the
+    // player may be at most (half - drop) from the centre. This subtracted HALF
+    // the drop, which is a bound that does not mean anything, and at a 60 m
+    // drop it happened not to matter.
+    //
+    // It costs one rebuild every (half - drop) metres of walking: at 220 m and
+    // a 100 m drop that is every ten metres, and a rebuild measures 5.97 ms on
+    // this terrain. That is the price of nothing ever popping, and it is paid
+    // on the frame thread -- if it ever shows, the fix is to build it on a
+    // worker rather than to shrink it.
+    // -----------------------------------------------------------------------
+    static constexpr float kSafeM = kLakeFieldM * 0.5f - kLakeDropM;
+
     bool stale(const Vec3 &p) const {
         if (!built_) return true;
-        const float m = kLakeFieldM * 0.5f - kLakeDropM * 0.5f - 4.0f;
-        return fabsf(p.x - cx_) > m || fabsf(p.z - cz_) > m;
+        return fabsf(p.x - cx_) > kSafeM || fabsf(p.z - cz_) > kSafeM;
     }
 
     void rebuild(const VoxelTerrain &t, const Vec3 &p) {
@@ -291,9 +397,22 @@ class LakeLife {
         if (field_.stale(player)) field_.rebuild(terrain, player);
         recycle(player);
         fill(player);
-        for (Fish &f : fish_) if (f.live) stepFish(&f, dt, player);
-        for (Pad &p : pads_) if (p.live) stepPad(&p, dt);
-        for (Dfly &d : flies_) if (d.live) stepDfly(&d, dt);
+        // -- A CREATURE OUTSIDE THE FIELD HOLDS STILL, IT DOES NOT VANISH ---
+        //
+        // Steering reads WaterField::at, and outside the square that answers
+        // "no water" -- so a creature out there would not merely lose its
+        // bearings, it would turn hard every frame and thrash. The staleness
+        // rule above is supposed to make this impossible; this is the belt to
+        // its braces, for the frames between a player crossing the margin and
+        // the rebuild landing.
+        //
+        // STILL LIVE AND STILL DRAWN. Holding position for a few frames at
+        // ninety metres is invisible; disappearing is not, which is the whole
+        // point of this pass.
+        auto inField = [&](float x, float z) { return field_.at(x, z); };
+        for (Fish &f : fish_) if (f.live && inField(f.x, f.z)) stepFish(&f, dt, player);
+        for (Pad &p : pads_) if (p.live && inField(p.x, p.z)) stepPad(&p, dt);
+        for (Dfly &d : flies_) if (d.live && inField(d.x, d.z)) stepDfly(&d, dt, player);
     }
 
     // -----------------------------------------------------------------------
@@ -338,6 +457,13 @@ class LakeLife {
         float thrX = 0, thrZ = 0;
         float senseAt = 0, holdAt = 0, fleeAt = 0;
         float navTh = 0;     // long-range intent, bent by the whiskers
+        // -- THE LEAP. jumpV is only meaningful while airborne; jumpOn says so
+        //    rather than a sentinel value, because 0 is a real vertical speed
+        //    at the top of the arc.
+        bool jumpOn = false;
+        float jumpV = 0.0f;
+        float jumpAt = 0.0f;   // when the next attempt is allowed
+        int pose = 0, poseWas = 0;
     };
     struct Pad {
         bool live = false;
@@ -355,12 +481,46 @@ class LakeLife {
         float th = 0, wantTh = 0;
         float turnAt = 0;
         float phase = 0;
+        float fleeUntil = -1.0f;   // see kDflyFleeHold
+        float stuck = 0.0f;        // seconds of getting nowhere -- see kDflyStuckSec
+        int pose = 0, poseWas = 0; // for the wing motion vector
     };
 
     // =======================================================================
     // THE FISH.
     // =======================================================================
     void stepFish(Fish *f, float dt, const Vec3 &player) {
+        // -- AIRBORNE: PURE BALLISTICS, AND NOTHING ELSE RUNS ---------------
+        //
+        // No steering, no whiskers, no depth servo. v1 is explicit that the
+        // arc is validated at launch and then flown: bending the heading in
+        // the air "would curve the arc off its validated splash-down".
+        if (f->jumpOn) {
+            f->y += f->jumpV * dt;
+            f->jumpV -= kJumpGrav * dt;
+            f->x += sinf(f->th) * kJumpFwd * dt;
+            f->z += cosf(f->th) * kJumpFwd * dt;
+            // The nose follows the arc, which is what makes a leap read as one
+            // -- up on the way up, down on the way in.
+            f->pitch = clampf(atan2f(f->jumpV, kJumpFwd), -1.2f, 1.2f);
+            // The tail keeps beating in the air. A fish that freezes mid-leap
+            // is a prop.
+            f->animClk += dt * kFishAnimFps;
+            float topM = 0.0f, bedM = 0.0f;
+            const bool over = field_.at(f->x, f->z, &topM, &bedM);
+            // REENTRY: falling, and back through the surface. If it has drifted
+            // off the water entirely the arc is abandoned at the top rather
+            // than flown into a bank.
+            if (!over) { f->jumpOn = false; f->y = f->y; return; }
+            if (f->jumpV < 0.0f && f->y <= topM - 0.14f) {
+                f->jumpOn = false;
+                f->y = topM - 0.14f;
+                f->vy = 0.0f;
+                f->pitch = 0.0f;
+            }
+            return;
+        }
+
         // -- THE THREAT SCAN, AND IT IS A SPHERE ----------------------------
         //
         // The JS engine includes the vertical gap with the player's own offset,
@@ -473,6 +633,34 @@ class LakeLife {
         // never enters the equation." This is what makes the flee read as
         // effort rather than as the same fish moved faster.
         f->animClk += dt * (f->spd / kFishCruise) * kFishAnimFps;
+
+        // -- ...AND EVERY SO OFTEN IT COMES OUT OF THE WATER ----------------
+        //
+        // NOT WHILE FLEEING. A fish breaking away from you is doing one thing
+        // and a fish showing off is doing another; v1 keeps them apart for the
+        // same reason, and a leap that fires mid-flee reads as the flee having
+        // been a run-up.
+        //
+        // DEEP WATER ONLY -- v1: "never from a shelf it could land back onto".
+        // The check is the depth HERE, so a fish that has wandered into the
+        // shallows simply does not leap until it is back out.
+        if (clock_ > f->jumpAt) {
+            const bool deep = (topM - bedM) >= kJumpMinDepthM;
+            if (!fleeing && deep) {
+                const uint32_t h = hashU32(uint32_t(clock_ * 311.0f), uint32_t(f->x * 53.0f));
+                f->jumpOn = true;
+                f->jumpV = kJumpVMin + hashUnit(0x7A1u, h) * (kJumpVMax - kJumpVMin);
+                // OUT OF THE SURFACE, not out of wherever it was holding. A
+                // salmon leaving from a metre down is a fish teleporting.
+                f->y = topM - 0.14f;
+            }
+            // The cooldown is reset whether or not the attempt fired, or a fish
+            // in the shallows would launch on the first frame it reached depth.
+            f->jumpAt = clock_ + kJumpCoolMin +
+                        hashUnit(0x7A2u, hashU32(uint32_t(clock_ * 131.0f),
+                                                 uint32_t(f->z * 71.0f))) *
+                            (kJumpCoolMax - kJumpCoolMin);
+        }
     }
 
     // =======================================================================
@@ -516,7 +704,15 @@ class LakeLife {
     // =======================================================================
     // THE DRAGONFLY -- the butterfly's wander with a water home.
     // =======================================================================
-    void stepDfly(Dfly *d, float dt) {
+    void stepDfly(Dfly *d, float dt, const Vec3 &player) {
+        // -- IT BREAKS WHEN YOU GET CLOSE, AND THE HOLD IS WHY IT DOES NOT
+        //    FLICKER AT THE RIM. Same shape as the fish's, same constants as
+        //    the butterflies'.
+        const float px = d->x - player.x, py = d->y - player.y, pz = d->z - player.z;
+        if (px * px + py * py + pz * pz < kDflyThreatM * kDflyThreatM)
+            d->fleeUntil = clock_ + kDflyFleeHold;
+        const float spd = kDflySpeed * (clock_ < d->fleeUntil ? kDflyFleeMul : 1.0f);
+
         if (clock_ > d->turnAt) {
             d->turnAt = clock_ + 0.6f + hashUnit(0x3C1u, hashU32(uint32_t(clock_ * 53.0f),
                                                                 uint32_t(d->x * 37.0f))) * 1.4f;
@@ -533,17 +729,37 @@ class LakeLife {
         const float err = atan2f(sinf(d->wantTh - d->th), cosf(d->wantTh - d->th));
         d->th += clampf(err * 3.0f, -3.0f, 3.0f) * dt;
 
-        const float nx = d->x + sinf(d->th) * kDflySpeed * dt;
-        const float nz = d->z + cosf(d->th) * kDflySpeed * dt;
+        const float nx = d->x + sinf(d->th) * spd * dt;
+        const float nz = d->z + cosf(d->th) * spd * dt;
         float topM = 0.0f;
         if (field_.at(nx, nz, &topM)) {
             d->x = nx;
             d->z = nz;
+            d->stuck = 0.0f;
         } else {
-            // OVER THE WATER, NOT OVER THE BANK. A dragonfly that wanders onto
-            // dry land is a fly; the one thing that makes it read as a
-            // dragonfly is that it works the surface.
-            d->wantTh = atan2f(hx, hz);
+            // -- OVER THE WATER, NOT OVER THE BANK, AND IT MUST NOT STOP -----
+            //
+            // A dragonfly that wanders onto dry land is a fly; the one thing
+            // that makes it read as a dragonfly is that it works the surface.
+            // But refusing the step and setting an intent is not enough on its
+            // own, and that is what stuck them: if the home direction also left
+            // the water it was refused every frame for ever, and a dragonfly
+            // sitting exactly ON its home asked atan2(0, 0), which does not
+            // even turn.
+            //
+            // So it TURNS HARD, every frame it is blocked -- the same thing the
+            // fish does at a bank -- and after kDflyStuckSec of getting
+            // nowhere it stops trusting its heading at all and takes a fresh
+            // one from the hash. Between the two there is no way to sit still.
+            d->stuck += dt;
+            d->th += 4.0f * dt;
+            if (hx * hx + hz * hz > 1e-4f) d->wantTh = atan2f(hx, hz);
+            if (d->stuck > kDflyStuckSec) {
+                d->stuck = 0.0f;
+                d->wantTh = hashUnit(0x3C9u, hashU32(uint32_t(clock_ * 977.0f),
+                                                     uint32_t(d->x * 13.0f))) * 6.2831853f;
+                d->th = d->wantTh;
+            }
         }
         if (field_.at(d->x, d->z, &topM)) {
             const float want = topM + kDflyLoM +
@@ -655,7 +871,9 @@ class LakeLife {
         for (int tries = 0; tries < 40; ++tries) {
             if (!field_.pick(hashU32(h, uint32_t(tries)), x, z, topM, bedM)) return false;
             const float dx = *x - player.x, dz = *z - player.z;
-            if (dx * dx + dz * dz > kLakePlaceM * kLakePlaceM) continue;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 > kLakePlaceM * kLakePlaceM) continue;
+            if (d2 < kLakeMinPlaceM * kLakeMinPlaceM) continue;   // see kLakeMinPlaceM
             if (crowded(*x, *z, kind)) continue;
             return true;
         }

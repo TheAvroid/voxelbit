@@ -288,7 +288,7 @@ constexpr int kBirdSlots = 48;
 // one population for the band's purposes because they are born and recycled
 // together off one water field -- see render/lake.h -- but each still owns a
 // contiguous run inside it, for the reason the note above gives.
-constexpr int kLakeSlots = 30;   // kSalmonCount + kLilyCount + kDflyCount
+constexpr int kLakeSlots = 26;   // kSalmonCount + kLilyCount + kDflyCount
 // ...and the songbirds that are IN THE AIR, which are a different population
 // from the ones in the trees and share nothing with them but their species --
 // see render/birdflock.h.

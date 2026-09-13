@@ -1541,7 +1541,15 @@ class VoxelTerrain {
     // int(kNoWater / VOXEL_M), which overflows and lands anywhere.
     static constexpr int kNoWaterVox = -1000000000;
 
-    float pineWater = 33.0f;          // metres, read off the pine field above
+    // RAISED ONE METRE -- ten voxels (user 2026-09-13, "can you just raise the
+    // water level by 10 voxels"). Moved HERE, on the still level itself,
+    // rather than as a lift on the voxel it quantises to: everything
+    // downstream reads waterAt -- the basin carve, the bank shaping, the depth
+    // rule, the swim, the lake life's water field -- so raising the number
+    // itself keeps all of them describing one lake. A lift applied at
+    // waterVoxAt would move the SURFACE and leave the carve shaping a basin
+    // for the old one.
+    float pineWater = 34.0f;          // metres, read off the pine field above
     // The fade starts AT the band boundary and runs 120 m. sstep has zero
     // derivative at each end, so the line is already flat where the fade
     // approaches 1 -- which is exactly where the lakes are -- and all the steep
@@ -1578,7 +1586,7 @@ class VoxelTerrain {
     // At 9.5 the wood also flooded once the carve started working: birch
     // ground sits a median 14.3 m against that line, so any real carve pulled
     // enormous areas under it -- 16.3% of the region wet.
-    float birchWater = 5.5f;
+    float birchWater = 6.5f;   // +1 m with the pine -- see pineWater
 
     // THE BASIN THRESHOLD. It decides where heightM CARVES A HOLLOW, and that
     // is now the only thing it decides -- it used to gate the wet test too,
@@ -1999,15 +2007,21 @@ class VoxelTerrain {
         // `line`, this one's surface is at `line - 1`, and 10 cm of water shows
         // above the sand. Measured: 2,538 of 4,687 lake edges.
         //
-        // Snapping that band UP to the line removes it by construction, and
-        // does more than that -- with no column left at `line - 1` there is no
-        // shallow fringe at all, so the wet test's neighbour clause has nothing
-        // to fire on and the water's edge is simply where the ground reaches
-        // the line. Water top and ground top become the same number.
+        // Snapping that band UP to the line removes it by construction. It is
+        // 10 cm of terrain on a thin band, and it is a pure function of this
+        // column -- no neighbour, so nothing for the gather and the point path
+        // to disagree about.
         //
-        // It is 10 cm of terrain on a thin band, and it is a pure function of
-        // this column -- no neighbour, so nothing for the gather and the point
-        // path to disagree about.
+        // A RUN OF ATTEMPTS TO DO MORE THAN THIS WAS REVERTED (user 2026-09-13,
+        // "can you just revert the previous shoreline changes"). They are worth
+        // one line each so nobody tries them again believing they are new:
+        // snapping the beach DOWN onto the line as well (flattens one column
+        // and leaves the rest of the beach where it was); dropping kWetMinVox
+        // to 1 so a one-voxel column is wet on its own (correct in itself, but
+        // it put the swell's trough inside the bed and drew black voxels along
+        // every sandy edge); and lifting the LINE a voxel above the still level
+        // (flush, measured at 0.66% proud edges against 8.3%, but it floods a
+        // little more ground -- 108 bodies became 121).
         // -------------------------------------------------------------------
         if (d < 0.0f && d >= -VOXEL_M) return wlm;
 
@@ -2528,20 +2542,26 @@ class VoxelTerrain {
     // birch tuft as a pine one. The fill is divided by the local planting
     // probability instead, so the ARITHMETIC is "this many strands in this
     // area" and the wood cancels out.
-    // TRIPLED, 5-10 -> 15-30 (user 2026-09-13: "fill in the grass strands
-    // more. triple the amount of grass strands in a group").
+    // 5-10, then 15-30, now 30-60 -- tripled and then DOUBLED (user
+    // 2026-09-13: "double the density of the tall grass").
     //
     // THE TUFT DOES NOT GROW WITH IT, and that is the point of expressing this
     // as a count rather than a probability: the radius is untouched, so the
-    // same patch of ground now holds three times as many tall blades. It fills
-    // in rather than spreading out.
+    // same patch of ground holds twice as many tall blades. It fills in rather
+    // than spreading out, which is what DENSITY means.
     //
-    // The arithmetic still cannot add grass -- the draw runs after the planting
-    // draw and only changes the HEIGHT of blades that were going to be there --
-    // so the ceiling is the number of blades in the disc. In the pine wood a
-    // 1.2-2.2 m tuft holds roughly 130 to 430 of them, so 30 is comfortably
-    // inside it and the clamp in strandRows never fires.
-    float tuftStrandsMin = 15.0f, tuftStrandsMax = 30.0f;
+    // THE CEILING IS REAL AND IT IS CLOSER NOW. The draw runs after the
+    // planting draw and only changes the HEIGHT of blades that were going to be
+    // there, so a tuft cannot hold more tall strands than it holds blades:
+    //
+    //     chance = want / (columns in the disc x planting probability)
+    //
+    // and that is clamped to 1. In the PINE wood, where only 27.8% of columns
+    // carry a blade, the smallest tuft (1.2 m radius, ~450 columns) has about
+    // 126 blades in it -- so 60 is a chance of 0.48 and the clamp still does
+    // not fire. Doubling again WOULD hit it, and the symptom would be quiet:
+    // the count would simply stop rising in the pine while the birch kept going.
+    float tuftStrandsMin = 60.0f, tuftStrandsMax = 120.0f;
     // -----------------------------------------------------------------------
     // A GROUP IS A HANDFUL OF STRANDS, NOT A FIELD OF THEM (user 2026-09-13:
     // "only have 5-10 strands of grass in groups like this").

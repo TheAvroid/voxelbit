@@ -366,7 +366,7 @@ class Tracer {
     float waterY = -1.0e4f;
     // WHICH WATER TERMS ARE ON -- one bit each, see kWF* in Shared.slang. All
     // of them by default; the [I] panel is the only thing that clears any.
-    uint32_t waterFlags = 0x1FBu;  // kWFDefault: all but the world reflection
+    uint32_t waterFlags = 0x1FFu;  // kWFDefault: every water term on
     float waterTime = 0.0f;
 
     // Auto-exposure and bloom live in their own module because they share a

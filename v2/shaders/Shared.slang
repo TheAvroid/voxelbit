@@ -746,13 +746,16 @@ static const uint kWFRipple  = 1u << 7;  // the analytic normal where the march 
 static const uint kWFFoam    = 1u << 8;  // the white churn round the shore
 static const uint kWFAll     = 0x1FFu;
 
-// WHAT THE WATER SHIPS WITH: everything except the world reflection (user
-// 2026-09-13). The traced reflection stays in the build and stays on the [I]
-// panel -- it is one tick away -- it simply is not what the water is by
-// default. Note the cost goes with it: that term is the one extra trace and
-// one extra shadow ray per primary water pixel, so OFF is also the cheaper
-// default, which is worth knowing if the frame budget is ever looked at.
-static const uint kWFDefault = kWFAll & ~kWFReflect;   // 0x1FB
+// EVERYTHING ON. The world reflection was taken out of the default on
+// 2026-09-13 and put back the same day, and the reason it went is worth
+// keeping: it was drawing a lattice of near-black blobs over every pond. That
+// turned out to be Hit::waterTop -- the reflection was fine and the SURFACE it
+// was measured against was the camera band's, not the pond's. With that fixed
+// there is nothing to hold it back for.
+//
+// It costs one extra trace and one extra shadow ray per primary water pixel,
+// which is the thing to look at first if the frame budget is ever tight.
+static const uint kWFDefault = kWFAll;   // 0x1FF
 
 // ---------------------------------------------------------------------------
 // THE THING IN YOUR HAND.
