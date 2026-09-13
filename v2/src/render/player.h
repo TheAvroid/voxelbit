@@ -80,6 +80,39 @@ struct WalkWorld {
 };
 
 // ---------------------------------------------------------------------------
+// THE TOP OF THE GROUND AT A WORLD POINT -- WITH THE HOLES IN IT.
+//
+// EVERY QUERY IN THIS FILE USED heightVox, which is the GENERATOR's top and
+// cannot see an edit. The result was reported plainly: "I created a hole, then
+// when I try to go inside the hole the player still floats above it. its like
+// the missing terrain is missing from the renderer but still there in memory."
+// It is the other way round -- the terrain really is gone, and the BODY was
+// the only thing still reading a world nobody had dug in. The mesher, the
+// physics ground patch, the swing ray and World::terrainSolidAt had all been
+// moved onto the edit layer one at a time; the walk never was.
+//
+// WalkWorld has carried `edits` all along for exactly this. TerrainProbe is the
+// one implementation of "generated, then edited", so routing through it means
+// the floor you stand on is the floor that is drawn, by construction.
+//
+// A COLUMN WITH NOTHING DUG IN ITS CHUNK COSTS WHAT IT ALWAYS DID -- probe
+// topVox returns heightVox the moment EditStore::get comes back empty, which
+// is every column in the world bar the handful anyone has hit.
+// ---------------------------------------------------------------------------
+inline int walkTopVox(const WalkWorld &w, int i, int j) {
+    if (!w.terrain) return 0;
+    TerrainProbe probe(w.terrain, w.edits);
+    return probe.topVox(i, j);
+}
+
+// ...and the same answer in metres, as the top SURFACE -- which is what every
+// caller here actually wanted. +1 because a column of height h fills voxel h,
+// so its surface is the top of that voxel.
+inline float walkGroundM(const WalkWorld &w, float x, float z) {
+    return float(walkTopVox(w, int(floorf(x / VOXEL_M)), int(floorf(z / VOXEL_M))) + 1) * VOXEL_M;
+}
+
+// ---------------------------------------------------------------------------
 // Is this point inside the world?
 //
 // The same two tests the swing uses, asked of a point rather than of a ray: the
@@ -121,7 +154,10 @@ inline Lake lakeAt(const WalkWorld &w, float x, float z) {
     const int i = int(floorf(x / VOXEL_M)), j = int(floorf(z / VOXEL_M));
     const int line = t.lakeLineAt(t.wx(i), t.wx(j), memo);
     if (line == VoxelTerrain::kNoWaterVox) return l;
-    const int hc = t.heightVox(i, j, memo);
+    // THE DUG TOP, not the generated one: a pit cut into a lake bed is deeper
+    // water, and a swimmer has to be told so or they stand on a bed that has
+    // been taken away.
+    const int hc = walkTopVox(w, i, j);
     if (!t.wetColumn(i, j, hc, line, memo)) return l;
     l.any = true;
     l.bedM = float(hc + 1) * VOXEL_M;
@@ -136,7 +172,10 @@ inline bool insideWorld(const WalkWorld &w, const Vec3 &p) {
     if (!w.terrain) return false;
     const int i = int(floorf(p.x / VOXEL_M)), j = int(floorf(p.z / VOXEL_M));
     const int y = int(floorf(p.y / VOXEL_M));
-    if (y <= w.terrain->heightVox(i, j)) return true;
+    // ...AND A PIT IS NOT GROUND. An arrow used to bury itself in a phantom
+    // surface over a hole and a flier used to turn away from ground that was
+    // no longer there -- the same fault as the walk, in two more verbs.
+    if (y <= walkTopVox(w, i, j)) return true;
     for (int k = 0; k < w.solidCount; ++k) {
         const Solid &s = w.solids[k];
         if (s.hx <= 0.0f || s.hz <= 0.0f || p.y > s.top) continue;
@@ -185,6 +224,32 @@ class Player {
     // 1.5x the velocity would have been a 2.45 m moon jump.
     float jumpVel = 8.08f;    // m/s up at the moment of the jump; apex 1.63 m
     float gravity = 20.0f;    // m/s^2
+    // -----------------------------------------------------------------------
+    // FALLING GAINS MOMENTUM, PORTED FROM v1 (user 2026-09-13: "when the player
+    // falls, apply momentum as they fall. it increases the falling speed the
+    // longer the player is falling. v1 did this as well").
+    //
+    // v1's own note is the argument for it:
+    //
+    //     "a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so
+    //      anything past a short drop fell at a CONSTANT speed and read as
+    //      floating. Gravity now ramps with time spent falling and the terminal
+    //      is higher, so a long drop keeps visibly winding up until it lands."
+    //
+    //     P.fallT = P.vy < 0 ? P.fallT + dt : 0;
+    //     const gK = 1 + Math.min(1.125, P.fallT * 0.41);
+    //     P.vy = Math.max(-345, P.vy - GRAVITY * gK * dt);
+    //
+    // THE RAMP STARTS AT 1, which is the load-bearing detail: a jump arc is
+    // unchanged, because the clock only runs while vy is NEGATIVE and a jump
+    // spends its first half rising. Only the descent winds up.
+    //
+    // v1's numbers are voxels per second and both engines are 10 cm voxels, so
+    // -345 is -34.5 m/s and the coefficients carry over as they are.
+    // -----------------------------------------------------------------------
+    float fallRamp = 0.41f;    // per second of falling      (v1)
+    float fallRampMax = 1.125f;  // so gravity tops out at 2.125x (v1)
+    float fallTermV = 34.5f;   // m/s, terminal              (v1 -345)
     float eye = 2.00f;        // 20 voxels -- and the whole of the figure,
                               // since nothing is modelled above the eye
 
@@ -442,6 +507,17 @@ class Player {
                 onGround = false;
             }
 
+            // ---- HOW LONG THIS BODY HAS BEEN DESCENDING --------------
+            //
+            // v1: `P.fallT = P.vy < 0 ? P.fallT + dt : 0`. Kept HERE, ahead of
+            // the three branches, rather than inside the falling one -- landing
+            // sets onGround and stops entering it, so a clock updated in there
+            // would still be reading five seconds the next time you stepped off
+            // a kerb, and the first frame of a two-voxel drop would be ramped.
+            // Standing, swimming and rising all read as "not falling" and zero
+            // it, which is what onGround and `vy < 0` say between them.
+            fallT_ = (!onGround && !swimming_ && vy < 0.0f) ? fallT_ + dt : 0.0f;
+
             if (swimming_) {
                 swimClock_ += dt;
                 // SPACE IS THE ONLY THING HOLDING YOU UP -- see the constants.
@@ -465,7 +541,8 @@ class Player {
                     onGround = false;
                 }
             } else if (!onGround) {
-                vy -= gravity * dt;
+                const float gK = 1.0f + minf(fallRampMax, fallT_ * fallRamp);
+                vy = maxf(-fallTermV, vy - gravity * gK * dt);
                 pos.y += vy * dt;
                 const Ground g = groundInfo(w, pos.x, pos.z);
                 if (pos.y <= g.y && vy <= 0.0f) {
@@ -534,9 +611,7 @@ class Player {
         for (int c = 0; c < 4; ++c) {
             const float cx = x + ((c & 1) ? hw : -hw);
             const float cz = z + ((c & 2) ? hw : -hw);
-            const int i = int(floorf(cx / VOXEL_M));
-            const int j = int(floorf(cz / VOXEL_M));
-            g.y = maxf(g.y, float(w.terrain->heightVox(i, j) + 1) * VOXEL_M);
+            g.y = maxf(g.y, walkGroundM(w, cx, cz));
         }
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
@@ -620,11 +695,7 @@ class Player {
         // canopy should meet it, and the airborne branch of moveAxis leans on
         // that. Only free flight has a height of its own that is unrelated to
         // the ground below it.
-        const float feet =
-            fly ? pos.y
-                : (w.terrain ? float(w.terrain->heightVox(int(floorf(x / VOXEL_M)),
-                                                          int(floorf(z / VOXEL_M))) + 1) * VOXEL_M
-                             : pos.y);
+        const float feet = fly ? pos.y : (w.terrain ? walkGroundM(w, x, z) : pos.y);
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
             if (s.standable) continue;
@@ -660,10 +731,7 @@ class Player {
         for (int c = 0; c < 4; ++c) {
             const float cx = x + ((c & 1) ? hw : -hw);
             const float cz = z + ((c & 2) ? hw : -hw);
-            gy = maxf(gy, float(w.terrain->heightVox(int(floorf(cx / VOXEL_M)),
-                                                    int(floorf(cz / VOXEL_M))) +
-                                1) *
-                              VOXEL_M);
+            gy = maxf(gy, walkGroundM(w, cx, cz));
         }
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
@@ -702,6 +770,9 @@ class Player {
     // the same reason VoxelTerrain::waveTime is one -- scrubbing the sun must
     // not run the swimmer's bob backwards.
     float swimClock_ = 0.0f;
+    // How long this body has been DESCENDING, in seconds. Zero on the ground,
+    // in water, and at every apex -- see fallRamp.
+    float fallT_ = 0.0f;
     // 0 standing, 1 fully crouched, and every value between while it eases.
     float crouchT_ = 0.0f;
 

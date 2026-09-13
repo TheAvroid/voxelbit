@@ -75,10 +75,36 @@ inline constexpr float kBirdFrameMs = 1000.0f / 24.0f;
 inline constexpr float kBirdRestMs = 25.0f;
 inline constexpr float kBirdStepMs = kBirdFrameMs + kBirdRestMs;
 
-// How far a bird may be from the player before its perch is given up and taken
-// somewhere ahead instead. Generous: a bird that vanishes from a tree you are
-// still looking at is worse than one you cannot quite make out.
-inline constexpr float kBirdKeepM = 42.0f;
+// -----------------------------------------------------------------------
+// THREE RADII, AND ONE USED TO DO ALL THREE JOBS.
+//
+// Reported 2026-09-13: "the birds are disappearing when out of distance, then
+// reappearing in a different spot ... the song birds are also flickering".
+// Both symptoms are this one number, which was 42 m and meant, at once:
+//
+//   * how far out trees are GATHERED,
+//   * how far a bird may be before it is given up,
+//   * and therefore how far a new perch may be taken.
+//
+// A bird forty-two metres away is perfectly visible -- that is inside the
+// nearest half-dozen trees -- so the recycle happened in plain sight. Worse,
+// the gather runs twice a second while `stillPerched` was consulted every
+// frame, so a tree that had merely dropped out of a STALE list read as a tree
+// that had been felled, and the bird let go of a branch that was still there.
+//
+// Split, they can each be right:
+//
+//   PLACE   where a NEW perch may be taken. Near you, or the flock spreads
+//           itself over the whole gather and the wood next to you is empty.
+//   DROP    how far a bird may get before it is recycled. Far enough that it
+//           is a couple of pixels when it happens.
+//   GATHER  wider than DROP, so a live bird's own tree is ALWAYS in the list
+//           and "is my branch still there" is a question we have the data to
+//           answer. This is the one that was really broken.
+// -----------------------------------------------------------------------
+inline constexpr float kBirdPlaceM = 42.0f;
+inline constexpr float kBirdDropM = 100.0f;
+inline constexpr float kBirdKeepM = 115.0f;   // the GATHER -- see above
 // ...and no two closer than this, or two models intersect on one branch.
 inline constexpr float kBirdSepM = 1.2f;
 // A tree has to be at least this tall to be worth perching in -- below it we
@@ -213,10 +239,23 @@ class Birds {
 
         for (size_t i = 0; i < birds_.size(); ++i) {
             Bird &b = birds_[i];
-            if (b.live) {
-                const float dx = b.p.x - player.x, dz = b.p.z - player.z;
-                if (dx * dx + dz * dz > kBirdKeepM * kBirdKeepM) b.live = false;
-            }
+            // -------------------------------------------------------------
+            // IT LETS GO ONLY ONCE IT HAS SOMEWHERE TO GO.
+            //
+            // This used to clear `live` and then call tryPerch, which gets six
+            // attempts and is allowed to fail -- so on any frame where all six
+            // missed, the bird was simply NOT DRAWN. Walking past a thin patch
+            // of wood that failed intermittently is the reported flicker, and
+            // it is a one-frame hole rather than anything DLSS did.
+            //
+            // Now the replacement is found FIRST, into a copy, and the bird is
+            // moved only if it succeeded. A bird that wants to move and cannot
+            // stays exactly where it is, which is always a better picture than
+            // a gap.
+            // -------------------------------------------------------------
+            const float dx = b.p.x - player.x, dz = b.p.z - player.z;
+            const float d2 = dx * dx + dz * dz;
+            const bool tooFar = b.live && d2 > kBirdDropM * kBirdDropM;
             // ...AND THE BRANCH HAS TO STILL BE THERE.
             //
             // A perch is a position, taken once and then held. When the tree
@@ -227,8 +266,30 @@ class Birds {
             // lets go if the answer has changed. A bird that lets go is not
             // deleted: the loop below re-perches it on the next tree it can
             // find, which is what a startled bird does anyway.
-            if (b.live && !stillPerched(b, trees)) b.live = false;
-            if (!b.live) tryPerch(&b, trees, player, uint32_t(i));
+            // ...AND THE BRANCH TEST ONLY RUNS WHERE WE HAVE THE DATA.
+            //
+            // `trees` is gathered to kBirdKeepM and refreshed twice a second,
+            // so a bird beyond that radius -- or one that has only just
+            // crossed into it -- is ABSENT from the list for reasons that have
+            // nothing to do with its tree. Judging it there is how a perfectly
+            // good perch was condemned. The drop radius is well inside the
+            // gather precisely so this question is always answerable for a
+            // bird that is still live.
+            const bool lost = b.live && d2 < kBirdDropM * kBirdDropM && !stillPerched(b, trees);
+
+            if (!b.live || tooFar || lost) {
+                Bird cand = b;
+                cand.live = false;
+                tryPerch(&cand, trees, player, uint32_t(i));
+                if (cand.live) {
+                    b = cand;
+                } else if (lost) {
+                    // Its tree really has gone and there is nowhere else: a
+                    // bird sitting in the air where a crown used to be is the
+                    // one case worth a gap. NOTHING FLOATS applies to birds.
+                    b.live = false;
+                }
+            }
             if (b.live) tick(&b);
         }
     }
@@ -505,6 +566,14 @@ class Birds {
             const uint32_t h = hashU32(seed, uint32_t(attempt));
             const Solid &s = trees[size_t(h % uint32_t(trees.size()))];
             if (!s.col || s.msx <= 0 || s.msz <= 0) continue;
+            // NEAR THE PLAYER. The gather is 115 m wide so that a live bird's
+            // own tree is always in it (see the radii note); a NEW perch must
+            // not use that width, or the flock spreads itself over eight
+            // hectares and the trees beside you are bare.
+            {
+                const float px = s.cx - player.x, pz = s.cz - player.z;
+                if (px * px + pz * pz > kBirdPlaceM * kBirdPlaceM) continue;
+            }
             // A TRUNK, NOT A ROCK. `standable` is what tells them apart: a rock
             // you can climb, a trunk carries a canopy far over your head.
             if (s.standable) continue;
@@ -548,7 +617,7 @@ class Birds {
 
             // And within sight of the player, or it is a bird nobody will meet.
             const float px = lastX - player.x, pz = lastZ - player.z;
-            if (px * px + pz * pz > kBirdKeepM * kBirdKeepM) continue;
+            if (px * px + pz * pz > kBirdDropM * kBirdDropM) continue;
 
             int sp = int(h >> 8) % kBirdSpecies;
             for (int k = 0; k < kBirdSpecies && !species_[size_t(sp)].ok; ++k)

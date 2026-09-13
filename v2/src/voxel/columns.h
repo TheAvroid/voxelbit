@@ -78,6 +78,10 @@ struct ColumnStack {
     // blade is hidden by its neighbour over the span they share, so the brick
     // next door has to be askable -- same reason the heights are padded.
     uint8_t sr[PAD * PAD];
+    // WHICH WOOD'S GREEN A BLADE HERE WEARS -- see VoxelTerrain::bladeMaterial.
+    // Resolved in the gather like the top material, because it is a hash of the
+    // column and the mesher would otherwise ask for it once per face.
+    uint8_t bm[PAD * PAD];
 
     // WHERE A LAKE MAY STAND OVER EACH COLUMN, padded like the heights and for
     // the same reason: the brick next door needs it to decide whether its own
@@ -158,7 +162,8 @@ struct ColumnStack {
                              std::abs(h[padIdxH(lx, lz + 1)] - h[padIdxH(lx, lz - 1)]));
                 const uint8_t tm = t.topMaterial(i0 + lx, j0 + lz, hc, slope, memo);
                 top[padIdx(lx, lz)] = tm;
-                sr[padIdx(lx, lz)] = t.strandRows(i0 + lx, j0 + lz, tm);
+                sr[padIdx(lx, lz)] = t.strandRows(i0 + lx, j0 + lz, tm, memo);
+                bm[padIdx(lx, lz)] = t.bladeMaterial(i0 + lx, j0 + lz);
             }
 
         crestTime = t.waveTime;
@@ -192,6 +197,7 @@ struct ColumnStack {
     }
     bool wetAt(int lx, int lz) const { return wet[padIdx(lx, lz)] != 0u; }
     uint8_t topAt(int lx, int lz) const { return top[padIdx(lx, lz)]; }
+    uint8_t bladeAt(int lx, int lz) const { return bm[padIdx(lx, lz)]; }
 
     // -----------------------------------------------------------------------
     // WHICH BRICKS IN THE STACK CAN POSSIBLY HOLD A SURFACE.
@@ -421,7 +427,8 @@ class WaterColumns {
         // foam kept the silhouette of the flat water because the pixels it
         // should have grown into were never tested against the water at all".
         const int lo = hc + 1;
-        const int hi = t_.waterTopVox(hc, wl, s_.crestAt(lx, lz), s_.wetAt(lx, lz));
+        const int hi = t_.waterTopVox(s_.i0 + lx, s_.j0 + lz, hc, wl, s_.crestAt(lx, lz),
+                                      s_.wetAt(lx, lz));
         // An edit owns its voxel -- see TerrainColumns::editedMask. Water does
         // not flow into a hole, and it does not paint over one either.
         return columnRange(lo - y0_, hi - y0_) & ~g_.editedMask(lx, lz);
@@ -456,7 +463,8 @@ class WaterColumns {
         const int wy = y0_ + ly;
         const int hc = s_.heightAt(lx, lz);
         if (wy <= hc) return true;  // ground
-        return wy <= t_.waterTopVox(hc, s_.lineV(lx, lz), s_.crestAt(lx, lz), s_.wetAt(lx, lz));
+        return wy <= t_.waterTopVox(s_.i0 + lx, s_.j0 + lz, hc, s_.lineV(lx, lz),
+                                   s_.crestAt(lx, lz), s_.wetAt(lx, lz));
     }
 
     const VoxelTerrain &t_;
@@ -509,7 +517,11 @@ class StrandColumns {
     bool solidAbove(int lx, int lz) const { return covered(lx, BRICK_VOX, lz); }
     bool solidBelow(int lx, int lz) const { return covered(lx, -1, lz); }
 
-    uint8_t material(int lx, int, int lz) const { return s_.topAt(lx, lz); }
+    // A BLADE IS GRASS, NOT THE DIRT IT ROOTS IN -- and WHICH grass depends on
+    // the wood. This returned the floor's own material, which was right only
+    // while the floor under a blade was painted green; the floor is soil and
+    // litter now, and left alone this drew every blade brown.
+    uint8_t material(int lx, int, int lz) const { return s_.bladeAt(lx, lz); }
 
     uint8_t strand(int lx, int, int lz) const {
         return strandCodeFor(s_.heightAt(lx, lz) + 1);

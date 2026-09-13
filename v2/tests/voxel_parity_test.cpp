@@ -143,7 +143,8 @@ struct Truth {
         // that says so -- so it must not borrow the array's answer.
         TerrainMemo memo;
         const bool w = terr->wetColumn(i0 + lx, j0 + lz, hc, line, memo);
-        if (ly <= hc || ly > terr->waterTopVox(hc, line, terr->waveCeilVox(), w))
+        if (ly <= hc ||
+            ly > terr->waterTopVox(i0 + lx, j0 + lz, hc, line, terr->waveCeilVox(), w))
             return false;
         return !edited(lx, lz, ly);
     }
@@ -259,8 +260,11 @@ int main(int argc, char **argv) {
                             // neighbours' blades, never by water -- grass does
                             // not grow in a lake, so the two never meet.
                             if (truth.blade(lx, wy, lz)) {
+                                // A blade wears its WOOD's grass, not the
+                                // floor it roots in -- the floor is dirt on
+                                // both sides now.
                                 const uint16_t key =
-                                    uint16_t(truth.top[truth.idx(lx, lz)]) |
+                                    uint16_t(terrain.bladeMaterial(truth.i0 + lx, truth.j0 + lz)) |
                                     (uint16_t(strandCodeFor(truth.h[truth.idxH(lx, lz)] + 1))
                                      << 8);
                                 for (uint8_t d = 0; d < 6; ++d) {

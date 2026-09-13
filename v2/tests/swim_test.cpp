@@ -103,6 +103,49 @@ int main() {
                     chk(p.onGround && std::fabs(p.pos.y - ground) < 0.2f, "ordinary falling -- ok",
                         "*** THE SWIM IS FIRING ON DRY LAND ***"));
     }
+    // ---- 4. A LONG FALL HAS TO KEEP WINDING UP -----------------------------
+    //
+    // v1: "a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so
+    // anything past a short drop fell at a CONSTANT speed and read as
+    // floating." The fix is a ramp on gravity with time spent falling, and the
+    // thing to test is not the ramp's arithmetic -- it is that the speed at
+    // three seconds is meaningfully past the speed a flat gravity would give.
+    //
+    // FLAT WOULD BE g*t: 20, 40, 60 m/s at one, two and three seconds, all of
+    // them clamped to the 34.5 terminal after 1.7 s. So the measurement that
+    // means anything is the DISTANCE: a ramped fall covers visibly more ground
+    // in the same time, and it is still accelerating when a flat one has not
+    // been for a second and a half.
+    {
+        Player p;
+        p.pos = Vec3(terrain.wx(bi) + 400.0f, 4000.0f, terrain.wx(bj) + 400.0f);
+        p.onGround = false;
+        std::printf("\nFALLING   t      speed     flat g would be\n");
+        float prev = 0.0f;
+        bool winding = true;
+        for (int f = 0; f < 180; ++f) {
+            p.update(w, Vec3(0, 0, 0), false, false, false, false, dt);
+            const float t = float(f + 1) * dt;
+            if ((f + 1) % 30) continue;
+            const float v = -p.vy;
+            const float flat = minf(p.gravity * t, p.fallTermV);
+            std::printf("          %.1fs   %6.2f m/s   %6.2f\n", double(t), double(v),
+                        double(flat));
+            // It must be AHEAD of a flat fall all the way to the terminal --
+            // that is the ramp, and it is the whole of what "momentum" means
+            // here. And it must never PASS the terminal, which is the other
+            // half of what v1 does: before this, v2 had no terminal at all and
+            // a long drop accelerated without limit.
+            if (t < 1.4f && v <= flat + 0.5f) winding = false;
+            if (v > p.fallTermV + 0.01f) winding = false;
+            prev = v;
+        }
+        (void)prev;
+        std::printf("          %s\n",
+                    chk(winding, "ahead of flat gravity, and capped at the terminal -- ok",
+                        "*** not ramping, or past its terminal ***"));
+    }
+
     std::printf("\n%s (%d failures)\n", fails ? "FAILED" : "PASSED", fails);
     return fails ? 1 : 0;
 }

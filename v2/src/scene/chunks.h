@@ -225,6 +225,11 @@ class ChunkMesher {
     // mushroomFoot holds the small models first and the doubled ones after it.
     // Everything at or past this index is a big one.
     int mushroomBig0 = 0;
+    // THE BIRCH FLOWERS BEGIN HERE. One file, loaded twice: once with its
+    // stems mapped to the pine's grass ramp and once to the birch's, so a
+    // flower's stem is the same green as the blade it is standing in. Same
+    // shape as mushroomBig0 above.
+    int flowerBirch0 = 0;
     // Density INSIDE a colony now, not over the whole wood: the patches cover
     // a fifth of the ground, so the old 0.22 spread over everything is about
     // this much concentrated into them. A bed wants to look like a bed.
@@ -233,7 +238,179 @@ class ChunkMesher {
     // boulders rather than six, so the same density would have put noticeably
     // more large rock in the wood than before rather than the same amount at a
     // new size.
-    float rockDensity = 0.0075f, flowerDensity = 0.45f;
+    // -----------------------------------------------------------------------
+    // 0.24, WHICH IS v1's 0.08 THROUGH v2's GRASS FILTER.
+    //
+    // v1 plants on 8% of its candidate cells. v2 cannot use that number
+    // directly, because scatterSmall is called with grassOnly and **a pine
+    // column carries a blade only 31.8% of the time** -- so 0.08 here is 0.025
+    // on the ground, and 0.08 measured 1 flower per 2,412 columns against v1's
+    // 800. The filter is right and stays (a flower grows out of grass, not out
+    // of bare litter); the rate in front of it has to be divided by it.
+    //
+    // MEASURED over the engine's own 625-chunk ring, as "one flower per N
+    // columns" so it can be read against v1's 800 directly:
+    //
+    //              pine            birch
+    //     0.08     1 per 2412      1 per 1332
+    //     0.16     1 per 1203      1 per  668
+    //     0.24     1 per  803      1 per  445     <-- shipped
+    //     0.32     1 per  601      1 per  333
+    //
+    // 0.24 puts the PINE on v1's number to within half a per cent. The birch is
+    // denser, at 445, and that is right twice over: its floor grows blades on
+    // 63.6% of columns rather than 31.8, and v1 gives its oak/birch band the
+    // full rate while thinning the pine forest to 0.375 of it. The ratio here
+    // comes out of the ground cover rather than a second constant, which is the
+    // same relationship without a number to keep in step.
+    // -----------------------------------------------------------------------
+    // HALVED, 0.24 -> 0.12 (user 2026-09-13: "reduce the frequency of the
+    // flowers in half"). That is one flower per ~1,600 columns in the pine and
+    // ~890 in the birch, against v1's 800 -- so v2 now sits at half v1's meadow
+    // in the pine and just under it in the birch. The table above is still the
+    // map: every figure in it doubles.
+    float rockDensity = 0.0075f, flowerDensity = 0.12f;
+    // -----------------------------------------------------------------------
+    // THE FLOWERS ARE v1's NOW (user 2026-09-13, second pass: "the flowers are
+    // still not right, still too sparse. look to v1s code into how to do the
+    // flowers properly").
+    //
+    // THE STRUCTURE WAS WRONG, NOT THE NUMBER. Tripling a colony field three
+    // times over never got there because v2 and v1 disagree about what a patch
+    // IS:
+    //
+    //   v2   a colony GATES PRESENCE. Most of the wood has no bed on it at all,
+    //        and flowers exist only inside the beds. Push it and you either run
+    //        out of beds to add (coverage tops out) or the beds merge.
+    //   v1   a uniform meadow. EVERY cell may carry a flower at one flat rate;
+    //        the coarse patch decides only WHICH SPECIES. What reads as
+    //        "grouped" is a drift of one colour into another, not a clump of
+    //        plants in bare ground.
+    //
+    // v1's own numbers, from flowerAt in game/index.html:
+    //
+    //     FLWCELL   8 voxels    one candidate per 64 columns
+    //     rate      0.08        "0.08 of cells, a QUARTER of the old
+    //                            per-column density"
+    //     FLWPATCH  12 cells    96 voxels of one species -- "holds ~11
+    //                            flowers ... a drift of one colour into
+    //                            another rather than a tile"
+    //
+    // which is one flower per 800 columns, or one per 8 square metres at 10 cm
+    // voxels. v2 was at one per 8,844 columns -- ELEVEN TIMES sparser -- and no
+    // amount of coverage was going to close that, because 96% coverage of an
+    // 18 m lattice is still only one bed per 18 m.
+    //
+    // So the colony keeps its species half and loses its presence half, the
+    // scatter grid drops from 1.35 m to v1's 0.8, and the rate becomes v1's
+    // 0.08. See scatterSmall and colonyAt.
+    //
+    // THE PINE'S 0.375 IS NOT COPIED. v1 thins the pine forest to 37.5% of the
+    // oak's rate and gives the oak and birch the full one. The ask here was "in
+    // all biomes", twice, so both woods get the full rate.
+    // -----------------------------------------------------------------------
+    // (What follows is the previous pass, kept because its measurements are
+    // still the reason the colony field is shaped the way it is.)
+    // THREE TIMES THE FLOWERS (user 2026-09-13: "triple the rate of the
+    // flowers. in all biomes. keep them grouped and somewhat spread out").
+    //
+    // These two are what moved, and BOTH of them had to become names first --
+    // the coverage was a bare `> 0.68` inside colonyAt and the cell was a
+    // static constexpr, so neither could be swept without a rebuild.
+    //
+    // WHY NOT THE OBVIOUS KNOB. There are four ways to get more flowers and
+    // three of them break the other half of the request:
+    //
+    //   flowerDensity   how crowded one bed is. Tripling it packs the SAME
+    //                   patches until they read as bedding rather than as a
+    //                   plant that spread from one root. Left at 0.45, so a
+    //                   bed looks exactly as it did.
+    //   colony radius   makes each bed bigger. Three times the area is 1.7x
+    //                   the radius, and at a 15 m lattice neighbouring beds
+    //                   then overlap -- which is two species mixed again, the
+    //                   one thing the colony field exists to prevent.
+    //   coverage alone  tops out. Measured: even at 1.0 -- every site live,
+    //                   which is the even wash colonyAt's own note warns about
+    //                   -- an 18 m lattice only reaches 2.90x.
+    //   CELL SIZE       more beds, same size, same spacing rules. This one.
+    //
+    // So it is mostly the lattice (18 -> 15 m, 1.44x the sites) and the rest
+    // coverage (0.32 -> 0.72), which together put down 2.3x as many beds. The
+    // count rises by more than the beds do because a denser lattice also fills
+    // the gaps BETWEEN beds that the old spacing left, and by less than the
+    // product because new sites land on ground an existing colony already
+    // covered and colonyAt keeps only the strongest.
+    //
+    // MEASURED over the engine's own 625-chunk ring, both woods, at the three
+    // places the pine-density notes use:
+    //
+    //                       pine                birch
+    //     400, 0        1605 -> 4632  2.89x   3466 -> 10020  2.89x
+    //     2000, 1500    1355 -> 4342  3.20x   3290 -> 10287  3.13x
+    //     400, -3000    1245 -> 4254  3.42x   2970 -> 10072  3.39x
+    //
+    // Mean 3.15x. It runs a little over three where the wood was sparsest,
+    // which is the right way round: those are the places that read as having
+    // no flowers at all.
+    //
+    // A QUARTER OF THE GROUND HAS FLOWERS ON IT NOW, against an eighth before
+    // -- 0.72 x (mean bed area 78 m^2) / (15 m cell) -- so there is still three
+    // times as much bare floor as flowered, and the beds are still beds.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHAT FRACTION OF THE SPECIES REGIONS GROW ANYTHING AT ALL.
+    //
+    // 0.5 (user 2026-09-13: "reduce the amount of flowers in half again. just
+    // reduce the amount of groups, but not the amount WITHIN a group").
+    //
+    // THIS IS THE ONLY KNOB THAT DOES THAT. flowerDensity is how crowded a bed
+    // is and halving it would thin every bed; colonyCellM is how big a bed is
+    // and shrinking it would make them all smaller. Making half the regions
+    // BARREN leaves the surviving ones exactly as full and exactly as large as
+    // they were, and there are half as many of them -- which is the sentence
+    // above, read literally.
+    //
+    // A BARREN REGION IS NOT A GAP IN A LATTICE. The regions are a jittered
+    // Voronoi, so a dead one is an irregular blob of bare floor between two
+    // live beds, and its edges are the same wandering lines every other
+    // boundary has. Turning off half a SQUARE grid would have read as a
+    // chequerboard.
+    // -----------------------------------------------------------------------
+    float colonyCoverage = 0.5f;
+    // HOW BIG ONE SPECIES' DRIFT IS. v1's FLWPATCH x FLWCELL = 12 x 8 = 96
+    // voxels; this is that in metres. It is no longer a spacing between beds,
+    // because there are no beds -- it is the scale at which the colour changes.
+    // -----------------------------------------------------------------------
+    // 10 m ACROSS (user 2026-09-13: "the flower groups are too big, reduce the
+    // size of the group in half across all flowers"). This is the LINEAR
+    // extent halved, 20 -> 10, which is what "half the size" says about
+    // something you are looking at on the ground; the area goes to a quarter
+    // and so does the flower count in a group.
+    //
+    // IT IS BACK NEAR v1's 9.6 AND THAT IS FINE NOW, which is worth stating
+    // because the note this replaces argued the opposite. 20 was chosen to stop
+    // the wood reading as a seed packet -- but that was never really the size,
+    // it was the SHAPE: the regions tiled on an axis-aligned floor() grid, so
+    // four species met at every lattice corner along ruled seams. colonyAt uses
+    // a jittered Voronoi now, where a point belongs to exactly one site by
+    // construction and two regions meet along one wandering line. With that
+    // fixed, small regions read as separate beds rather than as confetti, and
+    // the size is free to be whatever looks right.
+    //
+    // WHAT A GROUP HOLDS, at flowerDensity 0.12: about five flowers in the pine
+    // and eleven in the birch, the difference being that the birch floor grows
+    // blades on twice as many columns and a flower needs one. v1's own note
+    // calls ~11 "enough to read as a patch of roses"; the pine is thinner than
+    // that, and it is thin because the rate was halved and the group halved on
+    // top of it. Both were asked for, in that order.
+    // -----------------------------------------------------------------------
+    float colonyCellM = 10.0f;
+    // ONE CANDIDATE PER 0.8 m, v1's FLWCELL of 8 voxels. It is BOTH the grid
+    // and the jitter -- a candidate is thrown up to half a cell either way --
+    // and v1's note says why it is not larger: "the cell also sets the MINIMUM
+    // SPACING ... much larger than 8 turns a uniform meadow into visible
+    // clumps-and-gaps".
+    float flowerStrideM = 0.8f;
     // Mushrooms are NOT colonised the way flowers are. A flower bed is a patch
     // and reads wrong scattered evenly; a mushroom in a conifer wood is mostly
     // a thing you come across on its own, so this is a flat low probability
@@ -289,7 +466,36 @@ class ChunkMesher {
     // of the knob's range left above this -- at 1.0 every cell the stand
     // density admits would take a tree and the clumping would flatten into an
     // even field, which is the thing that gate exists to prevent.
-    float treeDensity = 0.3210f;  // was 0.55, less a quarter three times, then +25% of wood
+    // -----------------------------------------------------------------------
+    // HOW A STAND-DENSITY READING BECOMES A PLANTING PROBABILITY.
+    //
+    // It was `saturate((dens - 0.30) / 0.32) * 0.92 + 0.05` -- linear in the
+    // field, so every part of the wood scaled together and "more trees" could
+    // only ever mean "more trees everywhere in the same proportion".
+    //
+    // SQUARED, so the increase lands in the THICKETS. The user asked for a
+    // quarter more pine with the denser parts filled in further, and those are
+    // two different requests: the first is the mean, the second is the shape.
+    // Solved against a 141,000-sample survey of the field so the total is
+    // exactly +25% and the distribution is what moved:
+    //
+    //     clearings  1.10x     mid wood  0.97x     thickets  1.47x
+    //
+    // The floor is RAISED to 0.090 as the curve is squared, which is what
+    // keeps the clearings from emptying -- s^2 alone took them to 0.56x, and a
+    // wood whose glades are barer is not what was asked for. Squaring with a
+    // low floor also thins the mid wood hard (0.93x); at 0.090 it is 0.97x,
+    // near enough untouched.
+    // -----------------------------------------------------------------------
+    static float standGate(float dens) {
+        const float s = saturate((dens - 0.30f) / 0.32f);
+        return s * s * 1.20f + 0.090f;
+    }
+
+    // 0.3666: 0.3210 x 1.142. Not x1.25 -- squaring the curve raises its own
+    // mean from 0.602 to 0.659, so the density only has to make up the rest.
+    // The measured total is +25.0%.
+    float treeDensity = 0.3666f;  // was 0.55, less a quarter three times, then +25% of wood
     float treeStride = 2.4f;
 
     // ---- the birch wood ----------------------------------------------------
@@ -363,7 +569,11 @@ class ChunkMesher {
     // there is a great deal now -- at 1.0 every cell the stand-density field
     // admits would take a tree and the clumping would flatten out into an even
     // field, which is the thing that gate exists to prevent.
-    float birchDensity = 0.363f;
+    // 0.3317: 0.363 x 0.914, which is 1 / 1.0945 -- the factor by which
+    // squaring standGate raised its own mean. The birch wood was not asked to
+    // change, and it shares the gate, so its density is scaled back to hold
+    // its tree count where it was.
+    float birchDensity = 0.3317f;
 
     // TWICE AS MANY BIRCHES, AS AN EXTRA SWEEP RATHER THAN A BIGGER NUMBER.
     //
@@ -634,6 +844,11 @@ class ChunkMesher {
     // that two trees occasionally stand closer than they should across a seam.
     // That is a far better trade than serialising the chunk builds.
     // -----------------------------------------------------------------------
+    // PUBLIC, for the scatter harness. It is a pure function of the chunk
+    // coordinates and the knobs above -- no threads, no GPU, no state of its
+    // own -- which is exactly what lets a density be swept in a g++ loop
+    // instead of by launching the engine a dozen times.
+  public:
     void scatter(ChunkBuild *b) {
         const int I0 = b->cx * CHUNK_VOX, J0 = b->cz * CHUNK_VOX;
         // THE BAND'S WATERLINE, ONCE PER CHUNK. These gates keep trees, rocks
@@ -732,8 +947,7 @@ class ChunkMesher {
                         const float tDensity = isBirch ? birchDensity : treeDensity;
 
                         const float dens = terrain_.standDensity(x, z, memo.stand);
-                        if (hashUnit(seed + 13u, cell) >
-                            (saturate((dens - 0.30f) / 0.32f) * 0.92f + 0.05f) * tDensity)
+                        if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity)
                             continue;
 
                         // The model comes from that species' own range.
@@ -879,10 +1093,13 @@ class ChunkMesher {
         // It thins them too, and deliberately: area goes as the square, so a
         // flower bed is now a little over half as crowded. Raising the density
         // to hold the count would have put the spacing straight back.
-        scatterSmall(b, 2, flowerFoot, flowerDensity, 1.35f, true, &solid);
+        // v1's FLWCELL, 8 voxels -- see flowerStrideM. It used to be 1.35 m,
+        // which is one candidate per 182 columns against v1's 64.
+        scatterSmall(b, 2, flowerFoot, flowerDensity, flowerStrideM, true, &solid);
         scatterSmall(b, 3, mushroomFoot, mushroomDensity, 1.3f, true, &solid);
     }
 
+  private:
     // -----------------------------------------------------------------------
     // Flowers grow in COLONIES, ONE SPECIES TO A COLONY. Roses stand with
     // roses, lavender with lavender.
@@ -911,20 +1128,77 @@ class ChunkMesher {
     // still says how far apart.
     // -----------------------------------------------------------------------
     struct Colony {
-        float w = 0.0f;    // 0..1 how strongly this ground is inside a patch
+        // 0..1 how strongly this ground is inside a patch. ALWAYS 1 while
+        // colonyCoverage is 1, which is what makes the scatter a meadow rather
+        // than a set of beds -- see the v1 note over colonyCoverage.
+        float w = 0.0f;
         int species = 0;   // the one flower model the whole patch is made of
     };
 
     // Eighteen metres between sites, and the site sits in the middle half of
     // its cell. Both numbers are about SEPARATION: two neighbouring colonies
     // that overlap heavily are two species mixed again, just in bigger lumps.
-    static constexpr float kColonyCell = 18.0f;
 
     Colony colonyAt(float x, float z, int speciesCount, FbmMemo &wobMemo) const {
         Colony best;
         if (speciesCount <= 0) return best;
-        const int gi = int(floorf(x / kColonyCell));
-        const int gj = int(floorf(z / kColonyCell));
+
+        // ---- THE PATCH PICKS A COLOUR, IT DOES NOT PICK A PLACE -----------
+        //
+        // The whole ground is in a patch, which is v1's structure: what reads
+        // as "grouped" is a drift of one colour into another, not a clump of
+        // plants in bare ground.
+        //
+        // NEAREST SITE, NOT A FLOOR (user 2026-09-13: "dont mix different types
+        // of flowers together. make sure to keep them seperate in their own
+        // groups"). v1 uses `Math.floor(cx / FLWPATCH)`, which tiles the world
+        // into axis-aligned SQUARES of one species. v1 gets away with it -- its
+        // own note says "nothing draws the boundary, ~11 scattered plants do"
+        // -- but a square grid puts four species round every lattice corner and
+        // a straight seam between each pair, and at v2's larger patch that is
+        // exactly what "mixed together" looks like: two colours a metre apart
+        // along a ruled line, four of them meeting at a point.
+        //
+        // A jittered Voronoi has neither property. Every point belongs to
+        // exactly ONE site, so a region is one species by construction; the
+        // regions are irregular convex blobs rather than tiles; and two of them
+        // meet along one wandering line instead of a cross.
+        //
+        // A 3x3 OF SITES IS ENOUGH, and it has to be: a site sits in the middle
+        // half of its own cell, so the furthest a point can be from its own
+        // site is under one cell and no site outside the ring can be nearer.
+        //
+        // The lobed-disc machinery below still runs when colonyCoverage is
+        // turned down from 1; at 1 it cannot reject anything, so this is the
+        // path every flower in the world takes.
+        {
+            const int gx = int(floorf(x / colonyCellM));
+            const int gz = int(floorf(z / colonyCellM));
+            float bestD = 1e30f;
+            for (int dj = -1; dj <= 1; ++dj)
+                for (int di = -1; di <= 1; ++di) {
+                    const uint32_t pc =
+                        hashU32(uint32_t(gx + di) ^ 0x9E3779B9u, uint32_t(gz + dj));
+                    const float sx =
+                        (float(gx + di) + 0.25f + 0.50f * hashUnit(seed + 62u, pc)) * colonyCellM;
+                    const float sz =
+                        (float(gz + dj) + 0.25f + 0.50f * hashUnit(seed + 63u, pc)) * colonyCellM;
+                    const float dx = x - sx, dz = z - sz;
+                    const float d2 = dx * dx + dz * dz;
+                    if (d2 >= bestD) continue;
+                    bestD = d2;
+                    // BARREN OR NOT, decided by the SITE and not by the point,
+                    // so a dead region is dead all the way to its own
+                    // boundaries rather than fading out. See colonyCoverage.
+                    best.w = (hashUnit(seed + 61u, pc) < colonyCoverage) ? 1.0f : 0.0f;
+                    best.species =
+                        int(hashUnit(seed + 65u, pc) * float(speciesCount)) % speciesCount;
+                }
+            return best;
+        }
+
+        const int gi = int(floorf(x / colonyCellM));
+        const int gj = int(floorf(z / colonyCellM));
 
         // The radius is modulated by a ~five-metre noise, sampled at the QUERY
         // point rather than the site, so the outline is lobed and irregular
@@ -938,12 +1212,12 @@ class ChunkMesher {
                 // Most of the ground has no colony on it at all. Without this
                 // the patches tile and the wood is uniformly flowered again,
                 // just in lumps.
-                if (hashUnit(seed + 61u, c) > 0.68f) continue;
+                if (hashUnit(seed + 61u, c) > colonyCoverage) continue;
 
                 const float sx = (float(gi + di) + 0.25f + 0.50f * hashUnit(seed + 62u, c)) *
-                                 kColonyCell;
+                                 colonyCellM;
                 const float sz = (float(gj + dj) + 0.25f + 0.50f * hashUnit(seed + 63u, c)) *
-                                 kColonyCell;
+                                 colonyCellM;
                 const float rad = (3.0f + 4.0f * hashUnit(seed + 64u, c)) * wob;
                 const float dx = x - sx, dz = z - sz;
                 const float d = sqrtf(dx * dx + dz * dz);
@@ -1090,8 +1364,7 @@ class ChunkMesher {
                             if (pass != 0 && !isBirch) continue;
                             const float tDensity = isBirch ? birchDensity : treeDensity;
                             const float dens = terrain_.standDensity(x, z, memo.stand);
-                            if (hashUnit(seed + 13u, cell) >
-                                (saturate((dens - 0.30f) / 0.32f) * 0.92f + 0.05f) * tDensity)
+                            if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity)
                                 continue;
                             const int lo = isBirch ? birchBase : 0;
                             const int hi = isBirch ? int(pineFoot.size()) : birchBase;
@@ -1514,7 +1787,25 @@ class ChunkMesher {
                 const int h = terrain_.heightVox(ci, cj, memo);
                 if (h <= wl + 2) continue;
                 const uint8_t top = terrain_.topMaterial(ci, cj, h, memo);
-                if (grassOnly && !isGrass(top)) continue;
+                // ---------------------------------------------------------
+                // A FLOWER STANDS IN THE GRASS, so it asks whether there IS
+                // any -- not whether the FLOOR is green.
+                //
+                // The old test was `isGrass(top)`, and it was right while the
+                // ground itself was painted mat::GRASS_0 over half the world.
+                // The floor is soil and litter everywhere now and the grass is
+                // only the blades, so that test answered false on every column
+                // in the world and the flowers silently stopped being placed
+                // -- 0 of them, where the note further up this file records
+                // 276 in the same sweep.
+                //
+                // Asking for a BLADE is the same question the old test was
+                // really asking, and it is a better one: a flower now grows
+                // where grass actually grows, in both woods, rather than
+                // wherever a paint happened to be.
+                // ---------------------------------------------------------
+                const int rows = grassOnly ? terrain_.strandRows(ci, cj, top, memo) : 0;
+                if (grassOnly && rows <= 0) continue;
 
                 // The species is the COLONY's, not this cell's: that is the
                 // whole point of the patch.
@@ -1522,6 +1813,14 @@ class ChunkMesher {
                             ? col.species
                             : int(hashUnit(seed + 44u, cell) * float(foot.size())) %
                                   int(foot.size());
+                // WHICH WOOD'S STEM. The colony picked a species out of the
+                // first half; the second half is the same flowers wearing the
+                // birch's green. Dithered on the column hash exactly as
+                // bladeMaterial is, so the two do not disagree about a column
+                // and the changeover is not a straight line.
+                if (kind == 2 && flowerBirch0 > 0 && k < flowerBirch0 &&
+                    terrain_.bladeMaterial(ci, cj) == mat::BGRASS_0)
+                    k += flowerBirch0;
 
                 // TWO SIZES OF MUSHROOM, one in four of them the big one. The
                 // draw is a separate hash stream from the species pick above:
@@ -1534,6 +1833,11 @@ class ChunkMesher {
                     k = lo + (int(hashUnit(seed + 0x3C7Fu, cell) * float(hi - lo)) % (hi - lo));
                 }
                 const int yaw = int(hashUnit(seed + 45u, cell) * 4.0f) & 3;
+                // ON TOP OF THE BLADE. yOff is exactly this mechanism -- see
+                // Placement, where a pinecone uses it for the branch it is
+                // perched on. One voxel down into the sward so the stem meets
+                // the blade rather than floating a hair above it.
+                const int yLift = (kind == 2 && rows > 0) ? maxi(0, rows - 1) : 0;
                 int extraSink = 0;
 
                 // ---- SIT IT FLUSH, OR DO NOT PLACE IT AT ALL ----------------
@@ -1719,7 +2023,7 @@ class ChunkMesher {
                     if (inside) continue;
                 }
 
-                b->decor.push_back({kind, k, ci, cj, h, yaw, cell, 0, extraSink});
+                b->decor.push_back({kind, k, ci, cj, h, yaw, cell, yLift, extraSink});
             }
         }
     }

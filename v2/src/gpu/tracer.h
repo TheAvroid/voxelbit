@@ -364,6 +364,9 @@ class Tracer {
     // Beside skyTime because it is the same kind of thing: a per-frame value the
     // app pushes in, not a setting anybody tunes.
     float waterY = -1.0e4f;
+    // WHICH WATER TERMS ARE ON -- one bit each, see kWF* in Shared.slang. All
+    // of them by default; the [I] panel is the only thing that clears any.
+    uint32_t waterFlags = 0x1FBu;  // kWFDefault: all but the world reflection
     float waterTime = 0.0f;
 
     // Auto-exposure and bloom live in their own module because they share a
@@ -595,6 +598,7 @@ class Tracer {
         p.cam = cam;
         p.waterY = waterY;
         p.waterTime = waterTime;
+        p.waterFlags = waterFlags;
         // On the very first frame there is no previous camera; using this one
         // makes every motion vector zero, which is exactly right -- there is no
         // history for them to point into yet.

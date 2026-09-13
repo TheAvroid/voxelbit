@@ -1,0 +1,373 @@
+// ---------------------------------------------------------------------------
+// birdflock.h -- the songbirds that are IN THE AIR, as opposed to the ones
+// sitting in the trees (render/birds.h).
+//
+// Ported from the JS engine's `birdStep`, which is the reference. The two bird
+// systems share their species and nothing else: a perched bird is a POSE on a
+// branch that turns in place through eleven rotate/ frames, and a flying one is
+// a body with a heading, an altitude and a bank, cycling a seven-frame flight/
+// strip. They do not convert into one another and neither needs to know the
+// other exists.
+//
+// ALL THE SONGBIRDS BUT THE PINK ONE, which is the same rule the perched flock
+// already follows -- see kBirdSpecies in birds.h, whose note records the pink
+// bird being held back for the cherry forest.
+// ---------------------------------------------------------------------------
+#pragma once
+
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "../gpu/world.h"
+#include "../scene/vox.h"
+#include "../scene/voxelworld.h"
+#include "birds.h"
+
+namespace v2 {
+
+// assets/life/<species>/flight/00..06, and base.vox is SOURCE ART -- the same
+// trap the salmon and the dragonfly strips carry. See lake.h.
+inline constexpr int kFlightFrames = 7;
+
+// -- v1's OWN NUMBERS -------------------------------------------------------
+//
+// NAMED kSong*, NOT kFly*: butterflies.h already owns that prefix and the two
+// share a namespace, so kFlySpeed and friends are a redefinition error rather
+// than a shadow. Caught by the compiler, but only after the file was written.
+// ---------------------------------------------------------------------------
+//
+// Its units are voxels per second and both engines are 10 cm voxels, so they
+// divide by ten into metres.
+inline constexpr float kSongSpeed = 5.5f;    // m/s, ground speed  (JS BIRD_SPD 55)
+inline constexpr float kSongFlapFps = 24.0f; //                    (JS BIRD_FLAP 24)
+
+// -- ...AND THE ONE NUMBER THAT COULD NOT BE COPIED -------------------------
+//
+// JS: `BIRD_ALT = 140` with a hard floor at `g + 122`, and its comment says
+// exactly why -- "must beat the tallest pine (116 vox) + bob or it clips
+// foliage". That is a statement about ITS trees, not about flight, and v2's are
+// half again as tall: a felled pine measures 23 m end to end and a birch 25
+// (--fell-test, collider longest side). Copied literally the flock would fly
+// through every crown in the wood.
+//
+// So the same RULE with this engine's number: clear the tallest thing that
+// grows, plus the bob, plus a margin.
+inline constexpr float kSongFloorM = 28.0f;  // never closer to the ground than this
+inline constexpr float kSongCruiseM = 30.0f; // ...and the height it aims for
+
+// The wander band, the soar band, and the dive -- all JS, all divided by ten.
+inline constexpr float kSongWanderAlt = 3.4f;   // (JS altT 0..34)
+inline constexpr float kSongSoarLo = 1.8f, kSongSoarHi = 4.4f;   // (JS 18..44)
+inline constexpr float kSongSwoopSec = 3.2f;    // the dive-and-recover window
+inline constexpr float kSongLookM = 4.5f;       // terrain lookahead (JS 45 vox)
+inline constexpr float kSongBobM = 0.30f;       // (JS sin(t*1.2) * 3.0)
+
+// -- HOW MANY, AND WHERE THEY COME FROM -------------------------------------
+//
+// Nine, which divides by the three species so the round-robin comes out exact.
+// The JS note is worth keeping: an uneven split "shows up as one species being
+// rarer than the others rather than as anything subtle".
+inline constexpr int kFlockBirds = 9;
+
+// -- AND THEY ARRIVE FROM THE FOG, NOT OUT OF CLEAR SKY ---------------------
+//
+// This is the JS engine's own correction to itself, reported as "the song birds
+// seem to just appear out of the sky ... do they not have the same render
+// distance as everything else?". It had placed them at 0.24-0.50 of the keep
+// radius on the reasoning that a bird on the horizon is one pixel -- and the
+// flaw is that a speck against OPEN SKY is exactly where a new one is easiest
+// to catch, because there is nothing else up there to look at.
+//
+// Same band as everything else: it fades in at the far edge and flies toward
+// you. It is also the identical lesson the PERCHED birds had to learn the hard
+// way this week -- see v2-birds-popped-and-flickered.
+// 105 m, which is v1's own `min(renderDist + 64, 1040)` voxels. 200 was tried
+// first on the reasoning that v2 sees three times as far -- and measured, the
+// nearest of nine birds was 157 m away, which is two pixels. The ring is not a
+// draw distance, it is how often one crosses in front of you, and nine birds
+// spread over 200 m almost never do.
+inline constexpr float kSongKeepM = 105.0f;
+inline constexpr float kSongRingLo = 0.78f, kSongRingHi = 0.94f;
+
+// ---------------------------------------------------------------------------
+class BirdFlock {
+  public:
+    bool ready() const { return ready_; }
+
+    // -----------------------------------------------------------------------
+    // One flight strip per species. A species whose strip is missing is simply
+    // absent from the flock -- the JS loader does the same, "with a warn and no
+    // other effect".
+    // -----------------------------------------------------------------------
+    bool load(World &world, const std::string &lifeDir) {
+        static const char *kNames[kBirdSpecies] = {"blue_bird", "robin", "cardinal"};
+        for (int s = 0; s < kBirdSpecies; ++s) {
+            std::vector<VoxModel> mo;
+            mo.resize(size_t(kFlightFrames));
+            bool whole = true;
+            for (int f = 0; f < kFlightFrames; ++f) {
+                char path[600];
+                std::snprintf(path, sizeof(path), "%s/%s/flight/%02d.vox", lifeDir.c_str(),
+                              kNames[s], f);
+                std::string err;
+                if (!voxLoad(path, &mo[size_t(f)], &err)) {
+                    std::fprintf(stderr, "v2: flight %s: %s -- species skipped\n", path,
+                                 err.c_str());
+                    whole = false;
+                    break;
+                }
+            }
+            if (!whole) continue;
+            Strip st;
+            for (int f = 0; f < kFlightFrames; ++f) {
+                int sx = 0, sy = 0, sz = 0;
+                const int m = world.addFlyerModel(mo[size_t(f)], kNames[s], &sx, &sy, &sz);
+                if (m < 0) { st.model.clear(); break; }
+                st.model.push_back(m);
+            }
+            if (st.model.size() == size_t(kFlightFrames)) strips_.push_back(std::move(st));
+        }
+        birds_.resize(kFlockBirds);
+        ready_ = !strips_.empty();
+        if (ready_)
+            std::printf("  flock    %zu songbird species in the air, %d frames each\n",
+                        strips_.size(), kFlightFrames);
+        return ready_;
+    }
+
+    // -----------------------------------------------------------------------
+    // `ground` answers "how high is the world under this point", in metres. It
+    // is passed in rather than reached for so the flock cannot disagree with
+    // whatever the caller already calls the ground -- the same discipline the
+    // loose bodies' floor follows.
+    // -----------------------------------------------------------------------
+    template <typename GroundF>
+    void update(float dt, const Vec3 &player, const GroundF &ground) {
+        if (!ready_) return;
+        clock_ += dt;
+        for (size_t i = 0; i < birds_.size(); ++i) step(&birds_[i], uint32_t(i), dt, player, ground);
+    }
+
+    void publish(World &world, int slot0) {
+        if (!ready_) return;
+        for (size_t i = 0; i < birds_.size(); ++i) put(world, slot0 + int(i), birds_[i]);
+        // AND THE BAND IS FLUSHED, or none of that reaches the structure. This
+        // is the third system in this engine to be written without it and the
+        // symptom is always the same and always silent: the records are
+        // correct, nothing is drawn. birds.h carries the same note -- "27
+        // perched songbirds changed exactly zero pixels".
+        world.flushFlyerInstances();
+    }
+
+    // The nearest one to a point, for a headless check -- there is no other way
+    // to tell "no birds placed" from "birds placed 180 m away and two pixels
+    // across", and those are very different bugs.
+    bool nearest(const Vec3 &p, Vec3 *at, float *dist) const {
+        float best = 1e30f;
+        for (const Bird &b : birds_) {
+            if (!b.live) continue;
+            const float dx = b.x - p.x, dy = b.y - p.y, dz = b.z - p.z;
+            const float d = dx * dx + dy * dy + dz * dz;
+            if (d >= best) continue;
+            best = d;
+            if (at) *at = Vec3{b.x, b.y, b.z};
+        }
+        if (best > 1e29f) return false;
+        if (dist) *dist = sqrtf(best);
+        return true;
+    }
+
+    int flying() const {
+        int n = 0;
+        for (const Bird &b : birds_) n += b.live;
+        return n;
+    }
+
+  private:
+    struct Strip { std::vector<int> model; };
+    struct Bird {
+        bool live = false;
+        float x = 0, y = 0, z = 0;
+        float th = 0;        // heading
+        float om = 0, omT = 0;
+        float g = 0;         // the smoothed ground it is following
+        float altO = 0, altT = 0;   // the wander band, eased
+        float swO = 0;       // the swoop offset, eased
+        float swoopA = 0, swoopT0 = 0;
+        float pyPrev = 0, vyS = 0;  // vertical speed, low-passed
+        float reAt = 0;      // when to pick the next behaviour
+        int mode = 0;        // 0 wander / 1 thermal soar / 2 swoop
+        int sp = 0;          // species
+        float animClk = 0;
+    };
+
+    // A hash stream per bird that moves with the clock, so two recycles of the
+    // same slot do not produce the same bird.
+    float rnd(uint32_t i, uint32_t salt) const {
+        return hashUnit(salt, hashU32(i * 2654435761u, uint32_t(clock_ * 1000.0f)));
+    }
+
+    template <typename GroundF>
+    void step(Bird *b, uint32_t i, float dt, const Vec3 &player, const GroundF &ground) {
+        // -- THE RING ------------------------------------------------------
+        if (b->live) {
+            const float dx = b->x - player.x, dz = b->z - player.z;
+            if (dx * dx + dz * dz > kSongKeepM * kSongKeepM) b->live = false;
+        }
+        if (!b->live) {
+            const float a = rnd(i, 0x81u) * 6.2831853f;
+            const float r = kSongKeepM * (kSongRingLo + (kSongRingHi - kSongRingLo) * rnd(i, 0x82u));
+            *b = Bird{};
+            b->live = true;
+            b->x = player.x + sinf(a) * r;
+            b->z = player.z + cosf(a) * r;
+            // POINTED INBOARD. A bird spawned on the ring facing outward turns
+            // round in front of you and leaves, which is the one arrival that
+            // draws attention to itself.
+            b->th = a + 3.14159265f + (rnd(i, 0x83u) - 0.5f) * 1.2f;
+            b->sp = int(i) % int(strips_.size());
+            b->g = ground(b->x, b->z);
+            b->y = b->g + kSongCruiseM;
+            b->pyPrev = b->y;
+            b->animClk = rnd(i, 0x84u) * float(kFlightFrames);
+        }
+
+        // -- PICK THE NEXT BEHAVIOUR, NOT JUST THE NEXT TURN ----------------
+        //
+        // The JS comment is the design: "pick the next BEHAVIOUR, not just a
+        // turn rate -- that is what reads as intent instead of drift".
+        if (clock_ > b->reAt) {
+            const float r = rnd(i, 0x90u);
+            if (r < 0.18f) {
+                // THERMAL SOAR: a steady banked circle, drifting a little
+                // higher. One sign for the whole circle, or it is not a circle.
+                b->mode = 1;
+                b->omT = (rnd(i, 0x91u) < 0.5f ? 1.0f : -1.0f) * (0.45f + rnd(i, 0x92u) * 0.35f);
+                b->altT = kSongSoarLo + rnd(i, 0x93u) * (kSongSoarHi - kSongSoarLo);
+                b->reAt = clock_ + 6.0f + rnd(i, 0x94u) * 7.0f;
+            } else if (r < 0.34f) {
+                // SWOOP: fold in, trade height for speed, bleed it back into
+                // the climb-out. NEVER DEEPER THAN THE HEIGHT IT HAS IN HAND,
+                // which is what the min() is for.
+                b->mode = 2;
+                b->swoopT0 = clock_;
+                b->swoopA = 1.2f + rnd(i, 0x95u) * minf(2.6f, 0.6f + b->altO);
+                b->omT = (rnd(i, 0x96u) - 0.5f) * 0.4f;
+                b->reAt = clock_ + kSongSwoopSec;
+            } else {
+                b->mode = 0;
+                b->omT = (rnd(i, 0x97u) - 0.5f) * 1.0f;
+                b->altT = rnd(i, 0x98u) * kSongWanderAlt;
+                b->reAt = clock_ + 1.5f + rnd(i, 0x99u) * 3.0f;
+            }
+        }
+
+        b->om += (b->omT - b->om) * (1.0f - expf(-2.5f * dt));
+        b->th += b->om * dt;
+        const float hx = sinf(b->th), hz = cosf(b->th);
+
+        // -- ENERGY EXCHANGE ------------------------------------------------
+        //
+        // "a dive buys speed (up to +50%), a climb costs it -- the swoop reads
+        // as physics, not animation". The coefficient is v1's own, rescaled for
+        // metres: its -vyS * 0.045 on a voxel speed is -vyS * 0.45 on ours.
+        const float spd = kSongSpeed * (1.0f + clampf(-b->vyS * 0.45f, -0.28f, 0.5f));
+        b->x += hx * spd * dt;
+        b->z += hz * spd * dt;
+
+        // -- TERRAIN FOLLOW, AND IT IS ASYMMETRIC ---------------------------
+        //
+        // Climb fast ahead of rising ground, sink only gently -- so crossing a
+        // gorge is a mild swoop rather than a plunge below the rims. The
+        // lookahead is what makes it anticipate rather than react.
+        const float gT = maxf(ground(b->x, b->z), ground(b->x + hx * kSongLookM,
+                                                         b->z + hz * kSongLookM));
+        b->g += (gT - b->g) * (1.0f - expf(-(gT > b->g ? 3.0f : 0.35f) * dt));
+        b->altO += (b->altT - b->altO) * (1.0f - expf(-0.4f * dt));
+
+        // A HALF-SINE DIVE, eased -- so an interrupted swoop recovers smoothly
+        // instead of popping back to level.
+        const float swT = (b->mode == 2)
+                              ? -b->swoopA * sinf(3.14159265f *
+                                                  minf(1.0f, (clock_ - b->swoopT0) / kSongSwoopSec))
+                              : 0.0f;
+        b->swO += (swT - b->swO) * (1.0f - expf(-4.0f * dt));
+
+        const float py = maxf(b->g + kSongFloorM,
+                              b->g + kSongCruiseM + b->altO + b->swO +
+                                  sinf(clock_ * 1.2f) * kSongBobM);
+        // RAW, THEN LOW-PASSED. The ground samples step as voxel boundaries
+        // cross, so the raw vertical speed is noisy -- and BOTH the attitude
+        // and the bank read this, so unfiltered the pitch snaps.
+        const float vy = (py - b->pyPrev) / maxf(dt, 1e-4f);
+        b->pyPrev = py;
+        b->vyS += (vy - b->vyS) * (1.0f - expf(-5.0f * dt));
+        b->y = py;
+
+        // THE FLAP NEVER STOPS. The JS engine holds a glide frame on a flag
+        // that is permanently false -- "COASTING REMOVED (user) -- the bird
+        // never holds the spread-wing glide frame; it cycles its flap strip
+        // continuously" -- so that is what this does, and the glide frame is
+        // not loaded at all.
+        b->animClk += dt * kSongFlapFps;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE POSE, WHICH IS A BANKED TURN AND NOT A YAW.
+    //
+    // Everything else in this scene is a quarter turn about Y; a bird is the
+    // exception that earns a full basis. Built the way the JS engine builds it:
+    //
+    //     F    the 3D flight direction, pitch included
+    //     Xw   the wingspan, up x F -- for om > 0 this side faces the turn
+    //     Zw   the body's up, F x Xw
+    //     bank v.om/g, rolled about F, so the wing on the inside DIPS
+    //
+    // It is still a rotation, so it is still orthonormal and World::place's
+    // no-adjugate assumption holds.
+    // -----------------------------------------------------------------------
+    void put(World &world, int slot, const Bird &b) const {
+        if (!b.live || strips_.empty()) {
+            world.setFlyerInstance(slot, 0, nullptr, 0, 0, 0, nullptr, false);
+            return;
+        }
+        const float hx = sinf(b.th), hz = cosf(b.th);
+        const float fy = clampf(b.vyS / kSongSpeed * 3.0f, -0.6f, 0.6f);
+        const float fl = sqrtf(1.0f + fy * fy);
+        const float Fx = hx / fl, Fy = fy / fl, Fz = hz / fl;
+
+        const float xl = maxf(1e-4f, sqrtf(Fx * Fx + Fz * Fz));
+        const float ax = Fz / xl, az = -Fx / xl;                 // Xw0, up x F
+        const float ux = Fy * az, uy = Fz * ax - Fx * az, uz = -Fy * ax;   // Zw0 = F x Xw0
+
+        // ROLLS INTO THE TURN, and harder the faster it is going -- v.om/g.
+        const float spd = kSongSpeed * (1.0f + clampf(-b.vyS * 0.45f, -0.28f, 0.5f));
+        const float bank = clampf(spd * b.om / 9.81f * 1.8f, -0.5f, 0.5f);
+        const float cb = cosf(bank), sb = sinf(bank);
+        const float wx = ax * cb - ux * sb, wy = -uy * sb, wz = az * cb - uz * sb;
+        const float bx = ux * cb + ax * sb, by = uy * cb, bz = uz * cb + az * sb;
+
+        // COLUMNS ARE WHERE THE MODEL'S OWN AXES GO. World::place reads m by
+        // ROWS (see the ox/oy/oz product in birds.h), so the image of the
+        // model's local x is (m0, m3, m6).
+        //
+        // The strip is authored beak-along -z, which is the JS engine's "the
+        // beak (model -depth) points along it" carried through toWorld's
+        // Z-up-to-Y-up swap.
+        const float m[9] = {wx, bx, -Fx,
+                            wy, by, -Fy,
+                            wz, bz, -Fz};
+        const Strip &st = strips_[size_t(b.sp) % strips_.size()];
+        const int fi = int(b.animClk) % int(st.model.size());
+        world.setFlyerInstance(slot, st.model[size_t(fi)], m, b.x, b.y, b.z, nullptr, true);
+    }
+
+    bool ready_ = false;
+    float clock_ = 0.0f;
+    std::vector<Strip> strips_;
+    std::vector<Bird> birds_;
+};
+
+}  // namespace v2

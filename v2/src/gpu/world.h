@@ -107,8 +107,11 @@ static_assert(v2::TRI_STRAND_SHIFT == int(v2::kTriStrandShift),
               "tri layout disagrees with the shader");
 static_assert(v2::TRI_STRAND_MASK == int(v2::kTriStrandMask),
               "tri layout disagrees with the shader");
-static_assert(v2::STRAND_MAX_ROWS == int(v2::kStrandRowMask) + 1,
+static_assert(v2::STRAND_MAX_ROWS ==
+                  (int(v2::kStrandRowMask) + 1) * v2::STRAND_ROW_STEP,
               "strand height disagrees with the shader");
+static_assert(v2::STRAND_ROW_STEP == (1 << int(v2::kStrandRowShift)),
+              "the host and the shader disagree about the ramp's step");
 static_assert(v2::SUN_COS_THETA_MAX == v2::kSunCosThetaMax, "sun size disagrees with the shader");
 
 namespace v2 {
@@ -281,7 +284,17 @@ constexpr int kArrowInstances = 12;
 // exists to get right.
 constexpr int kButterflySlots = 64;
 constexpr int kBirdSlots = 48;
-constexpr int kFlyerInstances = kButterflySlots + kBirdSlots;
+// ...AND THE LAKE: salmon, lily pads and dragonflies, in that order. They are
+// one population for the band's purposes because they are born and recycled
+// together off one water field -- see render/lake.h -- but each still owns a
+// contiguous run inside it, for the reason the note above gives.
+constexpr int kLakeSlots = 30;   // kSalmonCount + kLilyCount + kDflyCount
+// ...and the songbirds that are IN THE AIR, which are a different population
+// from the ones in the trees and share nothing with them but their species --
+// see render/birdflock.h.
+constexpr int kFlockSlots = 9;   // kFlockBirds
+constexpr int kFlyerInstances =
+    kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots;
 
 // ---------------------------------------------------------------------------
 // RE-MESHING A DAMAGED MODEL, OFF THE FRAME THAT DAMAGED IT.
@@ -1992,6 +2005,17 @@ class World {
         return solid - reached;
     }
 
+    // Where a loose body's shapes actually are, in the world -- diagnostic.
+    // The pose is the model's ORIGIN CORNER, which for a felled tree is metres
+    // from the wood and says nothing about whether the thing is on the ground;
+    // this is what does.
+    bool debrisBounds(Physics &ph, int slot, Vec3 *lo, Vec3 *hi) const {
+        if (slot < 0 || slot >= kDebrisInstances) return false;
+        const Debris &d = debris_[slot];
+        if (!d.live || d.phys < 0) return false;
+        return ph.boundsOf(d.phys, lo, hi);
+    }
+
     // How many boxes the static window round a body is holding -- diagnostic.
     int debrisWindowBoxes() const { return int(winBoxes_.size()); }
 
@@ -2094,6 +2118,25 @@ class World {
                         ph.poseOf(d.phys, &d.pos, d.quat);
                     }
                 }
+                // ---- THE HINGE FIRES ON THE FRAME IT LANDS ---------------
+                //
+                // Not at the cut. A trunk severed halfway up has to DROP onto
+                // its own stump first -- see the note over the stop in
+                // fellTree -- and only then go over. "Landed" is the frame its
+                // descent is arrested: it was born falling, so a downward speed
+                // that is no longer downward means something is underneath it.
+                //
+                // The 100 ms floor is so the very first frame, before gravity
+                // has moved it at all, is not read as a landing; a tree cut at
+                // the base has nothing to fall and arms on the next one.
+                if (d.felled && d.tipArmed && nowMs - d.bornMs > 100.0) {
+                    Vec3 lin{0, 0, 0}, ang{0, 0, 0};
+                    if (ph.velocityOf(d.phys, &lin, &ang) && lin.y > -0.35f) {
+                        ph.nudgeSpin(d.phys, d.tipAxis, kFellNudge);
+                        d.tipArmed = false;
+                    }
+                }
+
                 // ...AND THE SOLID WORLD FOLLOWS IT DOWN.
                 //
                 // A window built once at the stump is a window the far end of
@@ -2398,40 +2441,66 @@ class World {
         for (int tries = 0; tries < 4; ++tries) {
             const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
             const int cx = (t.sx + q - 1) / q, cy = (t.sy + q - 1) / q, cz = (t.sz + q - 1) / q;
-            // THE TRUNK'S COLUMN, IN THE MODEL'S OWN FRAME -- see
-            // kFellFillFrac. baseCX/baseCZ is where the model MEETS THE GROUND
-            // relative to the middle of its box, which for a birch is metres
-            // away, so this follows the trunk rather than the crown.
-            const float bcx = float(t.sx) * VOXEL_M * 0.5f + t.col.baseCX;
-            const float bcz = float(t.sz) * VOXEL_M * 0.5f + t.col.baseCZ;
-            const float bhx = maxf(kTrunkPadM, float(t.col.baseX) * VOXEL_M * 0.5f + kTrunkPadM);
-            const float bhz = maxf(kTrunkPadM, float(t.col.baseZ) * VOXEL_M * 0.5f + kTrunkPadM);
             const int need = maxi(1, int(float(q * q * q) * kFellFillFrac));
             greedyBoxes(
                 cx, cy, cz, Vec3{0.0f, 0.0f, 0.0f}, cell,
                 [&](int i, int j, int k) {
-                    // Outside the trunk's own column: the canopy, which the
-                    // solver is not told about.
+                    // ---------------------------------------------------
+                    // A TREE'S COLLIDER IS ITS WOOD.
                     //
-                    // A TREE RULE, and only a tree's. A boulder is dense all
-                    // the way out, so clipping one to its base footprint would
-                    // hand the solver a narrow post where a twenty-metre rock
-                    // is -- and the undercut boulder that this same function
-                    // drops would then fall through everything beside it.
-                    if (isTree) {
-                        const float mx = (float(i) + 0.5f) * cell;
-                        const float mz = (float(k) + 0.5f) * cell;
-                        if (fabsf(mx - bcx) > bhx || fabsf(mz - bcz) > bhz) return false;
-                    }
+                    // This used to be a vertical PRISM over the stump: keep
+                    // every cell within the base footprint's half extents of
+                    // where the model meets the ground, drop the rest as
+                    // canopy. On a pine that is the trunk, because a pine's
+                    // trunk is straight and central. ON A BIRCH IT IS A STUB.
+                    //
+                    // Measured with --fell-test in the birch band: the felled
+                    // body's own shape bounds came back
+                    //
+                    //     lo.y 15.19   hi.y 16.00
+                    //
+                    // -- an EIGHTY CENTIMETRE collider under an eleven metre
+                    // tree. A birch leans, so its trunk leaves the prism a
+                    // metre up and everything above that was classed canopy
+                    // and thrown away. The body then had no length to topple
+                    // with: it dropped 0.37 m, came to rest at pitch 0.0 and
+                    // sat there, while the MESH -- the whole tree -- hung off
+                    // it wherever that stub happened to stop. That is the tree
+                    // standing in the air, and it is why a felled birch never
+                    // looked like it fell.
+                    //
+                    // The honest question was never "is this cell over the
+                    // stump" -- it was "is this cell WOOD", and the palette
+                    // has known the answer since the model was loaded, because
+                    // it classified every colour as foliage or bark to decide
+                    // what was translucent. So leaves simply do not count
+                    // towards the fill, and the collider follows the trunk
+                    // wherever the trunk actually goes, lean and all.
+                    //
+                    // THE CANOPY IS STILL NOT IN THE SOLVER, which is the part
+                    // that must not regress: a crown collider is a fat cone
+                    // that cannot lie down, and the recorded result of trying
+                    // was a tree gaining spin until it tumbled out of the world
+                    // at 28 m/s. Leaves are foliage by colour, so they are
+                    // excluded here as completely as the prism excluded them --
+                    // and the thin outer branches fail kFellFillFrac on their
+                    // own, being mostly air at this cell size.
+                    //
+                    // A BOULDER IS UNCHANGED. It has no foliage in it, so the
+                    // test is vacuous for a rock and the loop is what it was.
+                    // ---------------------------------------------------
                     int n = 0;
                     for (int b2 = 0; b2 < q; ++b2)
                         for (int a2 = 0; a2 < q; ++a2)
                             for (int e2 = 0; e2 < q; ++e2) {
                                 const int x = i * q + e2, y = j * q + b2, z = k * q + a2;
                                 if (x >= t.sx || y >= t.sy || z >= t.sz) continue;
-                                if (fallVol_[size_t(x) + size_t(z) * size_t(t.sx) +
-                                             size_t(y) * size_t(t.sx) * size_t(t.sz)] != mat::AIR)
-                                    if (++n >= need) return true;
+                                const uint8_t mv =
+                                    fallVol_[size_t(x) + size_t(z) * size_t(t.sx) +
+                                             size_t(y) * size_t(t.sx) * size_t(t.sz)];
+                                if (mv == mat::AIR) continue;
+                                if (isTree && palette.isFoliage(mv)) continue;
+                                if (++n >= need) return true;
                             }
                     return false;
                 },
@@ -2471,16 +2540,41 @@ class World {
         // A piece of rock gets none of it. It was never balanced -- it was
         // resting on stone that is no longer there -- so gravity is the whole
         // story and anything else would be a shove.
-        const float dl = sqrtf(swingDir.x * swingDir.x + swingDir.z * swingDir.z);
-        if (isTree && dl > 1e-4f) {
-            const float dx = swingDir.x / dl, dz = swingDir.z / dl;
-            ph.nudgeSpin(phys, Vec3{-dz, 0.0f, dx}, kFellNudge);
-        }
+        // -------------------------------------------------------------------
+        // ARMED, NOT DRIVING -- and this is v1's own correction, word for word:
+        //
+        //     "the drive PRESCRIBES rotation, which the contact solver cannot
+        //      argue with, so starting it at the cut let the trunk rotate
+        //      straight through its own stump. Drop cleanly onto the cut face
+        //      first; phStep starts the topple once it has actually landed."
+        //
+        // v2 spun the body AT THE CUT, so a trunk severed halfway up was born
+        // leaning on its own stump with a quarter radian a second of turn in
+        // it, wedged, and it crept over across five seconds while barely
+        // descending. Reported as "a felled tree when cut at the trunk just
+        // stays stationary while it falls ... instead of floating while it
+        // falls".
+        //
+        // So the piece is STOPPED here -- no spin, no sideways drift -- and
+        // falls straight down onto the cut face under gravity alone. The hinge
+        // is armed and applied by updateDebris on the frame it lands.
+        // -------------------------------------------------------------------
+        ph.stopBody(phys);
 
         Debris &d = debris_[slot];
         d = Debris{};
         d.live = true;
         d.felled = true;
+        // THE HINGE, HELD UNTIL IT LANDS -- see the note at the stop above. A
+        // rock gets none: it was never balanced, it was resting on stone that
+        // is no longer there, so gravity is the whole story.
+        {
+            const float dl = sqrtf(swingDir.x * swingDir.x + swingDir.z * swingDir.z);
+            if (isTree && dl > 1e-4f) {
+                d.tipAxis = Vec3{-swingDir.z / dl, 0.0f, swingDir.x / dl};
+                d.tipArmed = true;
+            }
+        }
         d.boxes = winBoxes_;   // before buildSolidWindow reuses the scratch
         d.phys = phys;
         d.bornMs = nowMs;
@@ -2778,6 +2872,25 @@ class World {
     // The old chunk keeps drawing until the new one lands, which is what
     // makes this safe to do mid-frame: nothing is torn down here.
     // ---------------------------------------------------------------------
+    // WHAT THE LAST BITE CUT LOOSE FROM THE STATIC GROUND, if anything.
+    //
+    // Returned rather than spawned here for the reason the spoil is: this
+    // class has no Physics, and threading one in for a body it does not own
+    // would put the simulation inside the world's geometry. The caller has
+    // both and does the spawning -- see App, beside the spoil's own spawn.
+    //
+    // TAKE, not peek: the flag clears, so one freed piece becomes one body
+    // however many times this is asked.
+    bool takeHangers(const std::vector<uint8_t> **vol, int *n, Vec3 *at, float *yaw) {
+        if (!hangHave_) return false;
+        hangHave_ = false;
+        *vol = &hangVol_;
+        *n = hangN_;
+        *at = hangAt_;
+        *yaw = hangYaw_;
+        return true;
+    }
+
     size_t dig(const Vec3 &p, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
                int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
         const int ci = int(std::floor(p.x / VOXEL_M));
@@ -2870,6 +2983,9 @@ class World {
         TerrainMemo memo;
         hangSolid_.assign(size_t(n) * size_t(n) * size_t(n), 0);
         hangSeen_.assign(hangSolid_.size(), 0);
+        // A NEW ANSWER EVERY BITE. Cleared here rather than after the spawn so
+        // a blow that frees nothing cannot hand the caller the last one's.
+        hangHave_ = false;
         auto ix = [&](int a, int b, int c) {
             return size_t(a) + size_t(c) * size_t(n) + size_t(b) * size_t(n) * size_t(n);
         };
@@ -2941,6 +3057,13 @@ class World {
         }
         if (reached == solid) return;   // the ordinary case, and it costs nothing more
 
+        // The cube's centre in world metres, for the body the caller spawns --
+        // the same point dig reports for the spoil, because it is the same box.
+        hangAt_ = Vec3{(float(ci) + 0.5f) * VOXEL_M, (float(cy) + 0.5f) * VOXEL_M,
+                       (float(cj) + 0.5f) * VOXEL_M};
+        hangN_ = n;
+        hangYaw_ = 0.0f;   // terrain stands in the world's own frame
+
         // ...AND OUT THEY COME. A voxel on the box's WALL is not judged: the
         // flood could not see the stone next to it, so it may be perfectly well
         // supported from outside. Only the interior is decided here.
@@ -2962,6 +3085,38 @@ class World {
                             if (m != mat::AIR)
                                 (*spoil)[size_t(dx) + size_t(dz) * size_t(spoilN) +
                                          size_t(dy) * size_t(spoilN) * size_t(spoilN)] = m;
+                        }
+                    }
+                    // ---------------------------------------------------
+                    // IT FALLS. IT DOES NOT SIMPLY STOP EXISTING.
+                    //
+                    // This used to carve the voxel and nothing else, so ground
+                    // a bite cut loose VANISHED -- unless it happened to land
+                    // inside the spoil cube above, which is only the handful
+                    // of voxels within the bite's own radius. Everything
+                    // further out was deleted in place. A tree does not do
+                    // this: a severed trunk becomes a real body, and that is
+                    // the behaviour the terrain was missing.
+                    //
+                    // The material comes from the generator, sampled BEFORE
+                    // the carve below, exactly as the spoil is -- after it
+                    // they are all air.
+                    //
+                    // Same cube layout spawnDebris wants, so the caller can
+                    // hand it straight over. See takeHangers.
+                    {
+                        if (hangVol_.size() != hangSolid_.size())
+                            hangVol_.assign(hangSolid_.size(), mat::AIR);
+                        else if (!hangHave_)
+                            std::fill(hangVol_.begin(), hangVol_.end(), mat::AIR);
+                        const int hh = terrain.heightVox(wi, wj, memo);
+                        const uint8_t tp = terrain.topMaterial(wi, wj, hh);
+                        const uint8_t mm = terrain.materialAt(wi, wj, wy, hh, tp);
+                        if (mm != mat::AIR) {
+                            // meshVolume's layout is x + z*n + y*n*n, which is
+                            // what ix() already gives.
+                            hangVol_[q] = mm;
+                            hangHave_ = true;
                         }
                     }
                     for (const auto &t : mesher_.edits.carve(wi, wj, wy, 0)) {
@@ -2997,6 +3152,8 @@ class World {
         const int r = kHangBoxModelVox;
         const int n = r * 2 + 1;
         const int i0 = mx - r, j0 = mz - r, y0 = my - r;
+        hangHave_ = false;
+        hangN_ = n;
         auto at = [&](int x, int y, int z) {
             return size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz);
         };
@@ -3081,6 +3238,28 @@ class World {
                     if (!hangSolid_[q] || hangSeen_[q]) continue;
                     const int x = i0 + a, y = y0 + b, z = j0 + c;
                     uint8_t &v = vol[at(x, y, z)];
+                    // ---------------------------------------------------
+                    // IT FALLS. IT DOES NOT SIMPLY STOP EXISTING.
+                    //
+                    // The same bug the terrain had, in the model's own frame:
+                    // a chip this blow cut loose only became anything if it
+                    // happened to land inside the spoil cube -- the bite's own
+                    // radius -- and everything further out was set to AIR and
+                    // gone. THIS is the path a visible piece breaking off a
+                    // boulder takes; the terrain one frees a voxel or two per
+                    // blow and was never what was being reported.
+                    //
+                    // Collected in MODEL space, which is what spawnDebris
+                    // wants: the caller hands it the model's quarter turn and
+                    // the body is born wearing it, exactly as the spoil is.
+                    if (v != mat::AIR) {
+                        if (hangVol_.size() != hangSolid_.size())
+                            hangVol_.assign(hangSolid_.size(), mat::AIR);
+                        else if (!hangHave_)
+                            std::fill(hangVol_.begin(), hangVol_.end(), mat::AIR);
+                        hangVol_[q] = v;
+                        hangHave_ = true;
+                    }
                     if (spoil && spoilN > 0) {
                         const int dx = x - mx + radiusVox, dy = y - my + radiusVox,
                                   dz = z - mz + radiusVox;
@@ -3295,6 +3474,16 @@ class World {
             solidWorldSpace(so, pmx, pmz, &wx, &wz);
             *spoilAt = Vec3{wx, so.baseY + (float(my) + 0.5f) * VOXEL_M, wz};
         }
+        // The cut-loose piece is centred on the same voxel and stands in the
+        // same frame, so it takes the same place and the same turn.
+        if (hangHave_) {
+            const float pmx = (float(mx) + 0.5f) * VOXEL_M;
+            const float pmz = (float(mz) + 0.5f) * VOXEL_M;
+            float hwx = 0.0f, hwz = 0.0f;
+            solidWorldSpace(so, pmx, pmz, &hwx, &hwz);
+            hangAt_ = Vec3{hwx, so.baseY + (float(my) + 0.5f) * VOXEL_M, hwz};
+            hangYaw_ = float(so.yaw & 3) * 1.57079633f;
+        }
 
         // ---- THE COLLIDER NOW, THE MESH SHORTLY --------------------------
         //
@@ -3402,6 +3591,8 @@ class World {
         // this terrain meshes to roughly 200k triangles; the budget below is
         // that with a margin, and the pool grows if the ground turns out to be
         // rougher than that. Models are a rounding error beside it.
+        // The disc's area, not the square's -- see rering. pi/4 of (2R+1)^2,
+        // with a little slack so a rehash is still rare rather than routine.
         const size_t ring = size_t(2 * std::max(1, viewChunks) + 1);
         pool_.init(device_, ring * ring * 260000 + (8u << 20));
         // The worker that re-meshes broken models -- see Remesher.
@@ -3657,18 +3848,13 @@ class World {
         return probe.solid(i, j, y);
     }
 
+    // THE ANSWER MOVED to TerrainProbe, the same way terrainSolidAt's did and
+    // for the same reason: the player walks on this now and render/player.h
+    // cannot reach into this class. One implementation, so the floor the body
+    // stands on and the floor the mesher draws cannot disagree about a hole.
     int terrainTopAt(int i, int j, TerrainMemo &memo) const {
-        const int h = terrain.heightVox(i, j, memo);
-        const std::shared_ptr<const ChunkEdits> ce =
-            mesher_.edits.get(floorDiv(i, CHUNK_VOX), floorDiv(j, CHUNK_VOX));
-        if (!ce) return h;
-        int y = h;
-        for (int n = 0; n < kUndermineDepthVox; ++n, --y) {
-            uint8_t m = mat::AIR;
-            if (!ce->voxel(i, j, y, &m)) return y;   // no edit here: still stone
-            if (m != mat::AIR) return y;            // filled back in
-        }
-        return y;
+        TerrainProbe probe(&terrain, &mesher_.edits, memo);
+        return probe.topVox(i, j);
     }
 
     // -----------------------------------------------------------------------
@@ -3902,6 +4088,12 @@ class World {
         uint32_t borrowTri = TriPool::kInvalid;
         float3 tint{1.0f, 1.0f, 1.0f};
         bool felled = false;
+        // THE FELLING HINGE, HELD UNTIL THE PIECE LANDS. v1's tipArm/tipAx:
+        // the topple is ARMED at the cut and applied on the frame the trunk
+        // has actually come down on its own stump, so it drops square instead
+        // of rotating through the wood underneath it. See fellTree.
+        bool tipArmed = false;
+        Vec3 tipAxis{1, 0, 0};
         // Which way the drawn shiver leans -- its own axis per slot, so two
         // chips off the same swing never rock together.
         Vec3 wobbleAxis{1, 0, 0};
@@ -4015,6 +4207,17 @@ class World {
     // Scratch for dropTerrainHangers, kept so a blow allocates nothing.
     std::vector<uint8_t> hangSolid_, hangSeen_;
     std::vector<int> hangStack_;
+    // THE GROUND A BITE CUT LOOSE, AS VOXELS WAITING TO BECOME A BODY.
+    // Filled by dropTerrainHangers in the same (2r+1) cube layout meshVolume
+    // and spawnDebris read, and taken by the caller -- see takeHangers.
+    std::vector<uint8_t> hangVol_;
+    int hangN_ = 0;
+    Vec3 hangAt_{0.0f, 0.0f, 0.0f};
+    // A MODEL'S CUBE IS IN THE MODEL'S OWN FRAME, so the body has to be born
+    // wearing the model's quarter turn -- the same yaw the spoil is given.
+    // Zero for terrain, which has no frame of its own.
+    float hangYaw_ = 0.0f;
+    bool hangHave_ = false;
     std::vector<const Solid *> winNear_;
     std::vector<VoxBox> winBoxes_;
     // Scratch for the sever test, which runs on every axe blow.
@@ -4662,7 +4865,14 @@ class World {
                       bool perches = false, int upscale = 0,
                       // Every colour these models actually use, for the caller
                       // that wants to paint something else in the same stone.
-                      std::vector<std::array<uint8_t, 4>> *colourSink = nullptr) {
+                      std::vector<std::array<uint8_t, 4>> *colourSink = nullptr,
+                      // NON-ZERO REPLACES THIS MODEL'S GREENS with that
+                      // material instead of minting palette entries for them.
+                      // A flower's stem is grass, and saying so here means it
+                      // wears the grass RAMP -- the same six shades, picked per
+                      // voxel on the device -- rather than one authored green
+                      // that matches nothing it is standing in.
+                      uint8_t stemId = mat::AIR) {
         for (const std::string &path : paths) {
             std::vector<VoxModel> models;
             std::string err;
@@ -4696,8 +4906,22 @@ class World {
                 std::vector<uint8_t> idOfEntry(256, mat::AIR);
                 std::vector<bool> used(256, false);
                 for (uint8_t v : a.a) used[v] = true;
+                // THE BIRCHES BEGIN HERE. loadPines() fills one vector with
+                // both species -- pines below birchBase, birches at and above
+                // it -- so this is the only moment the palette can be told
+                // which greens belong to which wood. See markBirchStart.
+                if (&pines_ == out && int(out->size()) == mesher_.birchBase)
+                    palette.markBirchStart();
                 for (int e = 1; e <= 255; ++e)
-                    if (used[e]) idOfEntry[e] = palette.forModelColor(mo.pal[e - 1]);
+                    if (used[e]) {
+                        const std::array<uint8_t, 4> &pc = mo.pal[e - 1];
+                        // Green-dominant is the stem and its leaves; the bloom
+                        // is not, and keeps its authored colour.
+                        if (stemId != mat::AIR && pc[1] > pc[0] && pc[1] > pc[2])
+                            idOfEntry[e] = stemId;
+                        else
+                            idOfEntry[e] = palette.forModelColor(pc);
+                    }
 
                 // The moss goes into the ASSET, before anything reads it, so
                 // the mesh and the collider below cannot disagree about where
@@ -4868,8 +5092,16 @@ class World {
         loadedRocks = int(rocks_.size());
     }
 
+    // ONE FILE, TWO SETS -- the pine wood's flowers and the birch wood's, the
+    // same models with their stems painted out of the two grass ramps. The
+    // scatter picks the half that matches the blade it is standing in; see
+    // mesher_.flowerBirch0, and loadMushrooms for the same shape.
     void loadFlowers() {
-        loadModelSet({decorDir + "/flowers.vox"}, &flowers_, true, false);
+        loadModelSet({decorDir + "/flowers.vox"}, &flowers_, true, false, 0u, false, 0, nullptr,
+                     mat::GRASS_0);
+        mesher_.flowerBirch0 = int(flowers_.size());
+        loadModelSet({decorDir + "/flowers.vox"}, &flowers_, true, false, 0u, false, 0, nullptr,
+                     mat::BGRASS_0);
         loadedFlowers = int(flowers_.size());
     }
 
@@ -4980,11 +5212,35 @@ class World {
     }
 
     // -------------------------------------------------------------- the ring
+    //
+    // A DISC, NOT A SQUARE (user 2026-09-13: "make the terrain renderer into
+    // that of a circle instead of a square").
+    //
+    // It was called a ring everywhere in this file and was never one: the two
+    // loops below walked [-R, R] squared, so the world reached R chunks ahead
+    // along an axis and R*sqrt(2) along a diagonal. Standing still and turning
+    // on the spot, the far edge of the world therefore MOVED IN AND OUT by 41%
+    // -- which is what you actually see, because the edge is where the fog
+    // meets nothing.
+    //
+    // The test is on the chunk INDEX, which makes the boundary a staircase of
+    // whole chunks rather than a true circle; at 25.6 m a chunk that is exactly
+    // right, because a chunk is the unit that exists or does not.
+    //
+    // WHAT IT COSTS, AND IT IS NEGATIVE. A disc of radius R holds pi/4 of the
+    // square -- at R = 12, 441 chunks against 625 -- so this is 29% FEWER
+    // chunks to mesh, upload and keep in the TLAS for the same view distance
+    // straight ahead. The corners it drops were the furthest, haziest and most
+    // expensive part of the frame.
     bool rering(int cx, int cz) {
         const int R = maxi(1, viewChunks);
+        const int R2 = R * R;
         wanted_.clear();
         for (int j = -R; j <= R; ++j)
-            for (int i = -R; i <= R; ++i) wanted_[chunkKey(cx + i, cz + j)] = 1;
+            for (int i = -R; i <= R; ++i) {
+                if (i * i + j * j > R2) continue;
+                wanted_[chunkKey(cx + i, cz + j)] = 1;
+            }
 
         bool changed = false;
         for (auto it = chunks_.begin(); it != chunks_.end();) {
@@ -5003,9 +5259,14 @@ class World {
         std::vector<std::pair<int, std::pair<int, int>>> order;
         for (int j = -R; j <= R; ++j)
             for (int i = -R; i <= R; ++i) {
+                // The same disc as above, and it HAS to be the same test: a
+                // chunk requested here but not wanted there is meshed, adopted
+                // and evicted on the next rering, forever.
+                const int d2 = i * i + j * j;
+                if (d2 > R2) continue;
                 const long long k = chunkKey(cx + i, cz + j);
                 if (chunks_.count(k) || requested_.count(k)) continue;
-                order.push_back({i * i + j * j, {cx + i, cz + j}});
+                order.push_back({d2, {cx + i, cz + j}});
             }
         std::sort(order.begin(), order.end(),
                   [](const std::pair<int, std::pair<int, int>> &a,

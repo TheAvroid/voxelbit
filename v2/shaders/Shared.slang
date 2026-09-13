@@ -76,6 +76,11 @@ static const int kAtmoSkyW = 192, kAtmoSkyH = 108;
 // for why that is where it belongs.
 static const uint kGrass0 = 7;
 static const uint kGrassCount = 6;
+// THE BIRCH WOOD'S OWN GRASS. A second ramp, not a wider one: the two woods
+// are different greens, and one ramp spanning both matched neither. Mirrors
+// mat::BGRASS_0 exactly.
+static const uint kBGrass0 = 32;
+static const uint kBGrassCount = 6;
 static const uint kSoil0 = 13;
 static const uint kSoilCount = 4;
 static const uint kLitter0 = 17;
@@ -118,9 +123,11 @@ static const uint kFoam = 27;
 //
 //     bits  0..7   material
 //     bits  8..10  face direction (0..5)
-//     bits 11..14  strand code: 0 for everything that is not a grass blade,
-//                  otherwise 1 + (the blade's base row & 7)
-//     bit   15     spare
+//     bits 11..15  strand code: 0 for everything that is not a grass blade,
+//                  otherwise 1 + (the blade's base row & 15)
+//
+// THE WORD IS FULL. Bit 15 was the spare and the tall grass took it -- see
+// STRAND_MAX_ROWS in voxelworld.h for what it bought and what it costs.
 //
 // Duplicated from packTri in voxelworld.h and asserted against it in world.h,
 // for the same reason the ramps above are. The direction was a whole byte
@@ -130,10 +137,13 @@ static const uint kFoam = 27;
 static const uint kTriDirShift = 8;
 static const uint kTriDirMask = 0x7u;
 static const uint kTriStrandShift = 11;
-static const uint kTriStrandMask = 0xFu;
-// A strand is at most eight voxels tall, which is what three bits of base row
-// can tell apart. The mesher clamps to it.
-static const uint kStrandRowMask = 0x7u;
+static const uint kTriStrandMask = 0x1Fu;
+// A strand is at most THIRTY-TWO voxels tall: four bits of stored row at two
+// voxels a step. The mesher clamps to it, and world.h static_asserts that this
+// and STRAND_MAX_ROWS still agree. See the long note over STRAND_MAX_ROWS in
+// voxelworld.h for why the resolution was spent rather than the range.
+static const uint kStrandRowMask = 0xFu;
+static const int kStrandRowShift = 1;   // STRAND_ROW_STEP == 1 << this
 
 // SLANG ONLY. This file is otherwise types and constants, and it has to be,
 // because cl.exe compiles it as a header in half a dozen translation units --
@@ -706,8 +716,43 @@ struct V6Params
     // -----------------------------------------------------------------------
     float waterY;
     float waterTime;
-    float2 waterPad;
+    // WHICH WATER TERMS ARE ON. One bit each, live from the [I] panel -- see
+    // kWF* below. It takes HALF THE PAD that was already here, so V6Params is
+    // the same size it was and nothing that asserts on that changes.
+    uint waterFlags;
+    float waterPad;
 };
+
+// ---------------------------------------------------------------------------
+// THE WATER, TERM BY TERM.
+//
+// Every one of these is a thing the water does that can be looked at on its
+// own, and half of them were argued about for a session apiece. Being able to
+// turn one off while the others stay on is the difference between "the water
+// looks wrong" and "it is the reflection".
+//
+// v1 does the same thing and for the same reason -- its WATER_BAKE is a row of
+// these, and the note beside it says a panel that cannot speak for every
+// caustic site "is a lie".
+// ---------------------------------------------------------------------------
+static const uint kWFGlint   = 1u << 0;  // the sun sparkle, v1's pixelGlisten
+static const uint kWFCaustic = 1u << 1;  // the webs on the bed
+static const uint kWFReflect = 1u << 2;  // the world in the surface, not just sky
+static const uint kWFAbsorb  = 1u << 3;  // Beer-Lambert along the eye path
+static const uint kWFScatter = 1u << 4;  // the in-scatter that stops it being ink
+static const uint kWFSunPath = 1u << 5;  // Beer-Lambert on the way DOWN to the bed
+static const uint kWFSwell   = 1u << 6;  // the voxel wave march
+static const uint kWFRipple  = 1u << 7;  // the analytic normal where the march ends
+static const uint kWFFoam    = 1u << 8;  // the white churn round the shore
+static const uint kWFAll     = 0x1FFu;
+
+// WHAT THE WATER SHIPS WITH: everything except the world reflection (user
+// 2026-09-13). The traced reflection stays in the build and stays on the [I]
+// panel -- it is one tick away -- it simply is not what the water is by
+// default. Note the cost goes with it: that term is the one extra trace and
+// one extra shadow ray per primary water pixel, so OFF is also the cheaper
+// default, which is worth knowing if the frame budget is ever looked at.
+static const uint kWFDefault = kWFAll & ~kWFReflect;   // 0x1FB
 
 // ---------------------------------------------------------------------------
 // THE THING IN YOUR HAND.

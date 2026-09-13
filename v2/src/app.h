@@ -78,6 +78,8 @@
 #include "render/butterflies.h"
 #include "render/drops.h"
 #include "render/helditem.h"
+#include "render/birdflock.h"
+#include "render/lake.h"
 #include "render/toolsound.h"
 #include "render/player.h"
 #include "render/recorder.h"
@@ -285,6 +287,13 @@ struct Options {
     std::string shotUi;
     // Open the settings panel at startup, so a scripted capture can see it.
     bool menuAtStart = false;
+    // Opens the water panel on the first frame, so --shot-ui can photograph it
+    // with no window and no keystroke. Same trick menuAtStart is for.
+    bool waterPanelAtStart = false;
+    // Everything but the world reflection -- see kWFDefault in Shared.slang,
+    // which is where this number is explained. Kept as a literal because
+    // app.h does not include the shader header.
+    uint32_t waterFlags = 0x1FBu;  // see kWF* in Shared.slang
     bool groundStats = false;
 
     // -- the built-in recorder, on R -------------------------------------
@@ -1148,6 +1157,10 @@ class ForestApp : public SampleApp {
             // are loaded here, beside the flock, and for the same reason: the
             // flyer models have to exist before anything is built.
             birds_.init(world_, opt_.birdDir);
+            // ...and the lake, which shares the band for the same reason and
+            // has to be registered in the same window. See render/lake.h.
+            lake_.load(world_, opt_.birdDir, opt_.decor);
+            flock2_.load(world_, opt_.birdDir);
             std::fflush(stdout);
         }
 
@@ -1184,6 +1197,26 @@ class ForestApp : public SampleApp {
             shutdown(0);
             return;
         }
+        // -- THE WATER TERMS, BEFORE ANYTHING CAN RENDER ---------------------
+        //
+        // ABOVE THE OFFLINE RETURN, and that placement is the whole point.
+        // These two lines used to sit two hundred lines further down, past the
+        // `if (opt_.outGiven) { ...; shutdown(0); return; }` below -- so
+        // --water-flags reached the interactive path and NOT the offline one.
+        // Measured: `--out --water-flags 0` against `--water-flags 511` differed
+        // by exactly zero pixels. Every scripted A/B of a water term taken that
+        // way was comparing an image with itself and reporting no change, which
+        // is indistinguishable from a term that does nothing.
+        //
+        // The same trap as the waterY note in the block below, one flag later.
+        // Anything the command line sets for the RENDERER belongs above that
+        // return; only what it sets for the player belongs after it.
+        //
+        // The panel is seeded from the same number so --water-flags and the
+        // checkboxes cannot disagree about what is on.
+        for (int b = 0; b < 9; ++b) waterTerm_[b] = (opt_.waterFlags >> b) & 1u;
+        tracer_.waterFlags = opt_.waterFlags;
+
         if (opt_.outGiven) {
             tracer_.setDemodulate(opt_.demodulate);
             // THE OFFLINE PATH SETS THE WATER ITSELF, because it never runs
@@ -1222,6 +1255,7 @@ class ForestApp : public SampleApp {
         if (opt_.profile && getDevice()->getProfiler()) getDevice()->getProfiler()->setEnabled(true);
 
         if (opt_.menuAtStart) setMenuOpen(true);
+        if (opt_.waterPanelAtStart) setWaterPanelOpen(true);
         // THE EDITOR, FROM THE COMMAND LINE. The same path U takes, so a shot
         // of the stage is a shot of the thing the key opens rather than of a
         // second arrangement that could drift from it.
@@ -1680,6 +1714,21 @@ class ForestApp : public SampleApp {
         if (birds_.ready() && (frameTick_ % 30) == 0)
             world_.collidersNear(player_.pos, kBirdKeepM, &perches_);
         birds_.update(dt, perches_, player_.pos);
+        // WHAT LIVES ON THE WATER. Ticked beside the birds because it is the
+        // same kind of thing -- a small population that follows the player --
+        // and published in the same window, so the flyer band is written once.
+        lake_.update(dt, world_.terrain, player_.pos);
+        lake_.publish(world_);
+        // THE GROUND THE FLOCK FOLLOWS IS THE ONE EVERYTHING ELSE STANDS ON,
+        // handed in rather than reached for -- see BirdFlock::update. The
+        // generator's own height, not the walk's: a bird does not care about a
+        // hole somebody dug, and asking the edit layer would cost a scan per
+        // lookahead sample per bird per frame.
+        flock2_.update(dt, player_.pos, [this](float x, float z) {
+            return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
+                                                  int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+        });
+        flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
 
         // The bed follows the canopy. Fed the same dt as the walk and the day
         // cycle -- the shot clock when one is running -- so a scripted move
@@ -2334,6 +2383,51 @@ class ForestApp : public SampleApp {
         // corner -- but the width is still measured, because the recorder's
         // panel has to be told where the readout ends so the two do not stack
         // on top of each other. See `below`.
+        // -------------------------------------------------------------------
+        // THE WATER PANEL -- [I], top right.
+        //
+        // One row per term the water actually does, each a live uniform bit
+        // (kWF* in Shared.slang) rather than a rebuild. v1 keeps the same row
+        // of switches in its WATER_BAKE and its note is the reason this exists:
+        // a panel that cannot speak for every site "is a lie", so every one of
+        // these turns off the WHOLE term wherever it is evaluated.
+        //
+        // TOP RIGHT, AND SET EVERY FRAME. ImGui remembers window positions in
+        // an ini between runs, so asking once is not the same as asking.
+        // -------------------------------------------------------------------
+        if (waterPanelOpen_) {
+            styleV2 style(pGui, px3_, 1.0f, fbH);
+            ImGui::GetStyle().WindowPadding = ImVec2(8.0f, 8.0f);
+            Gui::Window ww(pGui, "water##v2", {0, 0}, {0, 0}, kBare);
+            px3Font face(px3_);
+            ImGui::SetWindowFontScale(style.scale);
+            ww.text("WATER  [I]");
+            ww.separator();
+            static const char *kWaterRows[9] = {
+                "sun glint",        // kWFGlint
+                "caustics",         // kWFCaustic
+                "world reflection", // kWFReflect
+                "absorption",       // kWFAbsorb
+                "in-scatter",       // kWFScatter
+                "sunlight to bed",  // kWFSunPath
+                "voxel swell",      // kWFSwell
+                "surface ripple",   // kWFRipple
+                "shore foam",       // kWFFoam
+            };
+            uint32_t wf = 0;
+            for (int b = 0; b < 9; ++b) {
+                ww.checkbox(kWaterRows[b], waterTerm_[b]);
+                if (waterTerm_[b]) wf |= (1u << b);
+            }
+            tracer_.waterFlags = wf;
+            ww.separator();
+            if (ww.button("all on")) {
+                for (int b = 0; b < 9; ++b) waterTerm_[b] = true;
+            }
+            const ImVec2 wsz = ImGui::GetWindowSize();
+            ImGui::SetWindowPos(ImVec2(maxf(0.0f, fbW - wsz.x - 12.0f), 12.0f));
+        }
+
         float below = 12.0f;
         {
             const float inset = 12.0f;  // the HUD's, so the two corners agree
@@ -3427,6 +3521,15 @@ class ForestApp : public SampleApp {
             quitArmed_ = false;
             return true;
         }
+        // [I] OPENS THE WATER PANEL, and frees the mouse while it is up. Its
+        // own key rather than a page of the [Y] menu because these are meant
+        // to be flicked on and off WHILE LOOKING AT A LAKE -- a setting you
+        // have to leave the water to reach is a setting you judge from memory.
+        if (e.key == Input::Key::I) {
+            setWaterPanelOpen(!waterPanelOpen_);
+            quitArmed_ = false;
+            return true;
+        }
         // T OPENS THE CONSOLE, and only when it is shut -- while it is open the
         // key belongs to whatever is being typed, and ImGui has the keyboard.
         if (e.key == Input::Key::T && !consoleOpen_ && !menuOpen_) {
@@ -3552,7 +3655,8 @@ class ForestApp : public SampleApp {
             return true;
         }
 
-        if (menuOpen_) return false;  // the mouse belongs to the menu while it is up
+        // The mouse belongs to whichever panel is up.
+        if (menuOpen_ || waterPanelOpen_) return false;
 
         if (e.type == MouseEvent::Type::ButtonDown && e.button == Input::MouseButton::Left) {
             // Click to capture, the way a game does it. ESC gives it back.
@@ -3833,6 +3937,15 @@ class ForestApp : public SampleApp {
     bool quitArmed_ = false;
     bool moving_ = false;
     bool menuOpen_ = false;
+    // The water panel, its own capture memory, and one bool per term. All on:
+    // the panel subtracts, it does not build the water up from nothing.
+    bool waterPanelOpen_ = false;
+    bool captureBeforeWater_ = false;
+    // Index 2 is kWFReflect, and it is the one that starts off -- see
+    // kWFDefault. App::onLoad overwrites all nine from opt_.waterFlags, so
+    // this initialiser and that default cannot drift apart in practice; it is
+    // written out here so reading the member says the same thing.
+    bool waterTerm_[9] = {true, true, false, true, true, true, true, true, true};
     // ---- the console (T) ---------------------------------------------------
     // A command line, the way the browser engine has one. It exists for
     // /locate: the biomes are bands now (see birchWeight in
@@ -3904,6 +4017,13 @@ class ForestApp : public SampleApp {
     Clusters clusters_;
     Physics physics_;
     Birds birds_;
+    // What lives on and in the water -- see render/lake.h. Its own system
+    // rather than a branch of the flock: a fish, a pad and a dragonfly share a
+    // WATER FIELD and nothing else, where a butterfly shares the meadow's.
+    LakeLife lake_;
+    // ...and the songbirds in the sky, which are not the perched ones in a
+    // different state -- see render/birdflock.h.
+    BirdFlock flock2_;
 
     // Where the wood was when U was pressed -- see the handler.
     Vec3 woodPos_{0, 0, 0};
@@ -3996,10 +4116,11 @@ class ForestApp : public SampleApp {
                 physics_, player_.eyePosition(), simMs_,
                 [&](float x, float z) {
                     // Terrain alone: the one floor nothing may ever be under.
-                    return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
-                                                          int(std::floor(z / VOXEL_M))) +
-                                 1) *
-                           VOXEL_M;
+                    // ...AND IT HAS THE HOLES IN IT, for the same reason the
+                    // walk does now -- a chip that falls into a pit must not be
+                    // shoved back out of it by a floor the generator remembers
+                    // and the world no longer has.
+                    return walkGroundM(ww, x, z);
                 });
             world_.flushDebrisInstances();
         }
@@ -4444,6 +4565,23 @@ class ForestApp : public SampleApp {
             return std::string(
                 "/locate <biome|water>   /where   ENTER runs and closes   ESC cancels");
         return std::string("unknown command '" + verb + "' -- try /help");
+    }
+
+    // THE SAME TRADE THE MENU MAKES: while a panel is up the mouse belongs to
+    // it, and the look is handed back on close only if it was ours to begin
+    // with. Kept separate from setMenuOpen so the two panels cannot fight over
+    // who restores the capture.
+    void setWaterPanelOpen(bool on) {
+        if (on == waterPanelOpen_) return;
+        waterPanelOpen_ = on;
+        if (on) {
+            captureBeforeWater_ = looking_;
+            if (looking_) setCapture(false);
+            holdLook_ = false;
+        } else if (captureBeforeWater_) {
+            setCapture(true);
+            captureBeforeWater_ = false;
+        }
     }
 
     void setMenuOpen(bool on) {
@@ -4926,6 +5064,22 @@ class ForestApp : public SampleApp {
                             world_.spawnDebris(physics_, spoilVol_, spoilN_, at, kNoVel, kNoSpin,
                                                simMs_, spoilYaw_, srcRock);
                         }
+                        // ...AND THE GROUND THE BITE UNDERCUT COMES DOWN AS A
+                        // BODY, not as a deletion. dropTerrainHangers finds
+                        // the stone a blow cut loose from bedrock; before this
+                        // it was carved away in place and simply vanished.
+                        // A tree already did the right thing here, which is
+                        // why this read as "only the terrain disappears".
+                        {
+                            const std::vector<uint8_t> *hv = nullptr;
+                            int hn = 0;
+                            Vec3 hat{0.0f, 0.0f, 0.0f};
+                            float hyaw = 0.0f;
+                            const Vec3 kStill{0.0f, 0.0f, 0.0f};
+                            if (world_.takeHangers(&hv, &hn, &hat, &hyaw))
+                                world_.spawnDebris(physics_, *hv, hn, hat, kStill, kStill,
+                                                   simMs_, hyaw, nullptr);
+                        }
                     }
                 }
 
@@ -5314,6 +5468,76 @@ class ForestApp : public SampleApp {
                                     ? "PASS -- triangles scale with the SURFACE, not the depth,"
                                       " so buried stone is free until it is cut into"
                                     : "FAIL -- the buried stone is reaching the renderer");
+
+        // ---- ...AND CAN THE PLAYER GET INTO THE HOLE -----------------------
+        //
+        // THE ONE THING THIS TEST NEVER ASKED. Everything above proves the
+        // world was dug: the bites go deeper, the mesher emits the pit. None of
+        // it touches whether the BODY agrees, and for as long as this test
+        // existed it did not -- reported as "I created a hole, then when I try
+        // to go inside the hole the player still floats above it. its like the
+        // missing terrain is missing from the renderer but still there in
+        // memory".
+        //
+        // It was the other way round. The terrain really was gone; Player's
+        // ground query read heightVox, which is the GENERATOR's top and cannot
+        // see an edit, so the body stood on a floor nothing was drawing.
+        //
+        // So this asks the walk directly, at the bottom of the shaft the twenty
+        // swings above just cut. It is the acceptance test for that bug and it
+        // is cheap: two calls, no window, no physics.
+        {
+            const WalkWorld ww = walkWorld();
+            // THE COLUMN THE SWINGS WENT DOWN, not the spawn. The shaft is cut
+            // straight down through (ci, cj) from sixteen voxels above it --
+            // asking at player_.pos measures a piece of ground nobody touched,
+            // which is a test that passes when the bug is present.
+            const float sx = (float(ci) + 0.5f) * VOXEL_M;
+            const float sz = (float(cj) + 0.5f) * VOXEL_M;
+            const float gen = float(world_.terrain.heightVox(ci, cj) + 1) * VOXEL_M;
+            std::printf("\n  --- and whether the player can get into it ---\n");
+            std::printf("    generated surface   %.2f m\n", double(gen));
+
+            // TWO DIFFERENT QUESTIONS, and only the first is the bug.
+            //
+            // THE COLUMN is what the walk reads per sample: it must follow the
+            // shaft down, and if it does not, nothing else can.
+            const float col = walkGroundM(ww, sx, sz);
+            std::printf("    the column says     %.2f m   (%+.2f m)  %s\n", double(col),
+                        double(col - gen),
+                        (col < gen - 0.5f) ? "PASS -- the walk reads the edit layer"
+                                           : "FAIL -- it is still reading the generator");
+
+            // THE BODY is groundInfo, which samples the four corners of a 52 cm
+            // footprint and takes the HIGHEST. Against the 60 cm shaft the
+            // twenty swings cut, standing on the rim is the RIGHT answer -- you
+            // cannot fall into a hole narrower than you are. So the body's half
+            // of this is asked of a pit it can actually get into: four more
+            // bites around the first, which is what digging down looks like.
+            // A 3x3 OF BITES AT 4 VOXELS' SPACING. A plus is not enough and
+            // the diagonals are why: groundInfo samples the four CORNERS of the
+            // footprint, at (+-0.26, +-0.26), and a bite of radius 0.3 m
+            // centred on a plus arm at (+-0.5, 0) misses those by 5 cm. The
+            // first version of this dug a plus and the body stood on four
+            // untouched diagonal columns, which looks exactly like the bug.
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const Vec3 e2{(float(ci + dx * 4) + 0.5f) * VOXEL_M,
+                                  float(h + 16) * VOXEL_M,
+                                  (float(cj + dz * 4) + 0.5f) * VOXEL_M};
+                    for (int k = 0; k < 8; ++k) {
+                        const Swing s3 = swingRay(walkWorld(), e2, down);
+                        if (!s3.hit) break;
+                        world_.dig(s3.point, kDigRadiusVox);
+                    }
+                }
+            const float body = player_.surfaceAt(walkWorld(), sx, sz);
+            std::printf("    the body stands at  %.2f m   (%+.2f m)  %s\n", double(body),
+                        double(body - gen),
+                        (body < gen - 0.5f)
+                            ? "PASS -- it can get into a pit its own width"
+                            : "FAIL -- standing on ground that has been dug away");
+        }
     }
 
     // The family a material id belongs to, for the tables above. Named rather
@@ -5452,12 +5676,44 @@ class ForestApp : public SampleApp {
             for (const Solid &s2 : around) {
                 if (s2.modelKind != kind || !s2.vol || s2.hx <= 0.0f) continue;
                 const Solid so2 = s2;
-                for (int b = 0; b < 24; ++b) {
-                    const float ang = float(b) * 0.7853982f;
-                    const Vec3 eye{so2.cx + std::cos(ang) * (so2.hx + 3.0f),
-                                   so2.baseY + 0.6f + float(b % 5) * 0.5f,
-                                   so2.cz + std::sin(ang) * (so2.hz + 3.0f)};
-                    const Vec3 dir{-std::cos(ang), 0.0f, -std::sin(ang)};
+                // ---------------------------------------------------------
+                // FROM ONE SIDE, SWEEPING ACROSS THE CUT. Not round and round.
+                //
+                // This used to walk a full circle -- 45 degrees per blow, a
+                // different face of the trunk every time -- and a tree cut like
+                // that is never cut THROUGH. fellTree therefore never fired,
+                // the loop never broke, and every blow counted the whole canopy
+                // as "standing on nothing": a flat 31,450 voxels, which is the
+                // number the note below this loop already warns about. The test
+                // was measuring its own aim.
+                //
+                // runFellTest solves the same problem the same way and says
+                // why: "every blow from the same point along the same ray eats
+                // a TUNNEL through the wood, and a tunnel severs nothing", so a
+                // player's aim wanders across the cut and this does too. One
+                // side, one direction, a hand's width of wander.
+                //
+                // A ROCK IS UNAFFECTED. It is not severable, fellTree declines
+                // it, and what this measures there -- chips left hanging in the
+                // stone -- never depended on the angle.
+                // ---------------------------------------------------------
+                // SIXTY, WHICH IS runFellTest's BUDGET AND FOR ITS REASON.
+                // 24 was enough for most trees and not for all of them, and a
+                // tree that has been cut through but not felled reports its
+                // whole canopy as hanging -- so the run-to-run variance in
+                // which tree is nearest the spawn showed up as this test
+                // passing and failing on alternate runs with nothing changed.
+                // Measured: 0 voxels at a pinned spawn, 58,708 at a random one,
+                // same binary.
+                const float ang0 = 0.7853982f;   // one side, and it stays that side
+                bool camedown = false;
+                long kindLeft = 0;
+                for (int b = 0; b < 60; ++b) {
+                    const float wob = (float(b % 11) - 5.0f) * 0.12f;
+                    const Vec3 eye{so2.cx + std::cos(ang0) * (so2.hx + 3.0f) - std::sin(ang0) * wob,
+                                   so2.baseY + 1.2f + float(b % 3) * 0.1f,
+                                   so2.cz + std::sin(ang0) * (so2.hz + 3.0f) + std::cos(ang0) * wob};
+                    const Vec3 dir{-std::cos(ang0), 0.0f, -std::sin(ang0)};
                     if (!world_.carveModel(so2, eye, dir, 12.0f, kDigRadiusVox)) continue;
                     ++modelBlows;
                     // THE WHOLE SWING PATH, not half of it. carveModel alone
@@ -5465,16 +5721,51 @@ class ForestApp : public SampleApp {
                     // fellTree that hands a piece that big to the solver -- and
                     // a test that skips it measures 31,450 voxels of its own
                     // omission, which is what the first run of this did.
-                    if (world_.fellTree(physics_, so2, dir, simMs_)) break;
+                    if (world_.fellTree(physics_, so2, dir, simMs_)) { camedown = true; break; }
+                    // INTO A LOCAL, and committed below only if this model
+                    // actually came down -- see the note after the loop.
                     const long l = world_.looseVoxelsNow(so2);
-                    if (l > modelLeft) modelLeft = l;
+                    if (l > kindLeft) kindLeft = l;
                 }
+                // ...AND IF IT NEVER CAME DOWN, SAY SO RATHER THAN COUNTING IT.
+                // A tree still standing has its crown connected through its own
+                // trunk; a tree that has been severed and refused a body has
+                // the whole crown loose, and the number that produces is the
+                // canopy's size, not a floating-geometry bug. Reporting it as
+                // one is how this test cried wolf.
+                if (kind == 0 && !camedown)
+                    std::printf("  (the tree did not come down in 60 blows -- its crown is not"
+                                " counted; see the note in this loop)\n");
+                else if (kindLeft > modelLeft)
+                    modelLeft = kindLeft;
                 break;   // one of each kind is enough; the flood is the slow part
             }
         }
         std::printf("  %ld blows on a tree and a rock: worst %ld voxels left standing"
                     " on nothing\n",
                     modelBlows, modelLeft);
+        // ---- WHAT A NON-ZERO HERE MEANS, AND WHAT IT DOES NOT -------------
+        //
+        // THE TWO FLOODS RUN AT DIFFERENT GRAIN, and that is the whole of it.
+        // fellTree decides what has come away using COARSE cells
+        // (kSeverCell); this counts FINE voxels. A coarse cell is solid if
+        // any voxel in it is, so the coarse flood leaks across a one-voxel gap
+        // the fine one stops at -- and a blow can therefore disconnect tens of
+        // thousands of fine voxels while the sever test correctly reports that
+        // nothing structural has come off.
+        //
+        // So this number is real -- those voxels ARE standing on nothing, and
+        // nothing-floats says they should fall -- but it is a KNOWN GAP in the
+        // grain of the sever test, not a regression in whatever was last
+        // changed. It surfaces on some spawns and not others because it needs
+        // a blow that cuts a fine bridge without cutting a coarse one.
+        //
+        // Closing it means running the sever flood at voxel grain, or coarse
+        // first and fine inside the cells the coarse pass calls contested. It
+        // is not a one-line fix and it has never been attempted.
+        if (modelLeft > 0)
+            std::printf("  (coarse sever vs fine flood -- see the note here before blaming\n"
+                        "   whatever changed last)\n");
 
         // ---- ...AND THE GROUND ITSELF ------------------------------------
         //
@@ -5730,6 +6021,43 @@ class ForestApp : public SampleApp {
         std::printf("\n  collider boxes inside a rock or a trunk at rest: %d"
                     "   (static window %d boxes)\n",
                     clipped, boxes);
+
+        // ---- AND THE ONE NUMBER THAT SAYS "IT LANDED" ---------------------
+        //
+        // The trajectory above reports the body's ORIGIN, which for a felled
+        // tree is the model's base corner -- metres from the wood once the
+        // thing is lying down, and below the ground by construction because the
+        // collider starts at the CUT. Reading it as a height is what made a
+        // floating tree and a buried one look the same in this trace, twice.
+        //
+        // So: the SHAPES' own bounds against the ground under them. A collider
+        // barely taller than it is wide is a tree that never got a trunk -- the
+        // birch failure, where an 11 m tree was given an 0.8 m stub, could not
+        // topple, and left the mesh hanging in the air.
+        for (int i = 0; i < 512; ++i) {
+            Vec3 p{0, 0, 0};
+            float q[4] = {0, 0, 0, 1};
+            if (!world_.debrisPose(i, &p, q)) continue;
+            Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+            // CONTINUE, NOT BREAK. debrisPose answers for a slot whose actor
+            // has already been swept, and breaking there printed nothing at all
+            // -- which reads as "the test did not run" rather than "that slot
+            // was stale", and cost a rebuild to tell apart.
+            if (!world_.debrisBounds(physics_, i, &lo, &hi)) continue;
+            const WalkWorld ww = walkWorld();
+            float g = walkGroundM(ww, lo.x, lo.z);
+            g = maxf(g, walkGroundM(ww, hi.x, lo.z));
+            g = maxf(g, walkGroundM(ww, lo.x, hi.z));
+            g = maxf(g, walkGroundM(ww, hi.x, hi.z));
+            g = maxf(g, walkGroundM(ww, (lo.x + hi.x) * 0.5f, (lo.z + hi.z) * 0.5f));
+            std::printf("\n  collider   %.1f x %.1f x %.1f m   longest side %.1f m\n",
+                        double(hi.x - lo.x), double(hi.y - lo.y), double(hi.z - lo.z),
+                        double(maxf(hi.x - lo.x, maxf(hi.y - lo.y, hi.z - lo.z))));
+            std::printf("  at rest    underside %.2f m, ground %.2f m  -->  %+.2f m %s\n",
+                        double(lo.y), double(g), double(lo.y - g),
+                        (lo.y - g > 0.5f) ? "FLOATING" : "resting");
+            break;
+        }
         std::printf("\n  (pitch 0 = still standing, 90 = flat on the ground)\n");
     }
 
@@ -5780,6 +6108,39 @@ class ForestApp : public SampleApp {
                 world_.collidersNear(cam.origin, kBirdKeepM, &perches);
                 for (int i = 0; i < 60; ++i) birds_.update(1.0f / 60.0f, perches, cam.origin);
                 birds_.publish(world_);
+            }
+            // ...AND THE LAKE, for the reason the flock above is ticked: an
+            // --out picture of a lake with nothing living on it is a picture of
+            // a different lake. A second of it, so the pads have drifted off
+            // their spawn and the fish are not all pointing the same way.
+            {
+                for (int i = 0; i < 60; ++i) lake_.update(1.0f / 60.0f, world_.terrain, cam.origin);
+                lake_.publish(world_);
+                const auto groundAt = [this](float x, float z) {
+                    return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
+                                                          int(std::floor(z / VOXEL_M))) + 1) *
+                           VOXEL_M;
+                };
+                // TWENTY SECONDS, NOT ONE. The butterflies need a second because
+                // their fade is 0.7 s; the flock needs far longer for a
+                // different reason -- every bird is BORN ON A RING at 0.78-0.94
+                // of the keep radius, so one tick of it is nine birds sitting
+                // at eighty metres and nothing in the middle. Twenty seconds at
+                // 5.5 m/s is a hundred metres of flight, which is the ring
+                // crossed: by then they are distributed the way they are in
+                // play rather than the way they are spawned.
+                for (int i = 0; i < 1200; ++i)
+                    flock2_.update(1.0f / 60.0f, cam.origin, groundAt);
+                flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
+                Vec3 bat{0, 0, 0};
+                float bd = 0.0f;
+                if (flock2_.nearest(cam.origin, &bat, &bd))
+                    std::printf("  flock    %d songbirds in the air, nearest %.0f m at "
+                                "(%.0f, %.0f, %.0f)\n",
+                                flock2_.flying(), double(bd), double(bat.x), double(bat.y),
+                                double(bat.z));
+                if (lake_.living())
+                    std::printf("  lake     %d living on the water\n", lake_.living());
             }
             world_.refitTlas();
             Vec3 at{0, 0, 0};

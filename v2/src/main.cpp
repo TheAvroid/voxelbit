@@ -298,6 +298,27 @@ bool parseCacheOpt(const std::string &a, int argc, char **argv, int &i, Options 
 bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        // OUTSIDE THE CHAIN BELOW, DELIBERATELY. That else-if ladder is at
+        // MSVC's nesting ceiling -- adding one more rung is a hard
+        // "compiler limit: blocks nested too deeply" (C1061), not a warning.
+        // Anything new goes here, before it, and continues.
+        if (a == "--water-ui") { o->waterPanelAtStart = true; continue; }
+        // The same NINE bits the panel sets, for a scripted A/B: 511 is all on,
+        // and clearing one proves that term and only that term moved. 507 is
+        // what v2 ships with -- everything but the world reflection.
+        //
+        // THIS IS ONLY AS GOOD AS WHERE THE NUMBER IS APPLIED. It reached the
+        // interactive path and not the offline one for as long as it existed,
+        // because App::onLoad seeded the tracer two hundred lines past the
+        // `--out` return -- so `--out --water-flags 0` and `--water-flags 511`
+        // rendered pixel-for-pixel identical images and every scripted A/B of a
+        // water term silently compared a picture with itself. Fixed there, and
+        // the note at the seeding site says what else belongs above that
+        // return.
+        if (a == "--water-flags" && i + 1 < argc) {
+            o->waterFlags = uint32_t(std::atoi(argv[++i]));
+            continue;
+        }
         if (a == "--help" || a == "-h") { usage(); return false; }
         else if (a == "--width") argInt(argc, argv, i, &o->r.width);
         else if (a == "--height") argInt(argc, argv, i, &o->r.height);
@@ -535,10 +556,31 @@ int main(int argc, char **argv) {
     c.windowDesc.resizableWindow = true;
     // Straight to the taskbar rather than shown and then minimised: the latter
     // flashes a window across whatever the person at the keyboard is looking at.
-    if (o.background) c.windowDesc.mode = Falcor::Window::WindowMode::Minimized;
-    // No window at all for an offline render. SampleApp then skips the message
-    // loop and simply runs, which is exactly what a one-frame render wants.
-    c.headless = o.outGiven;
+    //
+    // ...AND ANY AUTOMATED CAPTURE IMPLIES IT. A --shot or --shot-ui run is a
+    // script taking a picture; it needs a window because it photographs the
+    // swap chain WITH the interface on it, but it has no business appearing in
+    // front of whoever is at the keyboard. Forgetting --background on one of
+    // those is a mistake with no upside, so it is not a mistake that can be
+    // made any more.
+    if (o.background || !o.shotUi.empty() || !o.shotPath.empty())
+        c.windowDesc.mode = Falcor::Window::WindowMode::Minimized;
+
+    // -----------------------------------------------------------------------
+    // NO WINDOW AT ALL FOR ANYTHING THAT ONLY PRINTS.
+    //
+    // SampleApp then skips the message loop and simply runs, which is what a
+    // one-frame render wants -- and it is equally what the three HEADLESS
+    // DIAGNOSTICS want. They were not on this list, so --fell-test,
+    // --float-test and --dig-test each opened a real window, took the focus and
+    // sat on top of whatever the user was doing, for a run whose entire output
+    // is text on stdout. Reported, twice.
+    //
+    // A test that has to be watched is a test with a bug in it. If one of these
+    // ever needs pixels it should take a --shot like everything else, which is
+    // covered by the minimise above.
+    // -----------------------------------------------------------------------
+    c.headless = o.outGiven || o.fellTest || o.floatTest || o.digTest;
 
     // Every device failure in this engine arrives as an exception carrying the
     // call that failed and the driver's own description of why. Catching it

@@ -119,7 +119,23 @@ class Physics {
         }
 
         physx::PxSceneDesc desc(physics_->getTolerancesScale());
-        desc.gravity = physx::PxVec3(0.0f, -9.81f, 0.0f);
+        // -------------------------------------------------------------------
+        // 20, NOT 9.81, AND THE REST OF THE ENGINE IS WHY.
+        //
+        // Player::gravity is 20 m/s^2 and has been since it was ported -- v1's
+        // GRAVITY of 200 voxels, with its own note: "Real gravity makes a jump
+        // feel like a moon". Everything the player feels is tuned around that
+        // number. The SOLVER was left at Earth's, so a felled tree fell at half
+        // the rate the man watching it does.
+        //
+        // v1 hit this exact complaint from the other side and recorded it:
+        // "the trees seem to have space like gravity" / "make it more
+        // realistic", and its fix was to stop scaling gravity down for the
+        // falling trunk. Ours was never scaled -- it was simply a different
+        // gravity from the game's -- and it reads the same way: a severed trunk
+        // that hangs.
+        // -------------------------------------------------------------------
+        desc.gravity = physx::PxVec3(0.0f, -20.0f, 0.0f);
         // TWO WORKER THREADS, not as many as the machine has. The chunk mesher
         // already owns a pool and is the thing actually competing for cores;
         // handing PhysX a thread per core would have the two fighting over the
@@ -778,6 +794,31 @@ class Physics {
     // because the cut is deeper on one side and the remaining fibres hinge --
     // it falls AWAY from the axe. This is that hinge, as a small angular
     // velocity about the cut. Everything after it is gravity.
+    // -----------------------------------------------------------------------
+    // DEAD STOP: no spin, no drift, still falling under gravity from here.
+    //
+    // For the moment a trunk is severed. v1 does exactly this and says why:
+    //
+    //     b.omega[0] = b.omega[1] = b.omega[2] = 0;  // the drive owns the
+    //                                                // rotation from here
+    //     b.vel[0] = b.vel[2] = 0;                   // ...and straight down
+    //                                                // onto the cut face
+    //
+    // A piece born with a shove leaves its own cut sideways, which is the one
+    // thing a cut trunk must not do.
+    // -----------------------------------------------------------------------
+    void stopBody(int h) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        a->setAngularVelocity(physx::PxVec3(0.0f, 0.0f, 0.0f));
+        a->setLinearVelocity(physx::PxVec3(0.0f, 0.0f, 0.0f));
+        a->wakeUp();
+#else
+        (void)h;
+#endif
+    }
+
     void nudgeSpin(int h, const Vec3 &axis, float radPerSec) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;

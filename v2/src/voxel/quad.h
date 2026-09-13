@@ -152,8 +152,8 @@ inline Column columnRange(int lo, int hi) {
 //     bits 24..29   h - 1     extent along its second, 1..64
 //     bits 30..32   dir       a face:: value, 0..5
 //     bits 33..40   material  a mat:: id, 0..255
-//     bits 41..44   strand    v2's strand code, 0..15
-//     bits 45..63   spare
+//     bits 41..45   strand    v2's strand code, 0..31
+//     bits 46..63   spare
 //
 // EIGHT BYTES A QUAD, against the seventy-six v2 uploaded. v2's VoxMesh stored
 // four Vec3 positions (48 bytes), six 32-bit indices (24) and two packed
@@ -184,7 +184,7 @@ constexpr int QUAD_MAT_SHIFT = 33, QUAD_STRAND_SHIFT = 41;
 constexpr uint64_t QUAD_POS_MASK = 0x3F;  // 6 bits -- x, y, z, and the biased w and h
 constexpr uint64_t QUAD_DIR_MASK = 0x07;
 constexpr uint64_t QUAD_MAT_MASK = 0xFF;
-constexpr uint64_t QUAD_STRAND_MASK = 0x0F;
+constexpr uint64_t QUAD_STRAND_MASK = 0x1F;
 
 inline PackedQuad packQuad(int x, int y, int z, int w, int h, uint8_t dir, uint8_t material,
                            uint8_t strand = 0) {

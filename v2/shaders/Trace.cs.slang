@@ -279,6 +279,11 @@ uint groundShade(uint packed, float3 p, float3 ng)
         base = kGrass0;
         count = kGrassCount;
     }
+    else if (mtl >= kBGrass0 && mtl < kBGrass0 + kBGrassCount)
+    {
+        base = kBGrass0;
+        count = kBGrassCount;
+    }
     else if (mtl >= kSoil0 && mtl < kSoil0 + kSoilCount)
     {
         base = kSoil0;
@@ -342,10 +347,16 @@ uint groundShade(uint packed, float3 p, float3 ng)
     // arithmetic, so it is right below sea level too, where v.y is negative.
     // -----------------------------------------------------------------------
     const uint strand = triStrand(packed);
-    if (strand != 0u && base == kGrass0)
+    // EITHER WOOD'S GRASS READS ITS RAMP ALONG THE BLADE. `base` already says
+    // which ramp this is, so the gradient is written once for both.
+    if (strand != 0u && (base == kGrass0 || base == kBGrass0))
     {
-        const uint row = (uint(v.y) - (strand - 1u)) & kStrandRowMask;
-        return kGrass0 + min(row, kGrassCount - 1u);
+        // HALVED, THE SAME WAY THE HOST HALVED THE BASE -- see the note over
+        // STRAND_MAX_ROWS in voxelworld.h. `>>` on a signed int is arithmetic,
+        // so this is floor division and the two agree at every y.
+        const uint row =
+            (uint(int(v.y) >> kStrandRowShift) - (strand - 1u)) & kStrandRowMask;
+        return base + min(row, count - 1u);
     }
 
     return base + hashVoxel(v) % count;
@@ -455,6 +466,38 @@ struct Hit
     // Which material this face actually wears, after groundShade. Zero when
     // the ray hit nothing.
     uint mtl;
+    // -----------------------------------------------------------------------
+    // THE STILL SURFACE THIS WATER HIT BELONGS TO, in world y. Only meaningful
+    // when the hit IS water.
+    //
+    // WHY IT CANNOT BE gParams.waterY, WHICH IS WHAT IT USED TO BE. That
+    // uniform is one scalar for the whole frame -- `terrain.waterAt(pos.x)`,
+    // the waterline of the band the CAMERA is standing in. The world's bands
+    // are 800 m wide and their lines are 33.0 m (pine) and 5.5 m (birch), so a
+    // pond twenty-seven metres away in y is routinely being measured against
+    // the wrong surface.
+    //
+    // It drew as a REGULAR LATTICE OF NEAR-BLACK BLOBS across a pond, which is
+    // the artifact in the user's debug video, and the tiling is the swell's own
+    // 5.2 m wavelength showing through: the crest-exit push below fires only
+    // where the marched crest comes out ABOVE this number, so the wave field
+    // decides which patches of water get pushed and which do not. Bisected by
+    // deploying a shader that marches but does not move the hit -- 6.05% of the
+    // frame against the bug, 1.5% against the swell turned off entirely.
+    //
+    // The quad's own y is right here and free: marchWaterVoxels already takes
+    // it as `baseTop`.
+    // -----------------------------------------------------------------------
+    float waterTop;
+    // HOW MUCH WHITE CHURN IS ON THIS BIT OF WATER. 0 everywhere that is not
+    // shore, and never 1 even where it is -- see foamMix.
+    //
+    // On the Hit rather than folded into the albedo because foam is not a
+    // colour the water IS, it is something floating ON it: the path loop has
+    // to take its share of the light BEFORE the surface splits into reflection
+    // and refraction. Folded into albedo it would be foam seen THROUGH the
+    // water. See the foam block in the dielectric branch.
+    float foam;
     Surface mat;
 };
 
@@ -599,12 +642,66 @@ float waterHeight(float2 p, float t)
 // crosses a lot of water per unit of drop, which is why 28 (2.8 m) put a hard
 // line across the lake at the distance it gave up. 48 pushes that out; the
 // fallback below is what stops it being a line at all.
+// HOW BRIGHT THE SUN-SPARKLE ON THE WATER IS. 0 turns it off and costs
+// nothing -- the whole block folds away. See the note at its use.
+// BACK ON at the user's request 2026-09-13, having been 0 since the 12th.
+// 1 is v1's own strength. This is the one number to move: 0 folds the whole
+// block away and costs nothing.
+static const float kGlintStrength = 1.0f;
+
+// Is this water term switched on? See kWF* in Shared.slang and the [I] panel.
+bool waterOn(uint bit) { return (gParams.waterFlags & bit) != 0u; }
+
 static const int kWaveSteps = 48;
 
 // HOW FAR BACK ALONG THE RAY THE MARCH STARTS, and how far past the flat hit
-// it is allowed to run, in metres. v1's 3.8 and 34/38 voxels.
+// it is allowed to run, in metres. v1's 3.8 and 34/38 voxels. This is now the
+// FLOOR of a reach that grows with range -- see kWaveCrestM.
 static const float kWaveBackM = 0.38f;
 static const float kWaveFarM  = 3.40f;
+
+// It is defined further down, next to the glint and the caustics it was written
+// for. The march wants it too and comes first in the file.
+float featureSizeM(float dist, float baseM);
+
+// ---------------------------------------------------------------------------
+// WHY THE MARCH USED TO GIVE UP AT A FIXED DISTANCE, AND WHAT IT COST.
+//
+// Reported twice: "the water is still not rendering right at a distance and
+// then renders correctly when moving closer". From the shore at eye height it
+// is unmistakable -- the swell carries voxel steps for the first sixty metres
+// or so and then STOPS DEAD along a horizontal line, and everything past it is
+// a flat pale sheet up to the far bank.
+//
+// THE LINE IS GEOMETRY, NOT A TOLERANCE. A crest stands about 0.26 m above the
+// still surface (the four amplitudes summed), and the march finds one by
+// backing up along the ray until it is above that. The ray length that takes is
+//
+//     crest / |rd.y|
+//
+// and a ray from a 4 m eye to water 80 m out has |rd.y| near 0.05, so it needs
+// FIVE metres of back-up. The window was a constant 3.4. Past the distance
+// where those two cross, every pixel falls through to the smooth analytic
+// normal -- and a smooth normal at a grazing angle is a mirror, which is one
+// flat sheet of sky. That is the "cut in half" being reported, and the earlier
+// fix (shading the fallback with waterNormal rather than with the flat quad)
+// made the line SOFTER without moving it.
+//
+// SO THE REACH IS DERIVED RATHER THAN CHOSEN, and the step budget is bought
+// back the way this shader already buys it back for the glint and the caustics:
+// the DDA's lateral cell GROWS WITH RANGE (featureSizeM). At 300 m a 10 cm
+// column is a third of a pixel across, so marching at that size spends
+// forty-eight steps covering five metres of water and integrates to a flat wash
+// anyway. Marched at the size a feature has to be to survive to the screen, the
+// same forty-eight steps reach forty.
+//
+// THE HEIGHT QUANTISATION STAYS AT kVoxelM, and that is not an oversight. The
+// swell is at most a couple of voxels tall; snapping it to a 0.8 m cell would
+// round every crest to zero and hand back the flat sheet by another route. It
+// is the LATERAL cell that grows -- wider plateaus, same step height, which is
+// exactly what "hold the feature to a few pixels" means here.
+// ---------------------------------------------------------------------------
+static const float kWaveCrestM = 0.30f;   // 0.130 + 0.072 + 0.034 + 0.020, rounded up
 
 bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
                       out float tOut, out bool sideFace, out float3 sideN)
@@ -612,7 +709,19 @@ bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
     tOut = tHit;
     sideFace = false;
     sideN = float3(0.0f, 1.0f, 0.0f);
-    const float vs = kVoxelM;
+    // THE LATERAL CELL, GROWN WITH RANGE -- see the note over kWaveCrestM. Up
+    // close featureSizeM returns kVoxelM exactly, so nothing about the near
+    // water moves.
+    const float vs = featureSizeM(tHit, kVoxelM);
+    // ...AND THE REACH, FROM THE GEOMETRY RATHER THAN FROM A CONSTANT. Far
+    // enough to clear a crest at this ray's slope, and never further than the
+    // step budget can actually walk. 0.45 rather than 1 because the window is
+    // spent on BOTH sides of the hit, and a diagonal ray crosses more than one
+    // column per cell of travel. Floored at the old constant so close water is
+    // byte for byte what it was.
+    const float reach = max(kWaveFarM,
+                            min(kWaveCrestM / max(abs(rd.y), 0.02f),
+                                float(kWaveSteps) * vs * 0.45f));
 
     // ---------------------------------------------------------------------
     // IT STARTS BEHIND THE HIT, AND THAT IS THE WHOLE TRICK.
@@ -633,7 +742,7 @@ bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
     // it casts no shadow and no other ray can find it. v1 accepts exactly
     // that, and it is invisible next to having a silhouette at all.
     // ---------------------------------------------------------------------
-    float tq = max(max(tHit - kWaveBackM / max(abs(rd.y), 0.08f), tHit - kWaveFarM), 0.0f);
+    float tq = max(max(tHit - kWaveBackM / max(abs(rd.y), 0.08f), tHit - reach), 0.0f);
     const float3 pW = ro + rd * tq;
 
     int2 c = int2(floor(float2(pW.x, pW.z) / vs));
@@ -658,7 +767,11 @@ bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
         // number of voxels above or below the still waterline and lands on
         // the same grid the terrain around it does. Flooring the absolute
         // height instead would let the whole sheet sit half a voxel off.
-        const float wh = baseTop + floor(waterHeight(cw, t) / vs + 0.5f) * vs;
+        // kVoxelM, NOT vs. The cell may be a metre wide out at the horizon;
+        // the STEP is still one voxel, because that is the grid the water
+        // shares with the terrain and a crest rounded to a metre is no crest.
+        const float wh =
+            baseTop + floor(waterHeight(cw, t) / kVoxelM + 0.5f) * kVoxelM;
         const float tNext = min(tmx, tmz);
 
         // Already below this column's top: the ray came in through the
@@ -682,7 +795,7 @@ bool marchWaterVoxels(float3 ro, float3 rd, float tHit, float baseTop, float t,
 
         if (tmx < tmz) { tq = tmx; tmx += stepX; c.x += int(sx); axis = 0; }
         else           { tq = tmz; tmz += stepZ; c.y += int(sz); axis = 1; }
-        if (tq > tHit + kWaveFarM) return false;
+        if (tq > tHit + reach) return false;
     }
     return false;
 }
@@ -730,10 +843,105 @@ float wNoise2(float2 p)
 //
 // The frequencies convert like the waves do: v1 samples in voxels at 0.09 and
 // 0.11, which is 0.9 and 1.1 per metre.
-float waterCaustic(float2 p, float t)
+// ---------------------------------------------------------------------------
+// HOW BIG A FEATURE HAS TO BE TO SURVIVE BEING LOOKED AT FROM A DISTANCE.
+//
+// "The effects on the water go away when you get far enough out" -- and they
+// were never switched off. Nothing in this file gates on range. What happens
+// is arithmetic: the glint keys off 10 cm cells and the caustics off roughly
+// metre-wide webs, and at 100 m a pixel covers most of a metre. Hundreds of
+// cells then fall inside one pixel and average to their own mean, which is a
+// flat sheen. Ray Reconstruction finishes the job. Rendering the same frame at
+// --no-dlss --spf 16 shows the sparkle IS still being computed out there; it
+// simply cannot be resolved.
+//
+// So the features grow with distance instead of vanishing -- the same trick as
+// a mip level, and for exactly the same reason. A cell is held to at least
+// kFeaturePx pixels across, so it stays visible at any range; up close the
+// clamp does nothing and the effect is the authored one, voxel for voxel.
+//
+// kPixelRad is the angle one pixel subtends, near enough: ~70 degrees of
+// horizontal field over ~1400 px. It does not have to be exact -- it sets
+// where the growth starts, and being out by a factor of two moves that
+// distance, not the look.
+// ---------------------------------------------------------------------------
+static const float kPixelRad  = 0.0009f;
+static const float kFeaturePx = 3.0f;
+
+float featureSizeM(float dist, float baseM)
 {
-    const float n1 = wNoise2(p * 0.9f + float2( t * 0.275f, t * 0.170f));
-    const float n2 = wNoise2(p * 1.1f + float2(-t * 0.235f, t * 0.145f));
+    return max(baseM, dist * kPixelRad * kFeaturePx);
+}
+
+// ---------------------------------------------------------------------------
+// FOAM, THE WAY v1 MIXES IT -- AND THE WAY THIS ENGINE ALREADY GOT IT WRONG
+// ONCE.
+//
+// v1:
+//     foam   = max(foam, step(0.35, ivhash(...) * (0.55 + 0.45*sin(...))));
+//     foamK  = clamp(foam, 0, 1) * 0.8;
+//     albedo = mix(albedo, FOAM_C, foamK);
+//
+// ...so it reads as CHURN: scattered, shifting, and never fully white.
+//
+// v2's first attempt made every shallow column a SOLID white material and
+// lifted it a voxel so it stood proud of the swell. A solid white band raised
+// all the way round a lake is a kerb, not surf -- it is why foamDepthVox sat
+// at 0 for a session. The lift is right in v1, where it carries a broken-up
+// band; here it turned a bad colour into a bad silhouette.
+//
+// The fix is not the colour, it is that foam must be PATCHY and LEVEL. The
+// host still says WHICH columns are shore -- foamColumn, by depth, and that
+// part always worked. This says how much churn is on any given SPOT of them,
+// and the answer is never all of it.
+//
+// PER VOXEL CELL, held to a few pixels at range for exactly the reason the
+// glint is -- see featureSizeM. Churn finer than a pixel averages into a flat
+// white wash, which is the one thing it must not look like.
+// ---------------------------------------------------------------------------
+static const float  kFoamK      = 0.80f;                        // v1's cap
+static const float3 kFoamColour = float3(0.92f, 0.95f, 0.96f);  // mat::FOAM's own
+
+// ---------------------------------------------------------------------------
+// ...AND IT HAS TO CLUMP, WHICH THE FIRST VERSION DID NOT.
+//
+// The per-cell hash alone is WHITE NOISE: every cell decides on its own, so
+// about half of them churn, evenly, everywhere the host called shore. Down a
+// steep bank the band is under a metre wide and that reads as surf. Over a
+// shallow BAY it is fifteen metres wide, and fifteen metres of evenly dithered
+// white is not foam, it is a rash -- measured on a pine inlet, the whole bay
+// speckled to its middle.
+//
+// Real surf GATHERS. So a low-frequency mask decides where there is foam at
+// all, and the per-cell hash only breaks up its inside. The mask drifts, slowly
+// and in its own direction, which keeps a shoreline alive without any of it
+// reading as a scrolling texture.
+// ---------------------------------------------------------------------------
+float foamMix(float2 p, float t)
+{
+    // ~2 m tongues, in WORLD space so the patches belong to the shore rather
+    // than to the camera, drifting far more slowly than the cells twinkle: a
+    // shoreline moves, it does not flicker.
+    const float gate = smoothstep(0.42f, 0.68f,
+                                  wNoise2(p * 0.55f + float2(t * 0.045f, -t * 0.030f)));
+    if (gate <= 0.0f) return 0.0f;
+
+    const float cellM = featureSizeM(0.0f, kVoxelM);
+    const float2 cell = floor(p / cellM);
+    const float hsh = frac(sin(cell.x * 127.1f + cell.y * 311.7f) * 43758.5453f);
+    // The sine is what stops the band being a fixed stencil: a cell drifts in
+    // and out of churning on its own phase, so the shore boils instead of
+    // holding a pattern.
+    const float w = 0.55f + 0.45f * sin(t * 1.9f + hsh * 6.2831853f);
+    return step(0.35f, hsh * w) * kFoamK * gate;
+}
+
+float waterCaustic(float2 p, float t, float scale)
+{
+    // scale < 1 stretches the webs, which is what keeps them resolvable far
+    // away. It is 1 at close range, so nothing about the near look moves.
+    const float n1 = wNoise2(p * (0.9f * scale) + float2( t * 0.275f, t * 0.170f));
+    const float n2 = wNoise2(p * (1.1f * scale) + float2(-t * 0.235f, t * 0.145f));
     return pow(saturate(1.0f - abs(n1 - n2) * 2.6f), 5.0f);
 }
 
@@ -748,6 +956,8 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.ns = float3(0.0f, 1.0f, 0.0f);
     h.held = false;
     h.mtl = 0u;
+    h.foam = 0.0f;
+    h.waterTop = 0.0f;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = float3(0.0f);
     h.mat.roughness = 1.0f;
@@ -916,11 +1126,21 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // enough where v1 needed two. A lake's TOP is what has a wave on it; its
     // edges are vertical and a y-up ripple normal on them would tilt the
     // surface into the bank and refract sideways.
+    // kFoam BELONGS IN THIS TEST. The shore band is its own material on the
+    // quad so the greedy merge splits at its edge (see WaterColumns::material)
+    // -- but it is still water, and without it here a shore column falls
+    // through to the OPAQUE path below and is drawn as a solid white block.
+    // That is the white wall in the note over foamMix, reached by a second
+    // route.
     const uint triMat = triMaterial(packed);
-    if (inst.kind == KIND_WATER || triMat == kWater)
+    if (inst.kind == KIND_WATER || triMat == kWater || triMat == kFoam)
     {
         const uint fdir = (packed >> kTriDirShift) & kTriDirMask;
         const bool topFace = (inst.kind == KIND_WATER) || (fdir == 0u);   // face::POS_Y
+        // THE QUAD IS THE STILL SURFACE, and it is recorded BEFORE the march
+        // moves h.p off it -- see Hit::waterTop for what reading the global
+        // instead cost.
+        h.waterTop = h.p.y;
         bool wSide = false;   // the march may land on a vertical step between crests
         // THE SURFACE IS BOTH: VOXEL CRESTS FOR SHAPE, A NORMAL FOR MOTION.
         //
@@ -958,7 +1178,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
             // onto the water. A ray leaving from underneath keeps the flat
             // top it already found.
             bool marched = false;
-            if (d.y < -0.01f)
+            if (waterOn(kWFSwell) && d.y < -0.01f)
             {
                 float wt;
                 bool ws;
@@ -995,7 +1215,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
             // with the march having found nothing there is no geometry for it
             // to argue with.
             // -----------------------------------------------------------
-            if (!marched)
+            if (!marched && waterOn(kWFRipple))
                 h.ns = waterNormal(float2(h.p.x, h.p.z), gParams.waterTime);
             // NO SHADING NORMAL. The surface has real voxel steps now, so the
             // silhouette carries the swell and a smooth Gerstner normal on top
@@ -1014,6 +1234,12 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
         // SET HERE, AFTER THE DEFAULTS. Setting it inside the branch above put
         // it two lines before `albedo = 1.0` and it was silently undone.
         h.mat.albedo = wSide ? float3(0.74f) : float3(1.0f);
+        // ONLY THE TOP OF A SHORE COLUMN CHURNS. A vertical step face is the
+        // side of the swell; whitening it would draw a bright rim under every
+        // crest, which is the corrugated look the step darkening exists to
+        // avoid.
+        if (triMat == kFoam && topFace && !wSide && waterOn(kWFFoam))
+            h.foam = foamMix(float2(h.p.x, h.p.z), gParams.waterTime);
         return h;
     }
 
@@ -1603,6 +1829,11 @@ void main(uint3 tid: SV_DispatchThreadID)
     // surfaced and dived again. gParams.waterY sits far below the world where
     // the band has no water, so this is false everywhere it should be.
     bool inWater = c.pos.y < gParams.waterY;
+    // WHERE THIS PATH LAST CROSSED A WATER SURFACE. Seeded with the frame's
+    // global for a camera that starts submerged -- it never crossed one, so
+    // there is nothing better to say -- and replaced by the real quad's y the
+    // first time the path refracts through one. See Hit::waterTop.
+    float waterEntryY = gParams.waterY;
     float primaryDist = -1.0f;
     // Whether the primary vertex is the tool in the player's hand. Read once,
     // by the motion vector -- see the note where it is used.
@@ -1752,8 +1983,9 @@ void main(uint3 tid: SV_DispatchThreadID)
             const float wDist = h.hit ? h.t : 60.0f;
             const float3 wTr = exp(waterSigma * -wDist);
             const float wSun = saturate(0.25f + gParams.sky.sunDir.y * 2.0f);
-            L += beta * float3(0.018f, 0.070f, 0.092f) * wSun * (float3(1.0f) - wTr);
-            beta *= wTr;
+            if (waterOn(kWFScatter))
+                L += beta * float3(0.018f, 0.070f, 0.092f) * wSun * (float3(1.0f) - wTr);
+            if (waterOn(kWFAbsorb)) beta *= wTr;
 
             // -----------------------------------------------------------------
             // CAUSTICS -- the webs a lake's surface focuses onto its bed.
@@ -1794,16 +2026,31 @@ void main(uint3 tid: SV_DispatchThreadID)
                 // FREE SIDE EFFECT, and a wanted one: the caustics below fade
                 // with depth, because they multiply an albedo this has already
                 // darkened. A deep lake stops wearing its shallows' webs.
-                const float depth = max(0.0f, gParams.waterY - h.p.y);
-                // Floored so a sun on the horizon does not divide the slant
-                // path to infinity and take the bed to black in one frame.
-                const float sinEl = max(gParams.sky.sunDir.y, 0.08f);
-                h.mat.albedo *= exp(-waterSigma * (depth / sinEl));
+                if (waterOn(kWFSunPath))
+                {
+                    // THE SURFACE THE PATH CAME IN THROUGH. Same correction as
+                    // the crest exit and for the same reason -- gParams.waterY
+                    // is the camera band's line and this bed may be under a
+                    // pond in the other band. waterEntryY is recorded where the
+                    // path last crossed a surface; it falls back to the global
+                    // for a submerged camera that never crossed one.
+                    const float depth = max(0.0f, waterEntryY - h.p.y);
+                    // Floored so a sun on the horizon does not divide the slant
+                    // path to infinity and take the bed to black in one frame.
+                    const float sinEl = max(gParams.sky.sunDir.y, 0.08f);
+                    h.mat.albedo *= exp(-waterSigma * (depth / sinEl));
+                }
 
-                const float sun = saturate(gParams.sky.sunDir.y * 8.0f);
+                const float sun = waterOn(kWFCaustic)
+                                      ? saturate(gParams.sky.sunDir.y * 8.0f)
+                                      : 0.0f;
                 if (sun > 0.0f)
-                    h.mat.albedo *= 1.0f + 1.6f * sun *
-                                    waterCaustic(float2(h.p.x, h.p.z), gParams.waterTime);
+                    // The webs are about 1.1 m across as authored; held to
+                    // kFeaturePx pixels so they do not wash out at range.
+                    h.mat.albedo *=
+                        1.0f + 1.6f * sun *
+                                   waterCaustic(float2(h.p.x, h.p.z), gParams.waterTime,
+                                                1.11f / featureSizeM(h.t, 1.11f));
             }
         }
 
@@ -1986,14 +2233,30 @@ void main(uint3 tid: SV_DispatchThreadID)
             // in and out instead of snapping.
             // -------------------------------------------------------------
             {
-                const float gk = saturate(smoothstep(-0.02f, 0.10f, gParams.sky.sunDir.y));
+                // OFF (user 2026-09-12: "turn off the shiny white reflections
+                // on the water"). This is v1's pixelGlisten -- a scatter of
+                // hard white sparks where the surface points at the sun, one
+                // per voxel cell, about half the cells taking part.
+                //
+                // Kept rather than deleted, and kept whole: the duty window,
+                // the per-cell phase and the cell size are all tuned numbers
+                // that took measuring, and v1's first attempt at the window
+                // read as blinking. `kGlintStrength` is the one thing to move
+                // if it is ever wanted back; 0 folds the block away entirely.
+                const float gk = (waterOn(kWFGlint) ? kGlintStrength : 0.0f) *
+                                 saturate(smoothstep(-0.02f, 0.10f, gParams.sky.sunDir.y));
                 if (gk > 0.01f)
                 {
                     const float3 refl = reflect(d, h.ns);
                     const float column = pow(max(dot(refl, gParams.sky.sunDir), 0.0f), 26.0f);
                     if (column > 1e-4f)
                     {
-                        const float2 cell = floor(float2(h.p.x, h.p.z) / kVoxelM);
+                        // ONE CELL IS ONE VOXEL UNTIL A VOXEL IS TOO SMALL TO
+                        // SEE. Past that the cell grows with range so the
+                        // sparkle stays a scatter of hard points instead of
+                        // integrating away into a sheet -- see featureSizeM.
+                        const float cellM = featureSizeM(h.t, kVoxelM);
+                        const float2 cell = floor(float2(h.p.x, h.p.z) / cellM);
                         const float ph =
                             frac(sin(cell.x * 91.7f + cell.y * 47.3f) * 4321.7f) * 6.2831853f;
                         const float tw = sin(gParams.waterTime * 1.6f + ph) * 0.5f + 0.5f;
@@ -2005,6 +2268,54 @@ void main(uint3 tid: SV_DispatchThreadID)
                         L += beta * float3(1.35f, 1.25f, 1.0f) * (spark * column * gk * 0.85f);
                     }
                 }
+            }
+
+            // -------------------------------------------------------------
+            // THE CHURN TAKES ITS SHARE FIRST.
+            //
+            // Foam floats ON the water: it throws light straight back and hides
+            // what is under it, in proportion. So it is paid out of beta BEFORE
+            // the Fresnel split below -- taken after, it would be foam seen
+            // through the surface rather than riding on it, and the reflection
+            // would be laid over the top of it.
+            //
+            // SUN PLUS SKY, THE SAME FORM THE TRACED REFLECTION USES BELOW --
+            // and the first version of this got it wrong in a way worth
+            // recording. It lit the foam with skyDome(up) alone, which at noon
+            // is the BLUEST light in the scene, so the band came out a faint
+            // violet smear: measured against the same frame with the term off,
+            // 0.77% of pixels touched at a maximum delta of 56/255. It was in
+            // exactly the right place and did not read as foam at all.
+            //
+            // Whitecaps are white because they are lit by the SUN. So the band
+            // is shaded as what it is -- a white Lambertian cap lying flat on
+            // the water, normal straight up -- and it then sits in the same
+            // light as the sand a metre away, which is the comparison the eye
+            // actually makes. It reddens at dusk and greys in shade for free.
+            //
+            // ONE SHADOW RAY, and only where h.foam > 0: the band is about a
+            // per cent of the frame, so this is a per-shore cost, not a
+            // per-water-pixel one. passWater is TRUE -- foam floats ON the
+            // lake, and the lake's own surface must not be allowed to shadow
+            // it.
+            //
+            // waterOn(kWFFoam) is applied where h.foam is SET, not here, so
+            // there is one gate rather than two that can disagree.
+            // -------------------------------------------------------------
+            if (h.foam > 0.0f)
+            {
+                const float3 up = float3(0.0f, 1.0f, 0.0f);
+                // A Lambertian under a dome of radiance L scatters back albedo*L,
+                // so the coefficient is 1 in principle; 0.8 pays for the trees
+                // and the bank that take a bite out of the shore's sky.
+                float3 lit = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, up) * 0.8f;
+                const float ndl = max(gParams.sky.sunDir.y, 0.0f);
+                if (ndl > 0.0f && !isBlack(gParams.sky.sunRadiance) &&
+                    !traceOccluded(offsetRay(h.p, up, gParams.sky.sunDir), gParams.sky.sunDir,
+                                   INF, true))
+                    lit += INV_PI * gParams.sky.sunRadiance * ndl * kSunSolidAngle;
+                L += beta * h.foam * kFoamColour * lit;
+                beta *= (1.0f - h.foam);
             }
 
             const bool entering = dot(d, h.ns) < 0.0f;
@@ -2085,8 +2396,65 @@ void main(uint3 tid: SV_DispatchThreadID)
                 const float3 skyR = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, rs);
                 const float wSunR = saturate(0.25f + gParams.sky.sunDir.y * 2.0f);
                 const float3 selfR = float3(0.018f, 0.070f, 0.092f) * wSunR;
-                L += beta * Fr * lerp(selfR, skyR, saturate(rdir.y * 4.0f));
+                float3 reflR = lerp(selfR, skyR, saturate(rdir.y * 4.0f));
+
+                // -------------------------------------------------------------
+                // THE REFLECTION IS THE WORLD NOW, NOT JUST THE SKY -- AND THIS
+                // IS WHY DISTANT WATER LOOKED DEAD.
+                //
+                // "The effects on the water go away at a distance." Nothing
+                // gates on range: rendered at --no-dlss --spf 16 the glint and
+                // the swell are still being computed out there. What changes
+                // with distance is the ANGLE. Close to a lake you look down
+                // into it, Fresnel is small, and most of what you see is the
+                // refraction -- the lit bed, the caustics, the colour of the
+                // water itself. Far away you see it at a graze, Fresnel goes to
+                // one, and almost all of what you see is the reflection.
+                //
+                // And the reflection was the sky DOME alone, which over a lake
+                // is a smooth gradient with nothing in it. So far water was a
+                // flat sheet of one colour -- not because its effects had been
+                // switched off, but because the one effect that survives a
+                // grazing view had nothing to show.
+                //
+                // One traced ray fixes it: the treeline, the bank and the
+                // shore come back into the water. Shaded cheaply -- a lambert
+                // against the sun plus a sky term, the same form ProbeTrace
+                // uses -- because this is a reflection in moving water and
+                // nobody is going to read the detail in it.
+                //
+                // DEPTH 0 ONLY. It costs one trace and one shadow ray per
+                // water pixel, and a reflection seen IN a reflection is not
+                // worth a second round of that.
+                // -------------------------------------------------------------
+                if (waterOn(kWFReflect) && depth == 0 && entering)
+                {
+                    const Hit rh = traceRadiance(offsetRay(h.p, nF, rdir), rdir, MASK_WORLD);
+                    if (rh.hit)
+                    {
+                        float3 lit = float3(0.0f);
+                        const float ndl = max(dot(rh.ns, gParams.sky.sunDir), 0.0f);
+                        if (ndl > 0.0f && !isBlack(gParams.sky.sunRadiance) &&
+                            !traceOccluded(offsetRay(rh.p, rh.ng, gParams.sky.sunDir),
+                                           gParams.sky.sunDir, INF, false))
+                            lit += rh.mat.albedo * INV_PI * gParams.sky.sunRadiance * ndl *
+                                   kSunSolidAngle;
+                        // The sky it sits under, as a flat ambient. A hemisphere
+                        // integral here would cost another trace for something
+                        // this blurred.
+                        lit += rh.mat.albedo *
+                               skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp,
+                                       float3(0.0f, 1.0f, 0.0f)) *
+                               0.35f;
+                        reflR = lit;
+                    }
+                }
+                L += beta * Fr * reflR;
                 beta *= (1.0f - Fr);
+
+                // WHERE THE PATH WENT UNDER, kept for the bed's sun path --
+                // see Hit::waterTop. The quad's own y, not the frame's global.
+                if (entering && h.waterTop != 0.0f) waterEntryY = h.waterTop;
 
                 // Refract deterministically; total internal reflection keeps
                 // the ray inside, which is the one case that must still bend.
@@ -2114,8 +2482,14 @@ void main(uint3 tid: SV_DispatchThreadID)
                 // rather than being allowed to meet it.
                 // ---------------------------------------------------------
                 float3 ori = h.p;
-                if (entering && wi.y < -1e-4f && ori.y > gParams.waterY)
-                    ori += wi * ((gParams.waterY - 2e-3f - ori.y) / wi.y);
+                //
+                // THIS SURFACE'S OWN LEVEL, NOT THE FRAME'S. See Hit::waterTop:
+                // pushing to the camera band's waterline drove the ray metres
+                // into (or clean through) any pond whose line differs, and drew
+                // the lattice of black blobs in the debug video.
+                const float stillY = (h.waterTop != 0.0f) ? h.waterTop : gParams.waterY;
+                if (entering && wi.y < -1e-4f && ori.y > stillY)
+                    ori += wi * ((stillY - 2e-3f - ori.y) / wi.y);
 
                 o = offsetRay(ori, h.ng, wi);
                 d = wi;

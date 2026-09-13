@@ -169,7 +169,17 @@ constexpr uint8_t FOAM = 27;
 // spreads that one id over these four per voxel -- see groundShade().
 constexpr uint8_t SAND_0 = 28;
 constexpr uint8_t SAND_COUNT = 4;  // 28..31
-constexpr uint8_t TREE_BASE = 32;  // model palette entries are allocated from here up
+// THE BIRCH'S OWN GRASS. Six more greens, read off the BIRCH models the way
+// GRASS_0 is read off the pines -- see deriveGroundFromTrees.
+//
+// A SECOND RAMP RATHER THAN A WIDER ONE, and the reason is that the two woods
+// are different colours. GRASS_0 used to be filled from every foliage entry
+// that loaded, pines and birches together, so the blades in both woods were a
+// blend of the two and matched neither. Splitting them is the only way a birch
+// meadow can be the birches' green and a pine floor the pines'.
+constexpr uint8_t BGRASS_0 = 32;
+constexpr uint8_t BGRASS_COUNT = 6;  // 32..37
+constexpr uint8_t TREE_BASE = 38;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -231,6 +241,13 @@ class Palette {
 
         // Green-dominant is foliage; anything else on a conifer is wood.
         const bool foliage = conifer && (c[1] > c[0] && c[1] > c[2]);
+        // ...AND THE ANSWER IS KEPT, because the physics wants it too. A felled
+        // tree's collider is built from the wood and not from the crown -- see
+        // World::fellTree -- and the only place in the engine that knows a
+        // green from a bark is right here, where the colour is still in hand.
+        // Recovering it later from the MaterialLook would be inferring a fact
+        // that was already known and thrown away.
+        foliage_[id] = foliage ? 1u : 0u;
         if (foliage) {
             // Needles are waxy and thin enough to pass light. That translucency
             // is what stops a backlit canopy from reading as a black cut-out --
@@ -286,6 +303,12 @@ class Palette {
     // is what makes the function's name true.
     void markPinesLoaded() { pineEnd_ = next_; }
 
+    // ...AND WHERE THE BIRCHES START INSIDE THAT RANGE. loadPines() loads both
+    // species into one vector, so pineEnd_ alone cannot tell a needle from a
+    // birch leaf -- it only separates the trees from the rocks. Called by the
+    // loader as it reaches the first birch model.
+    void markBirchStart() { birchStart_ = next_; }
+
     // FILL THE STONE RAMP FROM THE ROCK MODELS THEMSELVES.
     //
     // Given every colour the boulder .vox files actually use, this keeps the
@@ -321,6 +344,10 @@ class Palette {
     int stoneSampleCount() const { return stoneFromRocks_; }
 
     const MaterialLook &operator[](uint8_t id) const { return look_[id]; }
+    // Is this material id a LEAF rather than wood? False for everything that
+    // is not a model colour, which is the right answer for all of them: the
+    // ground, the water and the stone are none of them foliage.
+    bool isFoliage(uint8_t id) const { return foliage_[id] != 0u; }
     const std::vector<MaterialLook> &table() const { return look_; }
     int used() const { return next_; }
     int overflowed() const { return overflow_; }
@@ -340,11 +367,74 @@ class Palette {
     // MagicaVoxel model are usually a shading ramp of one hue, so the first
     // four would have been four barely-different greens.
     // -----------------------------------------------------------------------
+    // ONE RAMP FILL, USED BY BOTH WOODS. The pines' greens become GRASS_0 and
+    // the birches' BGRASS_0; everything about how a ramp is built is here once
+    // so the two cannot drift apart.
+    void fillGrassRamp(uint8_t base, uint8_t count, std::vector<uint8_t> src) {
+        std::sort(src.begin(), src.end(), [this](uint8_t a, uint8_t b) {
+            return luminance(look_[a].albedo) < luminance(look_[b].albedo);
+        });
+
+        for (int k = 0; k < int(count); ++k) {
+            MaterialLook &m = look_[base + k];
+            if (src.empty()) {
+                // No models loaded: a plain green, so the world still renders.
+                m.albedo = Vec3(0.14f + 0.04f * k, 0.26f + 0.05f * k, 0.10f + 0.02f * k);
+            } else {
+                const float t = (int(count) > 1)
+                                    ? float(k) / float(int(count) - 1) *
+                                          float(src.size() - 1)
+                                    : 0.0f;
+                const size_t i0 = size_t(t);
+                const size_t i1 = mini(int(src.size()) - 1, int(i0) + 1);
+                const float f = t - float(i0);
+                const Vec3 c = look_[src[i0]].albedo * (1.0f - f) +
+                               look_[src[i1]].albedo * f;
+                // THE SAME HUE AS THE NEEDLES, ONLY DARKER -- and the "only"
+                // is the whole change. This used to scale the three channels
+                // by 0.45, 0.44 and 0.32, which is a scale plus a shove
+                // towards yellow, and a shove towards yellow is a DIFFERENT
+                // COLOUR. The floor came out its own shade of olive standing
+                // under trees that were green, which reads as two materials
+                // that happen to be near each other rather than one wood.
+                //
+                // Scaling all three by the same number cannot change the hue
+                // by construction: it is the pine's green at a lower value,
+                // which is exactly what grass under conifers is.
+                //
+                // WHY IT IS SCALED AT ALL is lighting, not colour. The foliage
+                // albedo is tuned for needles sitting inside their own crown,
+                // in shadow most of the day; grass stands in the open taking
+                // full sun, so the same albedo renders far brighter. Reading it
+                // across literally is what once made the floor glow under a
+                // dark canopy.
+                m.albedo = c * 0.52f + Vec3(0.006f, 0.008f, 0.005f);
+            }
+            m.roughness = 0.88f;
+            m.specular = 0.022f;
+            // Thin blades, lit from behind at a low sun -- the same reason the
+            // needles have it. Without it a strand is a black stick at dawn.
+            // Kept well below the needles' 0.45: grass caught the sun from
+            // every angle at that value and the whole floor glowed.
+            m.translucency = 0.22f;
+        }
+    }
+
     void deriveGroundFromTrees() {
-        std::vector<uint8_t> foliage, bark;
+        std::vector<uint8_t> foliage, bfoliage, bark;
         const int end = pineEnd_ > mat::TREE_BASE ? pineEnd_ : next_;
+        const int bstart = (birchStart_ > mat::TREE_BASE) ? birchStart_ : end;
         for (int i = mat::TREE_BASE; i < end; ++i) {
-            if (look_[i].translucency > 0.0f) { foliage.push_back(uint8_t(i)); continue; }
+            // SPLIT BY WHICH WOOD MINTED THE ENTRY. Colours are deduplicated
+            // across models, so a green both species use is minted by whichever
+            // loaded first -- the pines -- and stays in their set. Only greens
+            // the birches alone carry land in theirs, which is exactly the
+            // difference we want to draw.
+            if (look_[i].translucency > 0.0f) {
+                if (i >= bstart) bfoliage.push_back(uint8_t(i));
+                else foliage.push_back(uint8_t(i));
+                continue;
+            }
 
             // NOT EVERY NON-GREEN ENTRY IS BARK. forModelColor classifies by
             // green dominance, so "bark" is really "everything else" -- and a
@@ -379,53 +469,12 @@ class Palette {
         // Sorted by luminance first: the palette's order is the artist's, and
         // it is not monotonic, so interpolating along it unsorted would walk
         // back and forth across the ramp instead of up it.
-        std::sort(foliage.begin(), foliage.end(), [this](uint8_t a, uint8_t b) {
-            return luminance(look_[a].albedo) < luminance(look_[b].albedo);
-        });
-
-        for (int k = 0; k < mat::GRASS_COUNT; ++k) {
-            MaterialLook &m = look_[mat::GRASS_0 + k];
-            if (foliage.empty()) {
-                // No models loaded: a plain green, so the world still renders.
-                m.albedo = Vec3(0.14f + 0.04f * k, 0.26f + 0.05f * k, 0.10f + 0.02f * k);
-            } else {
-                const float t = (mat::GRASS_COUNT > 1)
-                                    ? float(k) / float(int(mat::GRASS_COUNT) - 1) *
-                                          float(foliage.size() - 1)
-                                    : 0.0f;
-                const size_t i0 = size_t(t);
-                const size_t i1 = mini(int(foliage.size()) - 1, int(i0) + 1);
-                const float f = t - float(i0);
-                const Vec3 c = look_[foliage[i0]].albedo * (1.0f - f) +
-                               look_[foliage[i1]].albedo * f;
-                // THE SAME HUE AS THE NEEDLES, ONLY DARKER -- and the "only"
-                // is the whole change. This used to scale the three channels
-                // by 0.45, 0.44 and 0.32, which is a scale plus a shove
-                // towards yellow, and a shove towards yellow is a DIFFERENT
-                // COLOUR. The floor came out its own shade of olive standing
-                // under trees that were green, which reads as two materials
-                // that happen to be near each other rather than one wood.
-                //
-                // Scaling all three by the same number cannot change the hue
-                // by construction: it is the pine's green at a lower value,
-                // which is exactly what grass under conifers is.
-                //
-                // WHY IT IS SCALED AT ALL is lighting, not colour. The foliage
-                // albedo is tuned for needles sitting inside their own crown,
-                // in shadow most of the day; grass stands in the open taking
-                // full sun, so the same albedo renders far brighter. Reading it
-                // across literally is what once made the floor glow under a
-                // dark canopy.
-                m.albedo = c * 0.52f + Vec3(0.006f, 0.008f, 0.005f);
-            }
-            m.roughness = 0.88f;
-            m.specular = 0.022f;
-            // Thin blades, lit from behind at a low sun -- the same reason the
-            // needles have it. Without it a strand is a black stick at dawn.
-            // Kept well below the needles' 0.45: grass caught the sun from
-            // every angle at that value and the whole floor glowed.
-            m.translucency = 0.22f;
-        }
+        fillGrassRamp(mat::GRASS_0, mat::GRASS_COUNT, foliage);
+        // THE BIRCHES' OWN, from the entries only they carry. Falls back to
+        // the pines' set if no birch model loaded, so a pine-only world still
+        // has grass rather than the built-in default green.
+        fillGrassRamp(mat::BGRASS_0, mat::BGRASS_COUNT,
+                      bfoliage.empty() ? foliage : bfoliage);
 
         // -- ONE BROWN, IN SEVERAL SHADES ------------------------------------
         //
@@ -552,14 +601,20 @@ class Palette {
     }
 
     std::vector<MaterialLook> look_ = std::vector<MaterialLook>(mat::COUNT);
+    // One bit per id: was this colour classified as a leaf when it was minted?
+    std::vector<uint8_t> foliage_ = std::vector<uint8_t>(mat::COUNT, 0u);
     std::map<uint32_t, uint8_t> index_;
     uint8_t next_ = mat::TREE_BASE;
     int pineEnd_ = 0;
+    int birchStart_ = 0;
     int stoneFromRocks_ = 0;
     int overflow_ = 0;
 };
 
 inline bool isGrass(uint8_t m) { return m >= mat::GRASS_0 && m < mat::GRASS_0 + mat::GRASS_COUNT; }
+inline bool isBGrass(uint8_t m) {
+    return m >= mat::BGRASS_0 && m < mat::BGRASS_0 + mat::BGRASS_COUNT;
+}
 inline bool isSoil(uint8_t m) { return m >= mat::SOIL_0 && m < mat::SOIL_0 + mat::SOIL_COUNT; }
 inline bool isLitter(uint8_t m) {
     return m >= mat::LITTER_0 && m < mat::LITTER_0 + mat::LITTER_COUNT;
@@ -610,22 +665,79 @@ inline Vec3 faceNormal(uint8_t dir) {
 // same way the ground's own scatter already is: groundShade() knows the voxel
 // the ray landed in, and the only thing it is missing is where that blade
 // started. Three bits of the base row are enough to recover it -- a strand is
-// at most eight voxels tall, so `(v.y - base) & 7` is its row above the soil --
-// and the fourth bit is what distinguishes a blade from the ground it stands
-// in, since a base row of zero is a real base row.
+// at most sixteen voxels tall, so `(v.y - base) & 15` is its row above the soil
+// -- and the +1 is what distinguishes a blade from the ground it stands in,
+// since a base row of zero is a real base row.
 //
 // The dir field is three bits wide now rather than a whole byte, so anything
 // reading it MUST mask. See triFace here and faceNormal in Trace.cs.slang.
 // ---------------------------------------------------------------------------
 constexpr int TRI_DIR_SHIFT = 8, TRI_DIR_MASK = 0x7;
-constexpr int TRI_STRAND_SHIFT = 11, TRI_STRAND_MASK = 0xF;
-// A blade eight voxels tall is the most the three stored bits can tell apart.
-constexpr int STRAND_MAX_ROWS = 8;
+constexpr int TRI_STRAND_SHIFT = 11, TRI_STRAND_MASK = 0x1F;
+// -----------------------------------------------------------------------
+// THE RAMP STEPS TWO VOXELS, AND THAT IS WHAT BUYS 15-20 TALL GRASS.
+//
+// The field stores `1 + (base row & mask)` and the device recovers
+// `row = v.y - base`, so the MASK is the tallest blade that can be told apart.
+// Four bits of row is sixteen voxels, and the packed triangle word has no
+// seventeenth bit left -- bits 0..7 are the material, 8..10 the direction,
+// 11..15 this. The word is full.
+//
+// AND THE ZERO CANNOT BE RECLAIMED. It is the sentinel for "not a blade", and
+// it is load-bearing for something that is not obvious: a FLOWER'S STEM is
+// mapped onto the grass ramp (see loadModelSet's stemId), so a model voxel can
+// wear kGrass0 with no strand code at all. Drop the sentinel and every flower
+// stem in the world is shaded as a blade at some arbitrary row.
+//
+// So the RESOLUTION is spent instead of the range: the base row is stored
+// HALVED, and the device halves v.y the same way, which doubles what four bits
+// reach -- 32 voxels, or 3.2 m of grass.
+//
+// WHAT IT COSTS, stated plainly:
+//
+//   * The gradient steps every TWO voxels rather than every one. There are six
+//     shades in the ramp and `min(row, count-1)` clamps, so the gradient was
+//     spent by row 5 and is now spent by row 11. On a 20-voxel blade that is
+//     better, not worse -- the old encoding ran out of gradient in the bottom
+//     quarter of the strand.
+//   * A blade's first shade depends on the PARITY of its base row, because
+//     floor(y/2) - floor(base/2) is off by one when the two disagree. It is
+//     constant along any one blade, so a strand simply starts on shade 0 or
+//     shade 1. In a sward of six close greens that reads as sward.
+//
+// BOTH SIDES MUST FLOOR THE SAME WAY. `>>` on a signed int is an arithmetic
+// shift in C++ and in Slang, which IS floor division by two, so they agree --
+// including below y = 0, which no blade reaches anyway (the lowest ground in
+// the world is 1.8 m, and grass grows above it).
+// -----------------------------------------------------------------------
+// FIVE BITS OF STRAND, NOT FOUR -- and this spends the word's last spare bit.
+//
+// The field is `1 + (base row & mask)`, so the mask is what the device can
+// tell apart and the +1 is what distinguishes a blade from the ground it
+// stands in (a base row of zero is a real base row). Four bits meant three
+// bits of row, which is eight voxels, and the note that used to be here said
+// so as a format limit.
+//
+// TALL GRASS ASKED FOR 10-13 (user 2026-09-13), and there was no way to give
+// it inside eight: a blade thirteen tall would have its ninth row recovered as
+// row 1, so the top of every tall strand would wear the DARKEST green in the
+// ramp -- the gradient would run bright, then snap black, twice.
+//
+// bit 15 was the only thing left in the word and this is what it is for.
+// Sixteen rows is 1.6 m of grass, which is past anything that has been asked
+// for; there is nothing after it, so the next height request is a wider word.
+// -----------------------------------------------------------------------
+// 32 voxels: sixteen values of the stored half-row, two voxels each.
+constexpr int STRAND_MAX_ROWS = 32;
+// How many voxels one step of the stored row covers. See the note above.
+constexpr int STRAND_ROW_STEP = 2;
 
 // The value the mesher stores for a blade standing on surface voxel `hc` --
 // its base row is the one above. Never 0, which is what marks a face as a
 // blade at all.
-inline uint8_t strandCodeFor(int baseRow) { return uint8_t(1 + (baseRow & 7)); }
+inline uint8_t strandCodeFor(int baseRow) {
+    return uint8_t(1 + ((baseRow >> 1) & (STRAND_MAX_ROWS / STRAND_ROW_STEP - 1)));
+}
 
 inline uint16_t packTri(uint8_t material, uint8_t dir, uint8_t strand = 0) {
     return uint16_t(material) | (uint16_t(dir) << TRI_DIR_SHIFT) |
@@ -1118,6 +1230,8 @@ struct TerrainMemo {
     // octave having gone with it.
     FbmMemo birchRoll, birchSwell;
     FbmMemo stand, litter, grassMask;                       // topMaterial
+    // The tall-grass field had an FbmMemo here. It is a jittered site lattice
+    // now (see tuftAt), which is hashes alone -- no noise, nothing to cache.
     FbmMemo bankGrain;                                      // bankShaped
 };
 
@@ -1367,6 +1481,19 @@ class VoxelTerrain {
         return sstep(saturate(t / kBandBlend * 0.5f + 0.5f));
     }
 
+    // THE SAME SIGNED DISTANCE, IN METRES, because the waterline needs it and
+    // birchWeight throws it away. Positive inside the birch, negative inside
+    // the pine, magnitude = how far in. Asking birchMix instead does not work:
+    // the waterline's old cutoff sat at mix <= 0.001, and sstep is quadratic
+    // near zero, so the whole useful range of mix there spans about two metres
+    // of world -- nothing to fade over. Distance has 800 m of band to use.
+    static float bandDist(float x) {
+        const float period = 2.0f * kBandW;
+        float u = fmodf(x, period);
+        if (u < 0.0f) u += period;
+        return (u < kBandW) ? minf(u, kBandW - u) : -minf(u - kBandW, period - u);
+    }
+
     // Forced, when --birch or --pine pinned it; otherwise whatever the bands
     // say at this position.
     bool forced = false;
@@ -1415,7 +1542,43 @@ class VoxelTerrain {
     static constexpr int kNoWaterVox = -1000000000;
 
     float pineWater = 33.0f;          // metres, read off the pine field above
-    float birchWater = kNoWater;      // the birch wood is dry -- see above
+    // The fade starts AT the band boundary and runs 120 m. sstep has zero
+    // derivative at each end, so the line is already flat where the fade
+    // approaches 1 -- which is exactly where the lakes are -- and all the steep
+    // part happens where the line is far under the ground and there is no
+    // water to tilt. Starting 90 m inside and running 160 left only 300 m of
+    // an 800 m band at full waterline and HALVED the world's water.
+    float waterSeamEdgeM = 0.0f;
+    float waterSeamFadeM = 120.0f;
+    // HOW FAR THE LINE SINKS, and it must clear the BIRCH wood, not just the
+    // pine. 16 m looked right against pine's minimum of 20.8 and was badly
+    // wrong: the sunk line carries on through the birch band at that value,
+    // and 33 - 16 = 17 sits ABOVE the birch median of 14.3, so it flooded the
+    // wood it was meant to keep dry. 30 puts it at 3.0 m, under birch's
+    // minimum of 5.8. The line must end below EVERY ground it sinks through.
+    float waterSeamDropM = 30.0f;
+    // 9.5 m, AND THE BIRCH WOOD HAS LAKES NOW (user 2026-09-12). It was
+    // kNoWater, and the note above records why: a single 33 m line put 85.1%
+    // of the birch wood under water, because that wood's floor sits at a
+    // median of 14.3 m against the pine's 48.4.
+    //
+    // The answer was never "no water", it was "not the PINE's line". 9.5 sits
+    // just under the birch field's own p5 of 9.9 -- the same relationship
+    // pineWater has to the pine field, whose p5 is 33.8 against a line of 33.
+    // Measured rather than guessed; see tests/water_survey.cpp, which reports
+    // the two bands separately for exactly this.
+    // 5.5, AND IT IS DELIBERATELY UNDER THE BIRCH FIELD'S MINIMUM of 5.8.
+    //
+    // That is what makes "lakes or ponds, no puddles" true by construction:
+    // natural birch ground is never below this line, so water can only exist
+    // where a basin was actually CARVED. There are no shallow sheets left over
+    // from the landform dipping under a line, which is what 9.5 gave -- 45,000
+    // wet columns a metre deep, read as "large flat banks and small puddles".
+    //
+    // At 9.5 the wood also flooded once the carve started working: birch
+    // ground sits a median 14.3 m against that line, so any real carve pulled
+    // enormous areas under it -- 16.3% of the region wet.
+    float birchWater = 5.5f;
 
     // THE BASIN THRESHOLD. It decides where heightM CARVES A HOLLOW, and that
     // is now the only thing it decides -- it used to gate the wet test too,
@@ -1433,6 +1596,14 @@ class VoxelTerrain {
     // exponential in depth, so twice the depth is most of what made these lakes
     // read as ink where v4's read as pale blue. Swept in water_survey.
     float basinBed = 4.5f;
+    // TWICE AS DEEP IN THE BIRCH (user 2026-09-13). That wood's whole relief is
+    // 22 m against the pine's 90, so a basin cut to the pine's 4.5 m reads as a
+    // puddle in it -- the ground simply does not have far to fall. 9.0 gives
+    // the birch lakes the same presence the pine's have.
+    //
+    // BLENDED ON birchMix, not switched: the carve is applied to a HEIGHT, and
+    // a step in how deep the ground is cut is a step in the ground.
+    float birchBasinBed = 6.0f;
 
     // How far ABOVE the waterline the carve still reaches, and over how many
     // metres it fades in. Both are relative to the line -- see the note in
@@ -1655,11 +1826,75 @@ class VoxelTerrain {
     // looked. The lift -- which is right in v1, where it carries a broken-up
     // band -- is what turned a bad colour into a bad silhouette.
     //
-    // Doing it properly means the patchy mix, in the shader, on the water
-    // material: not a second material and not geometry. Left in place at 0 so
-    // the machinery is there when that is wanted.
-    int foamDepthVox = 0;  // 0 = no foam band
-    int foamLiftVox = 1;   // ...and how far it would stand proud
+    // THAT IS NOW WHAT IT DOES, and the band is back on (user 2026-09-13:
+    // "add foam around the edges like done in v1. white voxels around the
+    // edges"). Two numbers changed and the diagnosis above is why:
+    //
+    //   foamDepthVox 3  water 30 cm deep or less is shore, and shore churns.
+    //                   The host still decides WHICH columns -- that half was
+    //                   never the problem. THE TAIL IS WHAT THIS SETS, NOT THE
+    //                   MEDIAN, and that is the whole of the tuning. Measured
+    //                   across 2.4 km, band width where a scanline crosses a
+    //                   shore:
+    //
+    //                       1   med 0.1 m  p95 0.3 m  max  0.8 m   0.2% of water
+    //                       2   med 0.3 m  p95 1.5 m  max  7.0 m   4.3%
+    //                       3   med 0.5 m  p95 2.9 m  max 13.7 m   8.2%
+    //                       4   med 0.8 m  p95 4.6 m  max 16.6 m  12.0%
+    //                       6   med 1.3 m  p95 7.4 m  max 35.5 m  18.8%
+    //
+    //                   Every median in that table is plausible surf, which is
+    //                   exactly why the median is the wrong thing to read. 4
+    //                   shipped first and a rendered pine inlet settled it: a
+    //                   gently shelving bay is shallow for FIFTEEN METRES, so
+    //                   the whole of it went white and read as scum on a pond
+    //                   rather than as a shoreline. Clumping it in the shader
+    //                   helped and could not fix it -- half of a rash is still
+    //                   a rash.
+    //
+    //                   3 cuts the worst case from 16.6 m to 13.7 and the
+    //                   median to half a metre, which is a surf line you can
+    //                   see without it reaching into open water. 2 also reads
+    //                   correctly and is drier; 1 is a single voxel, which
+    //                   nothing can see at all.
+    //
+    //                   A NOTE ON WHAT THE BAY ACTUALLY WAS, since it cost a
+    //                   rebuild: the white speckle over that inlet is the sun
+    //                   GLINT (kGlintStrength, v1's pixelGlisten), not this.
+    //                   Toggling kWFFoam off moved 0.06% of the frame and
+    //                   toggling kWFGlint moved 7%. Foam and glint are both
+    //                   scattered white per-voxel cells and they are very easy
+    //                   to confuse by eye -- use the [I] panel before tuning
+    //                   either.
+    //
+    //   foamLiftVox  0  AND IT STAYS 0. The lift is what made it a wall. The
+    //                   band is broken up in the SHADER now (foamMix in
+    //                   Trace.cs.slang) where it costs no geometry and cannot
+    //                   stand proud of anything; v1 needs the lift because its
+    //                   band is already broken up before it is raised.
+    //
+    // mat::FOAM is still its own material, but only so the greedy merge splits
+    // at the band's edge and the shader can find it with no neighbour test --
+    // the shader treats it as water, not as a white solid.
+    int foamDepthVox = 3;  // 0 = no foam band
+    // ONE VOXEL, AND IT IS BROKEN UP BEFORE IT IS RAISED -- see foamCrest.
+    // v1 lifts its foam for a reason worth restating: the band has to stand
+    // proud BEFORE the surface is intersected, not after. Lifting a hit that
+    // has already been found only moves that pixel's depth, and "the foam kept
+    // the silhouette of the flat water because the pixels it should have grown
+    // into were never tested against the water at all".
+    // BACK TO 0 (user 2026-09-13: "revert the foam raised by one voxel
+    // change"). It was raised on request the same day and taken down again;
+    // foamCrest is left in place because it costs nothing while this is 0 and
+    // it is the thing that made the lift survivable -- the band is broken up
+    // in geometry before it is raised, so it never became the kerb the first
+    // attempt was. Setting this to 1 is all it takes to have it back.
+    int foamLiftVox = 0;   // ...and how far it would stand proud
+    // What fraction of the shore is in a surf tongue, and how solid a tongue
+    // is inside itself. 0.55 x 0.62 is about a third of the band raised, in
+    // runs of a couple of metres.
+    float foamCrestTongue = 0.55f;
+    float foamCrestFill = 0.62f;
 
     int waveCeilVox() const { return waveVoxMax; }
 
@@ -1820,7 +2055,53 @@ class VoxelTerrain {
         return maxf(flat + g * bankGrainM * (1.0f - ease), wlm + VOXEL_M);
     }
 
-    float waterAt(float x) const { return (birchMix(x) <= 0.001f) ? pineWater : birchWater; }
+    // -----------------------------------------------------------------------
+    // THE WATERLINE SINKS INTO THE GROUND AT THE BAND SEAM. IT DOES NOT SWITCH
+    // OFF, AND THAT IS THE WHOLE OF THIS FUNCTION'S HISTORY.
+    //
+    // It used to be `(birchMix(x) <= 0.001f) ? pineWater : birchWater`, with
+    // birchWater = kNoWater. A hard threshold on x, so any lake reaching it
+    // lost everything on the far side in a dead straight line WHATEVER the
+    // ground there was doing. Measured over a 6 km sweep: 1,882 of 87,840
+    // lake-edge faces ended with the ground across them still below the line,
+    // the worst 95 voxels -- NINE AND A HALF METRES of water standing in open
+    // air -- and they lined up on exactly three values of x.
+    //
+    // A BODY OF WATER CANNOT END AT A VERTICAL PLANE. It can only end where
+    // the ground rises to meet it, or where the LINE falls to meet the ground.
+    // The ground is not ours to raise -- a straight ridge along the seam would
+    // be as artificial as the cut -- so the line falls instead, sinking below
+    // the deepest ground as the seam approaches. The lake tapers to nothing:
+    // depth goes to zero at the contact, which is what a shoreline IS.
+    //
+    // birchWater is still honoured if it is ever set to a real number; the
+    // sinking only replaces the kNoWater case, which is the one that cut.
+    // -----------------------------------------------------------------------
+    float waterAt(float x) const {
+        if (forced) return (biome == Biome::Birch) ? birchWater : pineWater;
+        // BOTH WOODS WET: the line simply BLENDS between their two values on
+        // the same weight the terrain blends on. No sink is needed and none
+        // must be used -- there is no band where water stops existing, so
+        // there is nothing to cut, and the old hard switch here is exactly
+        // what sliced lakes in half along three lines of constant x.
+        if (birchWater != kNoWater) return lerpf(pineWater, birchWater, birchMix(x));
+        // Only the birch side dry: the line sinks under the ground instead of
+        // switching off, so a lake at the seam tapers rather than being cut.
+        return pineWater - (1.0f - waterSeamFade(x)) * waterSeamDropM;
+    }
+
+    // 1 well inside the pine wood, 0 at the seam and through the birch.
+    float waterSeamFade(float x) const {
+        if (forced) return (biome == Biome::Birch) ? 0.0f : 1.0f;
+        // BOTH WOODS WET: there is no band where water stops existing, so
+        // there is nothing to fade and nothing to protect. This fade exists
+        // only for the dry-birch case -- left on with birchWater set it
+        // multiplied the basin carve to ZERO across the whole birch band, so
+        // its lakes were 1.0 m deep whatever basinBed said.
+        if (birchWater != kNoWater) return 1.0f;
+        const float inPine = -bandDist(x);   // metres into the pine, negative in birch
+        return sstep(saturate((inPine - waterSeamEdgeM) / waterSeamFadeM));
+    }
     int waterVoxAt(float x) const {
         const float w = waterAt(x);
         return (w == kNoWater) ? kNoWaterVox : int(w / VOXEL_M);
@@ -1934,22 +2215,42 @@ class VoxelTerrain {
         // a wood with 22 m of relief, where the pine's was worth twelve on
         // ninety -- which is why one of them was asked about and the other was
         // not.
-        if (mix >= 0.999f) {
+        // -------------------------------------------------------------------
+        // THE BIRCH SIDE NO LONGER RETURNS HERE, AND THAT ONE LINE WAS BOTH OF
+        // THE BIRCH WATER COMPLAINTS.
+        //
+        // It used to `return` its height straight out, and the note above said
+        // exactly why that was safe: "The basin carve is skipped too -- it
+        // exists to hollow out lakes, and this wood has no water in it yet."
+        // That stopped being true the moment birchWater was set. The early
+        // return was taking the CARVE and the BANK away from every pure-birch
+        // column, so its water was uncarved natural dips -- measured at 1.0 m
+        // deep across 45,000 columns, which is the "large flat banks and small
+        // puddles" exactly -- and its shores were never shaped at all.
+        //
+        // Both woods now fall through to the same carve and the same bank. The
+        // fine octave is added below for both, so it is not in the expression
+        // here any more; it used to be, because this path ended at the return.
+        // -------------------------------------------------------------------
+        const bool pureBirch = (mix >= 0.999f);
+        float h;
+        if (pureBirch) {
+            // ALL FIVE ROLL OCTAVES AND ALL THREE SWELL -- the birch field is
+            // the one it always had, value for value. See the note above.
             const float roll =
                 warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 5);
             const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-            return 2.0f + roll * 15.0f + swell * 7.0f + fine;
+            h = 2.0f + roll * 15.0f + swell * 7.0f;
+        } else {
+            // ---------------------------------------------------------- pine
+            // TWO OCTAVES EACH, AND NOTHING ABOVE THEM. See the note on this
+            // function for what the missing ones were carrying and what taking
+            // them out measured.
+            const float roll =
+                warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 2);
+            const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
+            h = 14.0f + roll * 48.0f + swell * 21.5f;
         }
-
-        // -------------------------------------------------------------- pine
-        // TWO OCTAVES EACH, AND NOTHING ABOVE THEM. See the note on this
-        // function for what the missing ones were carrying and what taking them
-        // out measured.
-        const float roll =
-            warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 2);
-        const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
-
-        float h = 14.0f + roll * 48.0f + swell * 21.5f;
 
         // THE CARVE IS A FUNCTION OF THE WATERLINE AND EXISTS FOR NOTHING
         // ELSE. It pulls low ground down toward the line so that a lake has a
@@ -1962,7 +2263,13 @@ class VoxelTerrain {
                             ? 1.0f
                             : fbm(memo.basin, x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
         if (b < basinT) {
-            const float m = sstep(minf(1.0f, (basinT - b) / 0.10f));
+            // FADED WITH THE WATERLINE AT THE SEAM. A basin carves to
+            // `wlm - basinBed`, so a hollow inside the fade would follow the
+            // sinking line down and keep its full depth the whole way -- a
+            // 4.5 m lake lying at an angle. Multiplying the carve by the same
+            // fade means there is simply no hollow there to fill.
+            const float m =
+                sstep(minf(1.0f, (basinT - b) / 0.10f)) * waterSeamFade(x);
             // THE GATE IS PINNED OVER THE WATERLINE, NOT OVER THE LANDFORM,
             // and that distinction is the whole reason the lakes were puddles.
             //
@@ -1986,7 +2293,10 @@ class VoxelTerrain {
             // DELETES HILLS. It is relative to the WATER, and the water is the
             // only thing it should ever be relative to.
             const float lowGate = saturate((wlm + basinGateOver - h) / basinGateRamp);
-            h -= m * lowGate * (h - (wlm - basinBed));
+            // How far this wood's basins are cut. birchMix is a pure function
+            // of x with no noise in it, so asking again here costs nothing.
+            const float bed = lerpf(basinBed, birchBasinBed, birchMix(x));
+            h -= m * lowGate * (h - (wlm - bed));
         }
 
         // AND THE FINE OCTAVE HAS TO STAY. Cutting it entirely was a mistake
@@ -2008,7 +2318,11 @@ class VoxelTerrain {
         // ran on the 11% of columns inside a birch seam and on NONE of the
         // columns that have water, which measured as the bank doing nothing at
         // all whatever bankFlat was set to.
-        if (mix <= 0.001f) return bankShaped(h, wlm, b, x, z, memo);
+        // EITHER WOOD, PURE. Only a column inside the seam needs the blend
+        // below; a pure-birch one has its own carved height already and must
+        // NOT be lerped back toward an uncarved birch field, which would undo
+        // the hollow this function just cut.
+        if (mix <= 0.001f || pureBirch) return bankShaped(h, wlm, b, x, z, memo);
 
         // THE SEAM. Ninety metres of blend between a wood whose median floor is
         // 48 m and one whose median is 13, which is a 35 m drop -- so this is
@@ -2077,9 +2391,182 @@ class VoxelTerrain {
     // this density the blades no longer close into a mass, which is the point:
     // the ground colour shows between them and they read as scattered tufts on
     // grass rather than as the grass itself.
-    float grassDensity = 0.105f;
+    // 0.307, v4's number, and it means something different from the 0.105 it
+    // replaces. That one applied only to columns the surface mask had already
+    // painted green -- about half of them -- so real coverage was near 0.05.
+    // This applies to every dirt column, modulated by the patch field below,
+    // and the blades are now the only grass there is.
+    float grassDensity = 0.307f;
+
+    // -----------------------------------------------------------------------
+    // WHERE THE MEADOWS AND THE CLEARINGS ARE.
+    //
+    // A flat probability over the whole world gives grass with no structure in
+    // it: statistically identical everywhere, so there is no glade to walk
+    // into and no thicket to come out of. v4's fix, taken whole -- three
+    // octaves at grassPatchM, sharpened by sstep so the field commits to one
+    // side or the other instead of hovering in its middle, because a raw fbm
+    // lives in the centre of its range and a sparse patch has to be an actual
+    // clearing rather than a slightly thinner meadow.
+    //
+    // grassSparse AND grassFull ARE A PAIR: `sparse + full * 0.5 == 1` keeps
+    // the mean of the modulated density at grassDensity, because the sharpened
+    // field averages a half. Change one and the other has to move, or the
+    // whole world gets denser while the knob that is supposed to say so has
+    // not been touched.
+    // -----------------------------------------------------------------------
+    float grassPatchM = 24.0f;     // metres -- the size of a glade
+    float grassPatchGain = 3.1f;   // how hard the field commits
+    float grassSparse = 0.12f;     // a clearing: bare litter, a few blades
+    float grassFull = 1.76f;       // a thicket
     float flowerChance = 0.035f;
     int grassMinRows = 3, grassMaxRows = 6;
+    // -----------------------------------------------------------------------
+    // A FEW TALL STRANDS, AND NOTHING ELSE MOVES (user 2026-09-13, second
+    // pass: "revert the grass changes. you seemed to just increase the density
+    // of the grass. dont do that. just give me like 5-8 grass strands randomly
+    // that reach 10-13 voxels tall").
+    //
+    // THE FIRST VERSION WAS A PATCH FIELD AND IT DID RAISE THE DENSITY -- it
+    // blended the planting probability toward 0.85 inside a patch, so a tall
+    // patch was also a THICK one. That is the half that was wrong: nothing
+    // about how much grass there is was asked for.
+    //
+    // So the field is gone. What is left is a per-column draw, independent of
+    // everything else: a blade that was going to be planted anyway is, rarely,
+    // a tall one instead. Density is exactly what it was, the ordinary blades
+    // are exactly what they were, and the tall strands stand alone in the sward
+    // rather than in company -- which is what "5-8 randomly" describes.
+    //
+    // 0.0025 of BLADES, which is one tall strand per roughly 12 square metres
+    // -- five to eight in the patch of floor in front of you and none of them
+    // near another. Measured below in strandRows.
+    // -----------------------------------------------------------------------
+    // (The patch machinery this replaced is recorded in the git history; the
+    // measurements that sized it are no longer true of anything.)
+    // TALL GRASS PATCHES (user 2026-09-13: "add tall grass patches. something
+    // like 10-13 tall grass strands").
+    //
+    // Not taller grass everywhere -- PATCHES, so the floor still reads as a
+    // wood with rough corners in it rather than as a meadow. Its own field,
+    // its own scale and its own phase, so a tall patch is not simply the
+    // brightest part of the glade field wearing a different number.
+    //
+    // 10 TO 13 VOXELS, which is 1.0 to 1.3 m. That is over knee height on a
+    // 1.8 m body and it is why this needed the packed word's last spare bit --
+    // see STRAND_MAX_ROWS. Eight was a format limit, not a taste.
+    //
+    // ABOUT A TENTH OF THE FLOOR: measured 8.9% of the ground in the pine wood
+    // and 9.6% in the birch, which is a patch you come across rather than a
+    // meadow you are standing in.
+    //
+    // AND THEY ARE THICK. A patch of tall grass that is as sparse as the floor
+    // around it reads as a few stray weeds; the thing being asked for is the
+    // stand you have to wade through, so the density inside one goes to 0.85
+    // whichever wood it is in. Both woods get them: the pine floor's are the
+    // rough corners of a glade, the birch floor's are meadow.
+    //
+    // THE GAIN IS THE NUMBER THAT MATTERS, and the first attempt had it wrong.
+    // At the glade field's own 3.1 the patches came out 1.9% of the ground and
+    // -- worse -- the whole of one was in the BLEND, so the row histogram fell
+    // away from the moment it got tall: 12507 columns at 10 rows against 1919
+    // at 13. That is not a patch of tall grass, it is a smear that happens to
+    // peak. A patch wants a flat CORE and a thin rim, which is a high gain.
+    //
+    // Measured over a 240 m square, 7.0 against 3.4 at the same threshold:
+    //
+    //     gain 3.4    1.9% of the ground    10:12507  11:8395  12:4840  13:1919
+    //     gain 7.0    8.9%                  10:40080  11:35004 12:30149 13:23640
+    //
+    // and in the birch 9.6%, with 8 and 9 rows left as the rim -- 29432 and
+    // 27818 columns against 44433 at ten.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TALL GRASS COMES IN GROUPS (user 2026-09-13: "make the grass patches
+    // together in groups instead of seperate tall grass strands").
+    //
+    // THE HEIGHT ONLY. This is the third shape this has taken and the middle
+    // one is why the constraint is written down: the first version was a patch
+    // field that blended the PLANTING PROBABILITY toward 0.85 inside a patch,
+    // so a tall patch was also a thick one, and that was rejected in as many
+    // words ("you seemed to just increase the density of the grass. dont do
+    // that"). The second was a per-column draw with no field at all, which is
+    // what "separate strands" describes.
+    //
+    // So: the field is back, and it touches the ROW BOUNDS AND NOTHING ELSE.
+    // `p` is computed before it and never seen by it. A patch is a group of
+    // tall blades standing in exactly the grass that was already going to be
+    // there.
+    //
+    // BOTH BOUNDS MOVE TOGETHER, so a patch is 10 to 13 throughout rather than
+    // tall blades scattered among 3-voxel stubs -- which would be the separate
+    // strands again, wearing a field.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // A TUFT IS A SITE, NOT A THRESHOLD ON A NOISE FIELD.
+    //
+    // It was an fbm patch, and the thing that killed it is that a THRESHOLD
+    // HAS NO SIZE. Measured over a 240 m square: the patches came out a median
+    // 4.8 m across and a maximum of 25.7, so "however many strands are in one"
+    // ranged from 0 to 137 with the same constant. You cannot ask a level set
+    // for five to ten of anything.
+    //
+    // A site has a radius, so it has an area, so the count is arithmetic --
+    // see the fill below. Same shape as the flower colonies next door and for
+    // the same reason.
+    // -----------------------------------------------------------------------
+    float tuftCellM = 13.0f;      // one candidate site per 13 m of lattice
+    float tuftCoverage = 0.55f;   // ...and this fraction of them are real
+    float tuftRadMinM = 1.2f;     // a tuft is 2.4 to 4.4 m across
+    float tuftRadMaxM = 2.2f;
+    // HOW MANY STRANDS STAND IN ONE, drawn per tuft (user 2026-09-13: "only
+    // have 5-10 strands of grass in groups like this").
+    //
+    // A COUNT, NOT A PROBABILITY, and that is what makes it hold in both woods.
+    // The birch floor grows blades on 62% of its columns against the pine's
+    // 28%, so one fixed per-column chance would put twice as many strands in a
+    // birch tuft as a pine one. The fill is divided by the local planting
+    // probability instead, so the ARITHMETIC is "this many strands in this
+    // area" and the wood cancels out.
+    // TRIPLED, 5-10 -> 15-30 (user 2026-09-13: "fill in the grass strands
+    // more. triple the amount of grass strands in a group").
+    //
+    // THE TUFT DOES NOT GROW WITH IT, and that is the point of expressing this
+    // as a count rather than a probability: the radius is untouched, so the
+    // same patch of ground now holds three times as many tall blades. It fills
+    // in rather than spreading out.
+    //
+    // The arithmetic still cannot add grass -- the draw runs after the planting
+    // draw and only changes the HEIGHT of blades that were going to be there --
+    // so the ceiling is the number of blades in the disc. In the pine wood a
+    // 1.2-2.2 m tuft holds roughly 130 to 430 of them, so 30 is comfortably
+    // inside it and the clamp in strandRows never fires.
+    float tuftStrandsMin = 15.0f, tuftStrandsMax = 30.0f;
+    // -----------------------------------------------------------------------
+    // A GROUP IS A HANDFUL OF STRANDS, NOT A FIELD OF THEM (user 2026-09-13:
+    // "only have 5-10 strands of grass in groups like this").
+    //
+    // The patch field says WHERE a group is. It does not say that everything
+    // inside it is tall -- a 11 m patch holds about 2,600 blades in the pine
+    // wood, and turning all of them up is a meadow of reeds rather than a
+    // clump you come across.
+    //
+    // So a second, sparse draw inside the patch picks the few that stand. The
+    // chance is per BLADE and per patch-strength, so the tall ones thin out
+    // toward a patch's edge exactly as its own falloff does, and a group reads
+    // as a tuft rather than as a disc with a hard rim.
+    //
+    // -----------------------------------------------------------------------
+    // 15 TO 20 VOXELS, which is 1.5 to 2.0 m -- head height on a 2.0 m eye.
+    // This is what needed the ramp's resolution spending; see the long note
+    // over STRAND_MAX_ROWS.
+    // -----------------------------------------------------------------------
+    int tallGrassMinRows = 15, tallGrassMaxRows = 20;
+    // THE BIRCH FLOOR IS A MEADOW, not a wood with glades in it. Its density
+    // is flat -- no patch field, so no clearings -- and its blades stand a
+    // voxel taller. Both asked for directly.
+    float birchGrassDensity = 0.62f;
+    int birchGrassMaxRows = 7;
     uint32_t strandSeed = 20260904u;
 
     // HOW FAR DOWN THE STONE GOES BEFORE THE BEDROCK STARTS, in voxels, from
@@ -2148,8 +2635,17 @@ class VoxelTerrain {
         //
         // The hash is the COLUMN's, so it is stable: the same column answers
         // the same way every time it is meshed, from any chunk, on any thread.
-        if (birchMix(wx(i)) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
-            return mat::GRASS_0;
+        // THE BIRCH FLOOR IS DIRT TOO. It used to return mat::GRASS_0 here --
+        // one flat green over the whole wood, dithered against a column hash
+        // so the seam with the pine's needle floor was not a straight line.
+        //
+        // That was the same mistake the pine side had: a green PAINT standing
+        // in for grass. The floor is soil and litter on both sides now and the
+        // grass is only the blades, so there is no paint to dither and no seam
+        // to hide -- the two woods differ by what GROWS on them, which is what
+        // told them apart in the first place.
+        //
+        // The blades on this side are denser and taller: see strandRows.
 
         // THE BED AND THE SHORE. Under the line it is sand for the first
         // eight voxels and silt below that; for eight voxels ABOVE it, the
@@ -2206,28 +2702,24 @@ class VoxelTerrain {
         // only the family leaves the runs unbroken, so this costs no triangles
         // and saves some. It also retires an entire fbm field per column.
         //
-        // THE GRASS MASK IS ASKED FIRST, and that ordering is the whole fix.
+        // THE FLOOR IS NEVER GREEN. THE WHOLE TERRAIN IS DIRT, AND THE GRASS
+        // STANDS ON IT -- which is how v4 does it.
         //
-        // The litter rule used to run before it and take whatever it wanted.
-        // Litter follows the canopy, the canopy follows the stand-density
-        // field, and that field is a SIXTY-METRE feature -- so whole hillsides
-        // came out two thirds litter while ground a few hundred metres away was
-        // barely a third. Measured over 200 m squares the ground ran from 62%
-        // brown to 80% brown, and grass from 33% down to 20%. The ratio was a
-        // function of where you were standing, which is the one thing it should
-        // not be.
+        // What was here: a mask painted the SURFACE mat::GRASS_0 over about
+        // half the world, and blades were then allowed only on those green
+        // columns. So "grass" was two things at once -- a green paint and a
+        // scattering of blades -- and the paint did most of the work. Ground
+        // seen between blades was green, so there was never any floor visible,
+        // and density could not vary without the paint's edge showing as a
+        // colour boundary.
         //
-        // The mask itself has no such problem: its coarsest octave is under two
-        // metres, so over any patch bigger than a few strides it averages to
-        // the same fraction everywhere. Asking it first is therefore asking the
-        // only field here that is evenly distributed by construction.
-        if (fbm(memo.grassMask, x * 0.55f + 31.7f, z * 0.55f + 17.2f, 4) > 0.50f)
-            return mat::GRASS_0;
-
-        // What is left is brown either way, so the canopy is still allowed to
-        // say WHICH brown -- needle litter under a thick stand, soil in the
-        // open. That is what the rule was for; it was only ever the ratio it
-        // had no business setting.
+        // Now the floor is soil or needle litter everywhere and the grass is
+        // ONLY the blades. Thinning them reveals more litter; it does not
+        // change what the litter is. v4's note puts it exactly: "the dirt was
+        // always under the grass -- there is simply more of it to see now."
+        //
+        // The canopy still says WHICH brown -- needle litter under a thick
+        // stand, soil in the open -- which is all that rule was ever for.
         if (standDensity(x, z, memo.stand) > 0.44f &&
             fbm(memo.litter, x * 3.1f + 63.0f, z * 3.1f + 88.0f, 2) > 0.36f)
             return mat::LITTER_0;
@@ -2412,6 +2904,41 @@ class VoxelTerrain {
     }
 
     // -----------------------------------------------------------------------
+    // IS THIS COLUMN INSIDE A TALL-GRASS TUFT, and if so how big is it and how
+    // many strands does it want?
+    //
+    // A JITTERED SITE LATTICE, scanned 3x3. A site sits in the middle half of
+    // its own cell and a tuft's radius is well under half a cell, so nothing
+    // outside the ring can reach this column -- the same bound the flower
+    // colonies rely on.
+    //
+    // PURE, hash only, no noise and no memo: it is asked once per column that
+    // already grew a blade, which is under a third of them.
+    // -----------------------------------------------------------------------
+    bool tuftAt(float x, float z, float *radOut, float *wantOut) const {
+        const int gi = int(floorf(x / tuftCellM));
+        const int gj = int(floorf(z / tuftCellM));
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int di = -1; di <= 1; ++di) {
+                const uint32_t c = hashU32(uint32_t(gi + di) ^ 0x51ED2701u, uint32_t(gj + dj));
+                if (hashUnit(strandSeed + 71u, c) > tuftCoverage) continue;
+                const float sx = (float(gi + di) + 0.25f + 0.5f * hashUnit(strandSeed + 72u, c)) *
+                                 tuftCellM;
+                const float sz = (float(gj + dj) + 0.25f + 0.5f * hashUnit(strandSeed + 73u, c)) *
+                                 tuftCellM;
+                const float rad =
+                    tuftRadMinM + (tuftRadMaxM - tuftRadMinM) * hashUnit(strandSeed + 74u, c);
+                const float dx = x - sx, dz = z - sz;
+                if (dx * dx + dz * dz >= rad * rad) continue;
+                *radOut = rad;
+                *wantOut = tuftStrandsMin +
+                           (tuftStrandsMax - tuftStrandsMin) * hashUnit(strandSeed + 75u, c);
+                return true;
+            }
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
     // HOW TALL A GRASS BLADE STANDS ON THIS COLUMN, 0 for none.
     //
     // A pure function of the WORLD column and its surface material, which is
@@ -2426,14 +2953,106 @@ class VoxelTerrain {
     // grassMinRows and grassMaxRows are tuning knobs; STRAND_MAX_ROWS is a
     // format limit.
     // -----------------------------------------------------------------------
-    uint8_t strandRows(int i, int j, uint8_t top) const {
-        if (!isGrass(top)) return 0;
+    uint8_t strandRows(int i, int j, uint8_t top, TerrainMemo &memo) const {
+        // ONLY ON THE DIRT FLOOR. This used to ask isGrass(top), which was the
+        // surface paint; with the paint gone the question is whether this is
+        // ground a blade could root in at all -- so sand, rock and a lake bed
+        // still grow nothing, and that is the whole of what the old test was
+        // really protecting.
+        if (!isSoil(top) && !isLitter(top)) return 0;
+        const float x = wx(i), z = wx(j);
+        // HOW MUCH BIRCH THIS COLUMN IS. That wood is a meadow, so its floor
+        // gets no clearings at all -- the patch field is faded out of the
+        // density as the birch takes over, and the blades grow taller with it.
+        const float bm = birchMix(x);
+        const float ps = 1.0f / maxf(1.0f, grassPatchM);
+        const float patch = fbm(memo.grassMask, x * ps + 31.7f, z * ps + 17.2f, 3);
+        const float t = sstep(clampf((patch - 0.5f) * grassPatchGain + 0.5f, 0.0f, 1.0f));
+        // The pine floor keeps its glades and thickets; the birch floor is
+        // uniformly full, and the two crossfade so the seam is not a line.
+        const float pineP = grassDensity * (grassSparse + grassFull * t);
+        float p = lerpf(pineP, birchGrassDensity, bm);
+        // ...and taller on the birch side, 7 voxels at the top end against the
+        // pine's 6. Rounded rather than truncated so the crossfade reaches the
+        // full value instead of stopping a voxel short.
+        float loF = float(grassMinRows);
+        float hiF = lerpf(float(grassMaxRows), float(birchGrassMaxRows), bm);
+
         const uint32_t cell = hashU32(uint32_t(i), uint32_t(j));
-        if (hashUnit(strandSeed, cell) >= grassDensity) return 0;
-        const int span = maxi(1, grassMaxRows - grassMinRows + 1);
+        if (hashUnit(strandSeed, cell) >= p) return 0;
+
+        // ---- ...AND THE TALL PATCHES, WHICH ONLY CHANGE THE HEIGHT --------
+        //
+        // AFTER THE PLANTING DRAW, AND THAT PLACEMENT IS THE WHOLE POINT: `p`
+        // is already spent, so nothing this does can add or remove a blade. It
+        // decides how tall the blades that are ALREADY HERE stand.
+        //
+        // A SECOND FIELD, NOT A SECOND THRESHOLD ON THE GLADE ONE. Reusing the
+        // glade field would make every tall patch the middle of a thicket,
+        // which is the one place the floor is already busiest -- the patches
+        // would never be seen against it.
+        // ---- ...AND THE TALL TUFTS, WHICH ONLY CHANGE THE HEIGHT ----------
+        //
+        // AFTER THE PLANTING DRAW, AND THAT PLACEMENT IS THE WHOLE POINT: `p`
+        // is already spent, so nothing here can add or remove a blade. It
+        // decides how tall a few of the blades that are ALREADY HERE stand.
+        // The first version of this blended `p` toward 0.85 inside a patch and
+        // was rejected in as many words -- "you seemed to just increase the
+        // density of the grass. dont do that".
+        //
+        // NOT BLENDED -- SWITCHED. A chosen blade is 15 to 20, full stop.
+        // Easing the height with the field's falloff would ring every tuft
+        // with 7- and 9-voxel blades, which is scattered strands wearing a
+        // group.
+        //
+        // ITS OWN SALT, or it would correlate with the planting draw above and
+        // the tall ones would all be blades that only just got planted.
+        float tuftRad = 0.0f;
+        float tuftWant = 0.0f;
+        if (tuftAt(x, z, &tuftRad, &tuftWant)) {
+            // HOW MANY COLUMNS THE TUFT COVERS, and how many of them grew a
+            // blade -- that product is what `tuftWant` has to be spread over.
+            const float cols = 3.14159265f * tuftRad * tuftRad / (VOXEL_M * VOXEL_M);
+            const float chance = clampf(tuftWant / maxf(1.0f, cols * p), 0.0f, 1.0f);
+            if (hashUnit(strandSeed + 0x5BD1u, cell) < chance) {
+                loF = float(tallGrassMinRows);
+                hiF = float(tallGrassMaxRows);
+            }
+        }
+        const int loRows = maxi(1, int(loF + 0.5f));
+        const int hiRows = maxi(loRows, int(hiF + 0.5f));
+        const int span = maxi(1, hiRows - loRows + 1);
         return uint8_t(
             mini(STRAND_MAX_ROWS,
-                 grassMinRows + mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span))));
+                 loRows + mini(span - 1, int(hashUnit(strandSeed + 1u, cell) * span))));
+    }
+
+    // For the handful of callers with no memo to hand. A memo is a cache that
+    // validates itself, so this gives the same answer -- it just pays for it.
+    uint8_t strandRows(int i, int j, uint8_t top) const {
+        TerrainMemo memo;
+        return strandRows(i, j, top, memo);
+    }
+
+    // -----------------------------------------------------------------------
+    // WHICH WOOD'S GREEN A BLADE ON THIS COLUMN WEARS.
+    //
+    // DITHERED AGAINST A COLUMN HASH, not switched at mix = 0.5. A hard line
+    // would draw a straight north-south edge across the world where one wood's
+    // grass meets the other's -- the one shape nothing else in this terrain
+    // has. Testing the mix against a hash of the column interleaves them over
+    // the blend, so the two greens dissolve into each other the way a real
+    // treeline does. This is the same dither the birch FLOOR used before the
+    // floor became dirt; it is the right trick, it was just being spent on the
+    // wrong thing.
+    //
+    // The hash is the COLUMN's, so it is stable: the same column answers the
+    // same way every time it is meshed, from any chunk, on any thread.
+    // -----------------------------------------------------------------------
+    uint8_t bladeMaterial(int i, int j) const {
+        return (birchMix(wx(i)) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
+                   ? mat::BGRASS_0
+                   : mat::GRASS_0;
     }
 
     // -----------------------------------------------------------------------
@@ -2478,6 +3097,36 @@ class VoxelTerrain {
         *hi = (line == kNoWaterVox || h > line) ? h : line + crest;
     }
 
+    // -----------------------------------------------------------------------
+    // ...AND WHICH OF THOSE COLUMNS ACTUALLY CARRY IT.
+    //
+    // THE LIFT IS BACK (user 2026-09-13: "can you raise the foam upwards by 1
+    // voxel? just put a white voxel above the current foam voxel"), and the
+    // reason it was a wall the first time is the reason this function exists.
+    // A lift raises GEOMETRY. The shader's clumping breaks up the COLOUR and
+    // cannot touch the silhouette, so an unbroken band raised a voxel all the
+    // way round a lake is a white kerb however it is shaded.
+    //
+    // So the breakup moves to the host, where it can decide whether the voxel
+    // is THERE at all. Two scales, which is what stops it reading as noise:
+    //
+    //   a ~2.4 m cell     tongues of surf, the same size the shader's mask uses
+    //   a per-column hash inside them, so a tongue has a ragged edge rather
+    //                     than a square one
+    //
+    // Result: raised white voxels in broken runs along the water's edge, which
+    // is v1's shoreSurf. Nothing continuous, so nothing to read as a kerb.
+    //
+    // PURE, AND A FUNCTION OF THE WORLD COLUMN, so the mesher and TerrainProbe
+    // cannot disagree about where the shore stands -- which is exactly what
+    // tests/voxel_probe_test.cpp checks face by face.
+    // -----------------------------------------------------------------------
+    bool foamCrest(int i, int j) const {
+        const uint32_t tongue = hashU32(uint32_t(floorDiv(i, 24)), uint32_t(floorDiv(j, 24)));
+        if (hashUnit(0xF0A3u, tongue) > foamCrestTongue) return false;
+        return hashUnit(0xF0A4u, hashU32(uint32_t(i), uint32_t(j))) < foamCrestFill;
+    }
+
     // Is this column the churned band? Shallow, and wet at all.
     bool foamColumn(int h, int line) const {
         // <= 0 means OFF. Without this an unsigned-style read of the depth
@@ -2496,9 +3145,13 @@ class VoxelTerrain {
     // function has no coordinates to ask one with. `h >= line` rather than
     // `h > line` is belt and braces: a column with zero voxels of water gets
     // no water top even if a caller hands in the wrong flag.
-    int waterTopVox(int h, int line, int crest, bool wet) const {
+    // THE WORLD COLUMN IS AN ARGUMENT NOW, because the lift is no longer a
+    // property of the depth alone -- see foamCrest. Both callers have it: the
+    // mesher through ColumnStack::i0/j0 and the probe from its own (i, j).
+    int waterTopVox(int i, int j, int h, int line, int crest, bool wet) const {
         if (!wet || line == kNoWaterVox || h >= line) return h;
-        return line + crest + (foamColumn(h, line) ? foamLiftVox : 0);
+        const bool lift = foamLiftVox > 0 && foamColumn(h, line) && foamCrest(i, j);
+        return line + crest + (lift ? foamLiftVox : 0);
     }
 
     // waterTop is what waterTopVox returned for this column -- the line, the
@@ -2769,7 +3422,12 @@ class VoxelTerrain {
                     // The cap used to be a coloured voxel standing in for a
                     // flower. Real models are instanced on the ground now, so a
                     // strand is just a strand.
-                    const uint8_t cap = tm;
+                    //
+                    // GRASS, NOT THE FLOOR. This was tm -- the ground's own
+                    // material -- which was right only while the ground under
+                    // a blade was painted mat::GRASS_0. The floor is soil and
+                    // litter now, and left alone this drew brown grass.
+                    const uint8_t cap = bladeMaterial(I0 + i, J0 + j);
                     const int lo = hc + 1, hi = lo + rows;
                     // WHAT MAKES A BLADE A GRADIENT rather than a green stick.
                     // Every face of this strand carries the row it stands on,
@@ -2791,7 +3449,9 @@ class VoxelTerrain {
                         const int nhi = (nr > 0) ? nlo + nr : hi;
                         const int ground = H(ni, nj) + 1;
                         // Below the neighbour's surface is buried in terrain.
-                        emitUncovered(m, i, j, d, maxi(lo, ground), hi, nlo, nhi, tm, sc);
+                        // `cap`, not tm: a blade's SIDES are grass too, and this was
+                        // the half of it the top face did not cover.
+                        emitUncovered(m, i, j, d, maxi(lo, ground), hi, nlo, nhi, cap, sc);
                     }
 
                     const float yt = float(hi) * s;
@@ -2999,6 +3659,42 @@ struct TerrainProbe {
     TerrainProbe(const TerrainProbe &) = delete;
     TerrainProbe &operator=(const TerrainProbe &) = delete;
 
+    // -----------------------------------------------------------------------
+    // THE TOP OF THIS COLUMN AS IT IS NOW -- generated, then dug out.
+    //
+    // THE ONE THING EVERY WALKING QUERY WAS MISSING. heightVox answers the
+    // GENERATOR's top in one comparison and cannot see an edit, so the player,
+    // the arrows and the fliers all stood on the surface that used to be there:
+    // dig a pit, walk into it, and you hover over the hole on the floor that is
+    // no longer drawn. The renderer, the mesher and the swing ray had all been
+    // moved onto the edit layer; the body had not.
+    //
+    // CAPPED AT kUndermineDepthVox, which is what makes it affordable. With
+    // edits the top is a downward scan rather than a comparison, and the walk
+    // asks this several times a frame per contact point -- so the scan is
+    // bounded at 6.4 m, deeper than any bite the pick can take, and a column
+    // with no edits in its chunk costs the same one comparison it always did.
+    //
+    // The cap is the same one World::terrainTopAt uses, and that function now
+    // delegates here so the two cannot answer differently.
+    // -----------------------------------------------------------------------
+    static constexpr int kTopScanVox = 64;
+
+    int topVox(int i, int j) {
+        const int h = terrain ? terrain->heightVox(i, j, *memo_) : 0;
+        if (!edits) return h;
+        const std::shared_ptr<const ChunkEdits> ce =
+            edits->get(EditStore::floorDiv(i, CHUNK_VOX), EditStore::floorDiv(j, CHUNK_VOX));
+        if (!ce) return h;
+        int y = h;
+        for (int n = 0; n < kTopScanVox; ++n, --y) {
+            uint8_t m = mat::AIR;
+            if (!ce->voxel(i, j, y, &m)) return y;   // no edit here: still stone
+            if (m != mat::AIR) return y;             // filled back in
+        }
+        return y;
+    }
+
     // The cheap half, for the step of a march: solid or not, and no material.
     bool solid(int i, int j, int y) {
         uint8_t m = mat::AIR;
@@ -3036,10 +3732,13 @@ struct TerrainProbe {
         // from the one the mesher draws; tests/voxel_probe_test.cpp checks the
         // two against each other face by face.
         const int line = terrain->lakeLineAt(terrain->wx(i), terrain->wx(j), *memo_);
-        const int wTop = terrain->waterTopVox(h, line, terrain->waveCeilVox(),
+        const int wTop = terrain->waterTopVox(i, j, h, line, terrain->waveCeilVox(),
                                               terrain->wetColumn(i, j, h, line, *memo_));
         switch (VoxelTerrain::aboveAt(y, h, terrain->strandRows(i, j, top), wTop)) {
-            case VoxelTerrain::Above::Blade: return top;
+            // GRASS, not the floor, and WHICH wood's grass -- the mesher says
+            // the same, and tests/voxel_probe_test.cpp checks the two face by
+            // face.
+            case VoxelTerrain::Above::Blade: return terrain->bladeMaterial(i, j);
             // The churned band is its own material on the quad, so the probe
             // has to answer with it too or the renderer and the query disagree
             // about what a voxel of shore is.
