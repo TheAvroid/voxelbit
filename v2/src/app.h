@@ -56,6 +56,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 
@@ -78,7 +79,10 @@
 #include "render/butterflies.h"
 #include "render/drops.h"
 #include "render/helditem.h"
+#include "render/holotext.h"
 #include "render/birdflock.h"
+#include "render/bunnies.h"
+#include "render/assetedit.h"
 #include "render/lake.h"
 #include "render/toolsound.h"
 #include "render/player.h"
@@ -290,6 +294,7 @@ struct Options {
     // Opens the water panel on the first frame, so --shot-ui can photograph it
     // with no window and no keystroke. Same trick menuAtStart is for.
     bool waterPanelAtStart = false;
+    bool roomAtStart = false;   // --room: open the pause room on the first frame
     // Everything but the world reflection -- see kWFDefault in Shared.slang,
     // which is where this number is explained. Kept as a literal because
     // app.h does not include the shader header.
@@ -1161,6 +1166,12 @@ class ForestApp : public SampleApp {
             // has to be registered in the same window. See render/lake.h.
             lake_.load(world_, opt_.birdDir, opt_.decor);
             flock2_.load(world_, opt_.birdDir);
+            // ...and the bunnies, in the same window and for the same reason:
+            // every flyer-band model has to be registered before anything is
+            // built. opt_.birdDir is assets/life, which is where they live.
+            bunnies_.load(world_, opt_.birdDir + "/bunny");
+            edit_.attach(&bunnies_);
+
             std::fflush(stdout);
         }
 
@@ -1256,6 +1267,7 @@ class ForestApp : public SampleApp {
 
         if (opt_.menuAtStart) setMenuOpen(true);
         if (opt_.waterPanelAtStart) setWaterPanelOpen(true);
+        if (opt_.roomAtStart) setRoomOpen(true);
         // THE EDITOR, FROM THE COMMAND LINE. The same path U takes, so a shot
         // of the stage is a shot of the thing the key opens rather than of a
         // second arrangement that could drift from it.
@@ -1271,7 +1283,7 @@ class ForestApp : public SampleApp {
             yaw_ = 0.0f;
             pitch_ = -8.0f;
             pos_ = player_.eyePosition();
-            birds_.stageOne(Vec3(c.x, c.y, c.z));
+            stageSubject();
         }
 
         // The recorder compiles its conversion shader here rather than on the
@@ -1377,7 +1389,27 @@ class ForestApp : public SampleApp {
             // the settings menu (Y) and use the copy row to bring the numbers
             // back here.
             held_.add(world_, "stone shovel", opt_.shovel,
-                      HeldPose{8.512f, -0.910f, 8.730f, 0.040f, -1.420f, 0.009f, 1.003f},
+                      // ...AND HALF A TURN ON THE ROLL (user 2026-09-13: "flip the
+                      // shovel 180 degrees vertically so that the stone is facing
+                      // upwards like the other tools"). Roll is the innermost
+                      // rotation and turns the model about its own long axis, so
+                      // pi is exactly a vertical flip -- the blade that hung under
+                      // the haft now sits on top of it, where the axe head and the
+                      // pick head already are. 0.009 + pi.
+                      // ...AND HALF A TURN ON THE PITCH (user 2026-09-13: "flip the
+                      // shovel 180 degrees vertically so that the stone is facing
+                      // upwards like the other tools"). -1.420 + pi = 1.722.
+                      //
+                      // THE PITCH, NOT THE ROLL, and the difference is worth a
+                      // line because the roll was the obvious guess and it is
+                      // wrong. Roll is the innermost rotation, so it turns the
+                      // model about its OWN axis -- which spins a shovel on the
+                      // spot and leaves the blade exactly where it was; measured,
+                      // it changed 2% of the frame. Pitch is the outermost, so it
+                      // is the one that acts in the view's own frame, and half a
+                      // turn there is what "flip it vertically" means to somebody
+                      // looking at the screen.
+                      HeldPose{8.512f, -0.910f, 8.730f, 0.040f, 1.722f, 0.009f, 1.003f},
                       Takes::Soil);
             // THE BOW'S OWN BAKE, from the JS engine's PICK_DEFS for
             // 2026-08-04. It is not the tool family's pose: a bow is held
@@ -1400,6 +1432,37 @@ class ForestApp : public SampleApp {
             // for.
             held_.addEmpty("empty hand");
             held_.select(opt_.tool);
+
+            // -- AND WHETHER THE PALETTE SURVIVED ALL OF THAT ---------------
+            //
+            // AFTER THE TOOLS, WHICH IS THE WHOLE POINT OF WHERE IT SITS. The
+            // table has mat::COUNT entries and forModelColor returns **AIR**
+            // when it is full, so a model registered past the ceiling simply
+            // stops being drawn with no error anywhere.
+            //
+            // Palette::overflowed() has counted exactly this since the table
+            // was written and NOTHING HAS EVER CALLED IT. The first anybody
+            // knew was "the tools are broke" -- every stone head in the game
+            // had quietly become air, because the held items are the LAST thing
+            // to ask for colours and there were not enough left.
+            //
+            // Printed unconditionally, not only on overflow: a warning at the
+            // cliff edge tells you when it is already too late, and a number
+            // that creeps up tells you which model was the one that could not
+            // fit. 251 of 255 with the tools still to come is the reading that
+            // would have caught this before it shipped.
+            {
+                const int used = world_.palette.used();
+                const int lost = world_.palette.overflowed();
+                std::printf("  palette  %d of %d entries used%s\n", used, int(mat::COUNT),
+                            lost ? "  -- FULL" : "");
+                if (lost)
+                    std::fprintf(stderr,
+                                 "v2: PALETTE FULL -- %d colours could not be registered and "
+                                 "render as AIR. Models are served in load order, so what you "
+                                 "cannot see is whatever loaded last.\n",
+                                 lost);
+            }
             arrows_.init(world_, opt_.arrow);
             arrows_.log = opt_.swingLog;
             // WHERE THE NOCKED ARROW STARTS. Asked for rather than applied:
@@ -1494,6 +1557,12 @@ class ForestApp : public SampleApp {
         // could use.
         const float dt = opt_.shotPath.empty() ? wallDt : opt_.shotDt;
 
+        // THE SCREEN SWITCHING OFF IS NOT PART OF THE SIMULATION, so it is
+        // stepped here on the WALL clock rather than in processInput on the
+        // scaled one -- a slowed or scripted game should still take exactly as
+        // long to go dark.
+        tickQuit(wallDt);
+
         clock_.advance(dt);
         // THE DECK DRIFTS ON THE DAY CYCLE CLOCK, NOT ON THE WALL CLOCK.
         //
@@ -1523,7 +1592,20 @@ class ForestApp : public SampleApp {
         // two apart is what lets the report below say whether a slow frame was
         // the renderer or the streamer.
         const auto tu0 = std::chrono::steady_clock::now();
-        if (world_.update(pos_)) tracer_.resetAccumulation();
+        // -- IN THE ROOM, THE STREAMER GOES ON WATCHING THE WOOD -----------
+        //
+        // The pause room is at -4096, four kilometres from anywhere anyone
+        // plays. Following the CAMERA there would evict every chunk of the
+        // wood and stream a ring of forest nobody can see -- and then do the
+        // whole thing again backwards on the way out, so the green button would
+        // hand you a grey hole to stand in while it refilled.
+        //
+        // So while the room is open the streamer is pointed at the place the
+        // player LEFT. Everything else update() does -- draining compactions,
+        // ageing the buffer pool, retiring meshes -- still runs, because it is
+        // the same call.
+        const Vec3 streamAt = world_.inRoom() ? woodPos_ : pos_;
+        if (world_.update(streamAt)) tracer_.resetAccumulation();
 
         // ---- AND THE SPAWN IS CHECKED ONCE THERE IS A WORLD TO CHECK IT
         // AGAINST ------------------------------------------------------------
@@ -1540,7 +1622,21 @@ class ForestApp : public SampleApp {
         // wrong for the same reason the position was: groundInfo could not see
         // a rock that had not been streamed, so it put the player at terrain
         // level -- which, under a boulder, is inside it.
-        if (!spawnSettled_ && world_.chunkAt(player_.pos)) {
+        // -- ...BUT NOT WHILE THE PLAYER IS SOMEWHERE THAT IS NOT THE WOOD --
+        //
+        // --room and --stage put the player in a place of their own, and this
+        // ran one frame later and teleported them straight back out of it. It
+        // is the whole of why `--room --shot-ui` photographed the forest from
+        // two kilometres up: the room was built, it WAS in the structure, and
+        // the camera had been moved back to the spawn point without anything
+        // saying so. `--stage` had been doing the same thing for as long as it
+        // has existed.
+        //
+        // POSTPONED, NOT SETTLED. spawnSettled_ stays false, so the check runs
+        // on the first frame after they come back -- which is the first frame
+        // the position it is checking is one they are actually standing at.
+        if (!spawnSettled_ && !world_.inRoom() && !world_.staged() &&
+            world_.chunkAt(player_.pos)) {
             spawnSettled_ = true;
             nudgeOutOfSolids();
             player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
@@ -1711,7 +1807,11 @@ class ForestApp : public SampleApp {
         // costs a fraction of what the collision query costs -- the JS engine
         // makes the same call about its own perch check for the same reason.
         ++frameTick_;
-        if (birds_.ready() && (frameTick_ % 30) == 0)
+        // GATHERED FOR TWO SYSTEMS NOW, so it is no longer conditional on the
+        // birds being ready: the bunnies sense obstacles out of this same list
+        // (see Bunnies::blocked), and a bunny whose sensor is empty is a bunny
+        // that walks through boulders. 115 m covers the bunnies' own 105.
+        if ((frameTick_ % 30) == 0)
             world_.collidersNear(player_.pos, kBirdKeepM, &perches_);
         birds_.update(dt, perches_, player_.pos);
         // WHAT LIVES ON THE WATER. Ticked beside the birds because it is the
@@ -1729,6 +1829,31 @@ class ForestApp : public SampleApp {
                                                   int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
         });
         flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
+        // ...AND THE BUNNIES, on the generator's ground for the reason the
+        // songbirds are: a rabbit does not care about a hole somebody dug, and
+        // asking the edit layer would cost a scan per probe per animal.
+        // ON THE DECK THE EDITOR OWNS THIS BAND AND THE POPULATION DOES NOT
+        // TICK AT ALL. Not an optimisation: fill() claims sites from the
+        // lattice around the PLAYER, and the player is four kilometres away at
+        // y 512, so a tick here would spawn ten rabbits on whatever hillside
+        // happens to lie under the stage and hold nine slots showing them.
+        if (world_.staged()) {
+            edit_.update(dt);
+            edit_.publish(world_, kBunnySlot0);
+        } else {
+            bunnies_.update(dt, player_.pos,
+                            [this](float x, float z) {
+                                return float(world_.terrain.heightVox(
+                                                 int(std::floor(x / VOXEL_M)),
+                                                 int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+                            },
+                            // IS THIS COLUMN UNDER WATER -- the same three calls
+                            // WaterField::rebuild makes, which is this engine's
+                            // one definition of wet. A bunny and a lily pad
+                            // therefore agree about where the lake is.
+                            [this](float x, float z) { return wetColumnAt(x, z); }, perches_);
+            bunnies_.publish(world_, kBunnySlot0);
+        }
 
         // The bed follows the canopy. Fed the same dt as the walk and the day
         // cycle -- the shot clock when one is running -- so a scripted move
@@ -2426,6 +2551,38 @@ class ForestApp : public SampleApp {
             }
             const ImVec2 wsz = ImGui::GetWindowSize();
             ImGui::SetWindowPos(ImVec2(maxf(0.0f, fbW - wsz.x - 12.0f), 12.0f));
+        }
+
+        // -------------------------------------------------------------------
+        // THE ASSET EDITOR'S READOUT -- top right, only on the deck.
+        //
+        // NOT OPTIONAL AND NOT A TOGGLE, unlike every other panel in this file.
+        // Which frame is selected, what it plays, how far it has been nudged
+        // and which axis the arrows are pointing at are not settings you turn
+        // on to check: they are the tool's ENTIRE state, and a nudge whose
+        // effect you cannot read is a nudge you have to count in your head.
+        // v1's #edHud is up for the same reason and says the same first line.
+        //
+        // The key list is under it, out of AssetEdit::help, so the panel and F1
+        // cannot describe two different sets of bindings.
+        // -------------------------------------------------------------------
+        if (edit_.on() && !waterPanelOpen_) {
+            std::vector<std::string> rows;
+            edit_.hudLines(&rows);
+            styleV2 style(pGui, px3_, 1.0f, fbH);
+            ImGui::GetStyle().WindowPadding = ImVec2(8.0f, 8.0f);
+            Gui::Window ew(pGui, "asset editor##v2", {0, 0}, {0, 0}, kBare);
+            px3Font face(px3_);
+            ImGui::SetWindowFontScale(style.scale);
+            ew.text("ASSET EDITOR  [I]");
+            ew.separator();
+            for (const std::string &r : rows) ew.text(r.c_str());
+            ew.separator();
+            int nh = 0;
+            const char *const *hr = AssetEdit::help(&nh);
+            for (int i = 0; i < nh; ++i) ew.text(hr[i]);
+            const ImVec2 esz = ImGui::GetWindowSize();
+            ImGui::SetWindowPos(ImVec2(maxf(0.0f, fbW - esz.x - 12.0f), 12.0f));
         }
 
         float below = 12.0f;
@@ -3480,7 +3637,23 @@ class ForestApp : public SampleApp {
         // would answer with whatever hillside is at those coordinates and drop
         // you through the floor. Flight takes the ground out of the question.
         // -----------------------------------------------------------------
-        if (e.key == Input::Key::U && !consoleOpen_) {
+        // [I] IS THE ASSET EDITOR (user 2026-09-13: "Put the asset editor on
+        // the i key"). U still works -- it is what every note in this file and
+        // the help text already call it, and taking it away would invalidate
+        // all of them to gain nothing. Two keys, one door.
+        if ((e.key == Input::Key::U || e.key == Input::Key::I) && !consoleOpen_) {
+            // -- THE TWO PLACES ARE EXCLUSIVE, AND THE WOOD IS BETWEEN THEM ---
+            //
+            // "Make sure that the esc menu and the asset editor are seperate
+            // level. that they are not in the same world as the other levels."
+            // They already were -- each REPLACES the world in the structure, and
+            // they stand four kilometres apart -- but nothing stopped both being
+            // OPEN at once, and the state that produced is worse than either: a
+            // room drawn over a stage, with one saved wood position between them
+            // that the second door to open would overwrite with the first
+            // door's coordinates. Leaving for the wood first makes the save
+            // correct by construction.
+            if (world_.inRoom()) setRoomOpen(false);
             const bool on = !world_.staged();
             if (on) {
                 woodPos_ = player_.pos;
@@ -3501,12 +3674,9 @@ class ForestApp : public SampleApp {
                 yaw_ = 0.0f;
                 pitch_ = -8.0f;
                 // ...and the subject, standing on the deck in front of you.
-                birds_.stageOne(Vec3(c.x, c.y, c.z));
+                stageSubject();
             } else {
-                player_.pos = woodPos_;
-                player_.fly = woodFly_;
-                yaw_ = woodYaw_;
-                pitch_ = woodPitch_;
+                leaveStage();
             }
             player_.vy = 0.0f;  // no fall carried across the doorway
             pos_ = player_.eyePosition();
@@ -3514,6 +3684,26 @@ class ForestApp : public SampleApp {
             std::printf("v2: %s\n", on ? "asset editor" : "back to the wood");
             std::fflush(stdout);
             quitArmed_ = false;
+            return true;
+        }
+        // -----------------------------------------------------------------
+        // THE ASSET EDITOR'S OWN KEYS, and it gets first refusal on them.
+        //
+        // AFTER the door above, so [I] and [U] still let you out, and BEFORE
+        // everything below, because that is what "the editor owns the keyboard
+        // while it is up" means. It claims ten keys and passes every other
+        // press straight through, so Y, O, ESC and the rest work on the deck
+        // exactly as they do in the wood.
+        //
+        // THE ONE IT TAKES THAT SOMETHING ELSE WANTED IS [R]: it turns a frame
+        // here rather than starting a recording. That is v1's binding and v1's
+        // reason -- a key cannot mean two things at once in one mode -- and the
+        // recorder gets it back the moment you step off the deck.
+        // -----------------------------------------------------------------
+        if (world_.staged() && !consoleOpen_ && !menuOpen_ && !waterPanelOpen_ &&
+            edit_.key(e)) {
+            quitArmed_ = false;
+            std::fflush(stdout);
             return true;
         }
         if (e.key == Input::Key::Y) {
@@ -3525,7 +3715,10 @@ class ForestApp : public SampleApp {
         // own key rather than a page of the [Y] menu because these are meant
         // to be flicked on and off WHILE LOOKING AT A LAKE -- a setting you
         // have to leave the water to reach is a setting you judge from memory.
-        if (e.key == Input::Key::I) {
+        // THE WATER PANEL IS ON O NOW. I was rebound to ESC (user 2026-09-13)
+        // and ESC is the pause room, so the panel needed somewhere else; O is
+        // the nearest free key to the one it had.
+        if (e.key == Input::Key::O) {
             setWaterPanelOpen(!waterPanelOpen_);
             quitArmed_ = false;
             return true;
@@ -3548,16 +3741,24 @@ class ForestApp : public SampleApp {
                 setMenuOpen(false);
                 return true;
             }
-            // First press hands the mouse back, second press quits. Whether the
-            // cursor was captured or not, it always takes two.
-            if (looking_) setCapture(false);
-            if (quitArmed_) {
+            // -------------------------------------------------------------
+            // ...AND THEN IT IS THE PAUSE ROOM, AND THEN IT IS THE DOOR.
+            //
+            // "one esc goes to the main menu box, and another esc exits the
+            // game" (user 2026-09-13). So the two presses that used to be
+            // "release the mouse" and "quit" are now "go to the room" and
+            // "quit" -- the same muscle memory, with a place to change your
+            // mind in the middle of it rather than a printed warning.
+            //
+            // THE GREEN BUTTON IS STILL THE WAY BACK. ESC does not toggle any
+            // more: in the room it leaves the program, which is what makes the
+            // second press an exit rather than a second opinion.
+            // -------------------------------------------------------------
+            if (world_.inRoom()) {
                 shutdown(0);
-            } else {
-                quitArmed_ = true;
-                std::printf("v2: press ESC again to quit\n");
-                std::fflush(stdout);
+                return true;
             }
+            setRoomOpen(true);
             return true;
         }
 
@@ -3657,6 +3858,39 @@ class ForestApp : public SampleApp {
 
         // The mouse belongs to whichever panel is up.
         if (menuOpen_ || waterPanelOpen_) return false;
+
+        // -- IN THE ROOM, A CLICK IS A BUTTON PRESS AND NOTHING ELSE --------
+        //
+        // Before the capture rule below, because in the room the FIRST click
+        // has to work: there is nothing to look around at, and a pause menu
+        // that ignores the first thing you do is a pause menu that feels
+        // broken.
+        if (world_.inRoom() && e.type == MouseEvent::Type::ButtonDown &&
+            e.button == Input::MouseButton::Left) {
+            // -- THE CLICK STARTS THE PRESS; THE PRESS DOES THE THING -------
+            //
+            // "it presses the button down and then executes the action. make
+            // the button press at the right timing when the player hits."
+            //
+            // So the action is not run here. What happens here is that the
+            // button starts travelling, and tickButtons fires the action on the
+            // frame it BOTTOMS OUT -- which is the moment a real button closes
+            // its contact. Doing it on the click instead means the room shuts,
+            // or the program exits, before the button has visibly moved: the
+            // animation would exist but nobody would ever see it.
+            //
+            // ONE AT A TIME. A second click while a press is in flight is
+            // ignored rather than queued -- two buttons going down together is
+            // a thing a hand cannot do, and the second of them would be acting
+            // on a room the first one had already left.
+            const int b = buttonUnderCrosshair();
+            if (b >= 0 && btnPend_ < 0) {
+                btnHeld_ = b;
+                btnPend_ = b;
+                btnAt_ = btnClock_ + kBtnDownSec;
+            }
+            return true;
+        }
 
         if (e.type == MouseEvent::Type::ButtonDown && e.button == Input::MouseButton::Left) {
             // Click to capture, the way a game does it. ESC gives it back.
@@ -3941,6 +4175,17 @@ class ForestApp : public SampleApp {
     // the panel subtracts, it does not build the water up from nothing.
     bool waterPanelOpen_ = false;
     bool captureBeforeWater_ = false;
+    bool captureBeforeRoom_ = false;
+    // -- THE THREE BUTTONS. press is 0 out and 1 fully down; held is the one a
+    //    finger is on, or -1; pend is the one whose action has not fired yet.
+    static constexpr float kBtnDownSec = 0.08f, kBtnUpSec = 0.16f;
+    float btnPress_[3] = {0.0f, 0.0f, 0.0f};
+    float btnClock_ = 0.0f, btnAt_ = 0.0f;
+    int btnHeld_ = -1, btnPend_ = -1;
+    // -- THE RED BUTTON'S AFTERMATH. quitT_ is the collapse, 0 to 1.
+    static constexpr float kQuitFadeSec = 1.15f;
+    bool quitting_ = false;
+    float quitT_ = 0.0f;
     // ALL NINE ON -- see kWFDefault in Shared.slang. App::onLoad overwrites
     // every one of them from opt_.waterFlags, so this initialiser and that
     // default cannot drift apart in practice; it is written out here so reading
@@ -4024,6 +4269,11 @@ class ForestApp : public SampleApp {
     // ...and the songbirds in the sky, which are not the perched ones in a
     // different state -- see render/birdflock.h.
     BirdFlock flock2_;
+    Bunnies bunnies_;
+    // THE TOOLS ON THE DECK. Attached to the population rather than owning a
+    // second copy of the strips: it edits a BAKE, and the bake is read by the
+    // rabbits in the wood -- see render/assetedit.h.
+    AssetEdit edit_;
 
     // Where the wood was when U was pressed -- see the handler.
     Vec3 woodPos_{0, 0, 0};
@@ -4571,6 +4821,414 @@ class ForestApp : public SampleApp {
     // it, and the look is handed back on close only if it was ours to begin
     // with. Kept separate from setMenuOpen so the two panels cannot fight over
     // who restores the capture.
+    // -----------------------------------------------------------------------
+    // INTO THE ROOM AND BACK OUT, which is the editor deck's own trip -- see
+    // the U key. The wood's position, heading and flight are remembered on the
+    // way in and put back on the way out, because a pause that moves you is not
+    // a pause.
+    //
+    // THE MOUSE IS TAKEN, NOT HANDED BACK, which is the opposite of what every
+    // other panel in this file does and is the right call here. The buttons are
+    // picked by the CROSSHAIR -- see buttonUnderCrosshair -- and the outer two
+    // sit twenty degrees off centre, so a player who cannot turn their head can
+    // only ever press the green one. A settings panel is a page you point at; a
+    // room is a place you look around in.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE WORDS OVER THE BUTTONS.
+    //
+    // "quit", "back" and "discord", standing in the air a hand's width above
+    // the button each one names -- see V2Holo in Shared.slang for what they are
+    // and render/holotext.h for the face they are written in.
+    //
+    // IN THE ROOM, NOT ON THE SCREEN. This is the whole point of them and it is
+    // worth saying next to the code: an ImGui label over each button would have
+    // been four lines and would have been WRONG, because the pause room is a
+    // place the player is standing in and text pasted on the glass is not in it.
+    // The plane these are drawn on has world coordinates, so it has parallax
+    // against the wall behind it, the bulb's own glare passes in front of it,
+    // and it reprojects for Ray Reconstruction like every other surface. v1 made
+    // the same call about the stack badge beside the held tool -- its note reads
+    // "drawn INTO the image (user: not HTML in the corner)" -- and could only
+    // fake the perspective with a tilt and a shear, because a raymarcher that
+    // shades one hit has nowhere to put a second surface. A path tracer does.
+    //
+    // THE COLOUR HAD TO BE MEASURED, AND THE FIRST TWO GUESSES WERE THE SAME
+    // MISTAKE. The room's walls are white at 226 and the bulb lights them to a
+    // mean of 180, so a label has to be BRIGHTER THAN THE WALL to read at all --
+    // paint of any colour on a white wall under one lamp comes out a grey. Both
+    // early cuts (4.0, then 2.0) therefore just turned the number up, and both
+    // rendered as WHITE WORDS WITH A COLOURED FRINGE.
+    //
+    // What was wrong is not the level, it is which channels got it. kBtnRgb is
+    // an sRGB colour, so the way to make a radiance out of it is to LINEARISE it
+    // -- and sRGB is a steep curve down low, so (214, 58, 58) is not
+    // (1.00, 0.27, 0.27) of light but (1.00, 0.06, 0.06). Scaling the encoded
+    // numbers had been handing the off-channels four times too much, and up on
+    // the tone map's shoulder -- where the room sits -- the top channel is
+    // compressed hard and those off-channels are not, so the three of them
+    // converge and the hue is squeezed out. Measured off the render: the ink
+    // came back 244/201/201 against a wall of 209/201/197, which is the same
+    // grey with a red tip on it.
+    //
+    // 2.0 ON THE LINEARISED COLOUR gives about 244/85/85 -- brighter than the
+    // wall where it should be and far darker where it should not, which is what
+    // a coloured light on a white surface actually looks like. The bulb is 12;
+    // that is what a surface meant to be stared straight into costs.
+    //
+    // THE BUTTON'S OWN COLOUR, out of World::kBtnRgb, so a label can never name
+    // the wrong button.
+    // -----------------------------------------------------------------------
+    void setRoomLabels() {
+        for (int b = 0; b < 3; ++b) {
+            // Normalised on its brightest channel and then scaled: the three
+            // colours were chosen as surfaces and have quite different lumas, so
+            // scaling them as they stand would make "back" half the brightness
+            // of "quit" for no reason anybody could see.
+            float lin[3], m = 0.0f;
+            for (int k = 0; k < 3; ++k) {
+                lin[k] = srgbToLinearF(float(World::kBtnRgb[b][k]) / 255.0f);
+                m = maxf(m, lin[k]);
+            }
+            const float s = (m > 0.0f) ? (2.0f / m) : 0.0f;
+            const float3 tint(lin[0] * s, lin[1] * s, lin[2] * s);
+            const Vec3 mid = World::buttonLabelMid(b);
+            const Vec3 rt = World::buttonLabelRight();
+            const Vec3 up = World::buttonLabelUp();
+            holoSetWord(tracer_.holo[b], World::buttonLabel(b),
+                        float3(mid.x, mid.y, mid.z), float3(rt.x, rt.y, rt.z),
+                        float3(up.x, up.y, up.z), World::kBtnLabelCellM, tint);
+        }
+    }
+
+    // Back to the wood from the asset deck: the position, heading and flight
+    // saved on the way in. Extracted because the pause room has to be able to
+    // do it too -- see the note at the editor's key.
+    // -----------------------------------------------------------------------
+    // WHAT STANDS ON THE DECK.
+    //
+    // THE BUNNY HAS THE MIDDLE (user 2026-09-13: "put the bunny in the middle
+    // of the asset editor"), and it is not standing there to be looked at --
+    // the editor's tools operate on it. See render/assetedit.h.
+    //
+    // THE CARDINAL STEPS ASIDE RATHER THAN OUT. It was the only thing on this
+    // deck until now and placing the rabbit at the same coordinates would have
+    // put one inside the other; a metre and a half to the right keeps the bird
+    // available to look at, which was the whole of what the stage did before.
+    //
+    // AND THE WILD RABBITS LET GO OF THEIR SLOTS. The editor draws through the
+    // FIRST of them (kBunnySlot0), so the ten that were following you round the
+    // pines have to be cleared or nine of them keep standing wherever they were
+    // -- four kilometres away and, on this deck's coordinates, under the floor.
+    // update() stops ticking them while the stage is up, so nothing refills.
+    // -----------------------------------------------------------------------
+    void stageSubject() {
+        const Vec3 c = World::stageCentre();
+        bunnies_.despawnAll();
+        bunnies_.publish(world_, kBunnySlot0);   // every slot, written empty
+        edit_.enter(c);
+        edit_.publish(world_, kBunnySlot0);
+        // -- AND NOTHING ELSE STANDS ON IT ------------------------------
+        //
+        // The cardinal is gone (user 2026-09-13: "remove the cardinal from the
+        // asset editor"). assetedit.h's own note already explains why it was
+        // the odd one out: it "was a cardinal that you could look at and
+        // nothing else. That is a VIEWER" -- and once the deck grew real tools
+        // the bird was a second subject competing with whatever you actually
+        // came here to look at.
+        //
+        // unstage() still runs on the way out, so a cardinal placed by an older
+        // build cannot be left standing on an empty deck.
+    }
+
+    void leaveStage() {
+        edit_.leave();
+        birds_.unstage();
+        world_.setStage(false);
+        player_.pos = woodPos_;
+        player_.fly = woodFly_;
+        yaw_ = woodYaw_;
+        pitch_ = woodPitch_;
+        player_.vy = 0.0f;
+        pos_ = player_.eyePosition();
+    }
+
+    void setRoomOpen(bool on) {
+        if (on == world_.inRoom()) return;
+        if (on) {
+            woodPos_ = player_.pos;
+            woodYaw_ = yaw_;
+            woodPitch_ = pitch_;
+            woodFly_ = player_.fly;
+        }
+        world_.setRoom(on);
+        // -- AND THE LIGHT GOES ON WITH IT ------------------------------
+        //
+        // AFTER setRoom, NOT BEFORE. The palette index the shader matches on
+        // does not exist until buildRoom has asked for it, and setRoom is what
+        // runs buildRoom -- reading it first gets kNoBulb and a black room, and
+        // only on the FIRST open, which is the kind of bug that gets called
+        // intermittent.
+        //
+        // 12 IN WORKING UNITS, and it was MEASURED rather than reasoned to.
+        // The first guess was 62, on the argument that the sun delivers 22 of
+        // irradiance (Sky::SUN_IRRADIANCE) and a point source falls off -- and
+        // it came back with a mean pixel of 234 and a fifth of the frame at
+        // full white, the buttons bleached to pastel. What the arithmetic left
+        // out is the SHELL: a closed white box returns almost everything it is
+        // given, so the walls are lit far more by each other than by the lamp,
+        // and the box multiplies whatever goes into it.
+        //
+        // WARM. 3000 K-ish, because every other light in this engine is
+        // daylight and a room lit by the same white as the sky reads as a void
+        // with walls rather than as somewhere indoors.
+        if (on) {
+            tracer_.bulbPos = World::bulbCenter();
+            // 15 cm: lightbulb.vox is three voxels across. The radius is only
+            // the floor on the inverse-square law -- see sampleBulbSplit -- so
+            // it matters exactly when somebody puts their head in the lamp.
+            tracer_.bulbRadius = 0.15f;
+            tracer_.bulbRadiance = Vec3(1.00f, 0.86f, 0.66f) * 12.0f;
+            tracer_.bulbMtl = world_.bulbMtl();
+            setRoomLabels();
+        } else {
+            tracer_.bulbMtl = 0xFFFFFFFFu;   // kNoBulb
+            tracer_.clearHolos();
+        }
+        // The other level first, for the reason the editor's own note gives:
+        // one saved wood position cannot serve two doors.
+        if (on && world_.staged()) leaveStage();
+        // Nothing half-pressed carries across the doorway -- see tickButtons.
+        btnPress_[0] = btnPress_[1] = btnPress_[2] = 0.0f;
+        btnHeld_ = -1;
+        btnPend_ = -1;
+        if (on) {
+            // ...and the look, which the room needs and a panel gives away.
+            captureBeforeRoom_ = looking_;
+            if (!looking_) setCapture(true);
+            player_.pos = World::roomStand();
+            // ON THEIR FEET, NOT HOVERING. Flight was how the first version
+            // avoided the fact that the walk collider cannot see this room --
+            // it reads the terrain, and the room is a separate structure four
+            // kilometres from the nearest chunk. Reported as "the player falls
+            // through the floor on the esc room": that is what happens the
+            // moment anything turns flight off. clampToRoom below is the floor.
+            player_.fly = false;
+            player_.vy = 0.0f;
+            // Facing the wall the buttons are on. Yaw 0 looks down -Z in this
+            // engine, which is where they were put -- see kBtnZ.
+            yaw_ = 0.0f;
+            pitch_ = 0.0f;
+        } else {
+            // Back exactly as they came: if the mouse was free when ESC was
+            // pressed, it is free again.
+            if (!captureBeforeRoom_ && looking_) setCapture(false);
+            player_.pos = woodPos_;
+            yaw_ = woodYaw_;
+            pitch_ = woodPitch_;
+            player_.fly = woodFly_;
+            player_.vy = 0.0f;
+        }
+        pos_ = player_.eyePosition();
+        tracer_.resetAccumulation();
+    }
+
+    // -----------------------------------------------------------------------
+    // WHICH BUTTON THE PLAYER IS LOOKING AT, or -1.
+    //
+    // A ray against three discs on a known plane, in host code -- there is no
+    // reason to ask the acceleration structure about three circles whose
+    // centres this file already knows, and doing it here means the highlight
+    // and the click cannot disagree about which one is under the cursor.
+    // -----------------------------------------------------------------------
+    int buttonUnderCrosshair() const {
+        if (!world_.inRoom()) return -1;
+        const Vec3 o = pos_;
+        const Vec3 d = Camera::direction(yaw_, pitch_);
+        const float r = World::buttonRadiusM();
+        // A RAY AGAINST THREE SPHERES. It was a ray against three discs on the
+        // wall plane, which was right while the buttons were painted on it --
+        // now they are balls standing proud of it, and a plane test would let
+        // you press one by looking at the wall BESIDE it from far enough to the
+        // side. The nearest root wins, so a ball in front of another cannot be
+        // pressed through.
+        int best = -1;
+        float bestT = 1e9f;
+        for (int b = 0; b < 3; ++b) {
+            const Vec3 c = World::buttonAt(b);
+            const float ox = o.x - c.x, oy = o.y - c.y, oz = o.z - c.z;
+            const float half = ox * d.x + oy * d.y + oz * d.z;
+            const float cq = ox * ox + oy * oy + oz * oz - r * r;
+            const float disc = half * half - cq;
+            if (disc < 0.0f) continue;
+            const float sq = sqrtf(disc);
+            float t = -half - sq;
+            if (t <= 0.0f) t = -half + sq;      // standing inside it
+            if (t <= 0.0f || t >= bestT) continue;
+            bestT = t;
+            best = b;
+        }
+        return best;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE ROOM'S PHYSICS, WHICH IS SIX PLANES AND THREE CYLINDERS.
+    //
+    // The walk collider reads the TERRAIN -- see walkWorld -- and the pause
+    // room is not terrain: it is its own bottom-level structure at -4096, 2048,
+    // where there is no chunk and never will be. So the collider finds nothing
+    // under the player and they fall, for ever, out of the bottom of a sealed
+    // box. Flight hid it; walking is what was asked for.
+    //
+    // A BOX IS TWO CORNERS, and that is nearly the whole of it. Applied AFTER
+    // the player has moved, so the ordinary walk -- momentum, the head bob, the
+    // crouch, the jump -- all still happen, and this only says where they stop.
+    //
+    // THE BUTTONS ARE SOLID TOO. They are balls standing two thirds proud of
+    // the wall at chest height, so without this you can walk into the middle of
+    // one and press it from inside, looking at the back of its far side.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // IS THE COLUMN AT (x, z) UNDER WATER?
+    //
+    // The three calls WaterField::rebuild makes, in the same order and with the
+    // same meaning -- this is the engine's single definition of "wet", and every
+    // creature that needs to know asks it the same way. A second definition is
+    // how a bunny and a lily pad end up disagreeing about where a lake is.
+    // -----------------------------------------------------------------------
+    bool wetColumnAt(float x, float z) {
+        const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
+        TerrainMemo memo;
+        const int line =
+            world_.terrain.lakeLineAt(world_.terrain.wx(ci), world_.terrain.wx(cj), memo);
+        if (line == VoxelTerrain::kNoWaterVox) return false;
+        const int h = world_.terrain.heightVox(ci, cj, memo);
+        return world_.terrain.wetColumn(ci, cj, h, line, memo);
+    }
+
+    void clampToRoom() {
+        if (!world_.inRoom()) return;
+        const float r = 0.32f;                                  // shoulders
+        const float floorY = World::roomFloorY();
+        const float ceilY = World::roomCeilY() - player_.eye;
+        Vec3 p = player_.pos;
+        p.x = clampf(p.x, World::roomMinX() + r, World::roomMaxX() - r);
+        p.z = clampf(p.z, World::roomMinZ() + r, World::roomMaxZ() - r);
+        // Out of the three balls, in the horizontal only: they are wider than
+        // a person is tall at the height they sit, so a circle is the whole
+        // shape as far as walking into one is concerned.
+        const float br = World::buttonRadiusM() + r;
+        for (int b = 0; b < 3; ++b) {
+            const Vec3 c = World::buttonAt(b);
+            const float dx = p.x - c.x, dz = p.z - c.z;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 >= br * br || d2 < 1e-6f) continue;
+            const float d = sqrtf(d2);
+            p.x = c.x + dx / d * br;
+            p.z = c.z + dz / d * br;
+        }
+        if (p.y <= floorY) {
+            p.y = floorY;
+            player_.vy = 0.0f;
+            player_.onGround = true;
+        } else if (p.y > ceilY) {
+            p.y = ceilY;
+            if (player_.vy > 0.0f) player_.vy = 0.0f;
+        }
+        player_.pos = p;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE BUTTONS' OWN CLOCK.
+    //
+    // A LINEAR RAMP, NOT AN EXPONENTIAL EASE. Everything else that moves in
+    // this engine is eased, because everything else is an animal or a camera
+    // and those do not start instantly. A button is a piece of plastic under a
+    // finger: it goes down at the speed the finger pushes it, and -- more to
+    // the point -- an exponential never actually ARRIVES, so there would be no
+    // frame that is the bottom of the travel to hang the action on.
+    //
+    // DOWN FAST AND BACK SLOWER. 80 ms down is about as long as a real switch
+    // takes and short enough that the click still feels like the cause; the
+    // spring back is twice that because nobody is pushing it any more.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE CRT POWER-OFF, AND THEN THE DOOR.
+    //
+    // ON THE WALL CLOCK, NOT THE SHOT CLOCK. Everything else in this frame is
+    // fed the scaled dt so a scripted camera move and a live one agree; this
+    // wants the real one, because it is a thing happening to the SCREEN rather
+    // than to the world, and a paused or slowed game should still take exactly
+    // as long to switch off.
+    //
+    // THE EXIT IS ONE FRAME LATE ON PURPOSE. shutdown is called when the ramp
+    // has already been at 1 for a frame, so the fully black frame is presented
+    // before the window goes -- otherwise the last thing on screen is the
+    // second-to-last frame of the collapse, which is a bright dot.
+    // -----------------------------------------------------------------------
+    void tickQuit(float wallDt) {
+        if (!quitting_) return;
+        const bool wasDone = quitT_ >= 1.0f;
+        quitT_ = minf(1.0f, quitT_ + wallDt / kQuitFadeSec);
+        tracer_.crt = quitT_;
+        if (wasDone) shutdown(0);
+    }
+
+    void tickButtons(float dt) {
+        btnClock_ += dt;
+        for (int b = 0; b < 3; ++b) {
+            const float want = (btnHeld_ == b) ? 1.0f : 0.0f;
+            const float step = dt / ((btnHeld_ == b) ? kBtnDownSec : kBtnUpSec);
+            btnPress_[b] += clampf(want - btnPress_[b], -step, step);
+        }
+
+        // CONTACT. The order matters: the button is put at the bottom of its
+        // travel and PUBLISHED there before the action runs, so the last frame
+        // the player sees -- which for the red one is the last frame there is
+        // -- has the button fully down in it.
+        if (btnPend_ >= 0 && btnClock_ >= btnAt_) {
+            const int b = btnPend_;
+            btnPend_ = -1;
+            btnHeld_ = -1;              // ...and it springs back from here
+            btnPress_[b] = 1.0f;
+            world_.publishButtons(true, btnPress_);
+            pressButton(b);
+            return;
+        }
+        world_.publishButtons(world_.inRoom(), btnPress_);
+    }
+
+    // 0 red = quit, 1 green = back to the wood, 2 blue = the Discord server.
+    void pressButton(int b) {
+        if (b == 0) {
+            // -- THE TUBE GOES OUT FIRST ---------------------------------
+            //
+            // Not shutdown(0). The window would be gone on the same frame the
+            // button bottomed out, and the last thing anybody saw would be a
+            // button halfway down -- which is the same complaint the press
+            // animation was added to fix, one level further in.
+            //
+            // quitAt_ is what the frame loop counts against; see tickQuit.
+            quitT_ = 0.0f;
+            quitting_ = true;
+        } else if (b == 1) {
+            setRoomOpen(false);
+        } else if (b == 2) {
+            openDiscord();
+        }
+    }
+
+    // THE ONE PLACE THE LINK LIVES. docs/discord-integration.md is where it
+    // came from; the browser is the shell's business, not ours.
+    void openDiscord() const {
+#if defined(_WIN32)
+        ShellExecuteA(nullptr, "open", "https://discord.gg/AtW5fWZtSG", nullptr, nullptr,
+                      SW_SHOWNORMAL);
+#endif
+        std::printf("  room     opening https://discord.gg/AtW5fWZtSG\n");
+        std::fflush(stdout);
+    }
+
     void setWaterPanelOpen(bool on) {
         if (on == waterPanelOpen_) return;
         waterPanelOpen_ = on;
@@ -4769,7 +5427,11 @@ class ForestApp : public SampleApp {
         // The arrows scrub the CLOCK, not the sun directly: with a cycle
         // running, a manual elevation would be overwritten on the next frame
         // and the control would look broken.
-        if (!menuOpen_) {
+        // ...AND NOT ON THE EDITOR'S DECK, where the four of them reorder and
+        // nudge frames instead. v1's rule, in its own words: "the asset editor
+        // owns these two keys while it is up". A key cannot mean two things at
+        // once in one mode, and the sky over the stage is empty anyway.
+        if (!menuOpen_ && !world_.staged()) {
             const float scrub = 1.5f * dt;  // hours per second held
             if (in.isKeyDown(Input::Key::Left)) clock_.scrubHours(-scrub);
             if (in.isKeyDown(Input::Key::Right)) clock_.scrubHours(scrub);
@@ -4828,6 +5490,8 @@ class ForestApp : public SampleApp {
 
         const Vec3 before = player_.eyePosition();
         player_.update(walkWorld(), move, sprint, jump, down, crouch, dt);
+        clampToRoom();
+        tickButtons(dt);
         pos_ = player_.eyePosition();
 
         // -- the swing -------------------------------------------------------
@@ -6098,7 +6762,14 @@ class ForestApp : public SampleApp {
         // follow it; over the few metres a walk covers that only means the
         // butterflies are placed for the start of it.
         if (flock_.ready()) {
-            for (int i = 0; i < 60; ++i) flock_.update(1.0f / 60.0f, world_, cam.origin);
+            // TEN SECONDS, NOT ONE. The songbirds' own warmup below says why at
+            // length: a system with a settling time reports its spawn state if
+            // you only tick it once. The butterflies have two -- the flap
+            // phases spread over a second, and the PAIRING takes longer than
+            // that because a pair needs a partner in range, both of them free,
+            // and a cooldown to have expired. One second reported 4 of 24
+            // chasing where the steady state is 6.
+            for (int i = 0; i < 600; ++i) flock_.update(1.0f / 60.0f, world_, cam.origin);
             flock_.publish(world_);
             // The birds settle the same way: the offline path runs no frames,
             // so a population that fills itself over time has to be given the
@@ -6114,7 +6785,7 @@ class ForestApp : public SampleApp {
             // a different lake. A second of it, so the pads have drifted off
             // their spawn and the fish are not all pointing the same way.
             {
-                for (int i = 0; i < 60; ++i) lake_.update(1.0f / 60.0f, world_.terrain, cam.origin);
+                for (int i = 0; i < 600; ++i) lake_.update(1.0f / 60.0f, world_.terrain, cam.origin);
                 lake_.publish(world_);
                 const auto groundAt = [this](float x, float z) {
                     return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
@@ -6132,25 +6803,67 @@ class ForestApp : public SampleApp {
                 for (int i = 0; i < 1200; ++i)
                     flock2_.update(1.0f / 60.0f, cam.origin, groundAt);
                 flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
+                // ...AND THE BUNNIES, warmed the same way and for the same
+                // reason: a population with a settling time reports its SPAWN
+                // state if you only tick it once, and a bunny spends most of a
+                // minute sitting -- one tick and every one of them is still in
+                // the pose it was born in.
+                // ...and the offline path gathers the same list, or the warmup
+                // would run 900 ticks of a blind animal and report where a blind
+                // animal ended up.
+                world_.collidersNear(cam.origin, kBirdKeepM, &perches_);
+                for (int i = 0; i < 900; ++i)
+                    bunnies_.update(1.0f / 60.0f, cam.origin, groundAt,
+                                    [this](float x, float z) { return wetColumnAt(x, z); },
+                                    perches_);
+                bunnies_.publish(world_, kBunnySlot0);
+                Vec3 uat{0, 0, 0};
+                float ud = 0.0f;
+                if (bunnies_.nearest(cam.origin, &uat, &ud))
+                    std::printf("  bunny    %d on the ground, nearest %.0f m at "
+                                "(%.0f, %.0f, %.0f)\n",
+                                bunnies_.living(), double(ud), double(uat.x), double(uat.y),
+                                double(uat.z));
                 Vec3 bat{0, 0, 0};
                 float bd = 0.0f;
                 if (flock2_.nearest(cam.origin, &bat, &bd))
-                    std::printf("  flock    %d songbirds in the air, nearest %.0f m at "
-                                "(%.0f, %.0f, %.0f)\n",
-                                flock2_.flying(), double(bd), double(bat.x), double(bat.y),
-                                double(bat.z));
-                if (lake_.living())
-                    std::printf("  lake     %d living on the water\n", lake_.living());
+                    std::printf("  flock    %d songbirds in the air, %d of them chasing, "
+                                "nearest %.0f m at (%.0f, %.0f, %.0f)\n",
+                                flock2_.flying(), flock2_.chasing(), double(bd), double(bat.x),
+                                double(bat.y), double(bat.z));
+                if (lake_.living()) {
+                    float llo = 0, lmean = 0, lhi = 0;
+                    lake_.spread(cam.origin, &llo, &lmean, &lhi);
+                    char sch[128];
+                    const int ns = lake_.schools(sch, sizeof(sch), 0);
+                    char smin[128];
+                    const int nm = lake_.schools(smin, sizeof(smin), 3);
+                    std::printf("  lake     %d living on the water, %.0f / %.0f / %.0f m "
+                                "nearest / mean / farthest\n",
+                                lake_.living(), double(llo), double(lmean), double(lhi));
+                    int nf[8] = {};
+                    int npd = 0, nfl = 0;
+                    lake_.census(nf, &npd, &nfl);
+                    std::printf("  lake     %d salmon, %d bass, %d koi, %d minnows, %d catfish, "
+                                "%d blue gill, %d lily pads, %d dragonflies, "
+                                "%d ducks + %d ducklings\n",
+                                nf[0], nf[1], nf[2], nf[3], nf[4], nf[5], npd, nfl,
+                                lake_.ducksLiving(true), lake_.ducksLiving(false));
+                    std::printf("  school   salmon: %d school%s (%s) | minnows: %d school%s "
+                                "(%s)   %.2f m off station on average\n",
+                                ns, ns == 1 ? "" : "s", sch, nm, nm == 1 ? "" : "s", smin,
+                                double(lake_.stationErr()));
+                }
             }
             world_.refitTlas();
             Vec3 at{0, 0, 0};
             float d = 0.0f, lo = 0.0f, hi = 0.0f;
             flock_.band(&lo, &hi);
             if (flock_.nearest(cam.origin, &at, &d))
-                std::printf("  flock    %d butterflies, %.1f to %.1f m up, nearest %.1f m at "
-                            "(%.1f, %.1f, %.1f)\n",
-                            flock_.flying(), double(lo), double(hi), double(d), double(at.x),
-                            double(at.y), double(at.z));
+                std::printf("  flock    %d butterflies, %d of them chasing, %.1f to %.1f m "
+                            "up, nearest %.1f m at (%.1f, %.1f, %.1f)\n",
+                            flock_.flying(), flock_.chasing(), double(lo), double(hi), double(d),
+                            double(at.x), double(at.y), double(at.z));
             else
                 std::printf("  flock    %d butterflies\n", flock_.flying());
         }
@@ -7035,7 +7748,10 @@ class ForestApp : public SampleApp {
     void drawCrosshair(Falcor::RenderContext *ctx, const Falcor::ref<Fbo> &target) {
         // The settings panel owns the middle of the screen, and while it is up
         // the mouse is a cursor -- a mark that does not follow it is in the way.
-        if (!crosshair_ || menuOpen_) return;
+        // ...AND NOT OVER A SCREEN THAT IS SWITCHING OFF. The crosshair is
+        // drawn after the tone map, so it would sit there in full brightness
+        // over a collapsing picture and then float alone on the black.
+        if (!crosshair_ || menuOpen_ || quitting_) return;
 
         const float w = float(target->getWidth()), h = float(target->getHeight());
         // v2's sizes, and v2's whole-number scaling rule with them: 32 px across
@@ -7171,11 +7887,22 @@ class ForestApp : public SampleApp {
             "  arrow keys            scrub time (up/down = fast)\n"
             "  X + scroll wheel      day/night speed -- scroll down past 0.25x to REWIND\n"
             "  Y                     SETTINGS MENU\n"
+            "  I  or  U             ASSET EDITOR -- a deck in the sky, with the\n"
+            "                        bunny standing in the middle of it\n"
             "  R                     RECORD -- press again to stop and save\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
             "  P                     screenshot            F1   this help\n"
-            "  ESC                   release the mouse; ESC again quits\n\n");
+            "  O                     water panel\n"
+            "  ESC                   PAUSE ROOM -- ESC again quits\n"
+            "                        red quits, green returns, blue is Discord\n\n");
+        // THE EDITOR'S OWN, out of the class that binds them, so this list
+        // cannot go on describing a key after it has moved.
+        std::printf("  ...and on the asset editor\'s deck:\n");
+        int nh = 0;
+        const char *const *hr = AssetEdit::help(&nh);
+        for (int i = 0; i < nh; ++i) std::printf("%s\n", hr[i]);
+        std::printf("\n");
         std::fflush(stdout);
     }
 

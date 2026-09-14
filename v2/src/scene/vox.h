@@ -608,6 +608,123 @@ inline VoxAsset toWorld(const VoxModel &mo, int x0, int x1) {
 // Measured, the seven came out 2x9x9, 2x9x10, 3x9x11 and so on -- seven
 // different bows.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// NOTHING IS HOLLOW.
+//
+// "Fill in the centers of trees with their corresponding bark voxels. the trees
+// should not be hollow. you can fill in foilage with more green of the matching
+// green."
+//
+// WHAT "HOLLOW" MEANS HERE IS PRECISE, AND IT HAD TO BE MEASURED BEFORE IT
+// COULD BE FIXED. A pine's canopy is full of gaps and they are NOT cavities:
+// they are the spaces between separate branches, open to the sky, and filling
+// them would fuse a tree into a green cone. What is genuinely hollow is the air
+// a model ENCLOSES -- the hole down the middle of a trunk, which on pine_1 is
+// 158 voxels, half a per cent of the model.
+//
+// So the test is reachability, not "is it inside the bounding box": flood the
+// empty space inward from the six faces of the model's own box, and anything
+// empty the flood cannot reach is by definition sealed inside the wood.
+//
+// AND IT IS FILLED WITH WHAT SURROUNDS IT, not with a material chosen here.
+// Each round, every cavity voxel touching something solid takes the commonest
+// palette entry among those neighbours and becomes solid itself; repeat until
+// none are left. A hole inside a trunk is walled in bark, so it fills with
+// bark; one inside the crown is walled in needles, so it fills with that
+// green. "Corresponding" falls out of the geometry rather than being a rule
+// somebody has to keep in step with the art.
+//
+// IT IS INVISIBLE UNTIL SOMETHING CUTS THE MODEL, which is the point: a mesher
+// throws away faces between two solid voxels either way, so this costs no
+// triangles standing up. It shows the moment an axe takes a trunk in half.
+// ---------------------------------------------------------------------------
+inline int fillCavities(VoxAsset *a) {
+    const int W = a->sx, H = a->sy, D = a->sz;
+    if (W <= 2 || H <= 2 || D <= 2) return 0;
+    const size_t n = size_t(W) * size_t(H) * size_t(D);
+    auto id = [&](int x, int y, int z) {
+        return size_t(x) + size_t(z) * size_t(W) + size_t(y) * size_t(W) * size_t(D);
+    };
+
+    // -- 1. what the outside air can reach ---------------------------------
+    std::vector<uint8_t> seen(n, 0);
+    std::vector<int> stack;
+    stack.reserve(n / 8);
+    auto push = [&](int x, int y, int z) {
+        if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return;
+        const size_t k = id(x, y, z);
+        if (seen[k] || a->a[k]) return;
+        seen[k] = 1;
+        stack.push_back(x);
+        stack.push_back(y);
+        stack.push_back(z);
+    };
+    for (int y = 0; y < H; ++y)
+        for (int z = 0; z < D; ++z) { push(0, y, z); push(W - 1, y, z); }
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) { push(x, y, 0); push(x, y, D - 1); }
+    for (int z = 0; z < D; ++z)
+        for (int x = 0; x < W; ++x) { push(x, 0, z); push(x, H - 1, z); }
+    while (!stack.empty()) {
+        const int z = stack.back(); stack.pop_back();
+        const int y = stack.back(); stack.pop_back();
+        const int x = stack.back(); stack.pop_back();
+        push(x + 1, y, z); push(x - 1, y, z);
+        push(x, y + 1, z); push(x, y - 1, z);
+        push(x, y, z + 1); push(x, y, z - 1);
+    }
+
+    // -- 2. everything else that is empty is sealed in ---------------------
+    std::vector<int> holes;
+    for (int y = 0; y < H; ++y)
+        for (int z = 0; z < D; ++z)
+            for (int x = 0; x < W; ++x) {
+                const size_t k = id(x, y, z);
+                if (!a->a[k] && !seen[k]) { holes.push_back(x); holes.push_back(y); holes.push_back(z); }
+            }
+    const int filled = int(holes.size() / 3);
+    if (!filled) return 0;
+
+    // -- 3. ...and it takes the colour of its own walls ---------------------
+    //
+    // OUTSIDE IN, which is why this is a loop rather than one pass: the middle
+    // of a thick cavity touches nothing solid on the first round, and would
+    // otherwise have no wall to take a colour from.
+    std::vector<int> left = holes;
+    while (!left.empty()) {
+        std::vector<int> again;
+        bool any = false;
+        for (size_t i = 0; i < left.size(); i += 3) {
+            const int x = left[i], y = left[i + 1], z = left[i + 2];
+            int tally[256] = {0};
+            const int dx[6] = {1, -1, 0, 0, 0, 0};
+            const int dy[6] = {0, 0, 1, -1, 0, 0};
+            const int dz[6] = {0, 0, 0, 0, 1, -1};
+            for (int e = 0; e < 6; ++e) {
+                const int nx = x + dx[e], ny = y + dy[e], nz = z + dz[e];
+                if (nx < 0 || ny < 0 || nz < 0 || nx >= W || ny >= H || nz >= D) continue;
+                const uint8_t v = a->a[id(nx, ny, nz)];
+                if (v) ++tally[v];
+            }
+            int best = 0, bestN = 0;
+            for (int e = 1; e < 256; ++e)
+                if (tally[e] > bestN) { bestN = tally[e]; best = e; }
+            if (!best) {
+                again.push_back(x); again.push_back(y); again.push_back(z);
+                continue;
+            }
+            a->a[id(x, y, z)] = uint8_t(best);
+            any = true;
+        }
+        // A cavity with no solid neighbour at all cannot happen -- it was
+        // unreachable from outside, so something walls it in -- but a guard
+        // beats an infinite loop if the invariant ever stops holding.
+        if (!any) break;
+        left.swap(again);
+    }
+    return filled;
+}
+
 inline VoxAsset toWorldWhole(const VoxModel &mo) {
     VoxAsset out;
     out.sx = mo.sx;

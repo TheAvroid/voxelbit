@@ -71,6 +71,39 @@ inline constexpr float kSongBobM = 0.30f;       // (JS sin(t*1.2) * 3.0)
 // rarer than the others rather than as anything subtle".
 inline constexpr int kFlockBirds = 9;
 
+// ---------------------------------------------------------------------------
+// A QUARTER OF THEM FLY WITH SOMEBODY. THE REST FLY ALONE.
+//
+// "75% of the time the song birds fly alone and the other 25% of the time they
+// fly with someone else ... max 2 together." Three things follow from that
+// sentence and all three are rules rather than tendencies:
+//
+//   A PAIR IS TWO. Not a flock that happens to be small -- a chaser may chase
+//   exactly one bird, a bird may be chased by exactly one, and a chaser may not
+//   itself be chased. That last clause is the one that matters: without it the
+//   pairs chain into a conga line of five, which is emphatically not "max 2".
+//
+//   SAME SPECIES ONLY. "A cardinal would chase a cardinal and a blue bird will
+//   chase a blue bird" -- and the three strips are already the species, so this
+//   is one equality test on Bird::sp.
+//
+//   THE QUARTER IS A CEILING ON THE POPULATION, not a die rolled per bird. A
+//   per-bird 25% chance gives a binomial spread -- some minutes half the wood
+//   is chasing -- and what was asked for is a proportion. So a pair is formed
+//   only while (paired + 2) is still within a quarter of the living, which at
+//   nine birds is exactly one pair: 2 of 9 is 22%, and 4 of 9 would be 44%.
+//
+// A CHASE IS A HEADING, NOT A LEASH. The chaser steers at where the leader IS,
+// so it cuts corners and overshoots turns -- which is what a bird doing this
+// actually looks like. Pointing it at an offset BEHIND the leader would give a
+// tidy formation, and a tidy formation is the salmon's behaviour, not this one.
+inline constexpr float kSongPairM = 26.0f;      // near enough to take an interest
+inline constexpr float kSongPairDropM = 48.0f;  // ...and far enough to lose it
+inline constexpr float kSongChaseMin = 5.0f, kSongChaseMax = 13.0f;   // seconds
+inline constexpr float kSongChaseCool = 6.0f;   // before that bird may pair again
+inline constexpr float kSongChaseYaw = 1.9f;    // rad/s -- harder than a wander
+inline constexpr float kSongChaseSpd = 1.16f;   // and a little quicker, or it never closes
+
 // -- AND THEY ARRIVE FROM THE FOG, NOT OUT OF CLEAR SKY ---------------------
 //
 // This is the JS engine's own correction to itself, reported as "the song birds
@@ -147,6 +180,10 @@ class BirdFlock {
     void update(float dt, const Vec3 &player, const GroundF &ground) {
         if (!ready_) return;
         clock_ += dt;
+        // BEFORE the steps, so a bird that was paired this frame chases on this
+        // frame -- and, more usefully, so a bird whose partner has just been
+        // recycled is not steering at a dead slot for one tick.
+        pairUp();
         for (size_t i = 0; i < birds_.size(); ++i) step(&birds_[i], uint32_t(i), dt, player, ground);
     }
 
@@ -159,6 +196,14 @@ class BirdFlock {
         // correct, nothing is drawn. birds.h carries the same note -- "27
         // perched songbirds changed exactly zero pixels".
         world.flushFlyerInstances();
+    }
+
+    // How many are flying with somebody -- the offline report prints it, and it
+    // is the only way to check a PROPORTION without watching the sky.
+    int chasing() const {
+        int n = 0;
+        for (const Bird &b : birds_) n += (b.live && b.chase >= 0) ? 2 : 0;
+        return n;
     }
 
     // The nearest one to a point, for a headless check -- there is no other way
@@ -187,6 +232,7 @@ class BirdFlock {
 
   private:
     struct Strip { std::vector<int> model; };
+
     struct Bird {
         bool live = false;
         float x = 0, y = 0, z = 0;
@@ -200,8 +246,71 @@ class BirdFlock {
         float reAt = 0;      // when to pick the next behaviour
         int mode = 0;        // 0 wander / 1 thermal soar / 2 swoop
         int sp = 0;          // species
+        // -- WHO IT IS AFTER. An index into birds_, or -1. chaseT is when it
+        //    gives up; pairAt is the earliest it may start another one, which
+        //    is what stops a broken pair re-forming on the very next frame.
+        int chase = -1;
+        float chaseT = 0.0f, pairAt = 0.0f;
         float animClk = 0;
     };
+
+    bool isChased(int i) const {
+        for (const Bird &b : birds_)
+            if (b.live && b.chase == i) return true;
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // BREAK THE FINISHED CHASES, THEN START AT MOST ONE.
+    //
+    // At most one per call and not per frame in any hurry: a pair is a thing
+    // you notice over seconds, and forming several at once would spend the
+    // whole quarter-share in a single tick and then leave nothing to happen for
+    // the next ten.
+    // -----------------------------------------------------------------------
+    void pairUp() {
+        for (size_t i = 0; i < birds_.size(); ++i) {
+            Bird &b = birds_[i];
+            if (b.chase < 0) continue;
+            const Bird &o = birds_[size_t(b.chase)];
+            const float dx = o.x - b.x, dz = o.z - b.z;
+            const bool lost = !b.live || !o.live || o.sp != b.sp || o.chase >= 0 ||
+                              dx * dx + dz * dz > kSongPairDropM * kSongPairDropM;
+            if (lost || clock_ > b.chaseT) {
+                b.chase = -1;
+                b.pairAt = clock_ + kSongChaseCool;
+            }
+        }
+
+        int live = 0, paired = 0;
+        for (const Bird &b : birds_) {
+            live += b.live ? 1 : 0;
+            paired += (b.live && b.chase >= 0) ? 2 : 0;
+        }
+        if (live < 2 || (paired + 2) * 4 > live) return;
+
+        for (size_t i = 0; i < birds_.size(); ++i) {
+            Bird &b = birds_[i];
+            if (!b.live || b.chase >= 0 || clock_ < b.pairAt || isChased(int(i))) continue;
+            int best = -1;
+            float bestD2 = kSongPairM * kSongPairM;
+            for (size_t j = 0; j < birds_.size(); ++j) {
+                if (j == i) continue;
+                const Bird &o = birds_[j];
+                if (!o.live || o.sp != b.sp || o.chase >= 0 || isChased(int(j))) continue;
+                const float dx = o.x - b.x, dz = o.z - b.z;
+                const float d2 = dx * dx + dz * dz;
+                if (d2 >= bestD2) continue;
+                bestD2 = d2;
+                best = int(j);
+            }
+            if (best < 0) continue;
+            b.chase = best;
+            b.chaseT = clock_ + kSongChaseMin +
+                       rnd(uint32_t(i), 0xC1u) * (kSongChaseMax - kSongChaseMin);
+            return;   // one pair a pass -- see the note above
+        }
+    }
 
     // A hash stream per bird that moves with the clock, so two recycles of the
     // same slot do not produce the same bird.
@@ -264,6 +373,34 @@ class BirdFlock {
             }
         }
 
+        // -- ...AND CHASING BEATS ALL THREE OF THEM ------------------------
+        //
+        // AFTER the behaviour block, so it overrides whatever was just picked,
+        // and it forces mode 0: a soar is a circle and a swoop is a scripted
+        // dive, and neither of them can be steered at a moving target.
+        //
+        // IT AIMS AT THE BIRD, NOT BEHIND IT. See the note over kSongPairM --
+        // pointing at the leader's own position is what produces the overshoot
+        // and the recovery turn that make this read as a chase rather than as
+        // two birds in formation.
+        if (b->chase >= 0 && size_t(b->chase) < birds_.size()) {
+            const Bird &o = birds_[size_t(b->chase)];
+            b->mode = 0;
+            const float ex = o.x - b->x, ez = o.z - b->z;
+            if (ex * ex + ez * ez > 1e-4f) {
+                const float want = atan2f(ex, ez);
+                float d = want - b->th;
+                while (d > 3.14159265f) d -= 6.2831853f;
+                while (d < -3.14159265f) d += 6.2831853f;
+                b->omT = clampf(d * 2.2f, -kSongChaseYaw, kSongChaseYaw);
+            }
+            // Its height is the other bird's, expressed in the band this one
+            // holds -- so it climbs and dives with it instead of chasing across
+            // a fixed ceiling.
+            b->altT = clampf((o.y - b->g) - kSongCruiseM, 0.0f, kSongSoarHi);
+            b->reAt = clock_ + 0.4f;   // do not re-roll a behaviour under it
+        }
+
         b->om += (b->omT - b->om) * (1.0f - expf(-2.5f * dt));
         b->th += b->om * dt;
         const float hx = sinf(b->th), hz = cosf(b->th);
@@ -273,7 +410,8 @@ class BirdFlock {
         // "a dive buys speed (up to +50%), a climb costs it -- the swoop reads
         // as physics, not animation". The coefficient is v1's own, rescaled for
         // metres: its -vyS * 0.045 on a voxel speed is -vyS * 0.45 on ours.
-        const float spd = kSongSpeed * (1.0f + clampf(-b->vyS * 0.45f, -0.28f, 0.5f));
+        const float spd = kSongSpeed * (1.0f + clampf(-b->vyS * 0.45f, -0.28f, 0.5f)) *
+                          (b->chase >= 0 ? kSongChaseSpd : 1.0f);
         b->x += hx * spd * dt;
         b->z += hz * spd * dt;
 

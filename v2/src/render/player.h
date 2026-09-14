@@ -217,6 +217,20 @@ class Player {
     // walk * 3 and comes down with it.
     float walk = 4.97f;       // m/s -- old walk / sprintMul, so sprint == old walk
     float sprintMul = 1.85f;
+    // -- AND A QUARTER AGAIN FOR A SPRINTING JUMP ---------------------------
+    //
+    // "If the player is jumping and sprinting at the same time, have there be a
+    // 25% boost to movement speed." A bunny hop, and the rule is both halves at
+    // once: sprinting alone is 1.85, jumping alone is 1.0, and the two together
+    // are 1.85 x 1.25 = 2.31.
+    //
+    // IT APPLIES WHILE AIRBORNE, not on the frame the jump is pressed. A boost
+    // spent at the moment of takeoff would be one frame of extra speed that the
+    // air's own ease (3.2/s against the ground's 14) would then spend the whole
+    // arc bleeding off -- which is a jump that feels slightly wrong rather than
+    // a jump that goes further. Holding it for the flight is what makes the
+    // distance land where a player expects it.
+    float sprintJumpMul = 1.25f;
     // The port's was 6.6 (JUMP 66 vox/s), which apexes at 1.09 m. Raised 50%
     // in HEIGHT on the user's ask -- and height goes as v^2/2g, so that is
     // sqrt(1.5) on the velocity, not 1.5. 1.09 m -> 1.63 m, while the hang
@@ -483,7 +497,14 @@ class Player {
             const bool wading = inLake(lake, pos.y + wadeDeep);
             swimming_ = inLake(lake, pos.y + swimDeep);
 
+            // A SPRINTING JUMP CARRIES FURTHER. See sprintJumpMul: it is
+            // multiplied onto the sprint rather than replacing it, and it is
+            // gated on being off the ground so a sprint along the flat is
+            // unchanged. Wading is deliberately still in the chain -- you do not
+            // get to bunny hop across a lake.
+            const bool bounding = sprint && !onGround && !swimming_;
             const float spd = walk * (sprint ? sprintMul : 1.0f) *
+                              (bounding ? sprintJumpMul : 1.0f) *
                               (crouching ? kCrouchSpeed : 1.0f) *
                               (wading ? waterSpeed : 1.0f);
             // Approached exponentially rather than set outright, and far more

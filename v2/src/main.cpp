@@ -303,6 +303,10 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         // "compiler limit: blocks nested too deeply" (C1061), not a warning.
         // Anything new goes here, before it, and continues.
         if (a == "--water-ui") { o->waterPanelAtStart = true; continue; }
+        // BEFORE THE CHAIN, like every flag added since the C1061 -- see the
+        // note above. Opens the pause room on the first frame so --shot-ui
+        // and --out can photograph it with no keystroke.
+        if (a == "--room") { o->roomAtStart = true; continue; }
         // The same NINE bits the panel sets, for a scripted A/B: 511 is all on,
         // and clearing one proves that term and only that term moved. 507 is
         // what v2 ships with -- everything but the world reflection.

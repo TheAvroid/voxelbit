@@ -35,6 +35,12 @@ using float2 = Falcor::float2;
 using float3 = Falcor::float3;
 using float4 = Falcor::float4;
 using uint2 = Falcor::uint2;
+// uint4 is only used by V2Holo, whose glyph bitmaps are an ARRAY -- and a
+// constant buffer gives every array element a 16-byte stride whatever its
+// element type, so a bare `uint bits[12]` would occupy 192 bytes on the GPU and
+// 48 in C++. Four to a row is the packing the hardware was going to use anyway,
+// written down so both ends agree about it.
+using uint4 = Falcor::uint4;
 // int3 is only used by V6DdgiConsts, but it has to be aliased here for the same
 // reason every other vector type is: without it cl.exe parses the member as a
 // bare int, the struct comes out short, and the only thing that notices is the
@@ -458,6 +464,73 @@ struct V6DdgiConsts
 };
 
 // ---------------------------------------------------------------------------
+// THE LABEL THAT HANGS OVER A BUTTON.
+//
+// A word standing in the air of the pause room, a hand's width above the button
+// it names. NOT AN OVERLAY: it is a plane at real world coordinates that the
+// camera ray is tested against, so it has parallax, it is hidden by anything in
+// front of it, and it reprojects for the denoiser out of the same motion vector
+// every surface in the wood uses. Walk sideways and it slides across the wall
+// behind it, because it is genuinely in front of it.
+//
+// PORTED FROM v1'S STACK BADGE, which is the x{n} beside the held tool -- its
+// note says "drawn INTO the image (user: not HTML in the corner)". v1 packs
+// each of its digits into 25 bits of a uint and asks one bit per pixel whether
+// to paint. That is exactly what happens below, and the only thing that has
+// changed is WHERE the question is asked: v1 projects a world anchor down to a
+// canvas pixel on the CPU and rasterises the glyphs flat on the glass, tilting
+// and shearing them so that they LOOK like they are in the scene. A path tracer
+// does not have to pretend -- it can intersect the quad the badge is drawn on
+// and get the perspective, the occlusion and the depth for free.
+//
+// THE FONT IS ON THE HOST. What crosses is a bitmap per glyph, so changing a
+// label is a string literal in render/holotext.h and never a shader edit.
+// ---------------------------------------------------------------------------
+static const int kHoloSlots = 3;      // one per pause-room button
+static const int kHoloCols = 5;       // a glyph's own grid
+static const int kHoloRows = 6;       // five for the letter, a sixth for the tail of a g
+static const int kHoloAdvance = 6;    // ...and the sixth column is the gap between them
+static const int kHoloMaxGlyphs = 12; // as long a word as one slot can carry
+
+struct V2Holo
+{
+    // The TOP-LEFT corner of the block of text, in world metres -- the corner of
+    // the first glyph's first cell, not the middle of the word. A rasteriser's
+    // origin, because that is what the cell arithmetic below wants; the host
+    // centres the word on its button before it writes this.
+    float3 org;
+    // The edge of one glyph pixel, in metres. ZERO IS THE OFF SWITCH: a slot
+    // nobody has written draws nothing, and leaving the room is one memset.
+    float cell;
+
+    // Unit vectors along the page: +right is the reading direction, +up is up
+    // the letters. They are handed over rather than derived from a normal
+    // because the text has a ROLL that a normal alone cannot express.
+    float3 right;
+    uint count; // glyphs in the word, 0..kHoloMaxGlyphs
+
+    float3 up;
+    float pad0;
+
+    // What a lit glyph pixel emits, in the same working units as bulbRadiance.
+    //
+    // IT IS AN EMITTER AND NOT A PAINTED SURFACE, and against this room that is
+    // not a stylistic choice. The walls are white at 226 and lit to a mean of
+    // 180, so anything reflective enough to read against them would have to be
+    // brighter than white paint -- and anything ADDED to them (which is what a
+    // translucent hologram is) disappears into them. A saturated colour that
+    // owes nothing to the room's light is the only thing that stays legible on
+    // a white wall, and it is also what a hologram is.
+    float3 tint;
+    float pad1;
+
+    // The word, one 30-bit bitmap per glyph: bit (row * kHoloCols + col), row 0
+    // at the TOP and col 0 at the LEFT. v1's GLYPH5 packs its digits the same
+    // way, 25 bits to a 5x5 cell.
+    uint4 bits[3];
+};
+
+// ---------------------------------------------------------------------------
 // The per-launch constants.
 // ---------------------------------------------------------------------------
 struct V6Params
@@ -721,7 +794,57 @@ struct V6Params
     // the same size it was and nothing that asserts on that changes.
     uint waterFlags;
     float waterPad;
+
+    // -----------------------------------------------------------------------
+    // THE BULB. The only emitter in this engine that is not the sky.
+    //
+    // IT EXISTS BECAUSE A SEALED ROOM IS BLACK. The pause room is a closed
+    // white box, and this is a path tracer with exactly two lights in it -- the
+    // sun and the dome -- both of which are outside. The first render of the
+    // room came back as an empty frame with a crosshair on it, which is the
+    // correct image of a box with no light in it.
+    //
+    // A POINT LIGHT, NOT AN EMISSIVE MATERIAL. Adding emission to the palette
+    // would mean a per-material radiance, light sampling over triangles, and an
+    // MIS partner for every BSDF bounce in the wood -- a renderer-wide change to
+    // light one room. A point at a known position costs one shadow ray at the
+    // vertices that can see it and nothing at all anywhere else, because
+    // bulbOn is 0 in the world.
+    //
+    // bulbRadiance is BOTH the intensity in the inverse-square law AND the
+    // radiance the camera sees off the glass. They are not the same quantity
+    // and deliberately share a number: a bulb you can look straight at is
+    // blown-out white in any exposure that makes the room readable, so the
+    // second use only has to be "well past white" -- and tying it to the first
+    // means a brighter bulb is a brighter-LOOKING bulb, with no second dial to
+    // keep in step.
+    // -----------------------------------------------------------------------
+    float3 bulbPos;
+    float bulbRadius;
+    float3 bulbRadiance;
+    // WHICH MATERIAL IS THE GLASS, or kNoBulb. This is also the on switch --
+    // one field, so there is no state in which the light is on and the thing it
+    // comes out of is not, or the other way round.
+    //
+    // A MATERIAL TEST, NOT A DISTANCE ONE. The first version asked whether a
+    // hit was within a radius of bulbPos, and that cannot tell the glass from
+    // the CORD IT HANGS ON -- the flex touches the top of the sphere, so any
+    // sphere generous enough to contain the bulb's own blocky corners contains
+    // the bottom of the flex too, and a pendant with a glowing string is worse
+    // than no pendant. groundShade returns a model colour's index unchanged
+    // ("water, and everything a model brought with it"), so the index reaching
+    // the shader IS the palette entry buildRoom asked for.
+    uint bulbMtl;
+
+    // -----------------------------------------------------------------------
+    // THE WORDS OVER THE BUTTONS. All-zero everywhere but the pause room -- see
+    // V2Holo, and V2Tracer::clearHolos.
+    // -----------------------------------------------------------------------
+    V2Holo holo[kHoloSlots];
 };
+
+// No bulb. See V6Params::bulbMtl.
+static const uint kNoBulb = 0xFFFFFFFFu;
 
 // ---------------------------------------------------------------------------
 // THE WATER, TERM BY TERM.
@@ -810,7 +933,9 @@ static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
 static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");
 static_assert(sizeof(V6Instance) == 48, "V6Instance must fill whole 16-byte rows");
-static_assert(sizeof(V6Params) == 608, "V6Params must fill whole 16-byte rows");
+static_assert(sizeof(V2Holo) == 112, "V2Holo must fill whole 16-byte rows");
+static_assert(sizeof(V6Params) == 640 + 3 * 112,
+              "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2
 #endif

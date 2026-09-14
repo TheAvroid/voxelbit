@@ -1380,6 +1380,69 @@ bool traceOccluded(float3 o, float3 d, float tmax, bool passWater)
 }
 
 // ---------------------------------------------------------------------------
+// NEXT EVENT ESTIMATION: THE BULB.
+//
+// A POINT LIGHT, which makes this the shortest estimator in the file: there is
+// exactly one direction to the light, so there is no light pdf, no cone to
+// sample and no MIS partner -- a BSDF bounce can never find a point by chance,
+// so nothing it returns can be double counted.
+//
+// THE SHADOW RAY STOPS SHORT OF THE GLASS. The bulb is real geometry in the
+// BLAS (that is what the camera sees glowing), so a ray aimed at its centre
+// would hit it and report the whole room occluded -- the light shadowing
+// itself, and a room that stays black for a subtler reason than before. tmax is
+// pulled back past the voxel sphere's corners rather than to its radius,
+// because a blocky sphere is proud of the smooth one it approximates.
+//
+// THE FALLOFF HAS A FLOOR AT THE RADIUS. Inside the bulb, 1/d^2 goes to
+// infinity; a point light is a fiction that stops being true at the surface of
+// the thing it stands for, so it is clamped there rather than allowed to
+// produce one white pixel if the player ever flies into it.
+// ---------------------------------------------------------------------------
+void sampleBulbSplit(Hit h, Frame fr, float3 wo, bool inWater, out float3 sumDiff,
+                     out float3 sumSpec)
+{
+    sumDiff = float3(0.0f);
+    sumSpec = float3(0.0f);
+    if (gParams.bulbMtl == kNoBulb || isBlack(gParams.bulbRadiance))
+        return;
+
+    const float3 toL = gParams.bulbPos - h.p;
+    const float d2 = dot(toL, toL);
+    if (d2 < 1e-8f)
+        return;
+    const float dist = sqrt(d2);
+    const float3 wWorld = toL / dist;
+    const float3 wi = fr.toLocal(wWorld);
+    if (wi.z <= 0.0f && h.mat.translucency <= 0.0f)
+        return;
+
+    float pdf = 0.0f;
+    float3 fD, fS;
+    evalOpaqueSplit(h.mat, wo, wi, fD, fS, pdf);
+    if (pdf <= 0.0f || (isBlack(fD) && isBlack(fS)))
+        return;
+
+    const float tmax = dist - gParams.bulbRadius * 1.9f;
+    if (tmax <= 0.0f)
+        return;
+    if (traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, tmax, inWater))
+        return;
+
+    const float r = gParams.bulbRadius;
+    const float3 E = gParams.bulbRadiance * (abs(wi.z) / max(d2, r * r));
+    sumDiff = fD * E;
+    sumSpec = fS * E;
+}
+
+float3 sampleBulb(Hit h, Frame fr, float3 wo, bool inWater)
+{
+    float3 a, b;
+    sampleBulbSplit(h, fr, wo, inWater, a, b);
+    return a + b;
+}
+
+// ---------------------------------------------------------------------------
 // Next event estimation: the sun.
 // ---------------------------------------------------------------------------
 void sampleSunSplit(Hit h, Frame fr, float3 wo, inout Rng rng, BlueNoise bn, int depth,
@@ -1762,6 +1825,112 @@ float3 applyFog(float2 pixelUv, float3 L, float3 dir, float dist)
 }
 
 // ---------------------------------------------------------------------------
+// THE WORDS STANDING IN THE PAUSE ROOM.
+//
+// A label is a rectangle of light at world coordinates with a bitmap cut out of
+// it -- see V2Holo in Shared.slang. This is the intersection: a ray-plane test,
+// a division into glyph cells, and one bit looked up. There is no texture, no
+// sampler and no filter; a glyph pixel is 2.5 cm of world and the camera's own
+// jitter antialiases its edges over the accumulation exactly as it does the
+// edge of a voxel.
+//
+// WHAT IT IS PORTED FROM. v1 draws the x{n} beside the held tool this way --
+// its GLYPH5 is eleven 25-bit masks and its blit asks `(GLYPH5[g] >> (y*5+x)) &
+// 1` per pixel, which is the same question the last line below asks. The
+// difference is the coordinate it is asked in: v1 has a raymarcher that shades
+// one hit and stops, so its badge is rasterised on the CANVAS at a projected
+// anchor and given a tilt and a shear to fake the angle. Here the quad is a
+// real surface and the ray finds it, which is where the perspective, the
+// occlusion, the depth and the motion vector all come from for nothing.
+//
+// PRIMARY RAYS ONLY, and that is deliberate rather than a saving. A label is
+// not in the acceleration structure, so a bounce or a shadow ray that "hit" one
+// would be an emitter no light sampler knows about -- fireflies on every
+// diffuse bounce that happened to find a 2.5 cm letter, and a soft black shadow
+// under every word, since nothing would pay for the light it stopped. Down the
+// camera ray it is exactly what it looks like: a bright thing in front of a
+// wall.
+// ---------------------------------------------------------------------------
+struct HoloHit
+{
+    bool hit;
+    float t;
+    float3 p;
+    float3 n;
+    float3 emit;
+};
+
+// The bitmap of glyph `gi`, written out rather than indexed. A constant buffer
+// holds these four to a row (see V2Holo::bits) and a dynamic index into a vector
+// is the one thing HLSL will happily compile into a scratch array in memory.
+uint holoGlyphBits(V2Holo hg, int gi)
+{
+    const uint4 w = hg.bits[gi >> 2];
+    const int k = gi & 3;
+    return (k == 0) ? w.x : ((k == 1) ? w.y : ((k == 2) ? w.z : w.w));
+}
+
+// The nearest lit glyph pixel along [0, tMax), or no hit.
+HoloHit holoNearest(float3 o, float3 d, float tMax)
+{
+    HoloHit out_;
+    out_.hit = false;
+    out_.t = tMax;
+    out_.p = float3(0.0f);
+    out_.n = float3(0.0f, 0.0f, 1.0f);
+    out_.emit = float3(0.0f);
+
+    [unroll]
+    for (int s = 0; s < kHoloSlots; ++s)
+    {
+        const V2Holo hg = gParams.holo[s];
+        // cell IS the on switch -- see the note on V2Tracer::clearHolos. In the
+        // wood all three are zero and this is where every camera ray turns back.
+        if (hg.cell <= 0.0f || hg.count == 0u)
+            continue;
+
+        const float3 n = cross(hg.right, hg.up);
+        const float dn = dot(d, n);
+        // Edge on. Not a special case worth handling: a plane seen exactly edge
+        // on covers no pixels, so the honest answer is that it is not there.
+        if (abs(dn) < 1e-6f)
+            continue;
+        const float t = dot(hg.org - o, n) / dn;
+        if (t <= 1e-4f || t >= out_.t)
+            continue;
+
+        // Into the block's own frame. org is the TOP-LEFT corner, so v counts
+        // DOWNWARD and the glyph rows are in the order holotext.h draws them.
+        const float3 lp = o + d * t - hg.org;
+        const float u = dot(lp, hg.right) / hg.cell;
+        const float v = -dot(lp, hg.up) / hg.cell;
+        if (v < 0.0f || v >= float(kHoloRows) || u < 0.0f)
+            continue;
+
+        const int cell = int(u);
+        const int gi = cell / kHoloAdvance;
+        if (gi >= int(hg.count))
+            continue;
+        const int cx = cell - gi * kHoloAdvance;
+        if (cx >= kHoloCols)
+            continue;   // the blank column that separates two glyphs
+        const int cy = int(v);
+        if ((holoGlyphBits(hg, gi) >> uint(cy * kHoloCols + cx) & 1u) == 0u)
+            continue;
+
+        out_.hit = true;
+        out_.t = t;
+        out_.p = o + d * t;
+        // TOWARD THE EYE, WHICHEVER SIDE IT IS. The quad is two-sided -- it is a
+        // hologram, and the room is small enough to walk behind one -- and a
+        // normal pointing away would hand the denoiser a back-facing surface.
+        out_.n = (dn < 0.0f) ? n : -n;
+        out_.emit = hg.tint;
+    }
+    return out_;
+}
+
+// ---------------------------------------------------------------------------
 // One camera path, start to finish.
 // ---------------------------------------------------------------------------
 [numthreads(8, 8, 1)]
@@ -1989,6 +2158,54 @@ void main(uint3 tid: SV_DispatchThreadID)
         else
         {
             h = traceRadiance(o, d);
+        }
+
+        // -- AND A LABEL IN FRONT OF ALL OF IT TAKES THE PIXEL FROM BOTH ----
+        //
+        // The words over the pause room's buttons -- see holoNearest above, and
+        // V2Holo in Shared.slang. They are not in the acceleration structure, so
+        // they are tested here against whatever the structure found and win when
+        // they are nearer.
+        //
+        // IT IS A SURFACE, NOT A SPRITE, and the four lines of guide below are
+        // the whole reason that distinction is worth anything. A label written
+        // over the finished image would have to be reprojected by the DEPTH OF
+        // THE WALL BEHIND IT, because that is what the motion vector under it
+        // says -- and the plane stands 25 cm proud of that wall, so every step
+        // sideways would drag a ghost of the word across it under Ray
+        // Reconstruction. Handing over the plane's own depth, its own normal and
+        // its own hit point makes the reprojection exact, and it costs four
+        // assignments because the path simply ENDS here.
+        //
+        // IT ENDS HERE BECAUSE IT IS OPAQUE, which is the one place this departs
+        // from what a hologram usually means. An additive, see-through word is
+        // the obvious reading of the brief and it is unreadable in THIS room:
+        // the walls are white at 226 lit to a mean of 180, and adding light to a
+        // surface that is already near the top of the range moves it almost
+        // nowhere. A saturated emitter that owes the room nothing is the only
+        // thing that stays legible against it -- and it is still light rather
+        // than paint, because it is brighter than the wall and blooms.
+        //
+        // NO ALBEDO AND NO SPECULAR IN THE GUIDES. The denoiser demodulates by
+        // albedo and a light has none worth dividing out; this is the same entry
+        // the bulb makes a few lines below, and for the same reason.
+        if (depth == 0)
+        {
+            const HoloHit hg = holoNearest(o, d, h.hit ? h.t : 1e30f);
+            if (hg.hit)
+            {
+                primaryDist = hg.t;
+                gViewZ = dot(hg.p - c.pos, c.w);
+                gNormal = hg.n;
+                gAlbedo = float3(0.0f);
+                gSpecular = float3(0.0f);
+                gRough = 1.0f;
+                demodAlbedo = float3(1.0f);
+                wDiff = 1.0f;
+                L += beta * hg.emit;
+                Lemit += beta * hg.emit;
+                break;
+            }
         }
 
         if (inWater)
@@ -2239,6 +2456,34 @@ void main(uint3 tid: SV_DispatchThreadID)
                 // The plain albedo -- see the note on gDemodAlbedo at the top.
                 demodAlbedo = h.mat.albedo;
             }
+        }
+
+        // -- THE BULB ITSELF, WHICH IS THE ONE SURFACE THAT GIVES LIGHT -----
+        //
+        // ONE COMPARE AGAINST THE RESOLVED MATERIAL INDEX. h.mtl is what
+        // groundShade returned, and for a colour a model brought with it that
+        // is the palette entry itself -- so this is exact, and it separates the
+        // glass from the flex touching the top of it, which a distance test
+        // cannot.
+        //
+        // ONLY DOWN THE PRIMARY RAY. A bounce that lands on the bulb has
+        // already had the bulb's light delivered to it by the estimator above,
+        // so paying again here would count it twice -- as a room that gets
+        // brighter with maxDepth. Deeper paths simply end on it, which is what
+        // an opaque surface does to a path that has already been paid.
+        //
+        // INTO Lemit, beside the sky. DLSS-RR demodulates by albedo, and the
+        // bulb has no albedo worth dividing out -- it is a light, and filing it
+        // as diffuse radiance would have the denoiser try to average a 60 nit
+        // surface across its neighbours.
+        if (h.mtl == gParams.bulbMtl && gParams.bulbMtl != kNoBulb)
+        {
+            if (depth == 0)
+            {
+                L += beta * gParams.bulbRadiance;
+                Lemit += beta * gParams.bulbRadiance;
+            }
+            break;
         }
 
         // -- water: a delta surface, so no light sampling here at all ---------
@@ -2744,6 +2989,13 @@ void main(uint3 tid: SV_DispatchThreadID)
                 sampleSkySplit(h, fr, wo, rng, bn, depth, inWater, skyD, skyS);
                 neeD += skyD;
                 neeS += skyS;
+                // ...and the bulb, into the same two channels and for the same
+                // reason: downstream asks which LOBE a photon left by, never
+                // which lamp it came from.
+                float3 bulbD, bulbS;
+                sampleBulbSplit(h, fr, wo, inWater, bulbD, bulbS);
+                neeD += bulbD;
+                neeS += bulbS;
                 L += beta * (neeD + neeS);
                 Ldiff += beta * neeD;
                 Lspec += beta * neeS;
@@ -2752,7 +3004,8 @@ void main(uint3 tid: SV_DispatchThreadID)
             {
                 const float3 c =
                     beta * (sampleSun(h, fr, wo, rng, depth, inWater) +
-                            sampleSky(h, fr, wo, rng, depth, inWater));
+                            sampleSky(h, fr, wo, rng, depth, inWater) +
+                            sampleBulb(h, fr, wo, inWater));
                 L += c;
                 Ldiff += c * wDiff;
                 Lspec += c * (1.0f - wDiff);
@@ -3234,8 +3487,9 @@ void sharcUpdateMain(uint3 tid: SV_DispatchThreadID)
         // an update path is rare enough that its vertices are worth resolving
         // properly, and what it writes is shared by every later camera path that
         // lands in the same cell.
-        const float3 direct =
-            sampleSun(h, fr, wo, rng, 0, false) + sampleSky(h, fr, wo, rng, 0, false);
+        const float3 direct = sampleSun(h, fr, wo, rng, 0, false) +
+                              sampleSky(h, fr, wo, rng, 0, false) +
+                              sampleBulb(h, fr, wo, false);
 
         SharcHitData hd;
         hd.positionWorld = h.p;

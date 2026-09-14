@@ -225,8 +225,40 @@ class Palette {
     // the lift is calibrated for an authored olive that is nearly black once
     // linearised -- applied to a saturated lime it puts the albedo past one,
     // which is a surface that returns more light than reaches it.
+    // -----------------------------------------------------------------------
+    // NEAR-IDENTICAL COLOURS SHARE AN ENTRY.
+    //
+    // THE TABLE IS 255 ENTRIES AND THAT IS A FORMAT LIMIT, NOT A BUDGET. A
+    // material id is eight bits of the packed triangle word (material 0-7,
+    // direction 8-10, strand 11-15) and that word is full, so the ceiling
+    // cannot be raised without widening every triangle in the engine.
+    //
+    // MEASURED WHEN THE TOOLS DISAPPEARED: the models between them asked for
+    // 372 colours. 255 were served and **117 were returned as AIR** -- and
+    // because the held items are the LAST thing to register, what went missing
+    // was every stone head in the game. Nothing said so; Palette::overflowed()
+    // had counted it since the table was written and nothing ever called it.
+    //
+    // So the key is QUANTISED. Voxel art routinely carries five or six shades a
+    // couple of units apart -- a bass alone brought eighteen -- and at this step
+    // those collapse onto one entry. The step is small enough to be invisible:
+    // the worst error is half of it, which is under two per cent of a channel
+    // and well inside the tone curve's own rounding.
+    //
+    // THE FIRST COLOUR IN A BUCKET WINS AND ITS EXACT VALUE IS WHAT RENDERS --
+    // the quantisation decides only whether two colours SHARE, never what is
+    // drawn. So nothing shifts hue; some things merely stop being distinct.
+    //
+    // WHAT IT COSTS is ramp resolution. A model's own shading ramp can lose a
+    // step where two of its shades fall in one bucket, which on a six-shade
+    // trunk is a trunk with five. That is the trade against a stone axe head
+    // that is not drawn at all.
+    static constexpr int kQuantStep = 10;
+
     uint8_t forModelColor(const std::array<uint8_t, 4> &c, bool conifer = true) {
-        const uint32_t key = (uint32_t(c[0]) << 16) | (uint32_t(c[1]) << 8) | uint32_t(c[2]);
+        const uint32_t qr = uint32_t(c[0] / kQuantStep), qg = uint32_t(c[1] / kQuantStep),
+                       qb = uint32_t(c[2] / kQuantStep);
+        const uint32_t key = (qr << 16) | (qg << 8) | qb;
         auto it = index_.find(key);
         if (it != index_.end()) return it->second;
         if (next_ >= mat::COUNT) {
@@ -2585,7 +2617,17 @@ class VoxelTerrain {
     // THE BIRCH FLOOR IS A MEADOW, not a wood with glades in it. Its density
     // is flat -- no patch field, so no clearings -- and its blades stand a
     // voxel taller. Both asked for directly.
-    float birchGrassDensity = 0.62f;
+    // TWICE AS SPARSE (user 2026-09-13: "make the grass in the birch forest
+    // twice as sparse"). 0.62 -> 0.31, which is the planting PROBABILITY per
+    // column and therefore exactly half the blades over the same ground.
+    //
+    // THE TALL-GRASS TUFTS DO NOT THIN WITH IT, and that is on purpose: their
+    // fill is expressed as a COUNT and divided by the local planting
+    // probability (see tuftStrandsMin), so the arithmetic is "this many strands
+    // in this area" and halving the floor cancels out of it. A tuft in the
+    // birch wood holds the same number of tall blades it did; what changed is
+    // the carpet between the tufts, which is what was asked for.
+    float birchGrassDensity = 0.31f;
     int birchGrassMaxRows = 7;
     uint32_t strandSeed = 20260904u;
 

@@ -34,6 +34,7 @@ target_sources(v2 PRIVATE
     src/render/arrows.h
     src/render/bow.h
     src/render/helditem.h
+    src/render/holotext.h
     src/render/player.h
     src/render/recorder.h
     src/render/mfvideo.h

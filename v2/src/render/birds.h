@@ -277,6 +277,27 @@ class Birds {
             // bird that is still live.
             const bool lost = b.live && d2 < kBirdDropM * kBirdDropM && !stillPerched(b, trees);
 
+            // -------------------------------------------------------------
+            // ...AND NONE OF THAT APPLIES TO THE ONE ON THE EDITOR'S DECK.
+            //
+            // IT HAD STOPPED BEING DRAWN AT ALL. stageOne PLACES a bird rather
+            // than perching it -- there are no trees on the stage, which is the
+            // whole point of the stage -- so the branch test above asks "is
+            // there still a crown under this bird" of an empty list, gets no,
+            // condemns it, fails to re-perch it and clears `live` on the FIRST
+            // TICK after [I]. The deck has been empty ever since that test
+            // landed, and silently: a bird that is never drawn prints nothing.
+            //
+            // A staged bird is exempt because the premise is different. The
+            // test exists so a bird does not hang in the air where a felled
+            // crown used to be (NOTHING FLOATS); this one is standing on a
+            // floor, put there by hand, in a place with nothing to fell.
+            // -------------------------------------------------------------
+            if (b.staged) {
+                if (b.live) tick(&b);
+                continue;
+            }
+
             if (!b.live || tooFar || lost) {
                 Bird cand = b;
                 cand.live = false;
@@ -466,6 +487,17 @@ class Birds {
                    roundf(at.z / VOXEL_M) * VOXEL_M);
         b.phase = 0.0f;
         b.started = false;
+        b.staged = true;
+    }
+
+    // BACK TO THE WOOD. The flag has to go or the bird keeps its exemption
+    // among real trees, where the branch test is the thing that stops it
+    // hanging in the air over a stump.
+    void unstage() {
+        for (Bird &b : birds_) {
+            b.staged = false;
+            b.live = false;   // ...and it re-perches on the first tree it finds
+        }
     }
 
     // Where one is, for a scripted shot to aim at. A perched bird is a small
@@ -494,6 +526,9 @@ class Birds {
         Vec3 p{0, 0, 0};
         float phase = 0.0f;    // ...and where in the cycle it is, so a wood does not pulse as one
         // The animation clock.s output -- see tick().
+        // Placed on the editor's deck rather than perched in a wood -- see the
+        // exemption in update(). Cleared by unstage() on the way back out.
+        bool staged = false;
         int fi = 0, q = 0, fiWas = 0;
         float dth = 0.0f;      // radians turned since the last rendered frame
         bool started = false;  // ...so the first frame does not report a step

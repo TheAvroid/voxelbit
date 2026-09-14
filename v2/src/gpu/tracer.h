@@ -364,6 +364,42 @@ class Tracer {
     // Beside skyTime because it is the same kind of thing: a per-frame value the
     // app pushes in, not a setting anybody tunes.
     float waterY = -1.0e4f;
+
+    // -- THE CRT POWER-OFF, 0 TO 1, AND 0 IS OFF ----------------------------
+    //
+    // Driven by App::tickButtons when the red button bottoms out. It is here
+    // rather than in post.h because it is a tone-map concern: the collapse
+    // resamples the image, so it belongs where the image is read.
+    float crt = 0.0f;
+
+    // -- THE PAUSE ROOM'S BULB -------------------------------------------
+    //
+    // OFF EVERYWHERE ELSE, and that is the whole cost story: with bulbOn at 0
+    // the estimator returns on its first line, so the wood pays one compare per
+    // shaded vertex and no shadow ray at all. See the note in Shared.slang for
+    // why a point light rather than an emissive material.
+    Vec3 bulbPos{0.0f, 0.0f, 0.0f};
+    Vec3 bulbRadiance{0.0f, 0.0f, 0.0f};
+    float bulbRadius = 0.3f;
+    uint32_t bulbMtl = 0xFFFFFFFFu;   // kNoBulb
+    bool lit() const { return bulbMtl != 0xFFFFFFFFu; }
+
+    // -- AND THE WORDS THAT HANG OVER ITS BUTTONS -------------------------
+    //
+    // Three planes of light at world coordinates, filled in by App::setRoomOpen
+    // out of render/holotext.h. The tracer never looks inside them: it copies
+    // them into the launch constants and the intersection is the shader's.
+    //
+    // ZERO IS OFF, PER SLOT, and the off switch is V2Holo::cell rather than a
+    // count or a flag -- one field, so there is no state in which a slot has a
+    // word in it and no size, which would be a divide by zero in the middle of
+    // the primary ray. Everywhere but the pause room all three are zeroed, and
+    // the cost in the wood is three compares on the camera ray and nothing on
+    // any other.
+    V2Holo holo[kHoloSlots] = {};
+    void clearHolos() {
+        for (int i = 0; i < kHoloSlots; ++i) holo[i] = V2Holo{};
+    }
     // WHICH WATER TERMS ARE ON -- one bit each, see kWF* in Shared.slang. All
     // of them by default; the [I] panel is the only thing that clears any.
     uint32_t waterFlags = 0x1FFu;  // kWFDefault: every water term on
@@ -597,6 +633,12 @@ class Tracer {
         V6Params p{};
         p.cam = cam;
         p.waterY = waterY;
+        p.bulbPos = float3(bulbPos.x, bulbPos.y, bulbPos.z);
+        p.bulbRadius = bulbRadius;
+        p.bulbRadiance =
+            float3(bulbRadiance.x, bulbRadiance.y, bulbRadiance.z);
+        p.bulbMtl = bulbMtl;
+        for (int i = 0; i < kHoloSlots; ++i) p.holo[i] = holo[i];
         p.waterTime = waterTime;
         p.waterFlags = waterFlags;
         // On the very first frame there is no previous camera; using this one
@@ -1312,6 +1354,7 @@ class Tracer {
         var["gSrc"] = src;
         var["gDst"] = display_;
         var["gTonemapCB"]["gDim"] = dim;
+        var["gTonemapCB"]["gCrt"] = crt;
         var["gTonemapCB"]["gExposure"] = cfg.exposure;
         var["gTonemapCB"]["gToe"] = cfg.shadowLift;
         var["gTonemapCB"]["gDeepLift"] = cfg.deepLift;

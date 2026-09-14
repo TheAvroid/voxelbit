@@ -181,6 +181,47 @@ inline constexpr float kFlySpawnM = 76.0f;
 inline constexpr float kFlyThinkSec = 1.0f / 15.0f;
 
 // ---------------------------------------------------------------------------
+// AND A QUARTER OF THEM CHASE EACH OTHER, TWO AT A TIME.
+//
+// The same rule the songbirds got and for the same sentence -- see kSongPairM
+// in birdflock.h for the argument. What differs is only what "same species"
+// means: a butterfly's species is its COLOUR, so a yellow chases a yellow.
+//
+// THE LEASH STILL WINS. A chase sets the heading; the home leash overrides it
+// and the wood overrides that. So a pair can spiral around each other for as
+// long as they like and neither of them ends up in a trunk or eight cells from
+// the flower it belongs to -- which is what would happen if a chase were
+// allowed to be the outermost authority.
+//
+// THE DISTANCES ARE SHORT, BUT NOT SHORTER THAN THE FLOCK IS SPARSE. The first
+// build used six metres, on the argument that a butterfly is half a metre of
+// animal and should not be noticing things across a clearing. It measured ZERO
+// chases in a flock of twenty-four, and the reason is arithmetic rather than
+// behaviour: there is one home per kFlyCellM, which is 12.8 m, so two
+// butterflies are almost never six metres apart -- and they have to be the same
+// COLOUR as well, which is another one in six.
+//
+// Fifteen clears one home cell with room -- and measured TWO chases in
+// twenty-four, which is 8% against the quarter that was asked for. Clearing the
+// cell is not the bar. THE LATTICE IS ONLY A FIFTH OCCUPIED: the flock claims
+// 24 homes out of the ~111 that fall inside the spawn radius, so a 15 m circle
+// holds about five cells and only one of them has anybody in it -- and then the
+// colour has to match, which is another one in six. About an 18% chance of
+// having any eligible partner at all, and one pair is what that gives.
+//
+// THIRTY. Seventeen cells, three or four of them occupied, so roughly half of
+// the flock can find a partner and the quarter-share is actually reachable.
+// It is four seconds of flying to close, which is why the chase lasts longer
+// below than the songbirds' does -- a chase that expires before it arrives is
+// just two butterflies going the same way.
+inline constexpr float kFlyPairM = 30.0f;
+inline constexpr float kFlyPairDropM = 45.0f;
+inline constexpr float kFlyChaseMin = 6.0f, kFlyChaseMax = 14.0f;
+inline constexpr float kFlyChaseCool = 5.0f;
+inline constexpr float kFlyChaseYaw = 4.2f;
+inline constexpr float kFlyChaseSpd = 1.22f;
+
+// ---------------------------------------------------------------------------
 // A YELLOW BUTTERFLY, BUILT RATHER THAN AUTHORED.
 //
 // Straight out of assets/held-items.js, including the reason. That engine has
@@ -320,6 +361,7 @@ class Butterflies {
 
         recycle(player);
         fill(world, player);
+        pairUp();
 
         for (int i = 0; i < int(flies_.size()); ++i) {
             Fly &b = flies_[size_t(i)];
@@ -330,6 +372,14 @@ class Butterflies {
             }
             fly(h, b);
         }
+    }
+
+    // How many are flying with somebody. The offline report prints it: a
+    // proportion is not a thing you can check by looking at one frame.
+    int chasing() const {
+        int n = 0;
+        for (const Fly &b : flies_) n += (b.live && b.chase >= 0) ? 2 : 0;
+        return n;
     }
 
     // -----------------------------------------------------------------------
@@ -479,6 +529,9 @@ class Butterflies {
         float hx = 0.0f, hz = 0.0f;  // its home
         int hcx = 0, hcz = 0;        // ...and the cell that home belongs to
         int colour = 0;
+        // -- WHO IT IS AFTER, as an index into flies_, or -1. See kFlyPairM.
+        int chase = -1;
+        double chaseT = 0.0, pairAt = 0.0;
         float phase = 0.0f;  // frames of flap offset, so the flock is not in step
         // WHICH OF THE EIGHT IT IS WEARING, and which it wore last frame. This
         // is state and not a thing publish() can work out for itself, for the
@@ -491,6 +544,61 @@ class Butterflies {
         float dying = -1.0f; // seconds into the fade OUT, or negative
         uint32_t rng = 1u;
     };
+
+    bool isChased(int i) const {
+        for (const Fly &b : flies_)
+            if (b.live && b.chase == i) return true;
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Break the finished chases, then start at most one. Identical in shape to
+    // BirdFlock::pairUp -- deliberately, because they are answering the same
+    // instruction and two different readings of "max 2 together" in one engine
+    // would be a bug waiting for somebody to find it.
+    // -----------------------------------------------------------------------
+    void pairUp() {
+        for (int i = 0; i < int(flies_.size()); ++i) {
+            Fly &b = flies_[size_t(i)];
+            if (b.chase < 0) continue;
+            const Fly &o = flies_[size_t(b.chase)];
+            const float dx = o.p.x - b.p.x, dz = o.p.z - b.p.z;
+            const bool lost = !b.live || !o.live || o.colour != b.colour || o.chase >= 0 ||
+                              dx * dx + dz * dz > kFlyPairDropM * kFlyPairDropM;
+            if (lost || t_ > b.chaseT) {
+                b.chase = -1;
+                b.pairAt = t_ + double(kFlyChaseCool);
+            }
+        }
+
+        int live = 0, paired = 0;
+        for (const Fly &b : flies_) {
+            live += b.live ? 1 : 0;
+            paired += (b.live && b.chase >= 0) ? 2 : 0;
+        }
+        if (live < 2 || (paired + 2) * 4 > live) return;
+
+        for (int i = 0; i < int(flies_.size()); ++i) {
+            Fly &b = flies_[size_t(i)];
+            if (!b.live || b.chase >= 0 || t_ < b.pairAt || isChased(i)) continue;
+            int best = -1;
+            float bestD2 = kFlyPairM * kFlyPairM;
+            for (int j = 0; j < int(flies_.size()); ++j) {
+                if (j == i) continue;
+                const Fly &o = flies_[size_t(j)];
+                if (!o.live || o.colour != b.colour || o.chase >= 0 || isChased(j)) continue;
+                const float dx = o.p.x - b.p.x, dz = o.p.z - b.p.z;
+                const float d2 = dx * dx + dz * dz;
+                if (d2 >= bestD2) continue;
+                bestD2 = d2;
+                best = j;
+            }
+            if (best < 0) continue;
+            b.chase = best;
+            b.chaseT = t_ + double(kFlyChaseMin + rnd(&b.rng) * (kFlyChaseMax - kFlyChaseMin));
+            return;
+        }
+    }
 
     // xorshift32, seeded off the home cell so a given home always flies the
     // same way. The JS engine reaches for Math.random here and its own comment
@@ -743,8 +851,41 @@ class Butterflies {
             b.tRe = t_ + double(0.4f + rnd(&b.rng) * 0.8f);
         }
 
+        // -- a chase, which overrides the wander ----------------------------
+        //
+        // ABOVE THE LEASH ON PURPOSE. The leash is what keeps a butterfly near
+        // the flower it belongs to, and a chase that could beat it would tow
+        // pairs across the wood until one of them was recycled for being out of
+        // range -- which is a disappearing butterfly with extra steps.
+        if (b.chase >= 0 && size_t(b.chase) < flies_.size()) {
+            const Fly &o = flies_[size_t(b.chase)];
+            const float ex = o.p.x - b.p.x, ez = o.p.z - b.p.z;
+            if (ex * ex + ez * ez > 1e-4f)
+                b.omT = clampf(angleTo(atan2f(ex, ez) - b.th) * 3.0f, -kFlyChaseYaw,
+                               kFlyChaseYaw);
+            b.tRe = t_ + 0.3;   // and the wander does not re-roll under it
+        }
+
         // -- the leash, which overrides it ----------------------------------
-        const float lx = b.p.x - b.hx, lz = b.p.z - b.hz;
+        //
+        // WHILE CHASING, THE PARTNER'S HOME IS THE HOME. Without this the two
+        // rules are simply at war: the pair radius has to be wider than a home
+        // cell for a pair to exist at all (see kFlyPairM), and the leash is
+        // 8.4 m -- so every chase would be turned round before it got anywhere
+        // and would read as a butterfly changing its mind twice a second.
+        //
+        // Borrowing the leash rather than suspending it is what keeps the
+        // guarantee the leash exists for: the chaser is still tied to a home,
+        // still cannot wander the wood, and is still inside the radius its slot
+        // is recycled on -- which is measured from its OWN home and is
+        // untouched by this.
+        const float ahx = (b.chase >= 0 && size_t(b.chase) < flies_.size())
+                              ? flies_[size_t(b.chase)].hx
+                              : b.hx;
+        const float ahz = (b.chase >= 0 && size_t(b.chase) < flies_.size())
+                              ? flies_[size_t(b.chase)].hz
+                              : b.hz;
+        const float lx = b.p.x - ahx, lz = b.p.z - ahz;
         if (lx * lx + lz * lz > kFlyLeashM * kFlyLeashM) {
             const float homeTh = atan2f(-lx, -lz);
             b.omT = clampf(angleTo(homeTh - b.th) * 2.4f, -2.6f, 2.6f);
@@ -786,7 +927,8 @@ class Butterflies {
         b.om += (b.omT - b.om) * (1.0f - expf(-9.0f * dt));
         b.th += b.om * dt;
 
-        const float spd = kFlySpeed * (t_ < b.fleeT ? kFlyFleeMul : 1.0f);
+        const float spd = kFlySpeed * (t_ < b.fleeT ? kFlyFleeMul : 1.0f) *
+                          (b.chase >= 0 ? kFlyChaseSpd : 1.0f);
         b.p.x += sinf(b.th) * spd * dt;
         b.p.z += cosf(b.th) * spd * dt;
 

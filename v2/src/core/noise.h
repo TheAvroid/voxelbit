@@ -210,4 +210,45 @@ inline float warpedFbm(float x, float z, float warp, int octaves = 5) {
     return warpedFbm(mx, mz, mm, x, z, warp, octaves);
 }
 
+// ---------------------------------------------------------------------------
+// WHERE A THING IS BORN IS A PROPERTY OF THE WORLD, NOT OF THE PLAYER.
+//
+// "Have the lillypads and fish spawn in like the song birds. procedurally
+// generated. all entities should follow the same spawning mechanics. everything
+// generates with the terrain itself."
+//
+// THE OLD WAY WAS A DRAW, AND THAT IS THE WHOLE PROBLEM WITH IT. fill() picked
+// a random wet cell out of the lake nearest the player, which means a lily pad
+// had no place in the world until somebody walked up to it -- the same pond
+// grew different pads every time you came back, only ONE lake was ever
+// populated however many you could see, and nothing could be drawn far away
+// because nothing far away existed yet.
+//
+// THE LATTICE IS THE BUTTERFLIES' ANSWER AND IT IS THE RIGHT ONE. One candidate
+// site per cell of a fixed grid, its exact position a hash of the CELL's
+// coordinates -- so a site is a fact about the world, computed identically
+// wherever the player happens to be standing and whether or not anything is
+// occupying it. What the population does is CLAIM sites, not invent them.
+//
+// Three things follow that are worth having on purpose:
+//   * Every lake in range gets life, not just the one under your feet.
+//   * A pad you swim away from and come back to is the same pad in the same
+//     place -- because the cell decided, and the cell has not moved.
+//   * Density is a property of the grid, so it is uniform over water by
+//     construction rather than by a rejection rule that has to be tuned.
+//
+// A SITE IS INSET FROM ITS CELL'S EDGE. Without that, two sites in adjoining
+// cells can land against the shared boundary and be centimetres apart, which
+// puts two pads in the same place and reintroduces the clumping the grid is
+// there to prevent.
+// ---------------------------------------------------------------------------
+inline void siteOf(float cellM, uint32_t salt, int cx, int cz, float *x, float *z) {
+    const uint32_t h = hashU32(salt ^ (uint32_t(cx) * 2654435761u), uint32_t(cz) * 40503u);
+    const float inset = cellM * 0.2f;
+    const float span = cellM - 2.0f * inset;
+    *x = float(cx) * cellM + inset + hashUnit(0xA71u, h) * span;
+    *z = float(cz) * cellM + inset + hashUnit(0xA72u, h) * span;
+}
+
+
 }  // namespace v2

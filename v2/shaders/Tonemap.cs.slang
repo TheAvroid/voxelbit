@@ -86,7 +86,71 @@ cbuffer gTonemapCB
     // Took the last padding word this buffer was carrying, so its size is
     // unchanged -- the moon's own angular radius, which is not the sun's.
     float gMoonCosR;
+
+    // -- THE TUBE GOING OUT --------------------------------------------------
+    //
+    // 0 is off and costs one compare; otherwise it is the progress of the CRT
+    // power-off, 0 to 1. It lives HERE, in the tone map, and not in a pass of
+    // its own for one reason that matters: the collapse has to resample the
+    // image, so it has to happen where the image is still being read rather
+    // than after it has been written. A pass that ran afterwards could only
+    // darken pixels where they already were, which is a fade, not a tube.
+    float gCrt;
 };
+
+// ---------------------------------------------------------------------------
+// A CATHODE RAY TUBE LOSING ITS DEFLECTION, IN THREE ACTS.
+//
+// What actually happens in the glass is that the vertical deflection coils
+// give out first while the beam still has plenty of energy, so the raster
+// folds into one very bright horizontal line; then the horizontal deflection
+// goes and the line pulls into a dot; then the last of the charge bleeds off
+// the dot. Those are three separate failures in a fixed order, which is why
+// this is three overlapping ramps and not one curve.
+//
+// THE IMAGE IS SQUASHED, NOT CROPPED. A pixel inside the surviving band reads
+// the source at p / s -- so the whole picture is still in there, compressed --
+// which is the difference between a television switching off and a letterbox
+// closing over one.
+//
+// AND IT GETS BRIGHTER AS IT GOES. The same light is arriving on a fraction of
+// the area, and that concentration is most of what sells it; a collapse at
+// constant brightness reads as a window blind.
+// ---------------------------------------------------------------------------
+struct Crt {
+    float2 q;      // where to read the source, in -1..1
+    float gain;    // what to multiply the result by
+    float white;   // ...and how far to push it toward a bare phosphor glow
+    bool lit;      // false: this pixel is outside the tube's remaining raster
+};
+
+Crt crtCollapse(float2 p, float t)
+{
+    const float a = saturate(t / 0.42f);                 // the vertical coils
+    const float b = saturate((t - 0.42f) / 0.26f);       // ...then the horizontal
+    const float c = saturate((t - 0.68f) / 0.32f);       // ...then the charge
+    const float sa = a * a * (3.0f - 2.0f * a);
+    const float sb = b * b * (3.0f - 2.0f * b);
+    const float sc = c * c * (3.0f - 2.0f * c);
+
+    Crt r;
+    const float sy = lerp(1.0f, 0.0035f, sa);
+    const float sx = lerp(1.0f, 0.0022f, sb);
+    r.q = float2(p.x / sx, p.y / sy);
+    r.lit = abs(r.q.x) <= 1.0f && abs(r.q.y) <= 1.0f;
+    // MEASURED AND CUT BACK. Six times was the arithmetic answer -- it is
+    // roughly what the vertical compression is worth by the time the line is
+    // three thousandths of the screen -- and at a quarter of the way through it
+    // turned a white room into a featureless white band. The picture has to
+    // still be a picture while it is squashing; the glow belongs at the END,
+    // when there is nothing left of it but a line.
+    //
+    // Hence the cube on the white push: it is nothing for most of the collapse
+    // and arrives only as the raster folds shut.
+    r.gain = (1.0f + 1.4f * sa) * (1.0f - sc);
+    r.white = 0.45f * sa * sa * sa * (1.0f - sc);
+    return r;
+}
 
 // The ACES filmic approximation (Narkowicz). Reinhard desaturates highlights
 // toward white, which on a sunlit canopy turns every specular hit into a grey
@@ -337,7 +401,29 @@ void main(uint3 tid: SV_DispatchThreadID)
     // bit brighter".
     const float exposure = gExposure * (gUseAuto != 0u ? gExposureState[1] : 1.0f);
 
-    float3 c = gSrc[tid.xy].rgb * exposure;
+    // -- ...AND WHERE TO READ IT FROM, WHICH IS NOT ALWAYS HERE -------------
+    //
+    // Off by default: gCrt is zero for the whole life of the program except
+    // the last second of it, and this is one compare on a pass that already
+    // samples four textures.
+    int2 at = int2(tid.xy);
+    Crt crt;
+    crt.gain = 1.0f;
+    crt.white = 0.0f;
+    if (gCrt > 0.0f)
+    {
+        const float2 uv = (float2(tid.xy) + 0.5f) / float2(gDim);
+        crt = crtCollapse(uv * 2.0f - 1.0f, gCrt);
+        if (!crt.lit)
+        {
+            gDst[tid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+            return;
+        }
+        at = int2(clamp((crt.q * 0.5f + 0.5f) * float2(gDim), float2(0.0f),
+                        float2(gDim) - 1.0f));
+    }
+
+    float3 c = gSrc[at].rgb * exposure;
 
     // -- BLOOM, BEFORE THE CURVE AND NOT AFTER ------------------------------
     //
@@ -373,5 +459,12 @@ void main(uint3 tid: SV_DispatchThreadID)
         const float2 q = (uv - 0.5f) * float2(max(1.0f, gAspect), max(1.0f, 1.0f / gAspect));
         outc *= max(1.0f - gVignette * smoothstep(0.18f, 0.78f, length(q)), 0.0f);
     }
+    // THE TUBE, LAST. After the vignette, because a vignette is a property of
+    // the lens looking at the screen and this is the screen -- and because the
+    // line has to be allowed past white, which is what makes it read as a bare
+    // phosphor rather than as a bright picture.
+    if (gCrt > 0.0f)
+        outc = lerp(outc * crt.gain, float3(1.0f, 1.0f, 0.97f) * crt.gain, crt.white);
+
     gDst[tid.xy] = float4(outc, 1.0f);
 }

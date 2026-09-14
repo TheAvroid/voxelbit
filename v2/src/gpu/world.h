@@ -288,13 +288,39 @@ constexpr int kBirdSlots = 48;
 // one population for the band's purposes because they are born and recycled
 // together off one water field -- see render/lake.h -- but each still owns a
 // contiguous run inside it, for the reason the note above gives.
-constexpr int kLakeSlots = 26;   // kSalmonCount + kLilyCount + kDflyCount
+// THIS NUMBER IS NOT A PREFERENCE, IT IS A CONTRACT. It has to equal exactly
+// what LakeLife::publish writes, because the band is a fixed layout and every
+// population after this one is addressed from the end of it. Landing the lake's
+// own counts without landing this left the lake writing 44 slots into a 26-slot
+// reservation: it silently overwrote nine songbirds and all three pause-room
+// buttons, and the only symptom was "I dont see the buttons in the room
+// anymore". A static_assert in lake.h now makes the two agree at compile time.
+constexpr int kLakeSlots = 90;   // + the blue gill; lake.h static_asserts the exact sum
+                                 // -- the static_assert in lake.h is the authority
 // ...and the songbirds that are IN THE AIR, which are a different population
 // from the ones in the trees and share nothing with them but their species --
 // see render/birdflock.h.
 constexpr int kFlockSlots = 9;   // kFlockBirds
+// ...AND THE PAUSE ROOM'S THREE BUTTONS, WHICH ARE NOT ALIVE AT ALL.
+//
+// They are here because the band is the engine's only route to an instance
+// whose TRANSFORM changes every frame without a structure rebuild, and a button
+// that presses in when you click it is exactly that. Modelling them as part of
+// the room's static mesh would mean re-meshing and re-building a 68,000
+// triangle box to move three of them two centimetres.
+//
+// THEY COST NOTHING WHEN THE ROOM IS SHUT: a slot with mask 0 is never
+// traversed, and publishButtons switches them off the moment you leave.
+// ...THE BUNNIES, which are the first thing in this band that walks on the
+// ground. They are in it for the same reason everything else is: it is the one
+// route to an instance whose transform changes every frame, and a bunny in the
+// band is a bunny lit by exactly the shader that lights a pine.
+constexpr int kBunnySlots = 10;   // kBunnyCount
+constexpr int kButtonSlots = 3;
 constexpr int kFlyerInstances =
-    kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots;
+    kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots + kBunnySlots + kButtonSlots;
+constexpr int kBunnySlot0 = kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots;
+constexpr int kButtonSlot0 = kBunnySlot0 + kBunnySlots;
 
 // ---------------------------------------------------------------------------
 // RE-MESHING A DAMAGED MODEL, OFF THE FRAME THAT DAMAGED IT.
@@ -3535,6 +3561,143 @@ class World {
                     kStageAtZ + float(kStageVox) * VOXEL_M * 0.5f);
     }
 
+    // Where the player stands when the room opens: the middle of the floor,
+    // far enough back from the buttons to see all three.
+    static Vec3 roomStand() {
+        return Vec3(kRoomAtX + float(kRoomW) * VOXEL_M * 0.5f, roomFloorY(),
+                    kRoomAtZ + float(kRoomD) * VOXEL_M * 0.62f);
+    }
+    // The centre of button `b` in WORLD metres, and its radius. The picker is
+    // the only reader; it is here so the geometry and the hit test cannot
+    // describe two different buttons.
+    static Vec3 buttonAt(int b) {
+        return Vec3(kRoomAtX + (float(kBtnX[b]) + 0.5f) * VOXEL_M,
+                    kRoomAtY + (float(kBtnY) + 0.5f) * VOXEL_M,
+                    kRoomAtZ + (float(kBtnZ) + 0.5f) * VOXEL_M);
+    }
+    static float buttonRadiusM() { return float(kBtnR) * VOXEL_M; }
+
+    // -- WHAT EACH BUTTON IS CALLED, AND WHERE THE WORD HANGS ---------------
+    //
+    // The label is a plane of light standing in the air in front of the wall --
+    // see V2Holo in Shared.slang -- and everything about where it is comes from
+    // the button it names, for the reason buttonAt exists at all: two
+    // descriptions of one object drift.
+    //
+    // A COLOUR IS A BUTTON'S PROPERTY, NOT A MODEL'S. kBtnRgb used to be a local
+    // table inside loadRoomButtons, which was fine while the only thing that
+    // wanted it was the palette it tinted the model with. The word over the
+    // button wants the same red, so it moved out here rather than being typed a
+    // second time -- a green "quit" is the exact bug this prevents.
+    static constexpr uint8_t kBtnRgb[3][3] = {
+        {214, 58, 58}, {64, 196, 92}, {122, 96, 232}};
+
+    static const char *buttonLabel(int b) {
+        static const char *kWords[3] = {"quit", "back", "discord"};
+        return kWords[b];
+    }
+
+    // ONE GLYPH PIXEL, 2.1 cm (user 2026-09-13: a quarter smaller than the 2.8
+    // it landed at). The CEILING on it is geometry rather than taste and is
+    // worth writing down, because it is the number a future change will walk
+    // into: "discord" is seven glyphs at six cells of advance, so 41 cells wide,
+    // and "back" beside it is 23 -- half of each is 32 cells of the gap between
+    // their two buttons. At the ten-voxel spacing those buttons started on that
+    // capped the cell at 3.1 cm; at thirteen it is 4.0 cm. 2.1 leaves 63 cm of
+    // clear wall between the two words.
+    static constexpr float kBtnLabelCellM = 0.021f;
+    // How far above the button's CENTRE the middle of the word sits. The model
+    // is five voxels tall, so its top is 25 cm up; this leaves about a hand's
+    // width of dark wall between the two, which is what makes the label read as
+    // belonging to the button rather than sitting on it.
+    static constexpr float kBtnLabelRiseM = 0.52f;
+    // ...and how far out of the room's -Z wall the plane stands. It is measured
+    // from the WALL and not from the button, deliberately: the buttons have been
+    // moved back into the shell since (see kBtnZ) and a label that followed them
+    // would have lost most of its parallax with them. At 0.80 m the word stands
+    // 70 cm clear of the wall's inner surface, which is what makes a step
+    // sideways slide it visibly across that wall -- the whole difference between
+    // a hologram and a decal.
+    static constexpr float kBtnLabelOutM = 0.80f;
+
+    // The middle of the word, in world metres.
+    static Vec3 buttonLabelMid(int b) {
+        const Vec3 c = buttonAt(b);
+        return Vec3(c.x, c.y + kBtnLabelRiseM, kRoomAtZ + kBtnLabelOutM);
+    }
+    // The reading direction and the up of the page. +X across and +Y up puts the
+    // plane's normal at +Z, which is the way the player is facing when the room
+    // opens -- see kBtnZ.
+    static Vec3 buttonLabelRight() { return Vec3(1.0f, 0.0f, 0.0f); }
+    static Vec3 buttonLabelUp() { return Vec3(0.0f, 1.0f, 0.0f); }
+
+    // -- THE INSIDE OF THE BOX, FOR THE PLAYER TO STAND IN ------------------
+    //
+    // The walk collider reads the TERRAIN, and the room is not terrain -- so
+    // the player fell straight through the floor and out of the world. These
+    // six numbers are the whole of the room's physics: it is a box, and a box
+    // is two corners. The wall thickness is one voxel, so the air starts one in.
+    static float roomFloorY() { return kRoomAtY + float(1) * VOXEL_M; }
+    static float roomCeilY() { return kRoomAtY + float(kRoomH - 1) * VOXEL_M; }
+    static float roomMinX() { return kRoomAtX + VOXEL_M; }
+    static float roomMaxX() { return kRoomAtX + float(kRoomW - 1) * VOXEL_M; }
+    static float roomMinZ() { return kRoomAtZ + VOXEL_M; }
+    static float roomMaxZ() { return kRoomAtZ + float(kRoomD - 1) * VOXEL_M; }
+
+    // WHERE THE LIGHT IS, in world metres -- the centre of the glass, so the
+    // shadows in the room agree with the thing casting them.
+    static Vec3 bulbCenter() {
+        return Vec3(kRoomAtX + (float(kBulbX) + 0.5f) * VOXEL_M,
+                    kRoomAtY + (float(kBulbY) + 0.5f) * VOXEL_M,
+                    kRoomAtZ + (float(kBulbZ) + 0.5f) * VOXEL_M);
+    }
+    // Valid only once buildRoom has run; kNoBulb until then, which is why the
+    // app reads it AFTER setRoom(true) rather than at startup.
+    uint32_t bulbMtl() const { return bulbMtl_; }
+
+    // -----------------------------------------------------------------------
+    // WHERE THE THREE BUTTONS ARE THIS FRAME.
+    //
+    // press[b] is 0 at rest and 1 fully depressed; it moves the button INTO the
+    // wall along -Z by kBtnTravelM and nothing else -- no squash, no rotation.
+    // A button is a rigid thing on a spring, and the only honest animation for
+    // one is a translation.
+    //
+    // CALLED EVERY FRAME, room or not. The band is a fixed set of slots and a
+    // slot nobody writes keeps whatever was in it, so "switched off" has to be
+    // published too -- this is the same rule the butterflies' empty slots obey.
+    // -----------------------------------------------------------------------
+    void publishButtons(bool show, const float *press) {
+        if (btnModel_[0] < 0) return;
+        static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        // THE TRANSLATION IS THE MODEL'S CORNER, NOT ITS CENTRE. place() writes
+        // tx/ty/tz straight into the transform and uses the half-box only to
+        // work out where the middle ended up for the motion vector -- so a
+        // caller that hands it a centre gets a model displaced by half its own
+        // size, which is exactly what the first render showed: three buttons
+        // sitting up and to the right of the bezels they belong in. The
+        // butterflies' own note says the same thing from the other side.
+        const float hx = 0.5f * float(btnSx_) * VOXEL_M;
+        const float hy = 0.5f * float(btnSy_) * VOXEL_M;
+        const float hz = 0.5f * float(btnSz_) * VOXEL_M;
+        for (int b = 0; b < 3; ++b) {
+            const Vec3 c = buttonAt(b);
+            const float d = press ? press[b] : 0.0f;
+            setFlyerInstance(kButtonSlot0 + b, btnModel_[b], kI, c.x - hx, c.y - hy,
+                             c.z - d * kBtnTravelM - hz, nullptr, show && btnModel_[b] >= 0);
+        }
+        flushFlyerInstances();
+    }
+
+    // In the pause room, or in the wood.
+    void setRoom(bool on) {
+        if (on == room_) return;
+        if (on) buildRoom();
+        room_ = on;
+        rebuildTlas();
+    }
+    bool inRoom() const { return room_; }
+
     // In the editor, or in the wood.
     void setStage(bool on) {
         if (on == stage_) return;
@@ -4037,10 +4200,124 @@ class World {
     std::vector<ModelTemplate> hives_;
     Blas waterBlas_;
     // The editor's floor -- see buildStage.
-    static constexpr int kStageVox = 160;          // 16 m square
+    // -----------------------------------------------------------------------
+    // THE PAUSE ROOM -- a white box with three buttons on its wall.
+    //
+    // It is a SECOND STAGE, and deliberately so: the editor deck already solves
+    // the hard half of this, which is that a separate place has to REPLACE the
+    // world rather than be hidden inside it. A ray that misses the room hits
+    // the sky, exactly as it does on the deck, and the wood stays resident so
+    // coming back is one rebuild and no wait.
+    //
+    // ITS OWN CORNER OF THE WORLD, far from the deck as well as from the wood:
+    // the two are never on screen together but they are both real geometry at
+    // real coordinates, and overlapping them would be a bug nobody would think
+    // to look for.
+    // -----------------------------------------------------------------------
+    static constexpr int kRoomW = 62, kRoomH = 38, kRoomD = 62;   // 6.2 x 3.8 x 6.2 m
+    static constexpr float kRoomAtX = -4096.0f, kRoomAtY = 2048.0f, kRoomAtZ = -4096.0f;
+    // The buttons: centre height, the three centres across the wall, and how
+    // big a disc is. Voxels, in the room's own frame.
+    static constexpr int kBtnY = 18;                   // 1.8 m -- eye height
+    // CLOSER TOGETHER THAN THE BALLS WERE. button.vox is 50 cm across where the
+    // balls were 1.3 m, and three small buttons spread over four metres of wall
+    // read as three unrelated things rather than as a row.
+    //
+    // THREE VOXELS FURTHER APART THAN THAT (user 2026-09-13). The centres were
+    // ten voxels apart, which with a five-voxel button is five voxels of wall
+    // between them; they are thirteen now, so the gap is eight. Kept SYMMETRIC
+    // ABOUT 31, which is the middle of a 62-voxel room -- the row has to stay
+    // centred on the wall the player arrives facing, and the cheap edit (moving
+    // the outer two and leaving the middle) is the one that does that.
+    static constexpr int kBtnX[3] = {18, 31, 44};
+    // -- THE BUTTONS ARE BALLS NOW, NOT DISCS -----------------------------
+    //
+    // "make the buttons 3x3 spheres, but move the faces to outwards. so its
+    // really a 5x5 sphere but its smooth." That is a recipe for a voxel sphere
+    // rather than a size: a cube with its faces pushed out is what a rounded
+    // radius test draws, and dx^2+dy^2+dz^2 <= R^2 + R is exactly that test --
+    // the half-voxel of slack is what fills the six flat patches a bare R^2
+    // leaves, which are the thing that makes a small voxel ball read as a die.
+    //
+    // kBtnR IS THE SAME 6 IT WAS, because the disc's size was never what was
+    // wrong with it. What changed is that it is a solid ball, set into the wall
+    // rather than painted on it -- see kBtnZ for how far it stands proud.
+    // kBtnR is the PICK radius -- what the crosshair has to be inside -- and it
+    // is the button's own half-width plus a little grace, not a shape that
+    // exists in the geometry at all.
+    static constexpr int kBtnR = 4;                   // 0.4 m: the pick radius
+    static constexpr float kBtnTravelM = 0.12f;       // how far in a press goes
+    // WHICH WALL. The player arrives facing -Z (see Camera::direction and the
+    // note in the stage's own arrival), so the buttons go on the -Z wall and
+    // are in front of them the moment they get there.
+    // -- THE BUTTON'S CENTRE, AND IT IS NOW MOSTLY INSIDE THE WALL ---------
+    //
+    // "I don't want balls out of the wall, but into it" (user 2026-09-13). It
+    // was 3, and the arithmetic had been written down wrong beside it: buttonAt
+    // adds the half voxel, so a centre of 3 put the model's back face at 0.10 m
+    // -- exactly the wall's inner surface -- and the whole 50 cm of it stood
+    // proud. That is the ball out of the wall.
+    //
+    // THREE VOXELS BACK AND THEN ONE FORWARD AGAIN, which is where it settled:
+    // at 0 the button showed 20 cm of its 50 and read as a plate rather than a
+    // button. At 1 the centre is 0.15 m and the model spans -0.10 to +0.40; the
+    // wall occupies the first voxel, 0.00 to 0.10, so 30 cm is in the room and
+    // 20 cm is in or behind the wall. A press takes 0.12 m of the 30 that is
+    // showing and still leaves a face to look at.
+    //
+    // What ends up behind the shell is sealed inside an opaque box and nothing
+    // can see it -- the same argument buildRoom makes for not cutting a hole.
+    static constexpr int kBtnZ = 1;
+
+    // -- THE BULB, hung in the top centre of the room ------------------------
+    //
+    // It is there because the room was BLACK. This is a path tracer with two
+    // lights in it, the sun and the dome, and both of them are outside a sealed
+    // box -- the first render of this room came back as a crosshair on an empty
+    // frame, which is the correct picture of an unlit interior.
+    //
+    // THE GEOMETRY AND THE LIGHT ARE THE SAME OBJECT. What follows is the voxel
+    // sphere the camera sees; V6Params::bulbPos is its centre and the tracer
+    // puts a point light exactly there. Pulling them apart -- a light at one
+    // place, a glowing ball at another -- is a bug that only shows in shadows,
+    // so both are derived from these numbers and neither is typed twice.
+    // IT IS A MODEL NOW, NOT A SPHERE OF CODE: source/wip/technology/
+    // lightbulb.vox, 3 x 5 x 3 voxels -- a 30 x 50 x 30 cm bulb with a grey cap
+    // at the top of it. The cap is NOT emissive, which is what gives the thing
+    // a silhouette: a bulb blown to white against a white ceiling would be
+    // invisible if the whole model glowed.
+    static constexpr int kBulbY = kRoomH - 9;         // the glass, 90 cm below the ceiling
+    static constexpr int kBulbX = kRoomW / 2, kBulbZ = kRoomD / 2;
+
+    // -- A SMALL PLATFORM, AND IT IS SMALL ON PURPOSE ---------------------
+    //
+    // 8 m square, down from 16. The deck is a place to stand a model up and
+    // walk round it; at sixteen metres most of it was empty floor, and empty
+    // floor is the one thing on an asset stage that is never the subject. The
+    // gridlines are still a metre apart, so it is eight of them a side and you
+    // can read a model's size straight off the deck.
+    static constexpr int kStageVox = 80;           // 8 m square
     static constexpr float kStageAtX = 4096.0f;    // well clear of the wood
-    static constexpr float kStageAtY = 512.0f;
+    // -- ...SUSPENDED IN THE SKY, UNDER THE CLOUDS ------------------------
+    //
+    // 640 m. Clouds.slang puts the deck of cloud at CLOUD_LO = 760 and the tops
+    // at 1080, so this is a hundred and twenty metres of clear air below the
+    // nearest of them -- high enough that there is nothing but sky in any
+    // direction, close enough that the cloud base is plainly overhead rather
+    // than an abstraction. The terrain never reaches it: the generator's
+    // ceiling is far below, which is what makes this a place rather than a
+    // platform over a landscape.
+    static constexpr float kStageAtY = 640.0f;
     static constexpr float kStageAtZ = 4096.0f;
+    static constexpr const char *kBulbVox = "C:/voxelbit/source/wip/technology/lightbulb.vox";
+    static constexpr const char *kButtonVox = "C:/voxelbit/game/assets/decoration/button.vox";
+    int btnModel_[3] = {-1, -1, -1};
+    int btnSx_ = 0, btnSy_ = 0, btnSz_ = 0;
+    Blas roomBlas_;
+    uint32_t bulbMtl_ = 0xFFFFFFFFu;
+    int bulbLowY_ = 0, bulbHiY_ = 0;   // the model's own extent, for the flex above it
+    uint32_t roomTri_ = TriPool::kInvalid;
+    bool room_ = false;
     Blas stageBlas_;
     uint32_t stageTri_ = TriPool::kInvalid;
     bool stage_ = false;
@@ -4872,7 +5149,13 @@ class World {
                       // wears the grass RAMP -- the same six shades, picked per
                       // voxel on the device -- rather than one authored green
                       // that matches nothing it is standing in.
-                      uint8_t stemId = mat::AIR) {
+                      uint8_t stemId = mat::AIR,
+                      // ...AND THIS ONE IS LAST FOR A REASON. Inserting it into
+                      // the middle of this list renumbered every positional
+                      // argument after it, and the rock loaders pass colourSink
+                      // and stemId positionally -- which the compiler caught,
+                      // but only because the types happened to disagree.
+                      bool solidify = false) {
         for (const std::string &path : paths) {
             std::vector<VoxModel> models;
             std::string err;
@@ -4893,6 +5176,10 @@ class World {
             for (const VoxModel &mo : models) {
                 VoxAsset a = toWorld(mo, 0, mo.sx);
                 if (a.sx <= 0) continue;
+                // NOT HOLLOW. See vox.h::fillCavities for what that means and
+                // what it deliberately does NOT mean -- the gaps between a
+                // pine's branches are not cavities and are left alone.
+                if (solidify) solidVox += fillCavities(&a);
                 // A COUNT, NOT A FLAG. Each pass is 2x on a side, so 8x the
                 // voxels and about 4x the surface a mesher has to emit. One
                 // pass is the large mushrooms and the mid stones; two is the
@@ -4982,6 +5269,8 @@ class World {
     // they carry the beehives -- same question asked of the crown ("a solid
     // voxel with air under it"), different thing hung from the answer.
     // ------------------------------------------------------------------------
+    int solidVox = 0;   // how many sealed-in voxels fillCavities filled, for the report
+
     bool loadPines() {
         // ONE VECTOR, TWO RANGES. Pines occupy [0, birchBase) and birches
         // [birchBase, size) -- so the scatter picks a SPECIES by choosing which
@@ -5013,13 +5302,18 @@ class World {
             // which writes them.
             for (int i = 1; i <= 16; ++i)
                 paths.push_back(birchDir + "/" + std::to_string(i) + ".vox");
-        loadModelSet(paths, &pines_, false, false, 0u, /*perches=*/true);
+        // /*solidify=*/true -- the trees are the set this was asked for.
+        loadModelSet(paths, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
+                     /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true);
         if (pines_.empty()) {
             std::fprintf(stderr, "v2: no pine models loaded from %s -- pass --pines\n",
                          pineDir.c_str());
             return false;
         }
         loadedPines = int(pines_.size());
+        if (solidVox > 0)
+            std::printf("  trees    %d sealed-in voxels filled with their own walls\n",
+                        solidVox);
         return true;
     }
 
@@ -5148,6 +5442,183 @@ class World {
     // bird too big for a branch"), and ten voxels is what a metre IS here, so
     // the line falls on the lattice rather than across it.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // A HOLLOW WHITE BOX WITH THREE COLOURED DISCS ON ONE WALL.
+    //
+    // Built in code rather than authored, for the reason the stage deck is:
+    // it is a fixture of the interface and not a model anybody will re-author,
+    // so there is nothing for a .vox file to be the source of truth about.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE BUTTON, THREE TIMES, IN THREE COLOURS.
+    //
+    // ONE FILE AND THREE MODELS. button.vox is 5 x 5 x 5 and every one of its
+    // 54 voxels is the same firebrick red, which makes recolouring it a
+    // one-entry edit of the palette it carries -- addFlyerModel reads
+    // mo.pal[e-1] and nothing else, so three copies with three palettes are
+    // three coloured buttons and no special case anywhere downstream.
+    // -----------------------------------------------------------------------
+    void loadRoomButtons() {
+        if (btnModel_[0] >= 0) return;
+        VoxModel mo;
+        std::string err;
+        if (!voxLoad(kButtonVox, &mo, &err)) {
+            std::fprintf(stderr, "v2: room button %s: %s -- the wall keeps its discs%s",
+                         kButtonVox, err.c_str(), "\n");
+            return;
+        }
+        // The colours the room has always used, and in the order the wall reads
+        // left to right: quit, back, Discord. They live beside buttonAt now --
+        // the label hanging over each button is tinted with the same three.
+        const auto &rgb = kBtnRgb;
+        for (int b = 0; b < 3; ++b) {
+            VoxModel tint = mo;
+            for (int e = 0; e < 255; ++e) {
+                if (!tint.pal[size_t(e)][3]) continue;
+                tint.pal[size_t(e)] = {rgb[b][0], rgb[b][1], rgb[b][2], 255};
+            }
+            int sx = 0, sy = 0, sz = 0;
+            btnModel_[b] = addFlyerModel(tint, "room button", &sx, &sy, &sz);
+            if (b == 0) { btnSx_ = sx; btnSy_ = sy; btnSz_ = sz; }
+        }
+        if (btnModel_[0] >= 0)
+            std::printf("  room     button.vox %d x %d x %d, three of them\n", btnSx_,
+                        btnSy_, btnSz_);
+    }
+
+    void buildRoom() {
+        if (roomBlas_.valid()) return;
+        loadRoomButtons();
+        const uint8_t white = palette.forModelColor({226, 226, 232, 255}, false);
+        const uint8_t red = palette.forModelColor({214, 58, 58, 255}, false);
+        const uint8_t green = palette.forModelColor({64, 196, 92, 255}, false);
+        const uint8_t blue = palette.forModelColor({122, 96, 232, 255}, false);
+        // THE GLASS AND THE FLEX. The glass colour barely matters -- the tracer
+        // replaces it with the bulb's radiance the moment a camera ray lands on
+        // it -- but it must be an entry NOTHING ELSE IN THE ROOM SHARES, because
+        // that index is how the shader recognises the emitter. forModelColor
+        // dedups by colour, so a second white would have come back as the wall's
+        // index and lit the whole shell like a lantern.
+        const uint8_t glass = palette.forModelColor({255, 246, 214, 255}, false);
+        const uint8_t flex = palette.forModelColor({38, 34, 30, 255}, false);
+        bulbMtl_ = glass;
+        uploadMaterials();
+
+        VoxAsset a;
+        a.sx = kRoomW;
+        a.sy = kRoomH;
+        a.sz = kRoomD;
+        a.a.assign(size_t(kRoomW) * kRoomH * kRoomD, 0);
+        auto at = [&](int x, int y, int z) -> uint8_t & {
+            return a.a[size_t(x) + size_t(z) * size_t(kRoomW) +
+                       size_t(y) * size_t(kRoomW) * size_t(kRoomD)];
+        };
+        // THE SHELL ONLY. A solid box would be kRoomW*kRoomH*kRoomD voxels of
+        // which the tracer can see one face in six, and the mesher would throw
+        // every interior face away anyway -- but it would walk all of them
+        // first.
+        for (int y = 0; y < kRoomH; ++y)
+            for (int z = 0; z < kRoomD; ++z)
+                for (int x = 0; x < kRoomW; ++x) {
+                    const bool shell = x == 0 || y == 0 || z == 0 || x == kRoomW - 1 ||
+                                       y == kRoomH - 1 || z == kRoomD - 1;
+                    if (shell) at(x, y, z) = 1;
+                }
+        // -- NO BEZEL. THE BUTTONS SIT IN THE WALL ITSELF ------------------
+        //
+        // There was a grey ring round each of them and it is gone (user
+        // 2026-09-13: "get rid of those grey rings around the button. shove the
+        // button into the wall about half way"). What replaces it is nothing at
+        // all: the button is pushed back until half of it is inside the shell,
+        // so the wall's own surface is the housing and the coloured half left
+        // proud of it reads as a button set into it. See kBtnZ.
+        //
+        // THE WALL IS NOT CUT FOR THEM. The shell stays sealed and the buried
+        // half is simply inside it -- the room is a closed box lit from within,
+        // so nothing can see a surface that is behind an opaque wall, and a hole
+        // would only be somewhere for the light to leak out of.
+        // -- THE PENDANT, FROM THE AUTHORED MODEL -------------------------
+        //
+        // lightbulb.vox on the flex, hung from the middle of the ceiling. The
+        // flex runs from the ceiling to the top of the model with nothing
+        // between them: the emitter is picked out by MATERIAL, so the two may
+        // touch, which the distance test this started as would not have
+        // allowed. See V6Params::bulbMtl.
+        //
+        // TWO MATERIALS OUT OF THE MODEL'S FIVE. The file carries four shades
+        // of yellow for the glass and one grey for the cap, and the four
+        // yellows are collapsed into ONE index -- partly because the shader
+        // matches a single material, and mostly because they would not survive
+        // being an emitter anyway: every one of them renders as the same white.
+        // The grey cap keeps its own entry and stays unlit, which is the only
+        // reason the bulb has a shape against a white ceiling.
+        bulbLowY_ = kBulbY;
+        bulbHiY_ = kBulbY;
+        {
+            VoxModel mo;
+            std::string err;
+            if (voxLoad(kBulbVox, &mo, &err)) {
+                const VoxAsset bulb = toWorldWhole(mo);
+                const int x0 = kBulbX - bulb.sx / 2, z0 = kBulbZ - bulb.sz / 2;
+                const int y0 = kBulbY - bulb.sy / 2;
+                bulbLowY_ = y0;
+                bulbHiY_ = y0 + bulb.sy - 1;
+                for (int y = 0; y < bulb.sy; ++y)
+                    for (int z = 0; z < bulb.sz; ++z)
+                        for (int x = 0; x < bulb.sx; ++x) {
+                            // -- FLIPPED IN Y, AND THE FILE IS WHY ---------
+                            //
+                            // lightbulb.vox is authored cap-DOWN: toWorldWhole
+                            // turns the model's z into the world's y, and what
+                            // came out was a glowing ball with its screw cap
+                            // hanging underneath it and the flex growing out of
+                            // the glass. Reading the model bottom-up is the
+                            // whole fix, and it belongs here rather than in the
+                            // file -- the file is somebody's art and this is
+                            // the one place that has an opinion about which way
+                            // up a lamp goes.
+                            const uint8_t e = bulb.at(x, bulb.sy - 1 - y, z);
+                            if (!e) continue;
+                            const auto c = mo.pal[size_t(e) - 1];
+                            // A grey cell is the cap; anything with colour in it
+                            // is glass. Keyed on saturation rather than on the
+                            // one palette index, so a re-authored bulb still
+                            // splits the same way -- the butterflies' yellow
+                            // uses the identical test for the identical reason.
+                            const int mx = maxi(c[0], maxi(c[1], c[2]));
+                            const int mn = mini(c[0], mini(c[1], c[2]));
+                            at(x0 + x, y0 + y, z0 + z) = uint8_t((mx - mn > 24) ? 5 : 6);
+                        }
+            } else {
+                std::fprintf(stderr, "v2: room bulb %s: %s -- using a plain sphere%s",
+                             kBulbVox, err.c_str(), "\n");
+                for (int dy = -2; dy <= 2; ++dy)
+                    for (int dz = -2; dz <= 2; ++dz)
+                        for (int dx = -2; dx <= 2; ++dx) {
+                            if (dx * dx + dy * dy + dz * dz > 6) continue;
+                            at(kBulbX + dx, kBulbY + dy, kBulbZ + dz) = 5;
+                        }
+                bulbLowY_ = kBulbY - 2;
+                bulbHiY_ = kBulbY + 2;
+            }
+        }
+        for (int y = bulbHiY_ + 1; y < kRoomH - 1; ++y) at(kBulbX, y, kBulbZ) = 6;
+
+        std::vector<uint8_t> idOfEntry(256, mat::AIR);
+        idOfEntry[1] = white;
+        idOfEntry[2] = red;
+        idOfEntry[3] = green;
+        idOfEntry[4] = blue;
+        idOfEntry[5] = glass;
+        idOfEntry[6] = flex;
+        const VoxMesh mesh = meshAsset(a, idOfEntry, VOXEL_M);
+        if (mesh.triCount() == 0) return;
+        roomTri_ = pool_.upload(ctx_, mesh.tri);
+        roomBlas_ = buildBlas(mesh);
+        std::printf("  room     %d x %d x %d voxels, 3 buttons, a bulb, %zu tris\n", kRoomW,
+                    kRoomH, kRoomD, mesh.triCount());
+    }
+
     void buildStage() {
         if (stageBlas_.valid()) return;
 
@@ -5847,7 +6318,21 @@ class World {
         // nothing re-streams, so U back into the wood is one rebuild and no
         // wait -- it costs their memory for as long as the editor is open,
         // which is the right trade for a key you press to check a model.
-        if (stage_) {
+        // THE ROOM REPLACES THE WORLD TOO, for the reason the deck does: a
+        // pause menu you can see the wood through is a HUD, not a room.
+        if (room_) {
+            if (roomBlas_.valid()) {
+                RtInstanceDesc box = {};
+                writeTransform(box, kI, kRoomAtX, kRoomAtY, kRoomAtZ);
+                box.instanceMask = kMaskWorld;
+                box.accelerationStructure = roomBlas_.as->getGpuAddress();
+                V6Instance info{};
+                info.triOffset = roomTri_;
+                info.kind = KIND_TERRAIN;
+                info.tint = float3(1.0f, 1.0f, 1.0f);
+                push(box, info);
+            }
+        } else if (stage_) {
             if (stageBlas_.valid()) {
                 RtInstanceDesc deck = {};
                 writeTransform(deck, kI, kStageAtX, kStageAtY, kStageAtZ);

@@ -487,9 +487,46 @@ class ChunkMesher {
     // low floor also thins the mid wood hard (0.93x); at 0.090 it is 0.97x,
     // near enough untouched.
     // -----------------------------------------------------------------------
-    static float standGate(float dens) {
-        const float s = saturate((dens - 0.30f) / 0.32f);
-        return s * s * 1.20f + 0.090f;
+    // -- THE STAND GATE, AND ITS FOUR NUMBERS ARE NAMED NOW -----------------
+    //
+    // They were literals inside this function, which made the one question
+    // worth asking about them impossible to answer cheaply: a total can be
+    // raised entirely inside stands that were already thick, and that is
+    // exactly the change nobody wants. Named and non-static, the scatter
+    // harness can sweep them against THIS code rather than against a copy of
+    // the formula that would drift from it.
+    //
+    //   knee/span  where the noise starts producing trees, and over what range
+    //   gain       how thick the thickest stand gets
+    //   floor      and what a CLEARING still gets, which is the one that fills
+    //              the sparse areas in
+    float standKnee = 0.30f, standSpan = 0.32f;
+    // -- THE FLOOR IS 0.262 NOW, AND IT IS THE WHOLE OF THE +25% ------------
+    //
+    // "Increase the pine trees by 25%. fill in the sparse areas more." Those
+    // are two requests and this one number answers both, which is why nothing
+    // else in the gate moved.
+    //
+    // THE FLOOR IS WHAT A CLEARING GETS. Raising the GAIN would have put the
+    // extra quarter where the wood was already thick -- a bigger total and the
+    // same bare patches, which is the opposite of what was asked. Raising the
+    // floor adds the same probability to every cell in the wood, so all of it
+    // lands in the cells that had least.
+    //
+    // Measured over a 625-chunk pine ring with the scatter harness:
+    //
+    //                       total   /ha    p10   bottom decile   empty chunks
+    //   0.090 (before)       8432   205.9    3       0.95             27
+    //   0.262 (now)         10553   257.6    7       2.81             20
+    //
+    // +25.15% overall, and the thin end very nearly trebles. The thick stands
+    // are untouched: p90 went 27 to 29 and the max 33 to 36, which is the floor
+    // arriving there too and nothing more.
+    float standGain = 1.20f, standFloor = 0.262f;
+
+    float standGate(float dens) const {
+        const float s = saturate((dens - standKnee) / standSpan);
+        return s * s * standGain + standFloor;
     }
 
     // 0.3666: 0.3210 x 1.142. Not x1.25 -- squaring the curve raises its own
