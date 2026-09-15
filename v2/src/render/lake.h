@@ -28,6 +28,8 @@
 #include <vector>
 
 #include "../gpu/world.h"
+#include "../scene/collide.h"
+#include "../scene/shore.h"
 #include "../scene/vox.h"
 #include "../scene/voxelworld.h"
 
@@ -62,13 +64,51 @@ inline constexpr int kSalmonCount = 10;
 // bass taking a salmon's slot mid-swim is a motion vector between two
 // unrelated objects, which is the one thing that band exists to get right.
 inline constexpr int kBassCount = 6;
+// ---------------------------------------------------------------------------
+// ONE FRAME OF ONE STRIP: the model, and HALF ITS OWN BOX.
+//
+// The half-box is per FRAME and that is the whole point of this type existing.
+// setFlyerInstance puts a model's own ORIGIN at the translation, so a caller
+// that wants the body centred has to take the half-box off -- and a swim frame's
+// box CHANGES WIDTH as the tail sweeps, by up to two voxels. Centring every
+// frame on one stored half-box therefore slides the fish sideways by half that
+// difference, in step with the tail beat.
+//
+// REPORTED AS "the animations of the fish look off centered... the koi looks
+// fine though" (user 2026-09-13), and the koi is the clue that proves it: its
+// box is 5 wide in ten of its twelve frames, so its error is 0.08 of a voxel
+// and invisible, while the bass runs 5 to 7 wide and sits two thirds of a voxel
+// off its own position. Measured across all six, the fixed half-box leaves a
+// mean offset of -0.17, +0.67, +0.50, +0.50, +0.17 and -0.08 voxels; the
+// frame's own box leaves 0.00 for every one of them, which is what a body
+// centred on its own position means.
+//
+// AND THE BOX CENTRE IS THE AUTHORED ALIGNMENT, not a guess. MagicaVoxel
+// centres every frame of a keyframed shape on the SAME node translation -- see
+// the note in render/bow.h, which corrects for exactly this on the bow -- so
+// asking each frame to stand on its own centre reproduces what the art was
+// drawn against.
+//
+// NAMED FishFrame BECAUSE v2 ALREADY HAS A `Frame` at namespace scope. A
+// member declared `std::vector<Frame>` binds to that one and the errors name
+// the uses rather than the declaration; render/bunnies.h has the same note over
+// the same trap.
+// ---------------------------------------------------------------------------
+struct FishFrame {
+    int model = -1;
+    float hx = 0.0f, hy = 0.0f, hz = 0.0f;   // half the frame's own box, in metres
+};
+
 // -- THE KOI, WHICH IS A BASS THAT LOOKS LIKE A KOI -------------------------
 //
 // "Same fish mechanics as the bass" -- so it is species 2 and the only thing it
-// does differently is wear a different model. It is ONE FILE and not a strip:
-// assets/life/koi.vox has no swim cycle, so its strip is one frame long and
-// putFish's `animClk % size` lands on it every time. A fish that does not flex
-// is worse than one that does, and better than no koi.
+// does differently is wear a different strip.
+//
+// ITS TWELVE FRAMES LIVE IN ONE FILE, which is the only way it differs from
+// every other fish here: assets/life/koi.vox is keyframed onto a single shape
+// node rather than exported as twelve numbered files. This note used to say the
+// koi had no swim cycle at all -- it has one, and what it lacked was a reader.
+// See loadFrames, and the note at the call.
 inline constexpr int kKoiCount = 6;
 // -- ...AND THE MINNOWS, WHICH SCHOOL LIKE THE SALMON -----------------------
 //
@@ -154,6 +194,70 @@ inline constexpr float kDuckSway = 0.5f;
 inline constexpr float kBabyLostM = 4.0f;
 // How far the surface itself moves under it, before kDuckSway takes its share.
 inline constexpr float kDuckBobM = 0.06f;
+// -- AND SHE RIDES ONE VOXEL PROUDER OF IT (user 2026-09-14: "have the ducks
+// one voxel higher on average in the water") --------------------------------
+//
+// ON TOP OF THE 0.45 HALF-BOX in putDuck, not instead of it. That constant is
+// the WATERLINE -- where on her body the surface cuts, which is a fact about a
+// duck -- and this is how deep she floats, which is a fact about buoyancy. One
+// number each, so trimming the float does not move the waterline up her flank.
+inline constexpr float kDuckRideM = VOXEL_M;
+// -- A DUCK GOES ROUND A LILY PAD ------------------------------------------
+//
+// "Have ducks go around lillypads, not clip right through them." They are the
+// one pair in this file that genuinely collides: everything else either shares
+// the surface with nothing (the fish are under it, the dragonfly is over it) or
+// is kept apart by the spawn rule and never moves far enough to meet again. A
+// duck paddles a metre a second through water a pad is drifting across at a
+// tenth of that, so they WILL meet, and nothing was watching for it.
+//
+// Three rules, and the shape of them is the fish's, learned the same way:
+//
+//   SEE IT -- the mother's ray fan stops at a leaf exactly as it stops at a
+//             bank, so she turns away a metre and a half out and the whole
+//             line follows her round it. This is what makes it read as going
+//             AROUND rather than as bumping into.
+//   SLIDE  -- a step that would put a body on a leaf is retried either side
+//             before it is given up, which is separateFish's own lesson: a
+//             refused step that only adds a turn becomes a spin when several
+//             headings are refused at once.
+//   PUSH   -- and after everything has moved, nothing is allowed to be
+//             overlapping one. A steering term cannot promise that (a duck
+//             turns at a finite rate and a pad drifts under it), which is
+//             exactly why the salmon needed separateFish on top of its own
+//             avoidance.
+//
+// THE PUSH IS RATE-LIMITED rather than resolved in one frame. In the steady
+// state the overlap is a centimetre and the cap never binds; what it is for is
+// the one case that can produce a big one -- something appearing on top of a
+// duck -- where instantly resolving it is a teleport. Twice the paddle speed
+// clears the worst possible overlap in about half a second.
+inline constexpr float kDuckPadPushM = 1.4f;   // m/s, = 2 x kDuckSpeed
+// The headings a refused step is retried at, either side of the one it wanted.
+inline constexpr float kDuckSlideA = 0.6f, kDuckSlideB = 1.2f;
+// How near counts as having MET a leaf, for the report. Half a metre outside
+// touching, which at a duck's 0.7 m/s is most of a second of closing.
+inline constexpr float kDuckNearPadM = 0.5f;
+// MEASURED, both halves of it, over one 40,000-tick soak of the same lake with
+// 4 duck families (16 bodies) and 24 leaves in it:
+//
+//                       closest approach   duck-ticks within 0.5 m   INSIDE a leaf
+//     as it shipped          0.00 m              13,852               5,326 (0.833 m deep)
+//     seeing / sliding / pushed
+//                            0.51 m                   0                   0
+//
+// 0.833 m deep is a whole duck inside a large pad. The A/B ran off a temporary
+// constant gating the three rules, which was then DELETED rather than left at
+// true -- an always-true switch nothing will ever flip is the same dead weight
+// as kLakeMinPlaceM, which sat in this file for a day meaning nothing.
+//
+// ...AND THE SOAK IS WHY THE FIRST RUN PROVED NOTHING. The default offline
+// camera's lake reported 0 clashes with the avoidance switched OFF, because its
+// ducks and its pads never came within 17.55 m of each other in eleven minutes
+// of simulation. --cam-x/--cam-z put the camera in a lake big enough to hold
+// both, and that is the only reason the numbers above exist. A zero from a run
+// where nothing ever met is not a result, which is what `closest` is printed
+// for.
 // TWENTY-FOUR PADS, UP FROM TWELVE. They are the thing you see a lake BY at
 // distance -- "I should be able to see lillypads far away in the water" -- and
 // twelve spread over everything inside 170 m is a pad every fifty metres.
@@ -432,7 +536,32 @@ inline constexpr float kLakePlaceM = 170.0f;
 // drop, a creature is recycled rarely enough that "it appeared in front of me"
 // is a rare event rather than the steady state -- and a floor of thirty metres
 // would empty any lake smaller than that, which is most of them.
-inline constexpr float kLakeMinPlaceM = 12.0f;
+//
+// -- AND THEN IT WAS NEITHER TWELVE NOR ENFORCED ---------------------------
+//
+// Reported again on 2026-09-14: "I saw lillypads just appear in front of me.
+// they seemed to just grow out of nowhere ... every biome should share similar
+// mechanics. make sure there are no entities that do this, they all share the
+// same spawning mechanics."
+//
+// The constant was still here and NOTHING READ IT. The rewrite that moved the
+// spawn onto the site lattice replaced the whole place/min band with one
+// distance test in gatherSites, and only the ceiling survived the move -- so
+// for a day the floor was twelve metres in a comment and zero in the code,
+// which is the worst of the three possible values. `grep kLakeMinPlaceM`
+// returned exactly one line: this one.
+//
+// The rest of the reasoning above was wrong as well, and worth keeping so it is
+// not rediscovered: a floor does NOT empty a small lake. It is a distance from
+// the PLAYER, not a size of water -- you walk up to a pond and its sites pass
+// through the whole band on the way in, so it is populated long before you
+// reach it. What empties a lake is having no slots left to give it, which is a
+// different fault with a different fix (see yieldSite).
+//
+// The number is kBirthMinM in core/noise.h now, shared with the butterflies,
+// the rabbits and the perched songbirds, because "they all share the same
+// spawning mechanics" is the request and one constant is the only way to be
+// sure of it.
 // -- NOTHING SPAWNS ON TOP OF ANYTHING ELSE --------------------------------
 //
 // v1 does this and its note says why it had to: "sometimes the fish cluster up
@@ -518,6 +647,76 @@ inline constexpr uint32_t kBluegillSalt = 0x81C6u;
 // drifted a hundred metres from it would be recycled somewhere it is plainly
 // visible. Five metres is a lake-sized wander.
 inline constexpr float kLilyLeashM = 5.0f;
+// -- HOW FAST A SLOT MAY MOVE TO BETTER WATER -- see yieldSite --------------
+//
+// ONE EVERY TWO SECONDS WAS THE OTHER HALF OF "THE LIFE IN THE WATER HAS A VERY
+// DELAYED SPAWN" (user 2026-09-14). Walk from one pond to the next while the
+// first is still inside the 180 m drop radius and it holds every slot, so the
+// pond at your feet can only fill as fast as this rule releases them: at one
+// per two seconds, twenty-four lily pads is FORTY-EIGHT SECONDS of standing at
+// an empty lake.
+//
+// FOUR AT A TIME, EVERY SECOND. That is a lake populated in six seconds rather
+// than a minute, and it is safe for the reason the rule is safe at all: a
+// retiring creature is at least kYieldMarginM further away than the site that
+// wants its slot, and the site it is being retired FOR has nothing within
+// kYieldLonelyM of it. Nothing visible moves; what changes is where the
+// population is, and it changes at walking pace instead of at a crawl.
+//
+// STILL NOT UNBOUNDED. A cap is what keeps this from swapping a whole
+// population between two frames the moment a better lake comes into range --
+// which would be a different complaint with the same cause.
+inline constexpr float kYieldEverySec = 1.0f;
+inline constexpr int kYieldPerPass = 4;
+
+// -- A LILY PAD IS A DISC, AND THE SHORE IS SOLID ---------------------------
+//
+// "Have the lillypads bounce off the sandy shore, instead of clipping through
+// it." They clipped for two reasons that compound, and only one of them is the
+// missing bounce:
+//
+//   * A PAD WAS A POINT. The lookahead asked whether the water was wet three
+//     metres ahead of its CENTRE, so half a leaf could be over sand and every
+//     test in the file still said yes. The leaves are 0.5 to 0.9 m across.
+//   * THE FIELD CANNOT ANSWER THIS. WaterField is sampled on a two-metre
+//     lattice and each cell carries the wetness of its own CORNER column, so
+//     "is it wet here" is only right to within a cell -- a pad can be most of
+//     two metres inland with its cell still reading wet. That is the clipping,
+//     and no amount of lookahead in the field fixes it, because the field does
+//     not know where the shore is to better than 2 m.
+//
+// So the field stays the BROAD phase (is there a bank anywhere near this pad)
+// and the terrain itself is the NARROW one (exactly where does the water end).
+// The terrain is asked per column, which is what the shore actually is, and it
+// is only asked for pads the field says are near a bank -- typically two or
+// three of the twenty-four.
+// The rim points themselves are kShoreRimSamples in scene/shore.h, which is
+// where the disc test lives.
+inline constexpr float kLilyBankM = 0.06f;        // a little clear of the bank
+// How far from a pad a dry cell has to be before the exact test is worth
+// running. A cell is 2 m and a pad is under half a metre, so anything inside
+// three metres could be a bank the leaf can reach this second.
+inline constexpr float kLilyNearBankM = 3.0f;
+// A pad that is somehow ALREADY over land walks out at this rate. It is a
+// recovery, not a behaviour: the same shape as recoverFish, and it exists
+// because a lake can be re-carved under a leaf (an axe, a chunk streaming in,
+// the field rebuilding somewhere new) and a pad with every heading refused
+// would otherwise sit in the sand for ever.
+inline constexpr float kLilyPushM = 0.6f;         // m/s out of the bank
+// ...AND IF THAT DOES NOT WORK, IT IS NOT A PAD'S PLACE. Measured: a leaf can
+// end up in a finger of water narrower than itself, where the middle is wet,
+// the push has somewhere to go, and the disc still fits nowhere -- 1 of 24 in
+// tests/lily_shore_test.cpp. Pushing for ever there is a lily pad lying in the
+// sand for the rest of the session. Six seconds of getting nowhere and it
+// retires instead: the slot comes back and fill() puts a pad somewhere a pad
+// fits. The fish have the same rule and the same reasoning -- recoverFish
+// recycles one it cannot get back to water.
+inline constexpr float kLilyStuckSec = 6.0f;
+// A bounce puts a little turn into the leaf, because a leaf that glances off a
+// bank and carries on spinning at exactly its old rate reads as a sprite. It is
+// CLAMPED to the spin a pad is allowed to have anyway -- this may add character
+// to the drift, never a new kind of motion.
+inline constexpr float kLilyBounceSpin = 0.35f;
 
 // ---------------------------------------------------------------------------
 // A DRAGONFLY SETTLES ON A LILY PAD.
@@ -736,6 +935,37 @@ class WaterField {
     // Is there water here, and how deep? Outside the field the answer is NO --
     // which is the safe direction: a fish that swims off the edge of what we
     // know is turned back rather than allowed to leave the lake.
+    // -----------------------------------------------------------------------
+    // THE SURFACE AT THIS EXACT COLUMN, NOT AT THE CELL IT FALLS IN.
+    //
+    // (user 2026-09-14: "lillypads are underwater when on a slopped water
+    // lake.")
+    //
+    // THE FIELD IS SAMPLED EVERY TWO METRES and top_ holds one height per cell,
+    // taken at that cell's own column. That is the right resolution for
+    // steering a fish and the wrong one for FLOATING something, because the
+    // water line is not constant across a lake -- lakeLineAt takes x and z, and
+    // a body that spans a band seam has a stepped surface. A leaf handed its
+    // cell's height is up to a cell away from where it is actually sitting, and
+    // on the high side of the step that puts it UNDER the water.
+    //
+    // The note this replaces said the line is "a property of the lake rather
+    // than of the column under it", and that was the assumption: true of a flat
+    // pond and not of this world's lakes.
+    //
+    // ASKED OF THE TERRAIN, not of the field, because the field has no finer
+    // answer to give. It costs one lakeLineAt per floating thing per frame --
+    // twenty-four pads and sixteen ducks -- against a cell lookup, and it is
+    // the same call the field's own rebuild makes.
+    // -----------------------------------------------------------------------
+    static bool exactTop(const VoxelTerrain &t, TerrainMemo &memo, float x, float z, float *topM) {
+        const int i = int(floorf(x / VOXEL_M)), j = int(floorf(z / VOXEL_M));
+        const int line = t.lakeLineAt(t.wx(i), t.wx(j), memo);
+        if (line == VoxelTerrain::kNoWaterVox) return false;
+        *topM = float(line + 1) * VOXEL_M;
+        return true;
+    }
+
     bool at(float x, float z, float *topM = nullptr, float *bedM = nullptr) const {
         const int i = int(floorf((x - cx_) / kCellM + kN * 0.5f));
         const int j = int(floorf((z - cz_) / kCellM + kN * 0.5f));
@@ -858,33 +1088,33 @@ class LakeLife {
     // -----------------------------------------------------------------------
     bool load(World &world, const std::string &lifeDir, const std::string &decorDir) {
         loadStrip(world, lifeDir + "/salmon", kSalmonFrames, &salmon_, "salmon");
-        fishHX_[0] = lastHX_; fishHY_[0] = lastHY_; fishHZ_[0] = lastHZ_;
         loadStrip(world, lifeDir + "/bass", kSalmonFrames, &bass_, "bass");
-        fishHX_[1] = lastHX_; fishHY_[1] = lastHY_; fishHZ_[1] = lastHZ_;
-        // THE KOI IS ONE MODEL, NOT A STRIP. Loaded by hand rather than through
-        // loadStrip, which numbers its frames -- there is nothing to number.
-        {
-            VoxModel mo;
-            std::string err;
-            if (voxLoad(lifeDir + "/koi.vox", &mo, &err)) {
-                int sx = 0, sy = 0, sz = 0;
-                const int m = world.addFlyerModel(mo, "koi", &sx, &sy, &sz);
-                if (m >= 0) {
-                    koi_.push_back(m);
-                    fishHX_[2] = 0.5f * float(sx) * VOXEL_M;
-                    fishHY_[2] = 0.5f * float(sy) * VOXEL_M;
-                    fishHZ_[2] = 0.5f * float(sz) * VOXEL_M;
-                }
-            } else {
-                std::fprintf(stderr, "v2: koi %s\n", err.c_str());
-            }
-        }
+        // -- THE KOI'S TWELVE FRAMES ARE INSIDE ONE FILE ------------------
+        //
+        // It is loaded by hand rather than through loadStrip, and not because
+        // there is nothing to number: there are twelve frames, exactly as many
+        // as the salmon has. They are just packaged differently -- the salmon
+        // is twelve numbered .vox files in a folder, and koi.vox is ONE file
+        // with twelve models keyframed onto a single shape node.
+        //
+        // IT USED TO BE READ AS ONE MODEL, and the note here used to say the
+        // koi had no swim cycle. It has one; what it did not have was a reader.
+        // voxLoad COMPOSES a file, so all twelve frames were laid on top of one
+        // another -- 26 voxels became 130 in the same 5 x 10 x 4 box -- and
+        // what came out was a solid lump that never flexed. Reported as "it's
+        // loading all frames at once" (user 2026-09-13). voxParse no longer
+        // composes a shape's extra models, so that path gives a clean frame 0
+        // now; this asks for all twelve instead.
+        //
+        // voxLoadAll IS THE RIGHT READER because the frames are the file's
+        // SIZE/XYZI pairs in order, and for a keyframed shape that order is the
+        // authored one -- checked against koi.vox's own node, whose model list
+        // is 0..11. Nothing here needs the graph: one shape means one
+        // translation, and every frame is centred on it.
+        loadFrames(world, lifeDir + "/koi.vox", &koi_, "koi");
         loadStrip(world, lifeDir + "/minnow", kSalmonFrames, &minnow_, "minnow");
-        fishHX_[3] = lastHX_; fishHY_[3] = lastHY_; fishHZ_[3] = lastHZ_;
         loadStrip(world, lifeDir + "/catfish", kSalmonFrames, &catfish_, "catfish");
-        fishHX_[4] = lastHX_; fishHY_[4] = lastHY_; fishHZ_[4] = lastHZ_;
         loadStrip(world, lifeDir + "/blue_gill", kSalmonFrames, &bluegill_, "blue gill");
-        fishHX_[5] = lastHX_; fishHY_[5] = lastHY_; fishHZ_[5] = lastHZ_;
 
         // THE DUCKS ARE TWO SINGLE MODELS, not strips -- base.vox is the mother
         // and baby.vox the duckling, and neither has a paddle cycle. A duck is
@@ -900,7 +1130,7 @@ class LakeLife {
                     continue;
                 }
                 int sx = 0, sy = 0, sz = 0;
-                const int m = world.addFlyerModel(mo, i ? "duckling" : "duck", &sx, &sy, &sz);
+                const int m = world.addFlyerModel(mo, i ? "duckling" : "duck", &sx, &sy, &sz, true);
                 if (m < 0) continue;
                 (i ? duckB_ : duckM_).push_back(m);
                 if (i) {
@@ -912,13 +1142,16 @@ class LakeLife {
                     duckHY_ = 0.5f * float(sy) * VOXEL_M;
                     duckHZ_ = 0.5f * float(sz) * VOXEL_M;
                 }
+                // ...AND THE DISC THAT MEETS A LILY PAD. A duck turns freely
+                // about Y, so the only footprint true at every heading is the
+                // circle round its longer half -- the same argument, and the
+                // same arithmetic, as lilyR_.
+                (i ? babyR_ : duckR_) = maxf(0.5f * float(sx) * VOXEL_M,
+                                             0.5f * float(sz) * VOXEL_M);
             }
         }
         ducks_.assign(size_t(kDuckCount + kBabyCount), Duck{});
         loadStrip(world, lifeDir + "/dragonfly", kDflyFrames, &dfly_, "dragonfly");
-        dflyHX_ = lastHX_;
-        dflyHY_ = lastHY_;
-        dflyHZ_ = lastHZ_;
 
         static const char *kPads[kLilyModels] = {"lillypad_small", "lillypad_medium",
                                                  "lillypad_large"};
@@ -940,6 +1173,12 @@ class LakeLife {
             // has to be taken off or the leaf is drawn beside its own position.
             lilyHX_.push_back(0.5f * float(sx) * VOXEL_M);
             lilyHZ_.push_back(0.5f * float(sz) * VOXEL_M);
+            // ...AND THE DISC THAT BOUNCES. A leaf spins freely (`th` is its
+            // own), so the only footprint that is true at every heading is the
+            // circle round its longest half -- which is what has to be kept off
+            // the sand. Plus a few centimetres, so the rim stops just short of
+            // the bank rather than exactly on it.
+            lilyR_.push_back(maxf(lilyHX_.back(), lilyHZ_.back()) + kLilyBankM);
         }
 
         fish_.resize(size_t(kSalmonCount + kBassCount + kKoiCount + kMinnowCount + kCatfishCount +
@@ -959,12 +1198,26 @@ class LakeLife {
     // -----------------------------------------------------------------------
     // ONE TICK. The field first, because everything else reads it.
     // -----------------------------------------------------------------------
-    void update(float dt, const VoxelTerrain &terrain, const Vec3 &player) {
+    // `look` is which way the player is FACING, for the birth cone -- see
+    // kBirthConeCos. Zero (the default) tests distance only, which is what the
+    // offline renders pass and why their reports are comparable across this
+    // change.
+    void update(float dt, const VoxelTerrain &terrain, const Vec3 &player,
+                const Vec3 &look = Vec3(0.0f, 0.0f, 0.0f)) {
         if (!ready_) return;
+        // BORROWED FOR THE TICK, so the things that FLOAT can ask for the water
+        // line at their own column -- see WaterField::exactTop. The duck is why
+        // it is a member: stepDuckBody is three calls deep and threading a
+        // terrain reference through all of them to answer one question is more
+        // signature than the question is worth.
+        terrain_ = &terrain;
         clock_ += dt;
+        // BEFORE ANYTHING ASKS. It is what decides whether this tick is allowed
+        // to put a creature down where you are looking -- see kBirthMinM.
+        birth_.tick(dt, player.x, player.z, look.x, look.z);
         if (field_.stale(player)) field_.rebuild(terrain, player);
         recycle(player, dt);
-        fill(player);
+        fill(terrain, player);
         // -- A CREATURE OUTSIDE THE FIELD HOLDS STILL, IT DOES NOT VANISH ---
         //
         // Steering reads WaterField::at, and outside the square that answers
@@ -1016,7 +1269,7 @@ class LakeLife {
         for (Fish &f : fish_)
             if (f.live && !field_.at(f.x, f.z) && field_.covers(f.x, f.z))
                 recoverFish(&f, dt);
-        for (Pad &p : pads_) if (p.live && inField(p.x, p.z)) stepPad(&p, dt);
+        for (Pad &p : pads_) if (p.live && inField(p.x, p.z)) stepPad(&p, dt, terrain);
         // MOTHERS FIRST, THEN THE LINE. A duckling steers at a spot behind its
         // leader, so the leader has to have moved this frame or the whole line
         // is chasing where the family was last frame -- which at four animals
@@ -1026,6 +1279,11 @@ class LakeLife {
                 stepDuck(&ducks_[i], uint32_t(i), dt, player);
         for (size_t i = 0; i < ducks_.size(); ++i)
             if (ducks_[i].live && ducks_[i].mom >= 0) stepDuckling(&ducks_[i], uint32_t(i), dt);
+        // AFTER THE WHOLE FAMILY HAS MOVED, not inside the step: a duckling is
+        // placed relative to a leader that has already moved this tick, so
+        // correcting one mid-line would be correcting a position the rest of the
+        // line has not been told about yet. Same reasoning as separateFish.
+        duckOffPads(dt);
         for (Dfly &d : flies_) if (d.live && inField(d.x, d.z)) stepDfly(&d, dt, player);
     }
 
@@ -1037,6 +1295,34 @@ class LakeLife {
     // between two unrelated objects, which is the one thing the band exists to
     // get right.
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // EVERY LIVE MEMBER, FOR --clip-test. See LifeAt in scene/collide.h.
+    //
+    // Appends rather than assigns: the check wants every population in one
+    // list, and a population that clears the vector is a population that hides
+    // the eight before it.
+    // -----------------------------------------------------------------------
+    void livePoints(std::vector<LifeAt> *out) const {
+        // THE LAKE IS EXPECTED TO BE CLEAN AND IS CHECKED ANYWAY. Nothing that
+        // lives here can meet a rock: scatter() refuses any column within eight
+        // voxels of the waterline, so a boulder is never in the water in the
+        // first place. That is an argument about another file, which is exactly
+        // the kind that stops being true without anybody editing this one.
+        // EVERY ONE OF THEM FLAGGED inWater. A fish swims in it, a duck floats
+        // at the line, a pad lies on it and a dragonfly works the surface a
+        // hand's breadth up -- all four are AT the water by definition, and the
+        // check that finds a land animal under it must not also find these.
+        for (const Fish &f : fish_)
+            if (f.live) out->push_back({Vec3(f.x, f.y, f.z), "fish", 0.2f, false, true});
+        for (const Duck &d : ducks_)
+            if (d.live) out->push_back({Vec3(d.x, d.y, d.z), "duck", 0.25f, false, true});
+        for (const Pad &p : pads_)
+            if (p.live) out->push_back({Vec3(p.x, p.y, p.z), "lilypad", 0.45f, false, true});
+        for (const Dfly &d : flies_)
+            if (d.live) out->push_back({Vec3(d.x, d.y, d.z), "dragonfly", 0.15f, false, true});
+    }
+
     void publish(World &world) {
         if (!ready_) return;
         const int base = kButterflySlots + kBirdSlots;
@@ -1123,6 +1409,57 @@ class LakeLife {
         return n;
     }
 
+    // How often a duck met a lily pad, and how often it was INSIDE one. Both
+    // are body-tick counts accumulated since the lake was loaded; the second
+    // must be zero. See duckOffPads.
+    // NOT named *near*. windows.h still defines near and far as empty macros
+    // from the segmented-memory era, so the parameter simply DISAPPEARS and the
+    // line below compiles as *= padNear_ -- reported as C2059 at the assignment,
+    // which names neither the macro nor the header. birds.h and app.h each
+    // carry this note already; this is the fourth time in the project.
+    void duckPads(long *nearN, long *clash, float *worst, float *closest) const {
+        *nearN = padNear_;
+        *clash = padClash_;
+        *worst = padWorst_;
+        // ...AND HOW CLOSE THE TWO POPULATIONS EVER ACTUALLY GET, which is the
+        // question that has to be answered before the two numbers above mean
+        // anything: a run where no duck was ever within twenty metres of a leaf
+        // reports zero clashes whatever the code does.
+        *closest = padClosest_;
+    }
+
+    // -----------------------------------------------------------------------
+    // WHERE THE BANK IS, for anything that lives BESIDE the water rather than
+    // in it.
+    //
+    // THE FROG IS THE ONLY CALLER and that is why this is here rather than in
+    // render/critters.h: the water field is 420 m of sampled columns this file
+    // already rebuilds and already owns, and a second population re-deriving
+    // "where is the lake" off the terrain would be a SECOND DEFINITION OF WET
+    // in the engine -- exactly the drift wetColumnAt exists to prevent.
+    //
+    // A SPOT IN THE WATER, THEN A STEP OUT OF IT. pick() lands IN the lake --
+    // it is what the fish spawn through -- and the walk outward from there is
+    // what makes this a bank rather than a puddle. v1 arrives at the same place
+    // from the other end: its DES_WATER is a SHORE RADIUS and not a wet test,
+    // "because a frog sits ON the bank, not in the lake".
+    void bankSpots(uint32_t seed, int want, std::vector<Vec3> *out) const {
+        out->clear();
+        if (!field_.built() || !field_.any()) return;
+        for (int k = 0; k < want * 8 && int(out->size()) < want; ++k) {
+            float wx = 0.0f, wz = 0.0f, top = 0.0f, bed = 0.0f;
+            if (!field_.pick(hashU32(seed, uint32_t(k)), &wx, &wz, &top, &bed)) return;
+            const float a = hashUnit(0x5A1u, hashU32(seed, uint32_t(k) * 13u + 7u)) * 6.2831853f;
+            for (int r = 1; r <= 8; ++r) {
+                const float bx = wx + cosf(a) * float(r);
+                const float bz = wz + sinf(a) * float(r);
+                if (field_.at(bx, bz)) continue;   // still in the lake
+                out->push_back(Vec3(bx, 0.0f, bz));
+                break;
+            }
+        }
+    }
+
     void census(int *byFish, int *pads, int *flies) const {
         for (int i = 0; i < kFishSpecies; ++i) byFish[i] = 0;
         *pads = *flies = 0;
@@ -1139,6 +1476,118 @@ class LakeLife {
         for (const Dfly &d : flies_) n += d.live;
         for (const Duck &d : ducks_) n += d.live;
         return n;
+    }
+
+    // -- WHERE THE NEAREST ONE IS, per population ----------------------------
+    //
+    // What /locate salmon, /locate duck and the rest are taken to. Four
+    // functions rather than one with a selector, because the four containers
+    // hold four unrelated structs and the only thing a selector would buy is
+    // one switch here instead of one switch in the caller.
+    //
+    // THE FISH IS THE ONLY ONE THAT ASKS WHICH. Six species share `fish_` and
+    // are told apart by `species`, laid out in the fill order at the top of
+    // fillAll -- 0 salmon, 1 bass, 2 koi, 3 minnow, 4 catfish, 5 blue gill.
+    // Pass -1 for any of them.
+    //
+    // XZ ONLY, like Bunnies::nearest and Bees::nearest: a catfish on the bed
+    // is not further off than a salmon at the surface above it, and the
+    // arrival is a spot on the shore either way -- see standNear in app.h.
+    bool nearestFish(const Vec3 &p, int species, Vec3 *at, float *dist) const {
+        float best = 1e30f;
+        for (const Fish &f : fish_) {
+            if (!f.live || (species >= 0 && f.species != species)) continue;
+            const float dx = f.x - p.x, dz = f.z - p.z;
+            const float d = dx * dx + dz * dz;
+            if (d >= best) continue;
+            best = d;
+            if (at) *at = Vec3(f.x, f.y, f.z);
+        }
+        if (best > 1e29f) return false;
+        if (dist) *dist = sqrtf(best);
+        return true;
+    }
+
+    // A MOTHER, NOT A DUCKLING. The three in the line are hers and are within
+    // a couple of metres of her, so sending the player to whichever of the
+    // four happens to be nearest would be the same trip with a worse aim.
+    bool nearestDuck(const Vec3 &p, Vec3 *at, float *dist) const {
+        float best = 1e30f;
+        for (const Duck &d : ducks_) {
+            if (!d.live || d.mom >= 0) continue;
+            const float dx = d.x - p.x, dz = d.z - p.z;
+            const float q = dx * dx + dz * dz;
+            if (q >= best) continue;
+            best = q;
+            if (at) *at = Vec3(d.x, d.y, d.z);
+        }
+        if (best > 1e29f) return false;
+        if (dist) *dist = sqrtf(best);
+        return true;
+    }
+
+    bool nearestPad(const Vec3 &p, Vec3 *at, float *dist) const {
+        float best = 1e30f;
+        for (const Pad &q : pads_) {
+            if (!q.live) continue;
+            const float dx = q.x - p.x, dz = q.z - p.z;
+            const float d = dx * dx + dz * dz;
+            if (d >= best) continue;
+            best = d;
+            if (at) *at = Vec3(q.x, q.y, q.z);
+        }
+        if (best > 1e29f) return false;
+        if (dist) *dist = sqrtf(best);
+        return true;
+    }
+
+    bool nearestDfly(const Vec3 &p, Vec3 *at, float *dist) const {
+        float best = 1e30f;
+        for (const Dfly &d : flies_) {
+            if (!d.live) continue;
+            const float dx = d.x - p.x, dz = d.z - p.z;
+            const float q = dx * dx + dz * dz;
+            if (q >= best) continue;
+            best = q;
+            if (at) *at = Vec3(d.x, d.y, d.z);
+        }
+        if (best > 1e29f) return false;
+        if (dist) *dist = sqrtf(best);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // THAT ONE IS DEAD -- this population's half of a kill. See the same method
+    // in render/butterflies.h for the whole of the reasoning; `i` is the index
+    // within THIS population's run of the instance band and App::killLifeAt
+    // does the arithmetic.
+    // -----------------------------------------------------------------------
+    // FOUR POPULATIONS IN ONE RUN, in publish()'s own order: fish, pads,
+    // dragonflies, ducks. A PAD IS NOT ALIVE and lifeAtSlot never offers one,
+    // but this refuses it anyway -- the two tables are in different files and
+    // only one of them can be the authority on what a slot holds.
+    bool killSlot(int i) {
+        if (i < 0) return false;
+        if (size_t(i) < fish_.size()) {
+            if (!fish_[size_t(i)].live) return false;
+            fish_[size_t(i)] = Fish{};
+            return true;
+        }
+        i -= int(fish_.size());
+        if (size_t(i) < pads_.size()) return false;   // a lily pad is not life
+        i -= int(pads_.size());
+        if (size_t(i) < flies_.size()) {
+            if (!flies_[size_t(i)].live) return false;
+            flies_[size_t(i)] = Dfly{};
+            return true;
+        }
+        i -= int(flies_.size());
+        if (size_t(i) < ducks_.size()) {
+            if (!ducks_[size_t(i)].live) return false;
+            ducks_[size_t(i)] = Duck{};
+            return true;
+        }
+        return false;
     }
 
   private:
@@ -1201,6 +1650,12 @@ class LakeLife {
         // dying the shrink-out, and dying < 0 means "not leaving" rather than
         // zero, because zero is the first frame of a departure.
         float age = 0.0f, dying = -1.0f;
+        // GIVING UP A SLOT ON PURPOSE, which is not the same as being out of
+        // range -- see yieldSite. It has to be a field of its own because
+        // recycle() CANCELS a fade whenever the creature is back inside the
+        // drop radius, and a retiring pad never left it.
+        bool retire = false;
+        float stuck = 0.0f;  // seconds aground with nowhere to go -- kLilyStuckSec
         float x = 0, y = 0, z = 0;
         float th = 0;        // the MODEL's spin -- independent of where it drifts
         float spin = 0;
@@ -1224,6 +1679,7 @@ class LakeLife {
         bool live = false;
         int cx = 0, cz = 0;        // the site it belongs to -- see siteOf
         float age = 0.0f, dying = -1.0f;   // see the note on Fish
+        bool retire = false;               // ...and see Pad::retire
         float x = 0, y = 0, z = 0;
         float hx = 0, hz = 0;   // its home stretch of water
         float th = 0, wantTh = 0;
@@ -1732,18 +2188,62 @@ class LakeLife {
     // v1's mother: eight rays of edge avoidance, a gentle wander when nothing is
     // in range, and a wind-up guard so a duck in an inlet does not circle. See
     // the note over kDuckCount for the argument behind each.
+    // How wide a body is, for the one thing it can bump into. See kDuckPadPushM.
+    float duckRadius(const Duck &d) const { return d.mom < 0 ? duckR_ : babyR_; }
+
+    // IS A LILY PAD IN THIS CIRCLE? Asked of every live leaf, which is
+    // twenty-four distance tests -- the pads are a flat array and there is
+    // nothing here worth a grid for.
+    bool padAt(float x, float z, float r) const {
+        for (const Pad &q : pads_) {
+            if (!q.live) continue;
+            const float dx = x - q.x, dz = z - q.z;
+            const float rr = r + padRadius(q.model);
+            if (dx * dx + dz * dz < rr * rr) return true;
+        }
+        return false;
+    }
+
+    // ...AND THE SAME QUESTION THE OTHER WAY ROUND, for the spawn. Neither of
+    // these two may be PUT DOWN on the other -- the push would sort it out over
+    // half a second, but half a second of a duck sitting in a leaf is exactly
+    // the picture this is here to prevent, and a site nobody is standing on is
+    // one cell away.
+    bool duckAt(float x, float z, float r) const {
+        for (const Duck &e : ducks_) {
+            if (!e.live) continue;
+            const float dx = x - e.x, dz = z - e.z;
+            const float rr = r + duckRadius(e);
+            if (dx * dx + dz * dz < rr * rr) return true;
+        }
+        return false;
+    }
+
     void stepDuck(Duck *d, uint32_t i, float dt, const Vec3 &player) {
         // -- PROACTIVE EDGE AVOIDANCE ----------------------------------------
         //
         // The first DRY sample on each ray pushes back, weighted so a near bank
         // shoves harder than a far one. Summing eight of those gives a direction
         // into open water without any one of them having to be right.
+        //
+        // ...AND A LILY PAD IS A BANK AS FAR AS THIS FAN IS CONCERNED (user
+        // 2026-09-14: "have ducks go around lillypads, not clip right through
+        // them"). One clause, in the one place that already asks "can I go this
+        // way" -- so a leaf turns her a metre and a half out, with the same
+        // near-shoves-harder weighting, and the line behind her follows her
+        // round it. Adding a second, separate avoider for pads would have given
+        // the mother two opinions about her heading to average.
+        //
+        // THE PROBE CARRIES HER OWN WIDTH, so a gap between two leaves she does
+        // not fit through is not read as a way out.
         float rx = 0.0f, rz = 0.0f;
+        const float body = duckRadius(*d);
         for (int k = 0; k < 8; ++k) {
             const float a = float(k) * 0.785398f;
             const float sa = sinf(a), ca = cosf(a);
             for (float q = kDuckSeeMin; q <= kDuckSeeMax; q += kDuckSeeStep) {
-                if (field_.at(d->x + sa * q, d->z + ca * q)) continue;
+                const float px = d->x + sa * q, pz = d->z + ca * q;
+                if (field_.at(px, pz) && !padAt(px, pz, body)) continue;
                 const float w = (kDuckSeeMax + 0.2f) - q;
                 rx -= sa * w;
                 rz -= ca * w;
@@ -1820,28 +2320,123 @@ class LakeLife {
         // lately" rather than "since it was born".
         d->turnAcc = d->turnAcc * expf(-0.48f * dt) + d->om * dt;
 
-        const float nx = d->x + sinf(d->th) * spd * dt;
-        const float nz = d->z + cosf(d->th) * spd * dt;
+        // -- THE STEP, AND WHERE IT GOES IF IT CANNOT BE TAKEN -------------
+        //
+        // The avoidance above is a SOFT term and can be out-voted by the line;
+        // this is the hard rule, and it keeps a duck off the bank AND off a
+        // lily pad. A duckling has no fan at all -- one rule is what makes a
+        // line rather than three ducklings converging on a point -- so for
+        // three of every four bodies in a family this is the whole of it.
+        //
+        // IT SLIDES BEFORE IT GIVES UP, which is the fish's rule and was
+        // learned there the hard way: a refused step that only adds a turn
+        // becomes a SPIN once several headings are refused at once, and a
+        // spinning leader whips its whole formation round itself. Trying the
+        // same speed a little either side is what turns "stopped dead against a
+        // leaf" into "went round it".
+        const float off[5] = {0.0f, kDuckSlideA, -kDuckSlideA, kDuckSlideB, -kDuckSlideB};
+        const float r = duckRadius(*d);
         float topM = 0.0f;
-        if (field_.at(nx, nz, &topM)) {
+        bool moved = false;
+        for (int k = 0; k < 5 && !moved; ++k) {
+            const float th = d->th + off[k];
+            const float nx = d->x + sinf(th) * spd * dt;
+            const float nz = d->z + cosf(th) * spd * dt;
+            if (!field_.at(nx, nz, &topM)) continue;
+            if (padAt(nx, nz, r)) continue;
             d->x = nx;
             d->z = nz;
-        } else {
-            // The avoidance above is a SOFT term and can be out-voted by the
-            // line; this is the hard rule that keeps a duck on water.
+            moved = true;
+        }
+        if (!moved) {
             d->th += 2.5f * dt;
             field_.at(d->x, d->z, &topM);
         }
         // IT SITS ON THE WATER AND RIDES IT. kDuckSway is v1's: half the swell,
         // so it moves with the surface without pumping.
+        //
+        // ...AND ON THE SURFACE AT HER OWN COLUMN, for the reason the lily pad
+        // does -- see WaterField::exactTop. She floats, so a two-metre sample
+        // of a stepped surface sinks her by the size of the step.
+        {
+            float exact = topM;
+            if (terrain_ && WaterField::exactTop(*terrain_, padMemo_, d->x, d->z, &exact))
+                topM = exact;
+        }
         const float want = topM + kDuckSway * kDuckBobM * sinf(clock_ * 1.1f + float(d->sib));
         d->y += (want - d->y) * (1.0f - expf(-4.0f * dt));
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND AFTER EVERYTHING HAS MOVED, NOTHING IS INSIDE A LEAF.
+    //
+    // SEPARATION HAS TO BE POSITIONAL, NOT STEERED. The salmon taught this file
+    // that once already -- a steering term is what makes a body LEAN away and is
+    // most of what reads as life, but it cannot promise anything, because a duck
+    // turns at a finite rate and a pad drifts along underneath it at its own
+    // pace with no idea anyone is there.
+    //
+    // THE DUCK MOVES AND THE PAD DOES NOT, deliberately. Shoving the leaf would
+    // look better for exactly one frame and would then have to answer for where
+    // it put it: the whole of scene/shore.h exists to guarantee a pad is never
+    // over sand, and a duck herding leaves onto a bank would be arguing with it.
+    //
+    // RATE-LIMITED, because resolving a big overlap in one frame is a teleport.
+    // In the steady state the fan and the step test keep the overlap to about a
+    // centimetre a frame and the cap never binds.
+    // -----------------------------------------------------------------------
+    void duckOffPads(float dt) {
+        if (pads_.empty()) return;
+        // EVERY LIVE PAIR IS MEASURED, not only the overlapping ones -- see
+        // duckPads. The push below still only touches the ones that overlap.
+        const float cap = kDuckPadPushM * dt;
+        for (Duck &d : ducks_) {
+            if (!d.live) continue;
+            const float r = duckRadius(d);
+            for (const Pad &q : pads_) {
+                if (!q.live) continue;
+                const float dx = d.x - q.x, dz = d.z - q.z;
+                const float rr = r + padRadius(q.model);
+                const float d2 = dx * dx + dz * dz;
+                // -- AND THIS IS WHERE IT IS COUNTED ------------------------
+                //
+                // A clash is a body-ticks number, not an event: "how often is
+                // some part of a duck inside some leaf" is the thing that was
+                // reported and the thing that has to go to zero. The ENCOUNTERS
+                // are counted beside it, because 0 clashes over a run where
+                // nothing ever came near a pad says nothing at all -- it is the
+                // ratio that means something. See the offline lake report.
+                padClosest_ = minf(padClosest_, maxf(0.0f, sqrtf(d2) - rr));
+                if (d2 < (rr + kDuckNearPadM) * (rr + kDuckNearPadM)) ++padNear_;
+                if (d2 >= rr * rr) continue;
+                const float l = sqrtf(d2);
+                ++padClash_;
+                padWorst_ = maxf(padWorst_, rr - l);
+                // Dead centre has no direction to leave by; her own heading is
+                // as good an answer as any and it does not divide by zero.
+                const float ux = l > 1e-4f ? dx / l : sinf(d.th);
+                const float uz = l > 1e-4f ? dz / l : cosf(d.th);
+                const float push = minf(rr - l, cap);
+                const float nx = d.x + ux * push, nz = d.z + uz * push;
+                // ONTO WATER ONLY. Pushing a duck out of a leaf and into the
+                // bank is not an improvement.
+                if (!field_.at(nx, nz)) continue;
+                d.x = nx;
+                d.z = nz;
+            }
+        }
     }
 
     // =======================================================================
     // THE LILY PADS.
     // =======================================================================
-    void stepPad(Pad *p, float dt) {
+
+    float padRadius(int model) const {
+        const size_t mi = size_t(model);
+        return mi < lilyR_.size() ? lilyR_[mi] : 0.3f;
+    }
+
+    void stepPad(Pad *p, float dt, const VoxelTerrain &terrain) {
         // The spin is FREE and has nothing to do with the drift -- the JS
         // engine keeps `th` and `mth` apart for exactly this, and a pad whose
         // nose follows its drift reads as a boat.
@@ -1887,15 +2482,66 @@ class LakeLife {
         if (!field_.at(p->x + sinf(p->mth) * 3.0f, p->z + cosf(p->mth) * 3.0f))
             p->mth += kLilyShoreTurn * dt;
 
-        const float nx = p->x + sinf(p->mth) * kLilyDrift * dt;
-        const float nz = p->z + cosf(p->mth) * kLilyDrift * dt;
+        const float wantX = p->x + sinf(p->mth) * kLilyDrift * dt;
+        const float wantZ = p->z + cosf(p->mth) * kLilyDrift * dt;
+
+        // -- THE BROAD PHASE: IS THERE A BANK ANYWHERE NEAR THIS LEAF -------
+        //
+        // Eight field samples at three metres. If every one of them is water
+        // the nearest shore is further off than a pad travels in a frame (0.11
+        // m/s, so under two millimetres), and the exact test below -- nine
+        // terrain columns, twice -- is not worth running.
+        bool nearBank = false;
+        for (int k = 0; k < kShoreRimSamples && !nearBank; ++k) {
+            const float a = float(k) * (6.2831853f / float(kShoreRimSamples));
+            if (!field_.at(p->x + sinf(a) * kLilyNearBankM, p->z + cosf(a) * kLilyNearBankM))
+                nearBank = true;
+        }
+
         float topM = 0.0f;
-        if (field_.at(nx, nz, &topM)) {
-            p->x = nx;
-            p->z = nz;
-            // IT FLOATS, so its underside sits ON the surface rather than in
-            // it. The model's own half height is what keeps a thick pad from
-            // being half drowned.
+        if (!nearBank) {
+            if (field_.at(wantX, wantZ, &topM)) {
+                p->x = wantX;
+                p->z = wantZ;
+                // IT FLOATS, so its underside sits ON the surface rather than
+                // in it. The model's own half height is what keeps a thick pad
+                // from being half drowned.
+                p->y = topM;
+            }
+            return;
+        }
+
+        // -- THE NARROW PHASE: EXACTLY WHERE THE WATER ENDS -----------------
+        //
+        // Asked of the terrain, per column, over the leaf's whole footprint --
+        // and asked by scene/shore.h, which is where it lives so that a test can
+        // drive it without a device. A leaf is a Floater and nothing about this
+        // is particular to a lily: anything that drifts on water and must not
+        // end up in the sand wants exactly this.
+        Floater fl;
+        fl.x = p->x;
+        fl.z = p->z;
+        fl.mth = p->mth;
+        fl.spin = p->spin;
+        const ShoreHit hit = driftFloater(terrain, padMemo_, &fl, padRadius(p->model),
+                                          kLilyDrift * dt, kLilyPushM * dt, kLilyBounceSpin,
+                                          kLilySpinMax * 1.5f);
+        // A LEAF THAT CANNOT GET BACK ON THE WATER IS NOT SOMETHING TO KEEP
+        // PUSHING. See kLilyStuckSec.
+        p->stuck = (hit == ShoreHit::Aground) ? p->stuck + dt : 0.0f;
+        if (p->stuck > kLilyStuckSec) p->retire = true;
+        p->x = fl.x;
+        p->z = fl.z;
+        p->mth = fl.mth;
+        p->spin = fl.spin;
+        // THE SURFACE COMES FROM THE TERRAIN, AT THE LEAF'S OWN COLUMN.
+        // See WaterField::exactTop for why the field's two-metre cell is not
+        // good enough for something that FLOATS. The field is still what says
+        // whether there is water here at all -- a pad off the edge of it keeps
+        // the height it had rather than dropping to the bed.
+        if (field_.at(p->x, p->z, &topM)) {
+            float exact = topM;
+            if (WaterField::exactTop(terrain, padMemo_, p->x, p->z, &exact)) topM = exact;
             p->y = topM;
         }
     }
@@ -2133,11 +2779,29 @@ class LakeLife {
     // =======================================================================
     // Uniform, so the 3x3 stays a rotation times a number -- the tracer
     // normalises it back for the normal. Exactly the butterflies' form.
+    // -- IT SHRINKS OUT AND IT DOES NOT GROW IN -----------------------------
+    //
+    // "The lillypads are still just appearing in. They're doing this effect
+    // where they start off small and grow in size until full sized has been
+    // reached. Fix." (user 2026-09-14.)
+    //
+    // The grow-in was the butterflies' own treatment, copied here when the
+    // complaint was about things VANISHING, and the two halves are not
+    // symmetrical. A departure happens at a hundred and eighty metres, where
+    // the whole animal is a pixel and the fade is genuinely invisible. An
+    // arrival happens wherever the nearest free site is -- and eight tenths of a
+    // second of something swelling from 8% of its size is MOTION, which is the
+    // one thing the eye is built to catch. It made every birth more visible
+    // than the pop it was hiding.
+    //
+    // So a creature arrives at its full size and leaves by shrinking, and what
+    // stops the arrival being seen is the spawn rule instead: outside thirty
+    // metres and outside the view cone, which is where the guarantee belongs.
+    // See kBirthConeCos.
     static float fadeOf(float age, float dying) {
-        const float in = saturate(age / kLakeFadeSec);
-        const float sm = in * in * (3.0f - 2.0f * in);          // smoothstep
+        (void)age;
         const float out = dying >= 0.0f ? saturate(1.0f - dying / kLakeFadeSec) : 1.0f;
-        return kLakeFadeMin + (1.0f - kLakeFadeMin) * sm * out;
+        return kLakeFadeMin + (1.0f - kLakeFadeMin) * out;
     }
 
     // -- ...AND IT LEAVES OVER MOST OF A SECOND, NOT BETWEEN TWO FRAMES -----
@@ -2175,8 +2839,10 @@ class LakeLife {
         // belonging to that cell, and recycling it on its own position would
         // free a site that is plainly still in view. Fish have no site to
         // return to once they are swimming, so they are judged where they are.
-        for (Pad &p : pads_) if (p.live) age(far2(p.sx, p.sz), &p.age, &p.dying, &p.live);
-        for (Dfly &d : flies_) if (d.live) age(far2(d.hx, d.hz), &d.age, &d.dying, &d.live);
+        for (Pad &p : pads_)
+            if (p.live) age(p.retire || far2(p.sx, p.sz), &p.age, &p.dying, &p.live);
+        for (Dfly &d : flies_)
+            if (d.live) age(d.retire || far2(d.hx, d.hz), &d.age, &d.dying, &d.live);
         // THE FAMILY IS JUDGED BY THE MOTHER. A duckling holds a spot behind
         // her, so its distance from the player is hers to within a metre --
         // and letting the two be recycled independently is how you get three
@@ -2261,6 +2927,12 @@ class LakeLife {
                 const float ex = st.x - player.x, ez = st.z - player.z;
                 st.d2 = ex * ex + ez * ez;
                 if (st.d2 > kLakePlaceM * kLakePlaceM) continue;
+                // ...AND NOT UNDER YOUR NOSE. See kBirthMinM: a site inside the
+                // floor is a real site and stays a candidate -- it is simply
+                // not one a creature may be BORN into while you are stood next
+                // to it. Waived for a tick after a teleport, when there is no
+                // previous frame to pop against.
+                if (!birth_.mayAt(ex, ez)) continue;
                 if (!field_.at(st.x, st.z, &st.top, &st.bed)) continue;
                 if (st.top - st.bed < minDepthM) continue;
                 sites_.push_back(st);
@@ -2352,7 +3024,7 @@ class LakeLife {
     // relative to its leader, because a school is one thing.
     // -----------------------------------------------------------------------
     void fillFish(const Vec3 &player, size_t lo, size_t hi, int species,
-                  const std::vector<int> &strip, float cellM, uint32_t salt, bool schools) {
+                  const std::vector<FishFrame> &strip, float cellM, uint32_t salt, bool schools) {
         if (strip.empty()) return;
         bool gathered = false;
         for (size_t i = lo; i < hi; ++i) {
@@ -2411,7 +3083,7 @@ class LakeLife {
         }
     }
 
-    void fill(const Vec3 &player) {
+    void fill(const VoxelTerrain &terrain, const Vec3 &player) {
         if (!field_.any()) return;
 
         // ---- the four fish, two of which school -------------------------
@@ -2455,9 +3127,17 @@ class LakeLife {
                     gatherSites(player, kDuckCellM, kDuckSalt, 0.5f);
                     gatheredDucks = true;
                 }
-                const Site *st = freeSite([&](int cx, int cz) {
-                    return claimed(ducks_, cx, cz, [](const Duck &e) { return e.mom < 0; });
-                });
+                // ...AND NOT ON TOP OF A LEAF. Her brood is laid out behind
+                // her and may still land on one; that is what duckOffPads is
+                // for, and a duckling easing out of a leaf over half a second
+                // as it is born is invisible in a way a mother sitting in one
+                // is not.
+                const Site *st = nullptr;
+                while ((st = freeSite([&](int cx, int cz) {
+                            return claimed(ducks_, cx, cz,
+                                           [](const Duck &e) { return e.mom < 0; });
+                        })) != nullptr)
+                    if (!padAt(st->x, st->z, duckR_)) break;
                 if (!st) break;
                 const uint32_t h = hashU32(kDuckSalt ^ uint32_t(i), uint32_t(clock_ * 7.0f));
                 m = Duck{};
@@ -2494,11 +3174,31 @@ class LakeLife {
                 gatherSites(player, kPadCellM, kPadSalt, 0.15f);
                 gatheredPads = true;
             }
-            const Site *st = freeSite([&](int cx, int cz) {
-                return claimed(pads_, cx, cz, [](const Pad &) { return true; });
-            });
+            // -- AND THE LEAF HAS TO FIT, WHICH IS NOT WHAT THE SITE SAYS ---
+            //
+            // A site is accepted on the field's two-metre cell, so a site can
+            // be wet and still be a place where half a lily pad is over sand --
+            // the same gap stepPad's narrow phase exists for. A pad put down
+            // there would spend its life being pushed back out, so it is not
+            // put down there: the next site along is tried instead.
+            //
+            // THE MODEL IS DRAWN FIRST, because the radius that has to fit is
+            // that model's. It is a hash of the CELL, so drawing it here gives
+            // the same leaf the claim below does.
+            const Site *st = nullptr;
+            uint32_t h = 0;
+            int model = 0;
+            while ((st = freeSite([&](int cx, int cz) {
+                        return claimed(pads_, cx, cz, [](const Pad &) { return true; });
+                    })) != nullptr) {
+                h = hashU32(kPadSalt ^ uint32_t(st->cx), uint32_t(st->cz));
+                model = int(hashUnit(0x21u, h) * float(lily_.size())) % int(lily_.size());
+                if (discOnWater(terrain, padMemo_, st->x, st->z, padRadius(model), nullptr,
+                                nullptr) &&
+                    !duckAt(st->x, st->z, padRadius(model)))
+                    break;
+            }
             if (!st) break;
-            const uint32_t h = hashU32(kPadSalt ^ uint32_t(st->cx), uint32_t(st->cz));
             p = Pad{};
             p.live = true;
             p.cx = st->cx;
@@ -2508,12 +3208,26 @@ class LakeLife {
             p.x = st->x;
             p.z = st->z;
             p.y = st->top;
-            p.model = int(hashUnit(0x21u, h) * float(lily_.size())) % int(lily_.size());
+            p.model = model;
             p.th = hashUnit(0x22u, h) * 6.2831853f;
             // Its own rate AND its own direction -- two pads turning together
             // reads as a mechanism.
             p.spin = (hashUnit(0x23u, h) - 0.5f) * 2.0f * kLilySpinMax;
             p.mth = hashUnit(0x24u, h) * 6.2831853f;
+        }
+
+        // ---- ...and every few seconds, one slot moves to better water -----
+        //
+        // AFTER the pads and BEFORE the flies only because it has to be
+        // somewhere; each population is judged against its own lattice. It runs
+        // on a clock rather than per frame because gatherSites is a 39 x 39
+        // sweep and nothing here changes in a tenth of a second.
+        if (clock_ >= yieldAt_) {
+            yieldAt_ = clock_ + kYieldEverySec;
+            if (!lily_.empty()) yieldSite(pads_, player, kPadCellM, kPadSalt,
+                                          [](const Pad &) { return true; });
+            if (!dfly_.empty()) yieldSite(flies_, player, kDflyCellM, kDflySalt,
+                                          [](const Dfly &) { return true; });
         }
 
         // ---- and the dragonflies ------------------------------------------
@@ -2544,6 +3258,94 @@ class LakeLife {
             d.phase = hashUnit(0x32u, h) * 6.2831853f;
         }
     }
+
+    // -----------------------------------------------------------------------
+    // ...AND ONE SLOT MAY MOVE TO BETTER WATER. See kYieldMarginM.
+    //
+    // The floor alone is only half the fix. A population is a fixed number of
+    // slots over an unbounded lattice: walk from one pond to another and the
+    // first pond's pads hold every slot until they pass the drop radius, so the
+    // pond you are standing in is EMPTY -- and then, the moment those pads
+    // finally die, the freed slots take the nearest free sites, which are the
+    // ones at your feet. That is the whole mechanism behind "I saw lillypads
+    // just appear in front of me", and the floor would merely have moved the
+    // arrival from twelve metres to thirty.
+    //
+    // So a holder that is much further away than an unclaimed site gives up:
+    // it starts the ordinary fade, at a distance where that fade is what it was
+    // measured for, and its slot comes back for the near site a second later.
+    //
+    // ONE PER PASS, on a timer rather than per frame. A lake that is suddenly
+    // better than the one behind you should refill over a few seconds, the way
+    // it would have if you had walked to it -- not swap its whole population
+    // between two frames.
+    //
+    // MEASURED FROM THE SITE for a pad and a dragonfly, which is the same point
+    // recycle() judges them at, or the two rules would disagree about which one
+    // is furthest.
+    // -----------------------------------------------------------------------
+    template <typename V, typename OwnsF>
+    void yieldSite(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns) {
+        for (int n = 0; n < kYieldPerPass; ++n)
+            if (!yieldOne(v, player, cellM, salt, owns)) return;
+    }
+
+    // One retirement, or false when there is nothing worth retiring for. The
+    // caller runs it a few times a pass -- see kYieldPerPass.
+    template <typename V, typename OwnsF>
+    bool yieldOne(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns) {
+        gatherSites(player, cellM, salt, 0.15f);
+        const Site *want = nullptr;
+        for (const Site &st : sites_) {
+            if (claimed(v, st.cx, st.cz, owns)) continue;   // sorted, nearest first
+            // -- AND IT HAS TO BE WATER WITH NOTHING IN IT ------------------
+            //
+            // WITHOUT THIS THE RULE NEVER STOPS FIRING. The lattice is nine
+            // metres, so on any lake there is ALWAYS an unclaimed site a few
+            // metres from a claimed one -- and every one of them is nearer than
+            // the far half of the population, so a slot was being retired and
+            // re-placed every two seconds for ever. That is a pad quietly
+            // appearing somewhere twice a minute with nothing wrong, which is
+            // the other half of what "the lillypads are still just appearing
+            // in" was.
+            //
+            // What the rule is FOR is water that has nothing in it at all --
+            // the pond you walked to while the pond behind you held every slot.
+            // So the site has to be LONELY before it is worth a slot, and a
+            // lake that already has pads near that spot is left alone.
+            bool lonely = true;
+            for (const auto &e : v) {
+                if (!e.live) continue;
+                const float dx = siteXOf(e) - st.x, dz = siteZOf(e) - st.z;
+                if (dx * dx + dz * dz < kYieldLonelyM * kYieldLonelyM) { lonely = false; break; }
+            }
+            if (!lonely) continue;
+            want = &st;
+            break;
+        }
+        if (!want) return false;
+        const float ds = sqrtf(want->d2);
+
+        int worst = -1;
+        float worstD = 0.0f;
+        for (size_t i = 0; i < v.size(); ++i) {
+            if (!v[i].live || v[i].retire) continue;
+            const float dx = siteXOf(v[i]) - player.x, dz = siteZOf(v[i]) - player.z;
+            const float d = sqrtf(dx * dx + dz * dz);
+            if (d > worstD) { worstD = d; worst = int(i); }
+        }
+        if (worst < 0 || worstD < ds + kYieldMarginM) return false;
+        v[size_t(worst)].retire = true;
+        return true;
+    }
+
+    // Where a pad and a dragonfly are JUDGED from -- their site, not where they
+    // have drifted or flown to. One overload each so yieldSite stays one
+    // function; recycle() makes the same distinction by hand.
+    static float siteXOf(const Pad &e) { return e.sx; }
+    static float siteZOf(const Pad &e) { return e.sz; }
+    static float siteXOf(const Dfly &e) { return e.hx; }
+    static float siteZOf(const Dfly &e) { return e.hz; }
 
     // The nearest site nobody has taken, or null. POPPED: taking one removes it
     // from the list, so the next slot in the same pass cannot pick it again
@@ -2622,12 +3424,12 @@ class LakeLife {
         // ONE FUNCTION, TWO SPECIES. The only thing a bass does differently is
         // wear a different strip -- everything else about it, down to the basis
         // built from its swim direction, is the salmon's.
-        const std::vector<int> &strip = f.species == 5   ? bluegill_
-                                       : f.species == 4 ? catfish_
-                                       : f.species == 3 ? minnow_
-                                       : f.species == 2 ? koi_
-                                       : f.species == 1 ? bass_
-                                                        : salmon_;
+        const std::vector<FishFrame> &strip = f.species == 5   ? bluegill_
+                                             : f.species == 4 ? catfish_
+                                             : f.species == 3 ? minnow_
+                                             : f.species == 2 ? koi_
+                                             : f.species == 1 ? bass_
+                                                              : salmon_;
         if (!f.live || strip.empty()) {
             world.setFlyerInstance(slot, 0, nullptr, 0, 0, 0, nullptr, false);
             return;
@@ -2660,12 +3462,25 @@ class LakeLife {
         // ...and the same correction as the pads: a corner, not a centre. A
         // fish is a metre long, so half of it is half a metre of error in
         // whichever direction it happens to be swimming.
-        const size_t spi = size_t(f.species & (kFishSpecies - 1));
-        const float ox = m[0] * fishHX_[spi] + m[1] * fishHY_[spi] + m[2] * fishHZ_[spi];
-        const float oy = m[3] * fishHX_[spi] + m[4] * fishHY_[spi] + m[5] * fishHZ_[spi];
-        const float oz = m[6] * fishHX_[spi] + m[7] * fishHY_[spi] + m[8] * fishHZ_[spi];
-        world.setFlyerInstance(slot, strip[size_t(fi)], m, f.x - ox, f.y - oy, f.z - oz, nullptr,
-                               true);
+        //
+        // THIS FRAME'S HALF-BOX, NOT THE SPECIES'. See the note over FishFrame:
+        // a swim frame's box changes width with the tail, so one stored
+        // half-box for the whole strip walks the fish sideways every beat.
+        const FishFrame &fr = strip[size_t(fi)];
+        const float ox = m[0] * fr.hx + m[1] * fr.hy + m[2] * fr.hz;
+        const float oy = m[3] * fr.hx + m[4] * fr.hy + m[5] * fr.hz;
+        const float oz = m[6] * fr.hx + m[7] * fr.hy + m[8] * fr.hz;
+        // THE ANIMAL, NOT ITS BOX -- and here the two ALREADY AGREE. This
+        // publish subtracts exactly the half-box place() adds back, frame by
+        // frame, so the derived centre lands on this point to the last bit and
+        // the anchor changes no pixel today. It is passed anyway, because that
+        // agreement is a coincidence of two separate pieces of arithmetic
+        // staying in step, and the perched songbirds are what it looks like
+        // when they stop: 0.15 m of motion vector on a bird that had not moved.
+        // See World::place.
+        const float anchor[3] = {f.x, f.y, f.z};
+        world.setFlyerInstance(slot, fr.model, m, f.x - ox, f.y - oy, f.z - oz, nullptr, true,
+                               nullptr, anchor);
     }
 
     void putPad(World &world, int slot, const Pad &p) const {
@@ -2695,7 +3510,14 @@ class LakeLife {
         const float hzz = mi < lilyHZ_.size() ? lilyHZ_[mi] : 0.0f;
         const float ox = m[0] * hxx + m[2] * hzz;
         const float oz = m[6] * hxx + m[8] * hzz;
-        world.setFlyerInstance(slot, lily_[mi], m, p.x - ox, p.y, p.z - oz, nullptr, true);
+        // THE LEAF, NOT ITS BOX -- see the note in putFish. The y is the one
+        // that does not cancel here: the pad is drawn from its underside rather
+        // than its middle, so the derived centre sits half a leaf's thickness
+        // above the water line. A constant, so it never moved anything; this
+        // makes it the water line, which is where the pad is.
+        const float anchor[3] = {p.x, p.y, p.z};
+        world.setFlyerInstance(slot, lily_[mi], m, p.x - ox, p.y, p.z - oz, nullptr, true, nullptr,
+                               anchor);
     }
 
     void putDfly(World &world, int slot, const Dfly &d) const {
@@ -2713,11 +3535,26 @@ class LakeLife {
         yawMat(d.th, m);
         const float k = fadeOf(d.age, d.dying);
         for (int i = 0; i < 9; ++i) m[i] *= k;
-        const float ox = m[0] * dflyHX_ + m[1] * dflyHY_ + m[2] * dflyHZ_;
-        const float oy = m[3] * dflyHX_ + m[4] * dflyHY_ + m[5] * dflyHZ_;
-        const float oz = m[6] * dflyHX_ + m[7] * dflyHY_ + m[8] * dflyHZ_;
-        world.setFlyerInstance(slot, dfly_[size_t(fi)], m, d.x - ox, d.y - oy, d.z - oz, nullptr,
-                               true);
+        // ITS OWN FRAME'S HALF-BOX TOO, though for the dragonfly it changes
+        // NOTHING: all six of its frames are 7 voxels wide, so its box never
+        // moved and it never had the fish's wobble. Measured, not assumed --
+        // and it goes through the same path anyway so that a re-authored wing
+        // beat that DID resize the box could not quietly reintroduce it.
+        const FishFrame &dr = dfly_[size_t(fi)];
+        const float ox = m[0] * dr.hx + m[1] * dr.hy + m[2] * dr.hz;
+        const float oy = m[3] * dr.hx + m[4] * dr.hy + m[5] * dr.hz;
+        const float oz = m[6] * dr.hx + m[7] * dr.hy + m[8] * dr.hz;
+        // THE ANIMAL, NOT ITS BOX -- and here the two ALREADY AGREE. This
+        // publish subtracts exactly the half-box place() adds back, frame by
+        // frame, so the derived centre lands on this point to the last bit and
+        // the anchor changes no pixel today. It is passed anyway, because that
+        // agreement is a coincidence of two separate pieces of arithmetic
+        // staying in step, and the perched songbirds are what it looks like
+        // when they stop: 0.15 m of motion vector on a bird that had not moved.
+        // See World::place.
+        const float anchor[3] = {d.x, d.y, d.z};
+        world.setFlyerInstance(slot, dr.model, m, d.x - ox, d.y - oy, d.z - oz, nullptr, true,
+                               nullptr, anchor);
     }
 
     void putDuck(World &world, int slot, const Duck &d) const {
@@ -2739,8 +3576,13 @@ class LakeLife {
         const float ox = m[0] * hx + m[1] * hy + m[2] * hz;
         const float oy = m[3] * hx + m[4] * hy + m[5] * hz;
         const float oz = m[6] * hx + m[7] * hy + m[8] * hz;
-        world.setFlyerInstance(slot, mdl[0], m, d.x - ox, d.y - oy + hy * 0.45f, d.z - oz, nullptr,
-                               true);
+        // THE DUCK, NOT ITS BOX -- see the note in putFish. Hers carries the
+        // deliberate 0.45 of a half-box that sits her IN the surface, which is
+        // a constant and so never moved anything either; the anchor is her, at
+        // the waterline.
+        const float anchor[3] = {d.x, d.y, d.z};
+        world.setFlyerInstance(slot, mdl[0], m, d.x - ox, d.y - oy + hy * 0.45f + kDuckRideM,
+                               d.z - oz, nullptr, true, nullptr, anchor);
     }
 
     // -----------------------------------------------------------------------
@@ -2748,13 +3590,45 @@ class LakeLife {
     // engine skips it by name; loading it would put a still pose in the middle
     // of the cycle once per second.
     // -----------------------------------------------------------------------
-    // The half-box of the last strip loaded, so the callers below can hand
-    // place() a corner instead of a centre. See putPad for what goes wrong
-    // otherwise -- it is the same trap the pause room's buttons hit.
-    float lastHX_ = 0.0f, lastHY_ = 0.0f, lastHZ_ = 0.0f;
+    // A STRIP OUT OF ONE FILE, for art keyframed in MagicaVoxel rather than
+    // exported to numbered files. loadStrip's sibling: same output, same
+    // half-box bookkeeping, different packaging.
+    //
+    // BOTH OF THEM RECORD THE HALF-BOX PER FRAME. There used to be one
+    // `lastHX_` here, carrying whatever the LAST frame happened to measure, and
+    // the caller copied it into a per-species slot -- so eleven frames of every
+    // strip were centred on a twelfth frame's box. See the note over FishFrame
+    // for what that looked like.
+    // -----------------------------------------------------------------------
+    static FishFrame frameOf(int model, int sx, int sy, int sz) {
+        FishFrame f;
+        f.model = model;
+        f.hx = 0.5f * float(sx) * VOXEL_M;
+        f.hy = 0.5f * float(sy) * VOXEL_M;
+        f.hz = 0.5f * float(sz) * VOXEL_M;
+        return f;
+    }
 
-    void loadStrip(World &world, const std::string &dir, int frames, std::vector<int> *out,
-                   const char *what) {
+    void loadFrames(World &world, const std::string &path, std::vector<FishFrame> *out,
+                    const char *what) {
+        std::vector<VoxModel> mo;
+        std::string err;
+        if (!voxLoadAll(path, &mo, &err)) {
+            std::fprintf(stderr, "v2: %s %s: %s -- skipped\n", what, path.c_str(),
+                         err.c_str());
+            return;
+        }
+        for (const VoxModel &m : mo) {
+            int sx = 0, sy = 0, sz = 0;
+            const int id = world.addFlyerModel(m, what, &sx, &sy, &sz, true);
+            if (id < 0) { out->clear(); return; }
+            out->push_back(frameOf(id, sx, sy, sz));
+        }
+        std::printf("  lake     %s %zu frames out of one file\n", what, mo.size());
+    }
+
+    void loadStrip(World &world, const std::string &dir, int frames,
+                   std::vector<FishFrame> *out, const char *what) {
         // NOT `mo(size_t(frames))`. That is the most vexing parse: `size_t(frames)`
         // reads as a PARAMETER DECLARATION, so `mo` becomes a function
         // declaration and every use of it below fails with errors that name
@@ -2772,12 +3646,9 @@ class LakeLife {
         }
         for (int f = 0; f < frames; ++f) {
             int sx = 0, sy = 0, sz = 0;
-            const int m = world.addFlyerModel(mo[size_t(f)], what, &sx, &sy, &sz);
+            const int m = world.addFlyerModel(mo[size_t(f)], what, &sx, &sy, &sz, true);
             if (m < 0) { out->clear(); return; }
-            lastHX_ = 0.5f * float(sx) * VOXEL_M;
-            lastHY_ = 0.5f * float(sy) * VOXEL_M;
-            lastHZ_ = 0.5f * float(sz) * VOXEL_M;
-            out->push_back(m);
+            out->push_back(frameOf(m, sx, sy, sz));
         }
     }
 
@@ -2786,22 +3657,36 @@ class LakeLife {
     WaterField field_;
     std::vector<Site> sites_;   // the candidate list, reused between passes
     Site held_{};               // what freeSite last handed back
-    std::vector<int> salmon_, bass_, koi_, minnow_, catfish_, bluegill_, dfly_, lily_;
-    std::vector<float> lilyHalf_, lilyHX_, lilyHZ_;
-    // PER SPECIES. Four fish of four sizes share one putFish, and the half-box
-    // it takes off is the model's own -- a koi is twice a minnow, so one number
-    // for all of them would draw two of the four in the wrong place.
-    // EIGHT, NOT FOUR, AND THE MASK BELOW IS WHY. putFish indexes this by
-    // species through `& (kFishSpecies - 1)`; at four entries a fifth fish
-    // silently folded onto the salmon's half-box and would have been drawn half
-    // a salmon out of place, with nothing to say so.
-    static constexpr int kFishSpecies = 8;   // a power of two: see the mask in putFish
-    float fishHX_[kFishSpecies] = {}, fishHY_[kFishSpecies] = {}, fishHZ_[kFishSpecies] = {};
-    float dflyHX_ = 0.0f, dflyHY_ = 0.0f, dflyHZ_ = 0.0f;
+    std::vector<FishFrame> salmon_, bass_, koi_, minnow_, catfish_, bluegill_, dfly_;
+    // The pads are not a strip -- three separate models, one picked per pad --
+    // and they already carry their own extents in lilyHX_/lilyHZ_ below.
+    std::vector<int> lily_;
+    std::vector<float> lilyHalf_, lilyHX_, lilyHZ_, lilyR_;
+    // Kept across pads and across frames rather than made per call: it is a
+    // cache that validates itself, and consecutive rim samples of one leaf are
+    // centimetres apart.
+    TerrainMemo padMemo_;
+    // Borrowed for the length of one update() -- see the note there.
+    const VoxelTerrain *terrain_ = nullptr;
+    BirthGate birth_;
+    float yieldAt_ = 0.0f;
+    long padNear_ = 0, padClash_ = 0;
+    float padWorst_ = 0.0f, padClosest_ = 1e9f;
+    // HOW MANY KINDS OF FISH THERE ARE, and a power of two because the only
+    // readers left mask with it -- see census(), which counts the live ones.
+    //
+    // IT USED TO SIZE A PER-SPECIES HALF-BOX, and the note here used to explain
+    // why eight rather than four: a fifth fish folding onto the salmon's entry
+    // would have been drawn half a salmon out of place with nothing to say so.
+    // That table is gone -- the half-box belongs to the FRAME now, and the
+    // frame carries it (see FishFrame) -- so a new fish cannot be mis-sized by
+    // forgetting to widen anything.
+    static constexpr int kFishSpecies = 8;
     std::vector<Fish> fish_;
     std::vector<Duck> ducks_;
     std::vector<int> duckM_, duckB_;   // the two models: mother, duckling
     float duckHX_ = 0.0f, duckHY_ = 0.0f, duckHZ_ = 0.0f;
+    float duckR_ = 0.25f, babyR_ = 0.15f;
     float babyHX_ = 0.0f, babyHY_ = 0.0f, babyHZ_ = 0.0f;
     std::vector<Pad> pads_;
     std::vector<Dfly> flies_;

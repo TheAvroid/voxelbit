@@ -107,7 +107,31 @@ inline constexpr float kFlyGRefFallM = 0.9f; // 9 vox/s -- the ground memory's l
 inline constexpr float kFlyClimbM = 3.4f;    // 34 vox/s -- floors are approached, not snapped
 inline constexpr float kFlyUpCapM = 3.0f;    // 30 vox/s
 inline constexpr float kFlyDownCapM = 2.6f;  // 26 vox/s
-inline constexpr float kFlyLookM = 1.3f;     // la5 13 -- flyers see obstacles early
+// -- HOW FAR AHEAD IT LOOKS, AND WHY 1.3 WAS NOT FAR ENOUGH ----------------
+//
+// (user 2026-09-14: "they are ramming into trees endlessly.")
+//
+// 1.3 m is v1's la5, and at v1's speed it was most of a second of warning. Here
+// it is 0.23 s: the butterfly flies at 5.6 m/s, decides at 15 Hz, and eases its
+// turn in over about a tenth of a second on purpose -- so by the time the bank
+// has any authority the trunk is already inside the look. It would refuse the
+// step (see flySlide) and then press against the bark while its heading came
+// round, which is exactly what "ramming into trees" looks like.
+//
+// A TIME, NOT A DISTANCE. What a flyer needs is a fixed number of SECONDS of
+// warning, so a chase at 1.5x speed sees proportionally further -- see lookM().
+// 0.55 s is a little over twice the old warning at cruise and about three turn
+// time-constants, which is enough for the ease to finish rather than start.
+inline constexpr float kFlyLookSec = 0.55f;
+inline constexpr float kFlyLookMinM = 1.3f;  // la5 13 -- and still the floor
+inline constexpr float kFlyLookM = 1.3f;     // the GATHER radius; see the update loop
+// How far off its own centre a butterfly is probed -- see solidsTouch. Its
+// wings are the widest part of it and they are about 40 cm across.
+inline constexpr float kFlyBodyR = 0.2f;
+// ...and how big a thing it goes OVER rather than round -- see solidsFloor.
+// Its cruise is 2.0 m and its band is 2.4 deep, so four metres is a stone it
+// would fly over and anything taller is scenery it goes round.
+inline constexpr float kFlyRiseM = 4.0f;
 inline constexpr float kFlyFadeSec = 0.7f;   // grow in over 0.7 s rather than pop
 inline constexpr float kFlyFadeMin = 0.12f;  // ...from this much of full size
 
@@ -219,6 +243,11 @@ inline constexpr float kFlyPairDropM = 45.0f;
 inline constexpr float kFlyChaseMin = 6.0f, kFlyChaseMax = 14.0f;
 inline constexpr float kFlyChaseCool = 5.0f;
 inline constexpr float kFlyChaseYaw = 4.2f;
+// HOW HARD IT TURNS WHEN SOMETHING ACTUALLY STOPPED IT. Above the 5.0 the
+// look-ahead uses, because that one is an anticipation and this one is a
+// collision: at 5.6 m/s and 6.5 rad/s the turn radius is 0.86 m, which clears a
+// birch trunk in a third of a turn.
+inline constexpr float kFlyBlockedOm = 6.5f;
 inline constexpr float kFlyChaseSpd = 1.22f;
 
 // ---------------------------------------------------------------------------
@@ -257,7 +286,11 @@ class Butterflies {
   public:
     // How many are wanted in the air. Slots past what the world can house
     // simply stay empty; see kFlyerInstances for the ceiling the structure has.
-    int wanted = 24;
+    // The app sets this from Options::butterflies at load (12, halved on
+    // request 2026-09-14); this default is what a caller that never asks gets.
+    int wanted = 12;
+    // Where a butterfly may START being. See kBirthMinM in core/noise.h.
+    BirthGate birth_;
 
     // -----------------------------------------------------------------------
     // Six colours of eight frames, and a colour is committed WHOLE.
@@ -298,7 +331,7 @@ class Butterflies {
             for (int f = 0; f < kFlyFrames; ++f) {
                 int sx = 0, sy = 0, sz = 0;
                 const std::string what = dir + "/" + kColours[c];
-                const int m = world.addFlyerModel(frames[size_t(f)], what, &sx, &sy, &sz);
+                const int m = world.addFlyerModel(frames[size_t(f)], what, &sx, &sy, &sz, true);
                 if (m < 0) break;
                 // THE FRAMES SHARE A BOX or the body walks sideways as the
                 // wings beat. They are authored that way -- every frame of
@@ -359,6 +392,9 @@ class Butterflies {
         // its own integration, for the same reason.
         const float h = minf(dt, 0.25f);
 
+        // BEFORE fill, which asks it. See kBirthMinM: the same floor the lake,
+        // the rabbits and the perched songbirds are born outside.
+        birth_.tick(dt, player.x, player.z);
         recycle(player);
         fill(world, player);
         pairUp();
@@ -366,12 +402,41 @@ class Butterflies {
         for (int i = 0; i < int(flies_.size()); ++i) {
             Fly &b = flies_[size_t(i)];
             if (!b.live) continue;
+            // -- ONE GATHER, TWO READERS, AND IT MOVED UP HERE TO GET THAT ---
+            //
+            // This used to be the first line of decide(), which runs on the
+            // slow clock -- so by the time fly() ran for this butterfly,
+            // solids_ held the wood around whichever OTHER butterfly last
+            // thought. That was harmless while only decide() read it and is
+            // not harmless now that the flight itself has to be stopped by
+            // something.
+            //
+            // IT IS THE GATHER THAT IS CHEAP AND THE PROBE THAT IS NOT. This
+            // is a handful of chunk lookups and a distance test per solid;
+            // insideWorld walks the list it produces, five or six times per
+            // think. Widening the list to save gathers would have made the
+            // probes cost ten times what the gathers ever did, which is the
+            // trade the 2.8 m radius exists to keep.
+            world.collidersNear(b.p, lookM(b) + 1.5f, &solids_);
             if (t_ >= b.think) {
                 b.think = t_ + double(kFlyThinkSec);
                 decide(world, player, b);
             }
             fly(h, b);
         }
+    }
+
+
+    // -----------------------------------------------------------------------
+    // EVERY LIVE MEMBER, FOR --clip-test. See LifeAt in scene/collide.h.
+    //
+    // Appends rather than assigns: the check wants every population in one
+    // list, and a population that clears the vector is a population that hides
+    // the eight before it.
+    // -----------------------------------------------------------------------
+    void livePoints(std::vector<LifeAt> *out) const {
+        for (const Fly &b : flies_)
+            if (b.live) out->push_back({b.p, "butterfly", kFlyBodyR, false});
     }
 
     // How many are flying with somebody. The offline report prints it: a
@@ -454,7 +519,15 @@ class Butterflies {
             // and gets the same p - prev this used to hand over, from the one
             // place that cannot forget to. The FLAP is passed, because no
             // transform describes it -- the pose changed underneath one.
-            world.setFlyerInstance(i, model, m, b.p.x - ox, b.p.y - oy, b.p.z - oz, flap, true);
+            // THE INSECT, NOT ITS BOX -- and here the two already agree: all
+            // eight poses share one 5 x 6 x 4 box and the line above subtracts
+            // exactly what place() adds back, fade included (it is a uniform
+            // scale, so it divides out of both sides). Passed anyway, for the
+            // reason the note in World::place gives: the perched songbirds are
+            // what it looks like when that agreement quietly stops holding.
+            const float anchor[3] = {b.p.x, b.p.y, b.p.z};
+            world.setFlyerInstance(i, model, m, b.p.x - ox, b.p.y - oy, b.p.z - oz, flap, true,
+                                   nullptr, anchor);
         }
         world.flushFlyerInstances();
     }
@@ -504,6 +577,26 @@ class Butterflies {
         return n;
     }
     int colourCount() const { return int(colours_.size()); }
+
+    // -----------------------------------------------------------------------
+    // THAT ONE IS DEAD -- the population's half of a kill.
+    //
+    // (user 2026-09-14: "when killing life, the life breaks apart into multiple
+    // pieces".) render/lifehit.h owns the blow, the flash and the carcass; this
+    // is the one thing it cannot do, because whether a member is alive is this
+    // file's own business. `i` is the index within THIS population's run of the
+    // instance band -- App::killLifeAt does the arithmetic.
+    //
+    // THE SLOT IS FREED, NOT BLANKED. Retiring it is what every other escape in
+    // this file does, and the spawner refills it wherever it likes next -- v1
+    // goes further and marks the slot slain for the session, which needs a
+    // notion of a population roster this engine does not have.
+    // -----------------------------------------------------------------------
+    bool killSlot(int i) {
+        if (i < 0 || size_t(i) >= flies_.size() || !flies_[size_t(i)].live) return false;
+        flies_[size_t(i)] = Fly{};
+        return true;
+    }
 
   private:
     // -- one insect ---------------------------------------------------------
@@ -747,7 +840,14 @@ class Butterflies {
                 hm.cz = cz;
                 if (!homeOf(cx, cz, &hm.x, &hm.z)) continue;
                 const float ddx = hm.x - player.x, ddz = hm.z - player.z;
-                if (ddx * ddx + ddz * ddz > kFlySpawnM * kFlySpawnM) continue;
+                const float dd2 = ddx * ddx + ddz * ddz;
+                if (dd2 > kFlySpawnM * kFlySpawnM) continue;
+                // ...AND NOT IN YOUR FACE. A home inside the floor is still a
+                // real home; it is simply not one an insect may be born into
+                // while you are stood at it. The keep radius is 80 m and this
+                // is 30, so there is a band 46 m wide to be born in. See
+                // kBirthMinM -- one number for every population in the engine.
+                if (!birth_.may(dd2)) continue;
                 bool taken = false;
                 for (const Fly &b : flies_)
                     if (b.live && b.hcx == cx && b.hcz == cz) {
@@ -779,6 +879,24 @@ class Butterflies {
             cand_[k] = cand_.back();
             cand_.pop_back();
 
+            // -- NOT INSIDE THE TREE STANDING ON IT ------------------------
+            //
+            // A home is a point on a 12.8 m lattice and the only thing ever
+            // asked of it was whether it is over water. The butterfly is born
+            // two to four metres up, which in a pine wood is trunk -- so a
+            // handful of them started their lives inside one and flew out
+            // under the escape clause in flySlide. Five frames of it per
+            // minute, which is exactly the size of thing a check finds and an
+            // eye does not.
+            //
+            // AT THE BIRTH POINT AND ONLY AT THE MOMENT OF BIRTH. fill()
+            // returns before any of this when the population is full, so this
+            // gather costs nothing on the frames where nothing is born, which
+            // is nearly all of them. The list is gathered by COLUMN -- a
+            // collidersNear is an XZ query -- so one call covers the whole
+            // band this butterfly might be born anywhere in.
+            world.collidersNear(Vec3(hm.x, hm.ground + kFlyCruiseM, hm.z), 3.0f, &solids_);
+
             b = Fly{};
             b.live = true;
             b.hx = hm.x;
@@ -808,6 +926,26 @@ class Butterflies {
             b.ground = hm.ground;
             b.gRef = hm.ground;
             b.p = Vec3(hm.x, hm.ground + kFlyCruiseM + b.lift, hm.z);
+            // -- ...AND NOT INSIDE THE THING STANDING ON ITS HOME -----------
+            //
+            // TESTED AT THE HEIGHT IT IS ACTUALLY BORN AT, which is why this
+            // sits here and not up beside the gather where it was written
+            // first. `lift` is rolled eight lines above and is up to 2.4 m, so
+            // a check at the bare cruise line is a check of a point the
+            // butterfly is never at: it passed the clear air under a boulder's
+            // dome and put the insect in the stone above it. Three frames a
+            // minute, which is one butterfly born wrong and taking half a
+            // second to climb out.
+            //
+            // THE SLOT IS GIVEN BACK RATHER THAN SPENT. `free` is not
+            // decremented and the candidate has already been removed from the
+            // list, so the next pass round this loop takes a different home --
+            // the population fills a frame later instead of one short.
+            if (solidsTouch(solids_.data(), int(solids_.size()), b.p.x, b.p.y, b.p.z, kFlyBodyR,
+                            VOXEL_M)) {
+                b = Fly{};
+                continue;
+            }
             // Materialises mid-flap wherever the clock happens to be, and with
             // no step behind it: its first frame has no history to describe.
             b.pose = b.poseWas = poseNow(b);
@@ -828,13 +966,23 @@ class Butterflies {
     // the flight stepping.
     // -----------------------------------------------------------------------
     void decide(World &world, const Vec3 &player, Fly &b) {
-        world.collidersNear(b.p, kFlyLookM + 1.5f, &solids_);
         WalkWorld w;
         w.terrain = &world.terrain;
         w.solids = solids_.data();
         w.solidCount = int(solids_.size());
 
-        b.ground = world.terrain.heightM(b.p.x, b.p.z);
+        // THE GROUND UNDER IT, AND A ROCK IS GROUND.
+        //
+        // terrain.heightM cannot see a model, so over a five-metre boulder this
+        // answered the height of the dirt the boulder is standing in -- and
+        // every one of the three altitude authorities below is written against
+        // it. The butterfly then held a line two metres over that dirt, which
+        // is three metres inside the stone, and its obstacle steering could not
+        // help: turning away from something you are already inside only decides
+        // which wall you leave through. Same fault, same one-line shape, in
+        // four other species -- see Critters::flyFloor.
+        b.ground = solidsFloor(solids_.data(), int(solids_.size()), b.p.x, b.p.z, VOXEL_M,
+                               world.terrain.heightM(b.p.x, b.p.z), kFlyRiseM);
         // Never ease UP into the canopy. The JS engine probes twice here
         // because a gappy pine crown fooled one of them.
         b.roofed = insideWorld(w, Vec3(b.p.x, b.p.y + 0.3f, b.p.z)) ||
@@ -896,20 +1044,50 @@ class Butterflies {
         // A flyer sees an obstacle EARLY so the eased turn has room -- there is
         // no last-moment snap in this, and that is deliberate: a butterfly that
         // corners like a car reads as a machine.
+        const float look = lookM(b);
         const float hx = sinf(b.th), hz = cosf(b.th);
-        const bool ahead = insideWorld(w, b.p + Vec3(hx, 0.0f, hz) * kFlyLookM) ||
-                           insideWorld(w, b.p + Vec3(hx * 0.7f, 0.1f, hz * 0.7f));
+        // -- PROBED ALONG THE LANE, NOT JUST AT THE END OF IT --------------
+        //
+        // Two points at 1.0 and 0.7 of the look left a hole in the middle: a
+        // trunk at 0.4 of it was past the near probe and short of the far one,
+        // so the butterfly saw nothing, flew on, and met it. Three evenly
+        // spaced samples over the whole look close that -- and the thinnest
+        // thing in this world is a 0.4 m birch trunk, so a third of a 3 m look
+        // is still fine enough to catch one.
+        const auto blocked = [&](float th, float f) {
+            const Vec3 d = dirOf(th);
+            for (int k = 1; k <= 3; ++k)
+                if (insideWorld(w, b.p + d * (look * f * float(k) / 3.0f))) return true;
+            return false;
+        };
+        const bool ahead = blocked(b.th, 1.0f) || insideWorld(w, b.p + Vec3(hx, 0.1f, hz) * 0.5f);
         if (ahead) {
-            const bool pFree = !insideWorld(w, b.p + dirOf(b.th + 1.0f) * kFlyLookM);
-            const bool nFree = !insideWorld(w, b.p + dirOf(b.th - 1.0f) * kFlyLookM);
-            if (pFree && !nFree) b.omT = 5.0f;
+            // THE WIDER FAN IS TRIED FIRST AND THE NARROW ONE SECOND. A
+            // butterfly that only ever considers +-1 rad turns into the tree
+            // NEXT to the one it is avoiding about as often as not, which reads
+            // as bouncing down a row of trunks. Asking the open side at a full
+            // right angle first gives it somewhere to actually go.
+            const bool pWide = !blocked(b.th + 1.6f, 1.0f);
+            const bool nWide = !blocked(b.th - 1.6f, 1.0f);
+            const bool pFree = !blocked(b.th + 1.0f, 1.0f);
+            const bool nFree = !blocked(b.th - 1.0f, 1.0f);
+            if (pWide && !nWide) b.omT = 5.0f;
+            else if (nWide && !pWide) b.omT = -5.0f;
+            else if (pFree && !nFree) b.omT = 5.0f;
             else if (nFree && !pFree) b.omT = -5.0f;
             else if (!pFree && !nFree)
                 // Cornered in a dense pocket of canopy -- swing back toward the
                 // way it came, on whichever side is open at all.
-                b.omT = !insideWorld(w, b.p + dirOf(b.th + 2.4f) * 0.9f) ? 6.4f : -6.4f;
+                b.omT = !blocked(b.th + 2.4f, 0.4f) ? 6.4f : -6.4f;
             else
                 b.omT = b.om >= 0.0f ? 5.0f : -5.0f;
+            // AND IT DOES NOT DRIFT BACK ON THE NEXT WANDER ROLL. The wander
+            // re-rolls omT every 0.4-1.2 s from pure noise, so a turn started
+            // to miss a tree could be overwritten by a shrug before it had
+            // finished -- and then the butterfly simply flew into the tree it
+            // had begun to avoid. Holding the roll off for a third of a second
+            // is long enough for the bank to have done its work.
+            b.tRe = maxd(b.tRe, t_ + 0.35);
         }
     }
 
@@ -929,8 +1107,49 @@ class Butterflies {
 
         const float spd = kFlySpeed * (t_ < b.fleeT ? kFlyFleeMul : 1.0f) *
                           (b.chase >= 0 ? kFlyChaseSpd : 1.0f);
-        b.p.x += sinf(b.th) * spd * dt;
-        b.p.z += cosf(b.th) * spd * dt;
+        // -- ...AND THE STEERING IS NOT A GUARANTEE ------------------------
+        //
+        // The look-ahead above is the good part of this and it stays: seeing an
+        // obstacle 1.3 m out and easing round it is what makes a butterfly read
+        // as an animal rather than as a machine bouncing off a wall. But it
+        // decides at 15 Hz and flies at the frame rate, it eases its turn on
+        // purpose, and a chase overrides the leash -- so it CAN cut a corner,
+        // and a rule that is usually obeyed is not the rule that was asked for.
+        // The refusal below never fires on an open lane and costs a few voxel
+        // reads when it does.
+        const bool went =
+            flySlide(solids_.data(), int(solids_.size()), VOXEL_M, kFlyBodyR, &b.p.x, &b.p.y,
+                     &b.p.z, b.p.x + sinf(b.th) * spd * dt, b.p.y, b.p.z + cosf(b.th) * spd * dt);
+        // -- A REFUSED STEP IS THE BEST INFORMATION THIS ANIMAL EVER GETS ---
+        //
+        // And it was being thrown away. The return value went unread, so a
+        // butterfly with a trunk in front of it slid along the bark at full
+        // speed, waited up to 67 ms for its next think, saw the obstacle with a
+        // look that was too short, and began a turn it eased into over another
+        // tenth of a second -- through all of which it was still pressed
+        // against the tree. That is the whole of "ramming into trees
+        // endlessly": not a steering failure, a steering system that was never
+        // told the steering had failed.
+        //
+        // THREE THINGS AT ONCE, and all three are needed:
+        //
+        //   turn NOW      om is SET rather than eased toward omT. The ease is
+        //                 what makes an ordinary course change read as a bank
+        //                 and it stays for those; a wall is not a course
+        //                 change.
+        //   think NOW     the next decide() is pulled to this frame, so the
+        //                 fan below picks a genuinely open heading instead of
+        //                 the animal guessing for another 67 ms.
+        //   pick a SIDE   and keep it. Alternating would rock it against the
+        //                 trunk; the sign it already had is the side it was
+        //                 leaning, and a stationary one gets the hash.
+        if (!went) {
+            const float side = (b.om != 0.0f) ? (b.om > 0.0f ? 1.0f : -1.0f)
+                                              : ((rnd(&b.rng) < 0.5f) ? -1.0f : 1.0f);
+            b.om = side * kFlyBlockedOm;
+            b.omT = b.om;
+            b.think = t_;   // decide() on the next tick of the loop, not in 67 ms
+        }
 
         // -- the altitude, and it is three authorities in order --------------
         //
@@ -946,15 +1165,71 @@ class Butterflies {
         const float cruise = b.gRef + kFlyCruiseM + b.lift + bob;
         float step = (cruise - b.p.y) * (1.0f - expf(-4.0f * dt));
         step = clampf(step, -kFlyDownCapM * dt, kFlyUpCapM * dt);
-        if (!(step > 0.0f && b.roofed)) b.p.y += step;
+        // The climb is refused by the canopy (roofed) and the descent by the
+        // thing underneath it, which is what stops the servo easing a butterfly
+        // down into the top of a rock it is legitimately flying over.
+        if (!(step > 0.0f && b.roofed)) {
+            // BOTH WAYS, and the first cut only guarded the descent on the
+            // argument that `roofed` already stopped the climb. It does not
+            // quite: roofed is decided on the slow clock and probes two fixed
+            // points 30 and 60 cm up, so a branch that arrives between two
+            // thinks is climbed into. The escape term is the same one flySlide
+            // carries -- a butterfly that is already inside something must
+            // always be allowed to move, or the guard becomes the trap.
+            const float ny = b.p.y + step;
+            if (!solidsTouch(solids_.data(), int(solids_.size()), b.p.x, ny, b.p.z, kFlyBodyR,
+                             VOXEL_M) ||
+                solidsContain(solids_.data(), int(solids_.size()), b.p.x, b.p.y, b.p.z, VOXEL_M))
+                b.p.y = ny;
+        }
         // Then the two floors, APPROACHED at climb speed and never snapped to:
         // the memory's, so it does not sink while the memory is still high, and
         // the local ground's, which is absolute.
+        //
+        // -- AND THESE TWO ARE STEPS, WHICH IS THE WHOLE POINT --------------
+        //
+        // They were the last unguarded writes to a butterfly's position, and
+        // they were missed twice: once because they only ever RAISE the insect,
+        // which sounds safe, and once more because the servo above them is the
+        // line that looks like the altitude rule. Raising is not safe. `ground`
+        // is sampled on the slow clock and both floors are absolute -- so a
+        // butterfly that has drifted under a boulder's shoulder is lifted
+        // toward a line above the stone, at 3.4 m/s, straight up through it.
+        //
+        // Three creature-frames a minute at 0.7 m in, at one rock in the pine
+        // wood, in the same place in every run. Deterministic, invisible, and
+        // the only reason it is written down here is that --clip-test kept
+        // printing the same coordinate after two other theories had been tried
+        // and were wrong.
         const float soft = b.gRef + kFlyFloorM + 0.1f;
-        if (b.p.y < soft) b.p.y = minf(soft, b.p.y + kFlyClimbM * dt);
+        if (b.p.y < soft) b.p.y = riseTo(b, minf(soft, b.p.y + kFlyClimbM * dt));
         const float hard = b.ground + kFlyFloorM;
-        if (b.p.y < hard) b.p.y = minf(hard, b.p.y + kFlyClimbM * dt);
+        if (b.p.y < hard) b.p.y = riseTo(b, minf(hard, b.p.y + kFlyClimbM * dt));
     }
+
+    // A height this butterfly may be at, given where it is now: `want` if that
+    // is clear, its own y if it is not, and `want` regardless if the insect is
+    // already buried -- flySlide's escape clause, in the one place that cannot
+    // call flySlide because it is moving on one axis only.
+    float riseTo(const Fly &b, float want) const {
+        if (!solidsTouch(solids_.data(), int(solids_.size()), b.p.x, want, b.p.z, kFlyBodyR,
+                         VOXEL_M))
+            return want;
+        if (solidsContain(solids_.data(), int(solids_.size()), b.p.x, b.p.y, b.p.z, VOXEL_M))
+            return want;
+        return b.p.y;
+    }
+
+    // HOW FAR AHEAD IT LOOKS: a fixed number of SECONDS at whatever speed it is
+    // actually doing. See kFlyLookSec -- a chase runs 1.5x and has to see 1.5x
+    // as far, or the only time a butterfly is fast is the only time it is blind.
+    float lookM(const Fly &b) const {
+        const float spd = kFlySpeed * (t_ < b.fleeT ? kFlyFleeMul : 1.0f) *
+                          (b.chase >= 0 ? kFlyChaseSpd : 1.0f);
+        return maxf(kFlyLookMinM, spd * kFlyLookSec);
+    }
+
+    static double maxd(double a, double b) { return a > b ? a : b; }
 
     static Vec3 dirOf(float th) { return Vec3(sinf(th), 0.0f, cosf(th)); }
     // The shortest way round to an angle, in (-PI, PI].

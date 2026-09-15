@@ -163,7 +163,10 @@ struct ColumnStack {
                 const uint8_t tm = t.topMaterial(i0 + lx, j0 + lz, hc, slope, memo);
                 top[padIdx(lx, lz)] = tm;
                 sr[padIdx(lx, lz)] = t.strandRows(i0 + lx, j0 + lz, tm, memo);
-                bm[padIdx(lx, lz)] = t.bladeMaterial(i0 + lx, j0 + lz);
+                // THE HEIGHT DECIDES THE RAMP, so it is handed the row count
+                // cached on the line above -- a tall blade has gone over to
+                // straw and wears mat::WHEAT_0 in either wood.
+                bm[padIdx(lx, lz)] = t.bladeMaterial(i0 + lx, j0 + lz, sr[padIdx(lx, lz)]);
             }
 
         crestTime = t.waveTime;

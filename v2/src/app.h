@@ -12,9 +12,11 @@
 //            full length. The image converges under you while you stand still.
 //
 // CONTROLS follow the earlier engines deliberately, so the muscle memory
-// carries between them. ESC always takes two presses -- the first gives the
-// mouse back, the second quits -- because a rule that is only sometimes true is
-// worse than one that is never true.
+// carries between them. ESC IS A LADDER OF THREE: the first press gives the
+// mouse back, the second steps into the pause room, the third switches the
+// picture off and leaves. Each rung is a smaller commitment than the one above
+// it, and every one of them is reachable from the one before -- see the note at
+// the key itself.
 //
 // WHAT THE FRAMEWORK REPLACED. v2 owned a GLFW window, a fixed-function OpenGL
 // blit, a hand-rolled GDI text panel and a settings menu drawn as characters
@@ -75,6 +77,10 @@
 #include "render/audio.h"
 #include "render/camera.h"
 #include "render/arrows.h"
+#include "render/bees.h"
+#include "render/critters.h"
+#include "render/particles.h"
+#include "render/lifehit.h"
 #include "render/birds.h"
 #include "render/butterflies.h"
 #include "render/drops.h"
@@ -294,7 +300,7 @@ struct Options {
     // Opens the water panel on the first frame, so --shot-ui can photograph it
     // with no window and no keystroke. Same trick menuAtStart is for.
     bool waterPanelAtStart = false;
-    bool roomAtStart = false;   // --room: open the pause room on the first frame
+    bool roomAtStart = false;   // --room: put the pause buttons up once spawned
     // Everything but the world reflection -- see kWFDefault in Shared.slang,
     // which is where this number is explained. Kept as a literal because
     // app.h does not include the shader header.
@@ -483,6 +489,7 @@ struct Options {
     std::string axe = "C:/voxelbit/game/assets/stone_tools/stone_axe.vox";
     std::string pick = "C:/voxelbit/game/assets/stone_tools/stone_pick.vox";
     std::string shovel = "C:/voxelbit/game/assets/stone_tools/stone_shovel.vox";
+    std::string hoe = "C:/voxelbit/game/assets/stone_tools/stone_hoe.vox";
     std::string bow = "C:/voxelbit/game/assets/stone_tools/bow_arrow/bow/base.vox";
     std::string arrow = "C:/voxelbit/game/assets/stone_tools/bow_arrow/arrow.vox";
     bool axeOn = true;
@@ -498,7 +505,12 @@ struct Options {
     std::string butterflyDir = "C:/voxelbit/game/assets/life/butterfly";
     // The three species' folders sit under this one -- see Birds::init.
     std::string birdDir = "C:/voxelbit/game/assets/life";
-    int butterflies = 24;
+    // TWELVE, HALVED FROM 24 (user 2026-09-14: "reduce the butterflies in
+    // half"). The band still reserves 64 -- a reservation is not a population,
+    // and shrinking it would cost a structure rebuild to change your mind. This
+    // is the number flock_.wanted is set from at load; --butterflies overrides
+    // it, and 0 switches them off entirely.
+    int butterflies = 12;
 
     // WHERE THE NOCKED ARROW STARTS, in whole voxels -- the same three numbers
     // the settings panel edits, and applied through the same path, so a value
@@ -524,6 +536,26 @@ struct Options {
     bool floatTest = false;
     // ...and the shovel's, which needs no window either. See runDigTest.
     bool digTest = false;
+    // Survey every row of the /locate life table and check where it lands you
+    // -- see runLocateTest. No window either; its whole output is stdout.
+    bool locateTest = false;
+    bool clipTest = false;
+    bool wheatTest = false;
+    bool hoeTest = false;
+    bool shaftTest = false;
+    bool killTest = false;
+    bool soilTest = false;
+    // WHAT A BROKEN WHEAT PLANT PAYS OUT. Files rather than ids, like every
+    // other model this engine loads, so an artist can swap them without a
+    // build -- see --axe and its siblings.
+    std::string wheat = "C:/voxelbit/game/assets/decoration/wheat.vox";
+    std::string seeds = "C:/voxelbit/game/assets/decoration/seeds.vox";
+    // ...AND THE RAW MEAT A KILL LEAVES BEHIND (user 2026-09-14: "have
+    // life drop a raw steak"). v1's own file, at v1's own path -- its
+    // note calls it "RAW MEAT, which a killed land mammal leaves behind".
+    // base.vox is the source; the numbered frames beside it are that
+    // engine's eat animation, which v2 has nothing to do with.
+    std::string steak = "C:/voxelbit/game/assets/food/meat/steak/base.vox";
     // Hold the swing from the first frame, exactly as --shot-walk holds W. It
     // exists for the same reason that one does: an animation you can only see
     // by holding a mouse button cannot be photographed, measured or regression
@@ -539,8 +571,40 @@ struct Options {
     // it and for the same reason: a still of an item leaving the hand, or of
     // one lying in the wood, has to be reproducible. Negative never drops.
     int dropFrame = -1;
+    // ...AND A SCRIPTED BURST, for the same reason and on the same clock:
+    // a shader change cannot be type-checked and an emissive material is
+    // exactly the kind that fails SILENTLY -- see the private-material
+    // note in render/particles.h. --spark-frame N --shot out.png renders
+    // one with the sparks in the air.
+    int sparkFrame = -1;
+    // ...AND THE SAME FOR THE HIT FLASH, which is the other half of this
+    // feature that only a picture can check: V6Instance::hurt is a new field
+    // and a new branch in the shader, and Slang compiles at runtime, so the
+    // C++ build has never seen either. --hurt-frame N walks up to the nearest
+    // animal, aims at it and lights it; run it against -1 and diff.
+    int hurtFrame = -1;
+    // ...AND THE OTHER HALF OF THE A/B. The walk-up and the aim happen either
+    // way; only the flash itself is switched, so the two pictures are of the
+    // same animal from the same place and every pixel that differs differs
+    // because of the one field being tested. Without this the 'off' run stood
+    // somewhere else entirely and the diff was the whole frame.
+    bool hurtDim = false;
     // Open straight into the asset editor -- what U does, without the key.
     bool stageAtStart = false;
+    // ...and straight into the building level, which is what O does. Same
+    // reason --stage exists: a shot of the level has to be a shot of the place
+    // the key opens, not of a second arrangement that can drift from it -- and
+    // it is the only way to check the level headlessly, since a key press is
+    // not something --shot-frame can make.
+    bool levelAtStart = false;
+    // ...AND WITH THE SUBJECT ALREADY PICKED, which is what the mouse does.
+    // 0 none, 1 the move arrows, 2 the rotation rings. It exists for the same
+    // reason --stage does, and the note there gives it: a shot of the deck has
+    // to be a shot of the thing the key opens. The handles cannot be reached
+    // from a script any other way -- selecting is a click, and a click needs a
+    // hand -- so without this the one part of the editor that is pure geometry
+    // is the one part no capture can check.
+    int gizmoAtStart = 0;
     int shotLoose = -1;
 
     float sunAz = defaults::kSunAz;
@@ -1140,6 +1204,38 @@ class ForestApp : public SampleApp {
 
         tracer_.setQuality(opt_.dlssQuality);
 
+        // -- THE KIT CLAIMS ITS COLOURS HERE, NOT WHERE IT LOADS -------------
+        //
+        // "the bow is broken, missing voxels" (user 2026-09-14). The palette
+        // read 255 of 255 -- FULL on a plain start and the fourteen refused
+        // calls were the bow's fourteen frames, each one distinct colour short.
+        // The held kit loads LAST of everything in this function and colours are
+        // served first-come, so it is the kit that goes without.
+        //
+        // THE SAME MOVE prewarmRoom MAKES, and for the same reason, three
+        // hundred lines earlier than it because the queue in front of the tools
+        // is now the whole flyer band. HeldItem::prewarmColors carries the
+        // measurement and the argument; it takes colours only, so the models
+        // themselves still load below where the pool and the structures exist.
+        //
+        // HERE and not above: deriveGroundFromTrees has run, and the note on
+        // the flyer band below explains what registering ahead of it does.
+        if (opt_.axeOn) {
+            // EVERYTHING THE KIT HOLDS, and the four that were missing from
+            // this list are why it had to grow: the hoe, the wheat, the seeds
+            // and the STEAK all load in the same block as the axe, a few
+            // hundred lines below, by which time the flyer band has taken the
+            // colours. Measured the moment the steak was added -- "PALETTE
+            // FULL, 2 of its colours came back AIR", which is precisely the
+            // silent failure this reservation exists to prevent and which the
+            // bow had already been through once.
+            const int took = HeldItem::prewarmColors(
+                world_, {opt_.axe, opt_.pick, opt_.shovel, opt_.arrow, opt_.steak}, opt_.bow);
+            std::printf("  held     reserved %d palette entries for the kit, %d of %d now used\n",
+                        took, world_.palette.used(), int(mat::COUNT));
+            std::fflush(stdout);
+        }
+
         // -- and what is in the air (render/butterflies.h) -------------------
         //
         // AFTER the world, and it has to be: the models go into the same
@@ -1170,6 +1266,56 @@ class ForestApp : public SampleApp {
             // every flyer-band model has to be registered before anything is
             // built. opt_.birdDir is assets/life, which is where they live.
             bunnies_.load(world_, opt_.birdDir + "/bunny");
+            bees_.load(world_, opt_.birdDir);
+            // ...AND THE ANT, THE FLY, THE LADYBUG AND THE FROG. After the
+            // bees for the reason everything here is ordered: the palette is
+            // served first-come (see World::prewarmRoom), and these four are
+            // the smallest claim in the program -- between them they ask for
+            // about thirty entries, most of which the nearest-match snap
+            // resolves onto colours the wood already owns.
+            critters_.load(world_, opt_.birdDir);
+            // ...AND THE PARTICLES, LAST OF THE FOUR AND DELIBERATELY SO. They
+            // want three PRIVATE materials and a private material is one with
+            // nothing near it, so asking after everything else has registered
+            // is asking the question in its hardest form -- which is the only
+            // form whose answer stays true. See the note over Particles::load.
+            particles_.load(world_, &tracer_);
+
+            // -- AND WHETHER THE PALETTE SURVIVED ALL OF THAT ---------------
+            //
+            // The table has mat::COUNT entries and forModelColor returns AIR
+            // when it is full, so a model registered past the ceiling simply
+            // stops being drawn with no error anywhere. Palette::overflowed()
+            // counted exactly that for weeks with nothing calling it, and the
+            // first anybody knew was "the tools are broke".
+            //
+            // HERE, NOT AFTER THE TOOLS, WHICH IS WHERE IT USED TO SIT. That
+            // was right while the held kit was the last thing to register a
+            // colour; it PREWARMS at the front of the queue now (see the note
+            // over HeldItem::prewarmColors), and this band -- butterflies,
+            // birds, six fish, ducks, the flock, the rabbits, four marchers and
+            // the bees -- is what loads last. A report that stops counting
+            // before the last loader is a report that cannot see the overflow
+            // it exists for, and that is exactly what it did: "the newly
+            // imported life is missing voxels" with a clean-looking log.
+            //
+            // Printed unconditionally, and on the OFFLINE path too. It used to
+            // sit inside the held-model branch, which --out deliberately does
+            // not take, so a headless render could not see the number at all.
+            {
+                const int used = world_.palette.used();
+                const int lost = world_.palette.overflowedColors();
+                const int calls = world_.palette.overflowed();
+                std::printf("  palette  %d of %d entries used%s\n", used, int(mat::COUNT),
+                            lost ? "  -- FULL" : "");
+                if (lost)
+                    std::fprintf(stderr,
+                                 "v2: PALETTE FULL -- %d distinct colour(s) could not be "
+                                 "registered and render as AIR, refused %d time(s) across all "
+                                 "models. Models are served in load order, so what you cannot "
+                                 "see is whatever loaded last.\n",
+                                 lost, calls);
+            }
             edit_.attach(&bunnies_);
 
             std::fflush(stdout);
@@ -1208,6 +1354,53 @@ class ForestApp : public SampleApp {
             shutdown(0);
             return;
         }
+        if (opt_.clipTest) {
+            // The clock, for the same reason --locate-test sets it: the
+            // fireflies do not exist before dark, so a check run at noon
+            // silently skips a population.
+            clock_.tday = opt_.timeOfDay;
+            clock_.cycleSpeed = opt_.cycleSpeed;
+            clock_.azimuthBase = opt_.sunAz;
+            // ...AND THEN PUT IT IN THE SKY, WHICH IS THE HALF THAT WAS
+            // MISSING. Setting clock_.tday is not setting the sun: applySun is
+            // what carries the clock into world_.sky, it lives two hundred
+            // lines BELOW this branch (deliberately -- see the note over the
+            // offline path), and isNight() asks the SKY.
+            //
+            // So every headless diagnostic has run in daylight whatever --time
+            // said, and --locate-test has been reporting "firefly -- NONE, AND
+            // IT SHOULD BE HERE" at eleven at night ever since the fireflies
+            // were added. The clock line above was added to fix exactly that
+            // and fixed half of it; the report it was meant to silence went on
+            // printing, and was read as a known quirk.
+            applySun(true);
+            runClipTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.locateTest) {
+            // -- THE CLOCK FIRST, AND IT WAS NOT --------------------------
+            //
+            // clock_.tday is set eighty lines BELOW this, with the rest of the
+            // viewer's state, so every headless diagnostic ran at the default
+            // hour whatever --time said. It did not matter until a population
+            // existed that only comes out after dark: --locate-test --time 23
+            // surveyed a wood at noon and reported "firefly - NONE, AND IT
+            // SHOULD BE HERE", which is the survey being asked the wrong
+            // question rather than the firefly being missing.
+            //
+            // The same trap as --water-flags a few lines up, and the same rule
+            // settles it: anything the command line sets about the WORLD
+            // belongs above the diagnostics that measure the world.
+            clock_.tday = opt_.timeOfDay;
+            clock_.cycleSpeed = opt_.cycleSpeed;
+            clock_.azimuthBase = opt_.sunAz;
+            applySun(true);   // see the note in the --clip-test branch above
+            runLocateTest();
+            shutdown(0);
+            return;
+        }
+
         // -- THE WATER TERMS, BEFORE ANYTHING CAN RENDER ---------------------
         //
         // ABOVE THE OFFLINE RETURN, and that placement is the whole point.
@@ -1267,23 +1460,47 @@ class ForestApp : public SampleApp {
 
         if (opt_.menuAtStart) setMenuOpen(true);
         if (opt_.waterPanelAtStart) setWaterPanelOpen(true);
-        if (opt_.roomAtStart) setRoomOpen(true);
+        // -- THE PAUSE BUTTONS ARE LOADED NOW, WHETHER OR NOT ANYONE OPENS
+        // THEM ------------------------------------------------------------
+        //
+        // They used to be loaded on the first ESC, which made the pause menu
+        // the last thing in the program to ask the palette for a colour -- and
+        // the palette runs out. See World::prewarmRoom for the measurement and
+        // for what the user actually saw. HERE rather than three lines later
+        // because the held tools below are the next in the queue and they were
+        // the LAST thing to break this way.
+        world_.prewarmRoom();
+        // --room IS NOT OPENED HERE. The panel is pinned in front of the EYE
+        // when it opens, and the eye does not reach its final place until the
+        // chunk under the player has streamed and placeOnGround has run -- one
+        // frame later, in onFrameRender. Opened here it would hang at whatever
+        // height the player was at before the ground was found, which is a
+        // photograph of a bug rather than of the menu. See the settle block.
         // THE EDITOR, FROM THE COMMAND LINE. The same path U takes, so a shot
         // of the stage is a shot of the thing the key opens rather than of a
         // second arrangement that could drift from it.
         if (opt_.stageAtStart) {
             world_.setStage(true);
-            const Vec3 c = World::stageCentre();
-            // THREE METRES ON THE +Z SIDE, because yaw 0 looks down -Z in this
-                // engine (Camera::direction). Standing on the -Z side and facing
-                // that way put the subject squarely behind the camera.
-                player_.pos = Vec3(c.x, c.y + 0.2f, c.z + 3.0f);
-            player_.fly = true;
-            player_.vy = 0.0f;
-            yaw_ = 0.0f;
-            pitch_ = -8.0f;
-            pos_ = player_.eyePosition();
+            standOnDeck();
             stageSubject();
+            if (opt_.gizmoAtStart) edit_.pick(opt_.gizmoAtStart);
+        }
+        // THE BUILDING, FROM THE COMMAND LINE -- the same path [O] takes, for
+        // the reason the line above it does.
+        //
+        // AND IT SAVES THE WOOD FIRST, which the key does and this would
+        // otherwise skip: woodPos_ starts at the origin, so arriving here by
+        // flag and then pressing O to leave would have dropped the player at
+        // (0, 0, 0) -- underground, four kilometres from the spawn. There is
+        // nowhere better to go back to than wherever the wood had put them by
+        // now, which is exactly what the key would have recorded.
+        if (opt_.levelAtStart) {
+            woodPos_ = player_.pos;
+            woodYaw_ = yaw_;
+            woodPitch_ = pitch_;
+            woodFly_ = player_.fly;
+            if (world_.setLevel(true)) standInLevel();
+            else std::fprintf(stderr, "v2: --level: no building.vox to travel to\n");
         }
 
         // The recorder compiles its conversion shader here rather than on the
@@ -1411,6 +1628,43 @@ class ForestApp : public SampleApp {
                       // looking at the screen.
                       HeldPose{8.512f, -0.910f, 8.730f, 0.040f, 1.722f, 0.009f, 1.003f},
                       Takes::Soil);
+            // ...AND THE HOE, FOURTH (user 2026-09-14: "import the hoe from
+            // v1"). Same haft as the shovel and the same flip, so it starts on
+            // the SHOVEL's bake for the reason the shovel started on the
+            // pick's: these three are one shape of tool and a pose tuned for
+            // one of them frames the others. Its head is a blade set across the
+            // haft rather than along it, which the quarter turn on the roll is
+            // for.
+            // ...AND HALF A TURN ON THE PITCH (user 2026-09-14: "flip the hoe
+            // vertically 180 degrees so that the stone is facing upwards like
+            // the rest of the tools"). 1.722 - pi = -1.420, which is the axe's
+            // and the pick's own pitch -- so the hoe was the odd one out by
+            // exactly the flip the SHOVEL had needed, inherited along with the
+            // shovel's bake it started from.
+            //
+            // THE PITCH, NOT THE ROLL, and the shovel's note is why: roll is
+            // the innermost rotation and spins the model about its own long
+            // axis, which turns a hoe on the spot and leaves the blade where it
+            // was. Pitch is the outermost, so it acts in the VIEW's frame, and
+            // half a turn there is what "flip it vertically" means to somebody
+            // looking at the screen.
+            // ...AND THREE QUARTERS OF A TURN ON THE ROLL, arrived at in two
+            // asks: a quarter (2026-09-14, "change the hoes roll by 90
+            // degrees") to 1.580, then a half on top of that ("now rotate the
+            // hoe roll by 180 degrees") to 4.722.
+            //
+            // BOTH WRITTEN AS ONE NUMBER rather than as 1.580 + kPi, because a
+            // pose row is a BAKE -- seven literals somebody read off the panel
+            // and pasted -- and an expression in the middle of one is a value
+            // you cannot copy back out. See the copy-pose row in the settings
+            // menu, which hands over exactly this form.
+            //
+            // The head ends up under the haft rather than over it, which is not
+            // where the axe and the pick carry theirs. That is the ask; a hoe
+            // is swung with the blade turned down.
+            held_.add(world_, "stone hoe", opt_.hoe,
+                      HeldPose{8.512f, -0.910f, 8.730f, 0.040f, -1.420f, 4.722f, 1.003f},
+                      Takes::Earth);
             // THE BOW'S OWN BAKE, from the JS engine's PICK_DEFS for
             // 2026-08-04. It is not the tool family's pose: a bow is held
             // upright across the hand, further out and turned a quarter turn
@@ -1430,8 +1684,62 @@ class ForestApp : public SampleApp {
             // game still opens with the axe in hand -- putting it at slot zero
             // would have changed what you start holding, which was not asked
             // for.
+            // -- WHAT THE WHEAT PAYS OUT, AS TWO KIT SLOTS -----------------
+            //
+            // (user 2026-09-14: "have them drop out of the tall grass (wheat).
+            // one a piece ... then the player can absorb the items.")
+            //
+            // THEY ARE CARRIED ITEMS, NOT A COUNTER. Everything an absorbed
+            // drop needs already exists for the axe -- the walk-over pickup,
+            // the flight into the chest, the sound, the hand -- and all of it
+            // is addressed by a KIT INDEX. Giving wheat a tally of its own
+            // would mean a second inventory with none of that, and a pickup
+            // path that forks on which of the two kinds of thing you walked
+            // over. So a stalk of wheat is a thing you hold, like a pick.
+            //
+            // AND THEY START OUT OF THE WHEEL. `carried` is false until one is
+            // picked up, which is the same state a dropped axe is in -- see
+            // HeldItem::take. So the kit still opens on the axe and still
+            // scrolls axe / pick / shovel / bow / hand until you have cut some.
+            //
+            // They TAKE nothing: swinging a stalk of wheat at a rock knocks and
+            // moves no voxels, which is what Takes::Nothing already means.
+            // ITS OWN POSE, GIVEN RATHER THAN DERIVED (user 2026-09-14). The
+            // first number is how far out from the eye the item sits and the
+            // stalk wants 11.570 against the tools' 8.799 -- wheat is a long
+            // thin thing held up, not a haft gripped at the middle.
+            wheatTool_ = held_.count();
+            if (!held_.add(world_, "wheat", opt_.wheat,
+                           HeldPose{11.570f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
+                wheatTool_ = -1;
+            seedsTool_ = held_.count();
+            if (!held_.add(world_, "seeds", opt_.seeds,
+                           HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
+                seedsTool_ = -1;
+            // ...AND THE STEAK, on the same terms as the other two: a thing
+            // you hold, stowed until a kill puts one in your hands. Its pose is
+            // the seeds' -- a slab held out in front -- rather than the wheat's
+            // long-thin one, and it is a starting point for a bake rather than
+            // a tuned number.
+            steakTool_ = held_.count();
+            // ...AND IT IS ALLOWED TO SHARE ITS COLOURS, which no other member
+            // of the kit is. Nine colours in two smooth ramps took the palette
+            // to 255 of 255 and started serving AIR to whatever loaded next --
+            // and WHICH model that was moved with the world seed. See the note
+            // over World::addHeldVox.
+            if (!held_.add(world_, "steak", opt_.steak,
+                           HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f},
+                           Takes::Nothing, Palette::kModelMatch))
+                steakTool_ = -1;
+            if (wheatTool_ >= 0) held_.stow(wheatTool_);
+            if (seedsTool_ >= 0) held_.stow(seedsTool_);
+            if (steakTool_ >= 0) held_.stow(steakTool_);
+
             held_.addEmpty("empty hand");
             held_.select(opt_.tool);
+            // AFTER THE WHOLE KIT, because it matches on NAME and needs every
+            // slot to have one. See stackBakes.
+            applyStackBakes();
 
             // -- AND WHETHER THE PALETTE SURVIVED ALL OF THAT ---------------
             //
@@ -1451,18 +1759,14 @@ class ForestApp : public SampleApp {
             // that creeps up tells you which model was the one that could not
             // fit. 251 of 255 with the tools still to come is the reading that
             // would have caught this before it shipped.
-            {
-                const int used = world_.palette.used();
-                const int lost = world_.palette.overflowed();
-                std::printf("  palette  %d of %d entries used%s\n", used, int(mat::COUNT),
-                            lost ? "  -- FULL" : "");
-                if (lost)
-                    std::fprintf(stderr,
-                                 "v2: PALETTE FULL -- %d colours could not be registered and "
-                                 "render as AIR. Models are served in load order, so what you "
-                                 "cannot see is whatever loaded last.\n",
-                                 lost);
-            }
+            // AND IT LEADS WITH THE DISTINCT COUNT, not the call count. This
+            // line used to say "14 colours could not be registered" and then,
+            // after the held kit was moved to the front of the queue, "240" --
+            // which reads as twenty times worse and is the SAME ONE COLOUR,
+            // re-asked by every model in the flyer band. See
+            // Palette::overflowedColors. The call count is kept beside it
+            // because it does say something real: how widely that colour is
+            // wanted, and therefore how many models show the hole.
             arrows_.init(world_, opt_.arrow);
             arrows_.log = opt_.swingLog;
             // WHERE THE NOCKED ARROW STARTS. Asked for rather than applied:
@@ -1472,6 +1776,54 @@ class ForestApp : public SampleApp {
             arrowWant_ = opt_.arrowNudge;
             arrowDirty_ = (opt_.arrowNudge.across || opt_.arrowNudge.along ||
                            opt_.arrowNudge.up);
+        }
+
+        // -- AND THE WHEAT CHECK, WHICH RUNS DOWN HERE AND NOT UP THERE ----
+        //
+        // Every other headless diagnostic dispatches two hundred lines above
+        // this, before the world has a kit -- and that is right for them: they
+        // measure terrain and populations, and returning early is what keeps
+        // them off the render path. This one swings a tool at a plant and pays
+        // into two KIT SLOTS, so it cannot run until those exist.
+        //
+        // IT COST A BUILD TO FIND, and the symptom named nothing: the test
+        // printed "wheat slot -1, seeds slot -1" and no loader error anywhere,
+        // because the loader had not been called yet. The same trap as the
+        // clock in --clip-test, one file further on.
+        if (opt_.hoeTest) {
+            clock_.tday = opt_.timeOfDay;
+            clock_.cycleSpeed = opt_.cycleSpeed;
+            clock_.azimuthBase = opt_.sunAz;
+            applySun(true);
+            runHoeTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.soilTest) {
+            runSoilTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.killTest) {
+            clock_.tday = opt_.timeOfDay;
+            applySun(true);
+            runKillTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.shaftTest) {
+            runShaftTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.wheatTest) {
+            clock_.tday = opt_.timeOfDay;
+            clock_.cycleSpeed = opt_.cycleSpeed;
+            clock_.azimuthBase = opt_.sunAz;
+            applySun(true);
+            runWheatTest();
+            shutdown(0);
+            return;
         }
 
         printHelp();
@@ -1604,7 +1956,22 @@ class ForestApp : public SampleApp {
         // player LEFT. Everything else update() does -- draining compactions,
         // ageing the buffer pool, retiring meshes -- still runs, because it is
         // the same call.
-        const Vec3 streamAt = world_.inRoom() ? woodPos_ : pos_;
+        // THE WOOD WAS "WHERE YOU ARE, ALWAYS" FOR EXACTLY AS LONG AS THERE WAS
+        // NOWHERE ELSE TO BE. This read pos_ unconditionally once the pause
+        // room came down into the wood and left no second place to stand.
+        //
+        // THE BUILDING LEVEL IS A SECOND PLACE AGAIN -- at -4096, 640 m up --
+        // and it revives the fault above word for word. rering() is not gated
+        // on being somewhere else, so following the camera there evicts the
+        // whole resident disc and streams a ring of forest at the bottom of the
+        // sky that no ray can reach, and then does the entire thing backwards
+        // when [O] brings you home.
+        //
+        // So the level points the streamer at woodPos_ -- where the player was
+        // standing when they pressed the key. Same fix as the room's, same
+        // reason, and it is what makes coming back one TLAS rebuild rather than
+        // a re-stream of everything you were looking at a moment ago.
+        const Vec3 streamAt = world_.levelOn() ? woodPos_ : pos_;
         if (world_.update(streamAt)) tracer_.resetAccumulation();
 
         // ---- AND THE SPAWN IS CHECKED ONCE THERE IS A WORLD TO CHECK IT
@@ -1635,12 +2002,15 @@ class ForestApp : public SampleApp {
         // POSTPONED, NOT SETTLED. spawnSettled_ stays false, so the check runs
         // on the first frame after they come back -- which is the first frame
         // the position it is checking is one they are actually standing at.
-        if (!spawnSettled_ && !world_.inRoom() && !world_.staged() &&
+        if (!spawnSettled_ && !world_.staged() && !world_.levelOn() &&
             world_.chunkAt(player_.pos)) {
             spawnSettled_ = true;
             nudgeOutOfSolids();
             player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
             pos_ = player_.eyePosition();
+            // ...AND --room OPENS HERE, on the first frame there is a settled
+            // eye to hang it in front of. See the note over prewarmRoom.
+            if (opt_.roomAtStart) setRoomOpen(true);
         }
         const float updateMs =
             float(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tu0)
@@ -1680,6 +2050,66 @@ class ForestApp : public SampleApp {
         }
 
         if (processInput(dt)) tracer_.resetAccumulation();
+
+        // A SCRIPTED FLASH, on its named frame. It sets the flash DIRECTLY
+        // rather than swinging: the kill path is covered by --kill-test, and
+        // what is unproven here is the shader -- so this drives the one field
+        // that shader reads and nothing else, which is what makes a difference
+        // in the picture mean what it says.
+        if (opt_.hurtFrame >= 0 && shotFrames_ == opt_.hurtFrame) {
+            int best = -1;
+            float bestD = 1e30f;
+            Vec3 bestAt{0, 0, 0};
+            for (int q = 0; q < kFlyerInstances; ++q) {
+                if (!lifeAtSlot(q).alive()) continue;
+                Vec3 a{0, 0, 0};
+                float r = 0.0f;
+                if (!world_.flyerAt(q, &a, &r)) continue;
+                const float dx = a.x - pos_.x, dy = a.y - pos_.y, dz = a.z - pos_.z;
+                const float d = dx * dx + dy * dy + dz * dz;
+                if (d >= bestD) continue;
+                bestD = d;
+                best = q;
+                bestAt = a;
+            }
+            if (best >= 0) {
+                // STAND OFF AND LOOK AT IT, so the animal is actually in the
+                // frame -- a flash on something behind the camera proves as
+                // little as no flash at all.
+                const float dx = pos_.x - bestAt.x, dz = pos_.z - bestAt.z;
+                const float d = maxf(0.001f, std::sqrt(dx * dx + dz * dz));
+                teleportTo(bestAt.x + dx / d * 2.2f, bestAt.z + dz / d * 2.2f);
+                publishLife();
+                pos_ = player_.eyePosition();
+                const Vec3 look = normalize(Vec3(bestAt.x - pos_.x, bestAt.y - pos_.y,
+                                                 bestAt.z - pos_.z));
+                yaw_ = atan2f(look.x, -look.z) * 180.0f / PI;
+                pitch_ = asinf(look.y) * 180.0f / PI;
+                world_.setFlyerHurt(best, opt_.hurtDim ? 0.0f : 1.0f);
+                world_.flushFlyerInstances();
+                std::printf("v2: hurt test -- %s in slot %d at (%.1f, %.1f, %.1f), %.1f m "
+                            "off, flash %s\n",
+                            lifeKindAt(best).name, best, bestAt.x, bestAt.y, bestAt.z,
+                            std::sqrt(bestD), opt_.hurtDim ? "OFF" : "on");
+            } else {
+                std::printf("v2: hurt test -- no animal drawn anywhere\n");
+            }
+            std::fflush(stdout);
+        }
+
+        // A SCRIPTED BURST, on its named frame: four sparks and the smoke, two
+        // metres in front of the camera and a little below the eye line, which
+        // is where a blow lands. The one way to see whether an emissive
+        // material is actually emitting.
+        if (opt_.sparkFrame >= 0 && shotFrames_ == opt_.sparkFrame) {
+            const Vec3 sdir = forward();
+            const Vec3 sat(pos_.x + sdir.x * 2.0f, pos_.y + sdir.y * 2.0f - 0.35f,
+                           pos_.z + sdir.z * 2.0f);
+            particles_.deathBurst(sat, simMs_);
+            std::printf("v2: spark test -- burst at (%.2f, %.2f, %.2f), %d live\n", sat.x, sat.y,
+                        sat.z, particles_.live());
+            std::fflush(stdout);
+        }
 
         // A SCRIPTED DROP, on its named frame. Runs the same three lines the
         // Q handler does; there is no key event on this path to reach them
@@ -1754,13 +2184,22 @@ class ForestApp : public SampleApp {
             // player, but a drop being absorbed converges on the CHEST, which
             // is a fixed drop below the eye rather than a height above the
             // ground. See kAbsorbEyeM.
-            const int back = drops_.update(dt, walkWorld(), player_.pos, player_.eyePosition());
+            drops_.update(dt, walkWorld(), player_.pos, player_.eyePosition());
             // THE SOUND GOES WITH THE SNATCH, so it lands on the frame the item
             // leaves the ground rather than 360 ms later when the flight
             // arrives -- see ToolSounds::pickedUp for that engine's own note
             // about having got this the wrong way round first.
+            //
+            // ONE SOUND FOR A WHOLE PILE, and that is why snatchedNow stayed a
+            // BOOL when the arrivals became a list. Several items leaving the
+            // ground on one frame is one event to a listener; five copies of a
+            // 60 ms sample starting on the same sample boundary is not five
+            // pickups, it is a click.
             if (drops_.snatchedNow()) toolSfx_.pickedUp();
-            if (back >= 0) {
+            // EVERY ARRIVAL, NOT THE FIRST. See Drops::arrivedThisTick -- a
+            // pile converges together now, so more than one can land on a
+            // frame, and taking only one would drop the rest out of the world.
+            for (const int back : drops_.arrivedThisTick()) {
                 // NAMED BEFORE THE GIVE, and it has to be: give() only changes
                 // what is in the HAND when the hand is empty, so asking name()
                 // afterwards reports whatever you are still holding. Walking
@@ -1792,6 +2231,32 @@ class ForestApp : public SampleApp {
         // up to eighty metres away and the trunks it has to miss are the ones
         // around IT. See Butterflies::decide for the clock that keeps that
         // affordable.
+        // -- ...AND NONE OF IT HAPPENS IN THE PAUSE ROOM ------------------
+        //
+        // Every population below claims its sites from the lattice AROUND THE
+        // PLAYER, and in the room the player is at (-4096, 2048, -4096). So a
+        // tick in here gathered butterflies, songbirds, salmon, lily pads,
+        // dragonflies and rabbits two kilometres up in the air over a hillside
+        // four kilometres from the wood, and held their slots showing them --
+        // which is the exact fault the editor's own branch below was written to
+        // avoid, on the same band, for the same reason.
+        //
+        // -- AND NOTHING IS PAUSED WHILE THE BUTTONS ARE UP -----------------
+        //
+        // There was an `if (!pauseOpen_)` round everything below, and in the
+        // room it was right: the player had LEFT, four kilometres up, and a
+        // band that went on claiming sites round the camera gathered
+        // butterflies, salmon, lily pads and rabbits over a hillside nobody
+        // was standing on. The editor deck still has exactly that branch a
+        // little further down, and still needs it.
+        //
+        // THE PANEL IS NOT A PLACE, so there is nothing to leave and nothing
+        // to freeze. The player stands in the wood with three buttons hanging
+        // in front of them and CAN STILL WALK AND LOOK -- which is what
+        // settles it: a world where you move and nothing else does is not a
+        // pause, it is a bug. Either the walk stops too or the wood keeps
+        // living, and the wood keeping living is what "put the 3 balls in
+        // front of the player IN GAME" describes.
         flock_.update(dt, world_, player_.pos);
         // -- PERCHES ARE LOOKED FOR FURTHER OUT THAN COLLISION IS ----------
         //
@@ -1817,17 +2282,22 @@ class ForestApp : public SampleApp {
         // WHAT LIVES ON THE WATER. Ticked beside the birds because it is the
         // same kind of thing -- a small population that follows the player --
         // and published in the same window, so the flyer band is written once.
-        lake_.update(dt, world_.terrain, player_.pos);
+        lake_.update(dt, world_.terrain, player_.pos, forward());
         lake_.publish(world_);
         // THE GROUND THE FLOCK FOLLOWS IS THE ONE EVERYTHING ELSE STANDS ON,
         // handed in rather than reached for -- see BirdFlock::update. The
         // generator's own height, not the walk's: a bird does not care about a
         // hole somebody dug, and asking the edit layer would cost a scan per
         // lookahead sample per bird per frame.
-        flock2_.update(dt, player_.pos, [this](float x, float z) {
-            return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
-                                                  int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
-        });
+        flock2_.update(dt, player_.pos,
+                       [this](float x, float z) {
+                           return float(world_.terrain.heightVox(
+                                            int(std::floor(x / VOXEL_M)),
+                                            int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+                       },
+                       // ...AND THE WOOD, which a bird thirty metres up was
+                       // argued not to need -- see the note over its update.
+                       &perches_);
         flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
         // ...AND THE BUNNIES, on the generator's ground for the reason the
         // songbirds are: a rabbit does not care about a hole somebody dug, and
@@ -1851,8 +2321,79 @@ class ForestApp : public SampleApp {
                             // WaterField::rebuild makes, which is this engine's
                             // one definition of wet. A bunny and a lily pad
                             // therefore agree about where the lake is.
-                            [this](float x, float z) { return wetColumnAt(x, z); }, perches_);
+                            [this](float x, float z) { return wetColumnAt(x, z); }, perches_,
+                            // WHICH WOOD, for the species that belong to one.
+                            // The generator's own band weight, not a threshold:
+                            // the fill is the only caller and it makes its own
+                            // decision about where the seam is.
+                            [this](float x) { return world_.terrain.birchMix(x); },
+                            // ...AND NOT ON THE BEACH -- see Bunnies::blocked.
+                            [this](float x, float z) { return sandAt(x, z); });
             bunnies_.publish(world_, kBunnySlot0);
+            // ...AND THE MARCHERS, WHICH HAVE THEIR OWN RUN OF THE BAND. The
+            // editor branch above deliberately does not publish them: the deck
+            // is not the wood, and despawnAll() has already given every slot up.
+            bunnies_.publishSkunks(world_, kMarchSlot0);
+            // -- AND THE BEES, WHICH FOLLOW THE HIVES ----------------------
+            //
+            // The two lists are gathered on the birds' own half-second clock:
+            // a hive is a placement in a crown and a flower is a placement on
+            // the ground, and neither moves. kBeeHiveM decides how far a hive
+            // may be and still have a swarm; the blooms are gathered a little
+            // wider than a bee will fly, so a bee at the edge of its range
+            // still has flowers to choose between.
+            if ((frameTick_ % 30) == 0) {
+                world_.decorNear(5, player_.pos, kBeeHiveM, &hivesNear_);
+                world_.decorNear(2, player_.pos, kBeeHiveM + kBeeFlowerM, &bloomsNear_);
+                // ...AND THE BANK, for the frog. Same clock and the same
+                // argument: a shoreline does not move, and re-deriving it per
+                // frog per frame is the wide query this engine pays once.
+                lake_.bankSpots(uint32_t(frameTick_), 8, &banksNear_);
+            }
+            bees_.update(dt, player_.pos, hivesNear_, bloomsNear_, &perches_);
+            bees_.publish(world_, kBeeSlot0);
+            // -- AND THE FOUR SMALL ONES -----------------------------------
+            //
+            // The same three predicates the marchers take, because they are
+            // asking the same three questions: how high is the ground, is it
+            // under water, and which wood is this. The LOOK is handed in as
+            // well so a critter is not born in the middle of your view -- see
+            // BirthGate::mayAt.
+            critters_.update(dt, player_.pos,
+                             [this](float x, float z) {
+                                 return float(world_.terrain.heightVox(
+                                                  int(std::floor(x / VOXEL_M)),
+                                                  int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+                             },
+                             [this](float x, float z) { return wetColumnAt(x, z); },
+                             [this](float x) { return world_.terrain.birchMix(x); }, banksNear_,
+                             perches_,
+                             // AFTER DARK. v1 swaps its flyer band on the sun's
+                             // own sign; this is the same test in degrees, a
+                             // shade below the horizon so the fireflies come up
+                             // as the light goes rather than the instant it
+                             // crosses zero.
+                             isNight(), forward(),
+                             // ...AND THE LAKE'S OWN TOP, which the ground
+                             // query cannot give -- see waterTopAt.
+                             [this](float x, float z) { return waterTopAt(x, z); });
+            critters_.publish(world_, kCritterSlot0);
+            // The sparks are on the same clock as everything else in the band.
+            // update() only retires what has run out -- a particle's position
+            // is a closed form off its birth, so nothing here integrates.
+            particles_.update(simMs_);
+            particles_.publish(world_, simMs_);
+            // ...AND THE RED, AFTER EVERY POPULATION HAS PUBLISHED. It is
+            // written onto instances the populations have just re-placed, and a
+            // slot that stopped being drawn keeps what it last held -- see
+            // World::setFlyerHurt.
+            lifeHits_.publish(world_, simMs_);
+            // ...AND THE ONE MATERIAL IN THE WORLD THAT EMITS. Set every frame
+            // rather than once, because it costs one compare and because a
+            // firefly that failed to load must not leave a live material id
+            // pointing at whatever took its palette entry instead.
+            tracer_.glowMtl = critters_.glowMtl() ? uint32_t(critters_.glowMtl()) : 0xFFFFFFFFu;
+            tracer_.glowRadiance = Vec3(kGlowNits, kGlowNits * 0.85f, kGlowNits * 0.18f);
         }
 
         // The bed follows the canopy. Fed the same dt as the walk and the day
@@ -2013,6 +2554,10 @@ class ForestApp : public SampleApp {
             // own prevCam. A frame of lag on a launch point that moves with the
             // bob is not something an eye can see.
             lastHeld_ = hx;
+            // AFTER THE POSE, because it reads it. The badge is rewritten every
+            // frame rather than on a change: the hand bobs and sways, so the
+            // point it hangs off moves whether or not the COUNT does.
+            setStackBadge();
             world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, hx.show);
             // ...and the tracer is told the same pose, because it is the one
             // thing in this scene whose motion vector cannot be worked out from
@@ -2024,6 +2569,13 @@ class ForestApp : public SampleApp {
             tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show, held_.selected());
             arrows_.publish(world_);
             drops_.publish(world_);
+            // ...AND THE TWO THAT ARE PUBLISHED HERE RATHER THAN BESIDE THEIR
+            // OWN TICK. They were gated on the pause room along with the tick
+            // -- a publish without a tick writes the population back into the
+            // band at the position it last held in the wood, undoing the
+            // hideFlyerBand the room did on the way in. Both the room and that
+            // hide are gone; the wood ticks while the buttons are up, so these
+            // two publish with it.
             flock_.publish(world_);
             birds_.publish(world_);
             world_.refitTlas();
@@ -2509,7 +3061,11 @@ class ForestApp : public SampleApp {
         // panel has to be told where the readout ends so the two do not stack
         // on top of each other. See `below`.
         // -------------------------------------------------------------------
-        // THE WATER PANEL -- [I], top right.
+        // THE WATER PANEL -- `--water-ui`, top right.
+        //
+        // NO KEY. It was [I], then [O], then [L], and none of them stuck; it is
+        // a start-up flag now (user 2026-09-14: "you remove the water panel
+        // from l"). See onKeyEvent for the whole of that history.
         //
         // One row per term the water actually does, each a live uniform bit
         // (kWF* in Shared.slang) rather than a rebuild. v1 keeps the same row
@@ -2526,7 +3082,10 @@ class ForestApp : public SampleApp {
             Gui::Window ww(pGui, "water##v2", {0, 0}, {0, 0}, kBare);
             px3Font face(px3_);
             ImGui::SetWindowFontScale(style.scale);
-            ww.text("WATER  [I]");
+            // NO KEY IN THE TITLE, because it no longer has one -- this said
+            // "[I]" for a day after the panel had moved to [O], which is the
+            // argument for not naming a binding in a label at all.
+            ww.text("WATER");
             ww.separator();
             static const char *kWaterRows[9] = {
                 "sun glint",        // kWFGlint
@@ -2551,6 +3110,91 @@ class ForestApp : public SampleApp {
             }
             const ImVec2 wsz = ImGui::GetWindowSize();
             ImGui::SetWindowPos(ImVec2(maxf(0.0f, fbW - wsz.x - 12.0f), 12.0f));
+        }
+
+        // -------------------------------------------------------------------
+        // THE STACK BADGE'S FOUR NUMBERS, LIVE.
+        //
+        // (user 2026-09-14: "let me adjust the display number just like how we
+        // were able to in v1.")
+        //
+        // v1 tunes this from a card with exactly four sliders -- SB_K is
+        // ['x', 'y', 'size', 'tilt'] -- and these are the same four. Built on
+        // the water panel rather than on the settings menu because it is the
+        // same KIND of thing: a handful of numbers you move while looking at
+        // what they do, not a preference you set once.
+        //
+        // IT SHOWS THE COUNT IT IS TUNING and forces one if the hand is empty
+        // of a stack, because four sliders that move nothing you can see are
+        // four sliders nobody can use. v1 does the same -- "empty hand -> tune
+        // the axe, the same fallback the pose card takes".
+        //
+        // NOT PER ITEM, which v1's is. Its badge is a screen-space blit whose
+        // right place depends on how the model happens to project; this one
+        // hangs off the model's own measured half-width, so the same four
+        // numbers frame every tool in the kit. If one item ever needs its own,
+        // the shape of it is v1's sbCfgs table.
+        // -------------------------------------------------------------------
+        if (stackPanelOpen_) {
+            styleV2 style(pGui, px3_, 1.0f, fbH);
+            ImGui::GetStyle().WindowPadding = ImVec2(8.0f, 8.0f);
+            Gui::Window sw(pGui, "stack##v2", {0, 0}, {0, 0}, kBare);
+            px3Font face(px3_);
+            ImGui::SetWindowFontScale(style.scale);
+            sw.text("STACK COUNT");
+            sw.separator();
+            const int sel = held_.ready() ? held_.selected() : -1;
+            sw.text(sel >= 0 ? held_.tool(sel).name : "nothing in hand");
+            sw.checkbox("show a count while this is open", stackPanelForce_);
+            sw.separator();
+            // BOUND TO WHAT IS IN THE HAND, resolved every frame -- v1's own
+            // rule for its card ("resolved from the hand each time the panel
+            // refreshes, exactly as pkIt is"). Scroll to another tool and the
+            // sliders are that tool's.
+            StackCfg &cfg = stackFor(sel >= 0 ? sel : 0);
+            sw.slider("size", cfg.cell, 0.003f, 0.05f, false, "%.4f m");
+            sw.slider("across", cfg.across, -0.4f, 0.6f, false, "%.3f m");
+            sw.slider("up", cfg.up, -0.3f, 0.4f, false, "%.3f m");
+            sw.slider("tilt", cfg.tilt, -1.6f, 1.6f, false, "%.3f rad");
+            sw.separator();
+            if (sw.button("defaults")) cfg = StackCfg{};
+            // -- THE BAKE (user 2026-09-14: "let me bake the stack count number
+            //    text into here") ---------------------------------------------
+            //
+            // WHAT A BAKE IS HERE: the four numbers as the four SOURCE LINES
+            // they live on, ready to paste over the declarations in
+            // setStackBadge. Not a config file and not a save -- this engine
+            // bakes by pasting, which is what the asset editor's [C] does with
+            // its strip table and what the settings menu's "copy pose" does
+            // with a HeldPose. A tuned number that only exists in a running
+            // process is a number that dies with it.
+            //
+            // TO THE CONSOLE AS WELL, ALWAYS. assetedit.h's note is the reason:
+            // OpenClipboard fails outright when another program is holding it,
+            // and a copy that silently did nothing is worse than no copy. The
+            // console is the copy that cannot fail.
+            if (sw.button("bake")) {
+                // THE ROW, AS THE LINE THAT DECLARES IT. The table is keyed by
+                // the tool's NAME rather than by its slot, because a slot is
+                // where a thing happens to sit in the wheel this build and a
+                // name is what it is -- the same reason v1 keys sbCfgs by
+                // ITEM_NAMES and not by index.
+                stackBaked_ = fmt("        { \"%s\", { %.4ff, %.3ff, %.3ff, %.3ff } },",
+                                  sel >= 0 ? held_.tool(sel).name : "?", double(cfg.cell),
+                                  double(cfg.across), double(cfg.up), double(cfg.tilt));
+                std::printf("v2: stack badge bake -- paste into kStackBakes:\n%s\n",
+                            stackBaked_.c_str());
+                std::fflush(stdout);
+                ImGui::SetClipboardText(stackBaked_.c_str());
+            }
+            sw.text(stackBaked_.empty() ? "tune it, then bake" : "copied -- paste into app.h");
+            char line[160];
+            std::snprintf(line, sizeof(line), "%.4f  %.3f  %.3f  %.3f", double(cfg.cell),
+                          double(cfg.across), double(cfg.up), double(cfg.tilt));
+            sw.text(line);
+            const ImVec2 ssz = ImGui::GetWindowSize();
+            ImGui::SetWindowPos(ImVec2(maxf(0.0f, fbW - ssz.x - 12.0f),
+                                       maxf(0.0f, fbH - ssz.y - 12.0f)));
         }
 
         // -------------------------------------------------------------------
@@ -3609,6 +4253,11 @@ class ForestApp : public SampleApp {
     // -----------------------------------------------------------------------
     bool onKeyEvent(const KeyboardEvent &e) override {
         if (e.type != KeyboardEvent::Type::KeyPressed) return false;
+        // THE PICTURE IS ALREADY COLLAPSING. Swallow everything: the program is
+        // a second from gone, and a key that opened a panel or teleported the
+        // player now would only be drawn into the last few frames of a shot
+        // nobody asked for.
+        if (quitting_) return true;
 
         if (e.key == Input::Key::X) return true;  // held modifier for the wheel
         if (e.key == Input::Key::F) {
@@ -3616,7 +4265,6 @@ class ForestApp : public SampleApp {
             if (!player_.fly) player_.vy = 0.0f;  // do not inherit a climb as a fall
             std::printf("v2: %s\n", player_.fly ? "flying" : "walking");
             std::fflush(stdout);
-            quitArmed_ = false;
             return true;
         }
         // -----------------------------------------------------------------
@@ -3653,7 +4301,14 @@ class ForestApp : public SampleApp {
             // that the second door to open would overwrite with the first
             // door's coordinates. Leaving for the wood first makes the save
             // correct by construction.
-            if (world_.inRoom()) setRoomOpen(false);
+            if (pauseOpen_) setRoomOpen(false);
+            // ...AND THE BUILDING IS A THIRD PLACE, held to the same rule. Two
+            // levels open at once is the state this exclusivity was written to
+            // prevent; the saved wood position is a single slot and whichever
+            // door opened second would overwrite it with the first door's
+            // coordinates. Leaving for the wood first makes the save correct by
+            // construction, which is what the note above means.
+            if (world_.levelOn()) leaveLevel();
             const bool on = !world_.staged();
             if (on) {
                 woodPos_ = player_.pos;
@@ -3663,16 +4318,10 @@ class ForestApp : public SampleApp {
             }
             world_.setStage(on);
             if (on) {
-                const Vec3 c = World::stageCentre();
-                // Back from the middle and looking at it, so the cardinal is in
-                // front of you the moment you arrive rather than underfoot.
-                // THREE METRES ON THE +Z SIDE, because yaw 0 looks down -Z in this
-                // engine (Camera::direction). Standing on the -Z side and facing
-                // that way put the subject squarely behind the camera.
-                player_.pos = Vec3(c.x, c.y + 0.2f, c.z + 3.0f);
-                player_.fly = true;
-                yaw_ = 0.0f;
-                pitch_ = -8.0f;
+                // Off the corner and looking at it, so the subject is in
+                // front of you the moment you arrive rather than underfoot --
+                // and so every handle on it can be dragged. See standOnDeck.
+                standOnDeck();
                 // ...and the subject, standing on the deck in front of you.
                 stageSubject();
             } else {
@@ -3683,7 +4332,6 @@ class ForestApp : public SampleApp {
             tracer_.resetAccumulation();
             std::printf("v2: %s\n", on ? "asset editor" : "back to the wood");
             std::fflush(stdout);
-            quitArmed_ = false;
             return true;
         }
         // -----------------------------------------------------------------
@@ -3702,37 +4350,83 @@ class ForestApp : public SampleApp {
         // -----------------------------------------------------------------
         if (world_.staged() && !consoleOpen_ && !menuOpen_ && !waterPanelOpen_ &&
             edit_.key(e)) {
-            quitArmed_ = false;
             std::fflush(stdout);
             return true;
         }
         if (e.key == Input::Key::Y) {
             setMenuOpen(!menuOpen_);
-            quitArmed_ = false;
             return true;
         }
-        // [I] OPENS THE WATER PANEL, and frees the mouse while it is up. Its
-        // own key rather than a page of the [Y] menu because these are meant
-        // to be flicked on and off WHILE LOOKING AT A LAKE -- a setting you
-        // have to leave the water to reach is a setting you judge from memory.
-        // THE WATER PANEL IS ON O NOW. I was rebound to ESC (user 2026-09-13)
-        // and ESC is the pause room, so the panel needed somewhere else; O is
-        // the nearest free key to the one it had.
-        if (e.key == Input::Key::O) {
-            setWaterPanelOpen(!waterPanelOpen_);
-            quitArmed_ = false;
+        // -- THE WATER PANEL HAS NO KEY ANY MORE (user 2026-09-14: "you remove
+        // -- the water panel from l") ---------------------------------------
+        //
+        // It had three in two days. It was built on [I] on 2026-09-13; I was
+        // rebound to ESC that same day so it took O; O was asked for by name
+        // the next day for the building level, so it took L; and L is now gone
+        // too. A key that keeps moving is worse than no key -- every note that
+        // names one goes stale the moment it moves, and this one had already
+        // outlived two.
+        //
+        // IT IS NOT DELETED. `--water-ui` opens it at start-up and everything
+        // below setWaterPanelOpen is untouched, so the eight live terms are
+        // still there for the session you actually want to tune water in. What
+        // has gone is the press that could open it by accident mid-walk.
+        //
+        // If it ever wants a key back, this is the spot -- and J, M and Z are
+        // what is free. See World::levelOn for what took O.
+        // -----------------------------------------------------------------
+        // [O] -- THE BUILDING LEVEL, AND O AGAIN TO COME BACK.
+        //
+        // The asset deck's door, with the deck's own reasoning ("A different
+        // PLACE, not a different mode of this one") and the same exclusivity:
+        // the pause panel and the editor both close first, so only one place is
+        // ever open and the saved wood position can only have been written by
+        // whichever door is actually open. See the note over [U].
+        //
+        // NOT FLYING, and that is the difference from the deck. The editor has
+        // to fly because the walk reads the TERRAIN and there is no terrain at
+        // 640 m -- but this level brought its own ground with it, and a
+        // building you float through is not a building. Solid::interior is
+        // what makes the walk read the level's voxels instead; see collide.h.
+        // -----------------------------------------------------------------
+        if (e.key == Input::Key::O && !consoleOpen_) {
+            if (pauseOpen_) setRoomOpen(false);
+            if (world_.staged()) leaveStage();
+            const bool on = !world_.levelOn();
+            if (on) {
+                woodPos_ = player_.pos;
+                woodYaw_ = yaw_;
+                woodPitch_ = pitch_;
+                woodFly_ = player_.fly;
+                if (!world_.setLevel(true)) {
+                    std::fprintf(stderr, "v2: no level to travel to -- run "
+                                         "tools/voxelize_building.py\n");
+                    return true;
+                }
+                standInLevel();
+            } else {
+                leaveLevel();
+            }
+            player_.vy = 0.0f;   // no fall carried across the doorway
+            pos_ = player_.eyePosition();
+            tracer_.resetAccumulation();
+            volfog_.invalidate();
+            std::printf("v2: %s\n", on ? "the building" : "back to the wood");
+            std::fflush(stdout);
             return true;
         }
         // T OPENS THE CONSOLE, and only when it is shut -- while it is open the
         // key belongs to whatever is being typed, and ImGui has the keyboard.
         if (e.key == Input::Key::T && !consoleOpen_ && !menuOpen_) {
             setConsoleOpen(true);
-            quitArmed_ = false;
             return true;
         }
         if (e.key == Input::Key::Escape) {
-            // ESC closes the menu before it starts arming the quit -- otherwise
-            // dismissing a panel would leave the window one press from closing.
+            // A PANEL FIRST, ALWAYS. ESC dismisses whatever is over the screen
+            // before it starts down the ladder below -- otherwise closing a
+            // console would also spend a rung of it, and the press that was
+            // meant to put a panel away would be the press that gave the mouse
+            // back as well.
             if (consoleOpen_) {
                 setConsoleOpen(false);
                 return true;
@@ -3741,30 +4435,65 @@ class ForestApp : public SampleApp {
                 setMenuOpen(false);
                 return true;
             }
+            // ...THE WATER PANEL TOO, which it did not used to. That panel
+            // hands the cursor back when it opens, so ESC over it fell past the
+            // mouse rung and straight into the pause room -- leaving a panel up
+            // over a room it has nothing to do with. It is a panel; ESC closes
+            // panels.
+            if (waterPanelOpen_) {
+                setWaterPanelOpen(false);
+                return true;
+            }
             // -------------------------------------------------------------
-            // ...AND THEN IT IS THE PAUSE ROOM, AND THEN IT IS THE DOOR.
+            // ESC IS A LADDER OF THREE.
             //
-            // "one esc goes to the main menu box, and another esc exits the
-            // game" (user 2026-09-13). So the two presses that used to be
-            // "release the mouse" and "quit" are now "go to the room" and
-            // "quit" -- the same muscle memory, with a place to change your
-            // mind in the middle of it rather than a printed warning.
+            //     press 1   free the mouse          setCapture(false)
+            //     press 2   the three buttons up    setRoomOpen(true)
+            //     press 3   quit, CRT collapse      beginQuit()
             //
-            // THE GREEN BUTTON IS STILL THE WAY BACK. ESC does not toggle any
-            // more: in the room it leaves the program, which is what makes the
-            // second press an exit rather than a second opinion.
+            // "Have 1 esc free the mouse, another esc to bring up the main menu
+            // with the three balls, and one more esc to exit the game" (user
+            // 2026-09-14). This is the shape the pause ROOM had, restored onto
+            // the panel that replaced it -- the room is still gone; what came
+            // back is the ladder.
+            //
+            // IT WAS A TOGGLE FOR A FEW HOURS, and the argument for that was
+            // that a panel is not a place: three models standing in the wood
+            // you never left have nowhere to travel to, so there was nothing
+            // for the extra rungs to step through. That reasoning was about
+            // the GEOMETRY and the ladder is about the KEYBOARD -- ESC is the
+            // key that backs out of things, and each rung backs out of one more
+            // than the last. Both readings are defensible; this one is the
+            // user's, twice.
+            //
+            // THE PANEL IS TESTED ABOVE THE MOUSE RUNG, and it has to be:
+            // setRoomOpen TAKES the cursor (the buttons are picked by the
+            // crosshair), so a panel that fell through to the release below
+            // would spend the third press handing the mouse back and never
+            // reach the door.
+            //
+            // A PRESS THAT FREES NOTHING IS NOT SPENT. With the pointer already
+            // loose -- a fresh launch nobody has clicked into, or a panel that
+            // gave it away -- the first press goes straight to the buttons. The
+            // rung only exists while there is something on it.
+            //
+            // THE RED BUTTON IS STILL THE OTHER WAY OUT, and it runs the same
+            // beginQuit this third press does, so the two exits cannot differ.
+            // ESC does not close the panel: that is what the green button is
+            // for, and it is what makes this press an exit rather than a
+            // second opinion.
             // -------------------------------------------------------------
-            if (world_.inRoom()) {
-                shutdown(0);
+            if (pauseOpen_) {
+                beginQuit();
+                return true;
+            }
+            if (looking_) {
+                setCapture(false);
                 return true;
             }
             setRoomOpen(true);
             return true;
         }
-
-        // Any other key means the session is still in use, so disarm. Otherwise
-        // an ESC pressed minutes ago is still primed to close the window.
-        quitArmed_ = false;
 
         if (e.key == Input::Key::Minus) opt_.r.exposure = maxf(0.05f, opt_.r.exposure * 0.8f);
         if (e.key == Input::Key::Equal) opt_.r.exposure = minf(40.0f, opt_.r.exposure * 1.25f);
@@ -3816,6 +4545,16 @@ class ForestApp : public SampleApp {
             std::fflush(stdout);
         }
         if (e.key == Input::Key::R) toggleRecording();
+        // [K] -- THE STACK BADGE'S FOUR NUMBERS. Free at the time of writing
+        // and next to nothing else; see the panel for what it holds. The water
+        // panel deliberately has NO key any more ("a key that keeps moving is
+        // worse than no key"), and the difference is that this one was asked to
+        // be reachable: "let me adjust the display number".
+        if (e.key == Input::Key::K && !consoleOpen_) {
+            stackPanelOpen_ = !stackPanelOpen_;
+            std::printf("v2: stack badge panel %s\n",
+                        stackPanelOpen_ ? "open" : "closed");
+        }
         if (e.key == Input::Key::P) shotRequested_ = true;
         if (e.key == Input::Key::F1) printHelp();
         std::fflush(stdout);
@@ -3824,8 +4563,21 @@ class ForestApp : public SampleApp {
 
     // -----------------------------------------------------------------------
     bool onMouseEvent(const MouseEvent &e) override {
-        if (e.type == MouseEvent::Type::ButtonDown) quitArmed_ = false;
-
+        if (quitting_) return true;   // see onKeyEvent
+        // AN `if` WITH NO BODY BINDS TO THE NEXT STATEMENT, and the next
+        // statement here is the whole wheel. There used to be a
+        //
+        //     if (e.type == MouseEvent::Type::ButtonDown) quitArmed_ = false;
+        //
+        // on this line. quitArmed_ went when ESC became a ladder of three, and
+        // eight of the nine places that cleared it were statements of their own
+        // and came out cleanly; this one was the tail of an `if`, and taking it
+        // left the test behind. The wheel block below then ran only for an
+        // event that was a ButtonDown AND a Wheel, which no event is -- so the
+        // wheel did nothing at all, and there was no error and no warning,
+        // because `if (a) if (b) {...}` is perfectly good C++.
+        //
+        // Reported as "I cant scroll to any other tool".
         if (e.type == MouseEvent::Type::Wheel) {
             // X IS A HELD MODIFIER, and it is POLLED rather than tracked from
             // key events: a stuck flag after an alt-tab that swallowed the key
@@ -3865,8 +4617,33 @@ class ForestApp : public SampleApp {
         // has to work: there is nothing to look around at, and a pause menu
         // that ignores the first thing you do is a pause menu that feels
         // broken.
-        if (world_.inRoom() && e.type == MouseEvent::Type::ButtonDown &&
+        if (pauseOpen_ && e.type == MouseEvent::Type::ButtonDown &&
             e.button == Input::MouseButton::Left) {
+            // -- ...UNLESS THE POINTER IS NOT OURS YET, AND THAT EXCEPTION IS
+            //    THE WHOLE OF THE DISCORD BUG (user 2026-09-14) -----------
+            //
+            // "if the player comes back from discord after clicking on it, it
+            // cant click off the discord button."
+            //
+            // A LOOP, AND A TIGHT ONE. The blue button opens Discord;
+            // releaseMouseOffFocus sees the window go to the back and hands the
+            // pointer over, so `looking_` is false. Clicking the game window to
+            // come back is a ButtonDown, this branch runs BEFORE the
+            // click-to-capture rule below, and the crosshair has not moved --
+            // it is still resting on the blue ball. So the click that was meant
+            // to return to the game pressed Discord again, which took the focus
+            // away again, for ever.
+            //
+            // The note above is still right about the ordinary case: ESC opens
+            // the panel without touching the capture, so `looking_` is true and
+            // the first click still works. What it did not cover is a first
+            // click whose job is to get the mouse back, which is every click
+            // that follows an alt-tab.
+            if (!looking_) {
+                setCapture(true);
+                swingArmed_ = false;
+                return true;
+            }
             // -- THE CLICK STARTS THE PRESS; THE PRESS DOES THE THING -------
             //
             // "it presses the button down and then executes the action. make
@@ -3892,6 +4669,25 @@ class ForestApp : public SampleApp {
             return true;
         }
 
+        // -- ON THE DECK, A CLICK PICKS THE SUBJECT OR GRABS A HANDLE -------
+        //
+        // Before the capture rule below, exactly as the room's button press is
+        // and for the same reason: the first click has to work. It is gated on
+        // `looking_` all the same -- the ray is cast from the CROSSHAIR, and
+        // with a loose cursor the crosshair is not where the pointer is, so a
+        // click that had not taken the mouse yet would pick whatever happened
+        // to be in the middle of the screen.
+        if (world_.staged() && looking_ && e.button == Input::MouseButton::Left) {
+            if (e.type == MouseEvent::Type::ButtonDown) {
+                if (edit_.click(pos_, Camera::direction(yaw_, pitch_))) {
+                    std::fflush(stdout);
+                    return true;
+                }
+            } else if (e.type == MouseEvent::Type::ButtonUp && edit_.dragging()) {
+                edit_.release();
+                return true;
+            }
+        }
         if (e.type == MouseEvent::Type::ButtonDown && e.button == Input::MouseButton::Left) {
             // Click to capture, the way a game does it. ESC gives it back.
             //
@@ -3919,6 +4715,21 @@ class ForestApp : public SampleApp {
                     holdLook_ = true;
                     setCapture(true);
                 }
+                // -- ...AND WITH SEEDS IN HAND IT PLANTS (user 2026-09-14) ---
+                //
+                // "have it where the player can right click tilled land with
+                // seeds to place down seeds."
+                //
+                // AFTER THE CAPTURE, so the click that grabs a loose pointer is
+                // not also a planting -- the same rule the left button's
+                // click-to-capture follows, and for the same reason.
+                //
+                // BEFORE THE BOW, which is what the right button otherwise
+                // means: plantSeed answers false unless seeds are in the hand
+                // AND the crosshair is on turned earth, so the draw is
+                // untouched by anything that is not both.
+                else
+                    plantSeed();
             } else if (e.type == MouseEvent::Type::ButtonUp && holdLook_) {
                 holdLook_ = false;
                 setCapture(false);
@@ -4134,11 +4945,30 @@ class ForestApp : public SampleApp {
     // pick-sized hole rather than a crater, and small enough that the voxel
     // pass touches roughly a dozen columns out of a chunk's 65 536.
     static constexpr int kDigRadiusVox = 3;
+    // HOW WIDE A SWING CUTS WHEAT. Bigger than the dig radius on purpose: a
+    // bite is a tool head meeting stone and this is a swing going THROUGH a
+    // stand of straw, so it takes the tuft you aimed at rather than a
+    // thumbnail of it. 0.5 m, which is about what one plant occupies.
+    // WHAT A STRAY TALL BLADE COUNTS AS, when the hit is not inside any tuft.
+    // tuftAt is what makes a blade tall in the first place, so this should
+    // never fire -- it is the answer for the case where that stops being true.
+    static constexpr float kLooseWheatM = 0.5f;
+    // v1's TILL_R, which is 5 voxels -- a seed bed a metre across per swing.
+    static constexpr float kTillRadiusM = 0.5f;
+    // HOW FAR A SEED BED MAY BE FROM WATER AND STILL TAKE. Four metres, which
+    // is a bed you can see the lake from -- far enough that a shoreline is
+    // farmable along its length, near enough that it is a reason to farm THERE.
+    static constexpr float kSeedWaterM = 4.0f;
     bool swingArmed_ = false;
     // The last pose the menu's copy row printed, kept so the row can show it
     // back rather than the player having to find the console.
     std::string poseCopied_;
     Swing lastSwing_;
+    // WHICH LOOSE BODY, AND WHICH OF ITS VOXELS, when lastSwing_ is a Loose
+    // one. The slot alone would not do: the carve wants the struck VOXEL, and
+    // re-deriving that from the hit point is a rounding away from the cell in
+    // front or the one behind. Meaningless unless lastSwing_.kind is Loose.
+    DebrisHit lastDebris_;
     vb::AudioDevice audio_;
     vb::Ambience ambience_;
     ToolSounds toolSfx_;
@@ -4168,18 +4998,37 @@ class ForestApp : public SampleApp {
 
     bool looking_ = false;   // cursor captured, mouse turns the camera
     bool holdLook_ = false;  // ...because the right button is held
-    bool quitArmed_ = false;
     bool moving_ = false;
     bool menuOpen_ = false;
     // The water panel, its own capture memory, and one bool per term. All on:
     // the panel subtracts, it does not build the water up from nothing.
     bool waterPanelOpen_ = false;
+    // [K] -- the stack badge's four numbers. See the panel.
+    bool stackPanelOpen_ = false;
+    bool stackPanelForce_ = true;
+    // The last bake, kept so the panel can say it took -- see the bake button.
+    std::string stackBaked_;
     bool captureBeforeWater_ = false;
     bool captureBeforeRoom_ = false;
+    // -- THE PAUSE PANEL, AND WHERE IT IS STANDING ------------------------
+    //
+    // Pinned once, when the key is pressed -- see setRoomOpen. Everything that
+    // draws, picks or labels a button reads the pose from here, so there is one
+    // description of where the panel is rather than three.
+    bool pauseOpen_ = false;
+    Vec3 panelAt_{0.0f, 0.0f, 0.0f};
+    Vec3 panelRight_{1.0f, 0.0f, 0.0f};
+    Vec3 panelUp_{0.0f, 1.0f, 0.0f};
+    Vec3 panelInto_{0.0f, 0.0f, -1.0f};
+    // HOW FAR IN FRONT OF THE EYE. Far enough that three buttons 1.3 m apart
+    // are all comfortably in view at once, near enough that they read as
+    // something you could reach out and press.
+    static constexpr float kPanelReachM = 2.6f;
     // -- THE THREE BUTTONS. press is 0 out and 1 fully down; held is the one a
     //    finger is on, or -1; pend is the one whose action has not fired yet.
     static constexpr float kBtnDownSec = 0.08f, kBtnUpSec = 0.16f;
     float btnPress_[3] = {0.0f, 0.0f, 0.0f};
+    // The green button has been pressed and the wood is not ready yet.
     float btnClock_ = 0.0f, btnAt_ = 0.0f;
     int btnHeld_ = -1, btnPend_ = -1;
     // -- THE RED BUTTON'S AFTERMATH. quitT_ is the collapse, 0 to 1.
@@ -4270,6 +5119,23 @@ class ForestApp : public SampleApp {
     // different state -- see render/birdflock.h.
     BirdFlock flock2_;
     Bunnies bunnies_;
+    Bees bees_;
+    Critters critters_;
+    // v1's sparks and its death smoke. See render/particles.h.
+    Particles particles_;
+    // ...and what a blow does to a living thing. See render/lifehit.h.
+    LifeHits lifeHits_;
+    // How many pieces the last kill actually threw. For --kill-test: the
+    // shatter can be refused (no debris slot, a model loaded without its
+    // voxels) and a corpse that simply vanishes looks the same as one that
+    // came apart unless somebody counts.
+    int lastPieces_ = 0;
+    // WHERE THE HIVES AND THE BLOOMS ARE, gathered off World::decorNear twice a
+    // second rather than per bee per frame -- the same clock and the same
+    // reasoning as the perched birds' tree list, and for the same kind of
+    // thing: a hive and a flower do not move.
+    std::vector<Vec3> banksNear_;
+    std::vector<Vec3> hivesNear_, bloomsNear_;
     // THE TOOLS ON THE DECK. Attached to the population rather than owning a
     // second copy of the strips: it edits a BAKE, and the bake is read by the
     // rabbits in the wood -- see render/assetedit.h.
@@ -4280,6 +5146,12 @@ class ForestApp : public SampleApp {
     float woodYaw_ = 0.0f, woodPitch_ = 0.0f;
     bool woodFly_ = false;
     std::vector<Solid> perches_;  // trees a songbird may sit in -- see the note at its update
+    // Where seeds have to come back out of the ground this frame -- see the
+    // till revert. Cleared every tick; empty on all but a handful of them.
+    std::vector<Vec3> seedsBack_;
+    // The two kit slots a broken wheat plant pays into, or -1 if the art did
+    // not load. See the kit block and breakWheat.
+    int wheatTool_ = -1, seedsTool_ = -1, steakTool_ = -1;
     // A PLAIN FRAME COUNTER. It paces the perch query above and salts the
     // chunk hashes; it is not the tracer's tick, which is a sampler seed.
     uint32_t frameTick_ = 0;
@@ -4342,6 +5214,32 @@ class ForestApp : public SampleApp {
     // -----------------------------------------------------------------------
     void stepLoose(float dt) {
         simMs_ += double(dt) * 1000.0;
+        // ...AND THE TURNED EARTH GROWS BACK OVER. v1'''s tillRevert, on the
+        // same clock the rest of the loose world runs on -- it is the same kind
+        // of thing: a change to the static world with a lifetime on it. Costs
+        // one compare while nothing is tilled, which is nearly always.
+        // -- ...AND ANY SEED THAT WAS IN IT COMES BACK OUT ------------------
+        //
+        // (user 2026-09-14: "when the tilled grass turns back to dirt/grass,
+        // have the planted seeds pop out of the ground and start levitating".)
+        //
+        // A DROP, WHICH IS WHAT LEVITATING ALREADY IS IN THIS ENGINE. Drops
+        // hover for kDropRestSec and are absorbed by walking over them, so a
+        // seed that did not take is a seed you can pick up and try somewhere
+        // wetter -- which is the whole of what the ask wants and needed no new
+        // kind of object.
+        //
+        // World SAYS WHERE AND app.h SPILLS, because the drop pool is not the
+        // world's to reach into. Same split as the spoil, one file over.
+        seedsBack_.clear();
+        world_.tillRevert(simMs_ * 0.001, &seedsBack_);
+        if (!seedsBack_.empty() && seedsTool_ >= 0) {
+            const Tool &st = held_.tool(seedsTool_);
+            if (!st.models.empty())
+                for (size_t k = 0; k < seedsBack_.size(); ++k)
+                    drops_.spill(seedsTool_, st.models[0], st.sx, st.sy, st.sz, seedsBack_[k],
+                                 float(k) * 1.7f);
+        }
         if (physics_.available()) {
             // REBUILT WHEN THE GROUND MOVES, not only when the player does.
             // A dig changes the shape of the floor under everything that is
@@ -4450,6 +5348,15 @@ class ForestApp : public SampleApp {
 
     WalkWorld walkWorld() {
         world_.collidersNear(player_.pos, 6.0f, &solids_);
+        // THE LEVEL IS NOT IN A CHUNK, so collidersNear cannot find it: that
+        // walk goes through the resident chunk map and this building is four
+        // kilometres from the nearest chunk and 640 m over it. One solid,
+        // appended by hand, which is the whole of the level's physics -- see
+        // World::levelSolid and Solid::interior.
+        if (world_.levelOn()) {
+            Solid lv;
+            if (world_.levelSolid(&lv)) solids_.push_back(lv);
+        }
         WalkWorld w;
         w.terrain = &world_.terrain;
         // ...AND WHERE THE HOLES ARE. The ground is the generator plus the
@@ -4488,6 +5395,26 @@ class ForestApp : public SampleApp {
         world_.sky.sunTransOverride = want;
         return true;
     }
+
+    // -----------------------------------------------------------------------
+    // IS THE SUN DOWN? -- the fireflies' whole existence, and ONE reading of it.
+    //
+    // OFF THE SKY AND NOT OFF THE CLOCK, which is the difference between a test
+    // that is right on both paths and one that is right on the interactive one.
+    // The clock drives the sun while the viewer is running; an OFFLINE render
+    // takes its sun from --sun-az/--sun-el and leaves the clock at its default
+    // (see the note over the --water-flags branch in onLoad -- "the clock is a
+    // VIEWER concept"). So `--out --time 23` asked for midnight and the report
+    // said "daylight -- none expected", which is the report being asked the
+    // wrong question.
+    //
+    // world_.sky is what actually lit the frame, both ways round. To render
+    // fireflies offline, name the sun: --sun-el -10.
+    //
+    // A SHADE BELOW THE HORIZON rather than at it, so they come up as the light
+    // goes rather than the instant it crosses zero. v1 swaps its flyer band on
+    // the sun vector's own sign at -0.06, which is this angle.
+    bool isNight() const { return world_.sky.elevationDeg() < -3.4f; }
 
     bool applySun(bool force) {
         const float el = clock_.elevationDeg();
@@ -4656,6 +5583,180 @@ class ForestApp : public SampleApp {
         return t;
     }
 
+    // -----------------------------------------------------------------------
+    // THE LIFE /locate CAN TAKE YOU TO.
+    //
+    // "/locate skunk. this teleports the player to the nearest life."
+    // (user 2026-09-14.) The biome table above takes you to a PLACE, which is
+    // a coordinate this engine can compute from nothing; this one takes you to
+    // an ANIMAL, which exists only where it is standing right now. So every
+    // row below is answered by asking that population, never by arithmetic.
+    //
+    // ADDING AN ANIMAL IS ONE ROW, for the reason the biome table gives: the
+    // parser, the list in both error messages and the teleport all read this,
+    // so a creature cannot be half-registered. The one thing a row cannot
+    // carry is WHICH population to ask -- six classes with six containers --
+    // and that is the switch in nearestLife, which the compiler checks is
+    // exhaustive.
+    //
+    // WHAT EACH COLUMN IS FOR:
+    //
+    //   stand  HOW FAR OFF YOU ARRIVE, and it is not decoration. Every land
+    //          mammal has a flee sphere (MarchSpec::fleeInM) and landing
+    //          inside it means the animal you asked to be taken to bolts
+    //          before you have seen it do anything else. Each one is set
+    //          outside its own hysteresis: the mouse's 8.6 m flee-out is why
+    //          it is the odd number in the column. Anything that swims gets
+    //          the minimum, because standNear walks out to the shore on its
+    //          own and starting further out only skips usable ground.
+    //
+    //   wood   WHERE IT LIVES WHEN IT IS NOT HERE: -1 either, 0 pine, 1 birch,
+    //          from MarchSpec::wood and the hive pass in scene/chunks.h. This
+    //          is only ever read when nothing was found, and then it is the
+    //          difference between "there are none" -- which is wrong, there
+    //          are plenty, one band over -- and taking the player to them.
+    //
+    //   water  IT NEEDS A LAKE RATHER THAN A WOOD. Same job as `wood` for the
+    //          nine populations in render/lake.h: with none in range the
+    //          fallback is the nearest shore, which is where they will be.
+    // -----------------------------------------------------------------------
+    enum class Life {
+        Bunny, Skunk, Armadillo, Porcupine, Mouse, Worm, Snake,
+        Ant, Fly, Ladybug, Frog, Firefly,
+        Bee, Hive, Butterfly, Songbird, Flock,
+        Salmon, Bass, Koi, Minnow, Catfish, Bluegill, Duck, Dragonfly, LilyPad,
+    };
+
+    struct LifeName {
+        const char *name;
+        const char *alias;   // "" for none
+        Life life;
+        float stand;
+        int wood;            // -1 either, 0 pine, 1 birch
+        bool water;
+    };
+
+    static const std::vector<LifeName> &lifeNames() {
+        //                name         alias          kind             stand wood water
+        static const std::vector<LifeName> t = {
+            {"bunny",     "rabbit",    Life::Bunny,      5.0f, -1, false},
+            {"skunk",     "",          Life::Skunk,      5.0f, -1, false},
+            {"armadillo", "",          Life::Armadillo,  5.0f,  0, false},
+            {"porcupine", "",          Life::Porcupine,  5.0f,  0, false},
+            {"mouse",     "",          Life::Mouse,     10.0f,  1, false},
+            {"worm",      "",          Life::Worm,       4.0f, -1, false},
+            {"snake",     "grass_snake",Life::Snake,     5.0f,  1, false},
+            {"firefly",   "fireflies", Life::Firefly,    4.0f, -1, false},
+            {"ant",       "ants",      Life::Ant,        4.0f, -1, false},
+            {"fly",       "flies",     Life::Fly,        4.0f,  0, false},
+            {"ladybug",   "ladybird",  Life::Ladybug,    4.0f, -1, false},
+            // -- A WATERSIDE ROW, AND THAT IS THE FIX (user 2026-09-14: "I
+            //    dont see any frogs even when doing /locate frog") -----------
+            //
+            // It said `water = false`, so a miss sent you to the BIRCH BAND
+            // CENTRE -- dry birch wood, where a frog can never spawn, because
+            // fillFrogs places from a bank and nothing else. The command
+            // worked perfectly and took you to the one kind of place the
+            // animal does not live, every time, for ever.
+            //
+            // `water = true` with `wood = 1` is what it actually is: a frog
+            // wants a birch SHORE. nearestWater takes the wood now -- it is
+            // the first row that has ever needed it, since every other swimmer
+            // is a pine row and a lake was the whole condition.
+            {"frog",      "",          Life::Frog,       4.0f,  1, true},
+            {"bee",       "bees",      Life::Bee,        4.0f,  1, false},
+            {"hive",      "beehive",   Life::Hive,       5.0f,  1, false},
+            {"butterfly", "",          Life::Butterfly,  4.0f, -1, false},
+            {"songbird",  "bird",      Life::Songbird,   5.0f, -1, false},
+            // "songbird" is the one PERCHED in a crown (render/birds.h) and
+            // "flock" is the one FLYING (render/birdflock.h) -- two
+            // populations, two files, and the same animal to look at.
+            {"flock",     "flyingbird",Life::Flock,      8.0f, -1, false},
+            {"salmon",    "",          Life::Salmon,     2.0f,  0, true},
+            {"bass",      "",          Life::Bass,       2.0f,  0, true},
+            {"koi",       "",          Life::Koi,        2.0f,  0, true},
+            {"minnow",    "",          Life::Minnow,     2.0f,  0, true},
+            {"catfish",   "",          Life::Catfish,    2.0f,  0, true},
+            {"bluegill",  "blue_gill", Life::Bluegill,   2.0f,  0, true},
+            {"duck",      "",          Life::Duck,       2.0f,  0, true},
+            {"dragonfly", "",          Life::Dragonfly,  2.0f,  0, true},
+            {"lilypad",   "lily",      Life::LilyPad,    2.0f,  0, true},
+        };
+        return t;
+    }
+
+    // -----------------------------------------------------------------------
+    // WHERE THE NEAREST ONE OF A KIND IS, or false if none is live.
+    //
+    // FALSE IS THE ORDINARY ANSWER, NOT AN ERROR. A population only exists
+    // inside the streaming ring -- see the fill in each of these files -- so
+    // asking for an armadillo from the birch wood finds nothing because there
+    // IS nothing, and the caller's job is then to say where they are instead.
+    // -----------------------------------------------------------------------
+    bool nearestLife(Life k, Vec3 *at) const {
+        float d = 0.0f;
+        switch (k) {
+            case Life::Bunny:     return bunnies_.nearest(pos_, at, &d);
+            // nearestSkunk answers for any of the four marchers -- the name is
+            // bunnies.h's own shorthand for the family, as publishSkunks is.
+            case Life::Skunk:     return bunnies_.nearestSkunk(kMarchSkunk, pos_, at, &d);
+            case Life::Armadillo: return bunnies_.nearestSkunk(kMarchArmadillo, pos_, at, &d);
+            case Life::Porcupine: return bunnies_.nearestSkunk(kMarchPorcupine, pos_, at, &d);
+            case Life::Mouse:     return bunnies_.nearestSkunk(kMarchMouse, pos_, at, &d);
+            case Life::Worm:      return bunnies_.nearestSkunk(kMarchWorm, pos_, at, &d);
+            case Life::Snake:     return bunnies_.nearestSkunk(kMarchSnake, pos_, at, &d);
+            case Life::Firefly:   return critters_.nearestFirefly(pos_, at, &d);
+            case Life::Ant:       return critters_.nearestAnt(pos_, at, &d);
+            case Life::Fly:       return critters_.nearestFly(pos_, at, &d);
+            case Life::Ladybug:   return critters_.nearestBug(pos_, at, &d);
+            case Life::Frog:      return critters_.nearestFrog(pos_, at, &d);
+            case Life::Bee:       return bees_.nearest(pos_, at, &d);
+            case Life::Hive:      return nearestHive(at);
+            case Life::Butterfly: return flock_.nearest(pos_, at, &d);
+            case Life::Songbird:  return birds_.nearest(pos_, at, &d);
+            case Life::Flock:     return flock2_.nearest(pos_, at, &d);
+            case Life::Salmon:    return lake_.nearestFish(pos_, 0, at, &d);
+            case Life::Bass:      return lake_.nearestFish(pos_, 1, at, &d);
+            case Life::Koi:       return lake_.nearestFish(pos_, 2, at, &d);
+            case Life::Minnow:    return lake_.nearestFish(pos_, 3, at, &d);
+            case Life::Catfish:   return lake_.nearestFish(pos_, 4, at, &d);
+            case Life::Bluegill:  return lake_.nearestFish(pos_, 5, at, &d);
+            case Life::Duck:      return lake_.nearestDuck(pos_, at, &d);
+            case Life::Dragonfly: return lake_.nearestDfly(pos_, at, &d);
+            case Life::LilyPad:   return lake_.nearestPad(pos_, at, &d);
+        }
+        return false;
+    }
+
+    // A HIVE IS NOT A POPULATION. It is decor hanging in a birch crown, so
+    // there is no class holding a list of them -- World::decorNear is the
+    // register, and it is the same query the bees themselves are handed.
+    //
+    // ASKED FRESH AND WIDE RATHER THAN READING hivesNear_. That list is
+    // gathered to kBeeHiveM (40 m) because that is how far a bee cares; a
+    // command that can only find a hive already well within earshot of one is
+    // not worth having. The reach here is the loaded ring's own, and the scan
+    // is over resident chunks only, which is a one-off cost on one keystroke.
+    //
+    // THE POSITION IS A CORNER, which decorNear says in its own comment and is
+    // worth repeating at the one caller that AIMS at the result: the hive is
+    // about a metre across, so the crosshair lands on its edge rather than its
+    // middle. Close enough to be looking at it, and the bees orbiting it are
+    // what the eye finds anyway.
+    bool nearestHive(Vec3 *at) const {
+        std::vector<Vec3> hives;
+        world_.decorNear(5, pos_, 260.0f, &hives);
+        float best = 1e30f;
+        for (const Vec3 &h : hives) {
+            const float dx = h.x - pos_.x, dz = h.z - pos_.z;
+            const float d = dx * dx + dz * dz;
+            if (d >= best) continue;
+            best = d;
+            if (at) *at = h;
+        }
+        return best < 1e29f;
+    }
+
     void setConsoleOpen(bool on) {
         if (on == consoleOpen_) return;
         if (on) {
@@ -4694,10 +5795,15 @@ class ForestApp : public SampleApp {
     // the nearest one to the origin is several hundred metres away), so a
     // coarse ring is what keeps this from being a second of stalling.
     // -----------------------------------------------------------------------
-    bool nearestWater(float *outX, float *outZ) const {
+    // `wood` is -1 for any, 0 pine, 1 birch -- the frog is the only row that
+    // passes anything but -1, and it has to: sending it to the nearest lake
+    // full stop lands it on a PINE shore, where it is gated out and will never
+    // appear. See its row in lifeNames.
+    bool nearestWater(float *outX, float *outZ, int wood = -1) const {
         const VoxelTerrain &t = world_.terrain;
         TerrainMemo memo;
         auto wetAt = [&](float x, float z) {
+            if (wood >= 0 && (t.birchAt(x) ? 1 : 0) != wood) return false;
             const int vi = int(floorf(x / VOXEL_M)), vj = int(floorf(z / VOXEL_M));
             int wy = 0;
             return t.lakeColumn(vi, vj, memo, &wy);
@@ -4736,7 +5842,32 @@ class ForestApp : public SampleApp {
     }
 
     void teleportTo(float x, float z) {
-        player_.placeOnGround(walkWorld(), x, z);
+        // -- THE TREES ARE GATHERED ROUND THE DESTINATION ---------------------
+        //
+        // NOT round where you are standing, which is what walkWorld() does and
+        // is why this is not simply that call. placeOnGround runs findClear,
+        // whose whole job is to step a body out of a trunk it would otherwise
+        // be planted inside -- and findClear can only see the solids in the
+        // WalkWorld it is handed. walkWorld() gathers a six-metre bubble round
+        // player_.pos, so after a jump of a hundred metres that list describes
+        // the wood you have just LEFT: the check ran, found nothing in the way,
+        // and passed every spot in the new one.
+        //
+        // It cost nothing to miss while /locate went to a BAND CENTRE, which is
+        // a coordinate with no particular tree at it. /locate skunk arrives
+        // five metres from an animal a few dozen times a session, and a pine
+        // wood puts a trunk under about one spot in sixteen.
+        //
+        // 8 m, because findClear spirals out to 6 and a solid is kept by its
+        // centre -- a trunk whose middle is just outside the gather is still
+        // one the body can be inside.
+        world_.collidersNear(Vec3(x, player_.pos.y, z), 8.0f, &solids_);
+        WalkWorld w;
+        w.terrain = &world_.terrain;
+        w.edits = &world_.editStore();
+        w.solids = solids_.data();
+        w.solidCount = int(solids_.size());
+        player_.placeOnGround(w, x, z);
         pos_ = player_.eyePosition();
         // EVERYTHING TEMPORAL HAS TO BE TOLD. The film, the fog's history and
         // the reconstruction all carry state about somewhere else entirely, and
@@ -4745,6 +5876,200 @@ class ForestApp : public SampleApp {
         moving_ = true;
         tracer_.resetAccumulation();
         volfog_.invalidate();
+    }
+
+    // Point the camera at a world position. The asset deck's own two lines --
+    // see stageSubject, which now calls this -- pulled out because /locate
+    // needs exactly the same thing: being set down beside an animal and left
+    // facing the other way is not being taken to it.
+    void lookAt(const Vec3 &p) {
+        const Vec3 aim = p - pos_;
+        const float len = maxf(0.01f, length(aim));
+        yaw_ = atan2f(aim.x, -aim.z) * 180.0f / PI;
+        pitch_ = asinf(clampf(aim.y / len, -1.0f, 1.0f)) * 180.0f / PI;
+    }
+
+    // -----------------------------------------------------------------------
+    // WHERE YOU STAND TO LOOK AT SOMETHING -- WHICH IS NOT WHERE IT IS.
+    //
+    // ARRIVING ON THE ANIMAL IS WRONG TWICE OVER. On land it puts the player
+    // inside a body and inside its flee sphere, so the thing you asked for
+    // bolts on the frame you appear. On water it puts you on the LAKE BED,
+    // underwater, which is the trap /locate water already carries a paragraph
+    // about -- and every fish, duck, dragonfly and lily pad in the table is on
+    // water.
+    //
+    // SO IT IS ONE RING SEARCH OUTWARD FROM THE CREATURE, starting at that
+    // row's own stand-off and taking the first column that is not wet. ON LAND
+    // THAT IS THE STAND-OFF ITSELF, because the ground beside a skunk is dry;
+    // OVER WATER THE SAME LOOP WALKS OUT TO THE SHORE on its own. Two cases,
+    // no branch -- and the water half is nearestWater's second pass, which is
+    // the same answer arrived at by the same means.
+    //
+    // THE SWEEP STARTS ON THE PLAYER'S OWN SIDE. Every point on a ring is the
+    // same distance from the animal, so with no preference the arrival side is
+    // wherever k == 0 lands -- and being sent round to the far shore of a lake
+    // to look at a fish is a long walk for nothing. Opening the sweep at the
+    // bearing back toward the player and widening it alternately each way
+    // makes the accepted spot the nearest acceptable one to where you were.
+    //
+    // 1.5 m STEPS, 400 m OUT. Finer than nearestWater's 6 m because this one
+    // is placing a body rather than finding a lake, and the cap is a lake's
+    // half-width: past that there is no shore to reach and the caller is
+    // better off being told.
+    // -----------------------------------------------------------------------
+    bool standNear(float tx, float tz, float stand, float *outX, float *outZ) const {
+        const VoxelTerrain &t = world_.terrain;
+        TerrainMemo memo;
+        const float a0 = atan2f(pos_.x - tx, pos_.z - tz);
+        for (float r = maxf(1.5f, stand); r <= 400.0f; r += 1.5f) {
+            const int steps = maxi(8, int(2.0f * PI * r / 1.5f));
+            for (int k = 0; k < steps; ++k) {
+                // 0, +1, -1, +2, -2 ... out from the player's bearing.
+                const int half = (k + 1) / 2;
+                const float turn = float(((k & 1) ? half : -half)) / float(steps) * 2.0f * PI;
+                const float a = a0 + turn;
+                const float x = tx + sinf(a) * r, z = tz + cosf(a) * r;
+                const int vi = int(floorf(x / VOXEL_M)), vj = int(floorf(z / VOXEL_M));
+                int wy = 0;
+                if (t.lakeColumn(vi, vj, memo, &wy)) continue;
+                *outX = x;
+                *outZ = z;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Put the player beside `at` and face them at it. Returns how far off the
+    // arrival ended up being, which is what the reply quotes -- a fish reached
+    // from forty metres of shore and one reached from four are both "the
+    // nearest salmon", and the number is the only thing that says which.
+    float teleportToLife(const Vec3 &at, float stand) {
+        float sx = at.x, sz = at.z;
+        // A creature with no dry column within 400 m: stand where it is. The
+        // player floats over water rather than falling through it, so this is
+        // survivable, and it cannot happen on any lake this world generates.
+        if (!standNear(at.x, at.z, stand, &sx, &sz)) { sx = at.x; sz = at.z; }
+        teleportTo(sx, sz);
+        lookAt(at);
+        const float dx = at.x - pos_.x, dz = at.z - pos_.z;
+        return sqrtf(dx * dx + dz * dz);
+    }
+
+    // The names in the table, wrapped -- the console's reply window is one
+    // TextUnformatted and will not wrap for itself, and nineteen animals on
+    // one line runs off the side of the screen.
+    //
+    // BUILT FROM THE TABLE, so the help can never list a creature /locate does
+    // not know or miss one it does.
+    static std::string lifeList(const char *indent, size_t perLine) {
+        std::string m;
+        for (size_t i = 0; i < lifeNames().size(); ++i) {
+            if (i % perLine == 0) m += (i ? "\n" : "");
+            m += (i % perLine == 0) ? indent : "  ";
+            m += lifeNames()[i].name;
+        }
+        return m;
+    }
+
+    // What /locate knows, for the empty line and for a name it does not have.
+    // Three lines, because one would be a hundred and forty characters.
+    std::string locateMenu(const std::string &lead) const {
+        std::string m = lead + "\n  places  water";
+        for (size_t i = 0; i < biomeNames().size(); ++i)
+            m += "  " + std::string(biomeNames()[i].name);
+        return m + "\n  life\n" + lifeList("    ", 7);
+    }
+
+    // -----------------------------------------------------------------------
+    // /locate <animal> -- TAKE ME TO THE NEAREST ONE.
+    //
+    // THE ANSWER WHEN THERE IS NONE IS STILL A TELEPORT. A population exists
+    // only inside the streaming ring, and half this table is gated to one wood
+    // or to water (see MarchSpec::wood, the hive pass in scene/chunks.h, and
+    // every fill in render/lake.h) -- so "/locate armadillo" typed in the
+    // birch wood finds nothing, and there is nothing wrong. Replying "none
+    // found" would be true and useless: there are six of them, one band over.
+    // So a miss falls through to the PLACE the creature lives, which is a
+    // coordinate this engine can always compute, and the population fills in
+    // around the player over the next second -- BirthGate waives its floor for
+    // exactly this case, a jump of more than 40 m in one tick. See
+    // [[v2-spawn-contract]].
+    //
+    // WHICH IS WHY THE REPLY SAYS WHICH OF THE TWO HAPPENED. "skunk -- 412,
+    // -80, 5.0 m off" is an animal on your screen; "no armadillo here -- the
+    // pine wood" is a promise about the next few seconds, and reading one as
+    // the other is the report "the command does nothing".
+    // -----------------------------------------------------------------------
+    std::string locateLife(const LifeName &ln) {
+        // NOT FROM THE DECK, because it despawns every population on the way
+        // in (see stageSubject) and does not run their updates -- there is
+        // nothing to find and the answer would always be the fallback, which
+        // would then teleport the player off a deck they opened on purpose.
+        //
+        // AND NOT WITH THE PAUSE BUTTONS UP, for a different reason now that
+        // the wood keeps living behind them: the panel is PINNED where it was
+        // opened (see setRoomOpen), so a teleport would leave it standing in a
+        // wood the player is no longer in.
+        if (world_.staged() || pauseOpen_)
+            return std::string("not from in here -- back to the wood first");
+
+        Vec3 at{0.0f, 0.0f, 0.0f};
+        if (nearestLife(ln.life, &at)) {
+            const float d = teleportToLife(at, ln.stand);
+            char buf[200];
+            std::snprintf(buf, sizeof(buf), "%s -- %.0f, %.0f, %.0f m off", ln.name, pos_.x,
+                          pos_.z, d);
+            return std::string(buf);
+        }
+
+        // ---- none in range: go to where they live ---------------------------
+        //
+        // WATER FIRST, because it is the stronger condition of the two. Every
+        // row that swims is also a pine row, and a lake is a place inside that
+        // wood rather than a second wood to choose between -- so sending a
+        // salmon-hunter to the band centre would leave them standing in dry
+        // pines having been told they were on their way to a fish.
+        if (ln.water) {
+            float wx = 0.0f, wz = 0.0f;
+            if (!nearestWater(&wx, &wz, ln.wood))
+                return std::string("no ") + ln.name +
+                       " and no water it would live beside within 6 km -- lakes sit in "
+                       "basins, and this one has to be in the right wood";
+            teleportTo(wx, wz);
+            char buf[200];
+            std::snprintf(buf, sizeof(buf), "no %s in range -- the nearest shore, %.0f, %.0f. "
+                                            "give it a moment",
+                          ln.name, wx, wz);
+            return std::string(buf);
+        }
+
+        if (ln.wood >= 0) {
+            const bool inBirch = world_.terrain.birchAt(pos_.x);
+            const bool wantBirch = (ln.wood == 1);
+            // ALREADY IN THE RIGHT WOOD AND STILL NOTHING. Not a place
+            // problem, so do not teleport: either the models failed to load
+            // (the loaders say so on stdout) or, for a hive, this stretch of
+            // birch simply drew none -- they are on 5% of the trees.
+            if (inBirch == wantBirch)
+                return std::string("no ") + ln.name + " in range -- walk on a little";
+            if (world_.terrain.forced)
+                return std::string("no ") + ln.name + " here, and the world is pinned to one "
+                                   "wood (--birch / --pine) -- restart without it";
+            const float tx = nearestBandX(wantBirch ? Biome::Birch : Biome::Pine);
+            teleportTo(tx, pos_.z);
+            char buf[200];
+            std::snprintf(buf, sizeof(buf), "no %s here -- the %s wood, %.0f, %.0f. "
+                                            "give it a moment",
+                          ln.name, wantBirch ? "birch" : "pine", tx, pos_.z);
+            return std::string(buf);
+        }
+
+        // Either wood, so there is nowhere better to be sent: this one did not
+        // load. Every loader prints its own reason at startup.
+        return std::string("no ") + ln.name + " anywhere -- check the console output for the "
+                           "loader's warning";
     }
 
     // Returns the reply to show. Never throws; an unknown command is a message,
@@ -4765,12 +6090,7 @@ class ForestApp : public SampleApp {
         for (char &c : arg) c = char(tolower((unsigned char)c));
 
         if (verb == "locate") {
-            if (arg.empty()) {
-                std::string m = "locate what? try: water";
-                for (size_t i = 0; i < biomeNames().size(); ++i)
-                    m += ", " + std::string(biomeNames()[i].name);
-                return m;
-            }
+            if (arg.empty()) return locateMenu("locate what?");
             // WATER IS NOT A BIOME, so it is not a row in that table -- it is
             // a feature of the landform inside one. Handled before the band
             // loop, and it works in a pinned world too, unlike the bands.
@@ -4799,10 +6119,10 @@ class ForestApp : public SampleApp {
                 std::snprintf(buf, sizeof(buf), "%s forest -- %.0f, %.0f", bn.name, tx, pos_.z);
                 return std::string(buf);
             }
-            std::string m = "nothing called '" + arg + "'. try: water";
-            for (size_t i = 0; i < biomeNames().size(); ++i)
-                m += ", " + std::string(biomeNames()[i].name);
-            return m;
+            // ---- ...AND THE LIFE ------------------------------------------
+            for (const LifeName &ln : lifeNames())
+                if (arg == ln.name || arg == ln.alias) return locateLife(ln);
+            return locateMenu("nothing called '" + arg + "'.");
         }
         if (verb == "where") {
             char buf[160];
@@ -4812,8 +6132,10 @@ class ForestApp : public SampleApp {
             return std::string(buf);
         }
         if (verb == "help")
-            return std::string(
-                "/locate <biome|water>   /where   ENTER runs and closes   ESC cancels");
+            return std::string("/locate <biome|water>   /where   "
+                               "ENTER runs and closes   ESC cancels\n"
+                               "/locate <animal> takes you to the nearest one:\n") +
+                   lifeList("  ", 7);
         return std::string("unknown command '" + verb + "' -- try /help");
     }
 
@@ -4854,51 +6176,239 @@ class ForestApp : public SampleApp {
     // shades one hit has nowhere to put a second surface. A path tracer does.
     //
     // THE COLOUR HAD TO BE MEASURED, AND THE FIRST TWO GUESSES WERE THE SAME
-    // MISTAKE. The room's walls are white at 226 and the bulb lights them to a
-    // mean of 180, so a label has to be BRIGHTER THAN THE WALL to read at all --
-    // paint of any colour on a white wall under one lamp comes out a grey. Both
-    // early cuts (4.0, then 2.0) therefore just turned the number up, and both
-    // rendered as WHITE WORDS WITH A COLOURED FRINGE.
+    // MISTAKE. In the room the walls were white at 226 lit to a mean of 180, so
+    // a label had to be BRIGHTER THAN THE WALL to read at all -- paint of any
+    // colour on a white wall under one lamp comes out a grey. Both early cuts
+    // just turned the number up, and both rendered as WHITE WORDS WITH A
+    // COLOURED FRINGE.
     //
     // What was wrong is not the level, it is which channels got it. kBtnRgb is
     // an sRGB colour, so the way to make a radiance out of it is to LINEARISE it
     // -- and sRGB is a steep curve down low, so (214, 58, 58) is not
     // (1.00, 0.27, 0.27) of light but (1.00, 0.06, 0.06). Scaling the encoded
     // numbers had been handing the off-channels four times too much, and up on
-    // the tone map's shoulder -- where the room sits -- the top channel is
-    // compressed hard and those off-channels are not, so the three of them
-    // converge and the hue is squeezed out. Measured off the render: the ink
-    // came back 244/201/201 against a wall of 209/201/197, which is the same
-    // grey with a red tip on it.
+    // the tone map's shoulder the top channel is compressed hard while those
+    // off-channels are not, so the three of them converge and the hue is
+    // squeezed out. That is the whole reason the level below is applied to a
+    // LINEARISED colour and normalised on its brightest channel.
     //
-    // 2.0 ON THE LINEARISED COLOUR gives about 244/85/85 -- brighter than the
-    // wall where it should be and far darker where it should not, which is what
-    // a coloured light on a white surface actually looks like. The bulb is 12;
-    // that is what a surface meant to be stared straight into costs.
+    // -- AND THE LEVEL ITSELF WENT UP WHEN THE ROOM CAME DOWN ---------------
+    //
+    // 2.0 was measured against a wall. The panel stands in the open now and the
+    // thing behind a word is usually SKY, which the tone map puts far higher
+    // than any interior -- so the same ink that beat a wall lost to a cloud.
+    // Measured off --room --spawn 7, ink luma against the luma right beside it:
+    //
+    //     gain   quit          back          discord       saturation
+    //     2.0    +4            +30           +63           0.23 / 0.17 / 0.26
+    //     4.0    +17           +34           +85           0.18 / 0.13 / 0.19
+    //     8.0    +31           +27           +65           0.12 / 0.06 / 0.17
+    //     16.0   +41           +38           +104          0.07 / 0.05 / 0.09
+    //
+    // GREEN IS THE ONE THAT DECIDES IT. A saturated green is the highest-luma
+    // hue there is -- 0.7152 of the luma weight is in that channel -- so "back"
+    // was rendering at 205 against a sky at 212 and simply was not there. It is
+    // also the first word to go white as the level rises, and by 8.0 it has
+    // (saturation 0.06, which is a grey).
+    //
+    // 4.0 IS WHERE BOTH HOLD: every word clears its background, and all three
+    // still read as their button's colour rather than as white. Past that the
+    // contrast column barely moves and the saturation column falls off a cliff,
+    // which is the same failure the paragraph above describes arriving by a
+    // different road.
+    static constexpr float kLabelNits = 4.0f;
     //
     // THE BUTTON'S OWN COLOUR, out of World::kBtnRgb, so a label can never name
     // the wrong button.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // HOW MANY OF THE THING IN YOUR HAND, WRITTEN BESIDE IT.
+    //
+    // (user 2026-09-14: "import the stacked item numbers next to the hand held
+    // object. it should be setup similar to the current main menu floating
+    // text.")
+    //
+    // THE SAME GLYPHS THE ROOM'S LABELS USE, which is what that sentence asks
+    // for and is also the cheap answer: V2Holo already draws world-space text
+    // through the tracer, so this is one slot and one call. v1 does it the
+    // other way -- a badge blitted at the held model's projected corner, with
+    // its own lane in the uniform buffer and its own glyph table in the blit
+    // shader -- and none of that machinery has to exist here.
+    //
+    // WHERE IT GOES. The held item is a VIEWMODEL: it lives in camera space and
+    // has no world position of its own. HeldXform::cam is its offset along the
+    // camera's three axes, which is exactly what the Q drop already converts to
+    // a world point, so the badge is that point pushed out along camRight.
+    //
+    // ...AND IT FACES THE CAMERA BECAUSE ITS PAGE IS THE CAMERA'S. right and up
+    // are camRight/camUp, so the number is square to the eye at every angle --
+    // a label on the panel is on a wall and this one is not.
+    //
+    // HIDDEN BELOW TWO. "x1" next to an axe is noise, and it is the state
+    // almost everything in the kit is in almost always.
+    // -----------------------------------------------------------------------
+    // -- ...AND ALL FOUR OF THEM ARE LIVE (user 2026-09-14: "let me adjust the
+    //    display number just like how we were able to in v1") ---------------
+    //
+    // v1 tunes this badge from a panel with exactly four sliders -- SB_K is
+    // ['x', 'y', 'size', 'tilt'] -- and these are the same four in world terms:
+    // across the view, up it, the glyph cell, and a roll about the view axis.
+    //
+    // NOT `static constexpr` ANY MORE, and that is the whole change: a number
+    // you can only edit by rebuilding is not one you can judge, because the
+    // thing you are judging is how it sits next to a model that is bobbing.
+    // They start where they were tuned, so a session that never opens the panel
+    // sees what a session before it did.
+    //
+    // HALF THE SIZE IT WAS (same message): 0.022 -> 0.011. v1's default `size`
+    // is 1 against a badge the blit draws at a fixed pixel scale, so there is
+    // no number to carry over -- this one was chosen by eye against a 0.9 m
+    // tool and was chosen too big.
+    // -- AND THEY ARE PER ITEM NOW (user 2026-09-14) -----------------------
+    //
+    // The note that stood here said this was deliberately NOT per item: "this
+    // one hangs off the model's own measured half-width, so the same four
+    // numbers frame every tool in the kit. If one item ever needs its own, the
+    // shape of it is v1's sbCfgs table."
+    //
+    // TWO DID, IN THE SAME MESSAGE. The seed and the wheat came back with
+    // different numbers -- the seed up 0.205 and the wheat up 0.313 and ACROSS
+    // -0.145, on the other side of the model. The half-width is a box, and a
+    // stalk held upright and a handful of seed are not the same shape inside
+    // one; no single offset frames both.
+    //
+    // A ROW PER TOOL, defaulted to the base. That is v1's sbCfgs exactly, and
+    // its own fallback is the same: an id with nothing of its own reads the
+    // base rather than minting an entry from a render loop.
+    struct StackCfg {
+        float cell = 0.011f;    // glyph cell, in metres
+        float across = 0.100f;  // clear of the model's right edge
+        float up = 0.060f;      // ...and up from its middle
+        float tilt = 0.000f;    // a roll about the view axis, radians
+    };
+    std::vector<StackCfg> stackCfg_;
+
+    // -----------------------------------------------------------------------
+    // THE BAKED ROWS -- what the panel's tuning looks like once it has landed.
+    //
+    // (user 2026-09-14, giving both directly: "seed position: ... stackUpM_ =
+    // 0.205f ..." and "wheat position: ... stackAcrossM_ = -0.145f, stackUpM_ =
+    // 0.313f".)
+    //
+    // KEYED BY NAME, NOT BY SLOT. A slot is where a thing happens to sit in the
+    // wheel in this build -- the wheat moved from 4 to 5 when the hoe was added
+    // -- and a bake keyed by that would silently start framing the bow. v1
+    // keys sbCfgs by ITEM_NAMES for the same reason.
+    //
+    // ANYTHING NOT LISTED TAKES StackCfg's OWN DEFAULTS, which is every tool:
+    // a tool is never held in a stack of two, so its row would never be seen.
+    // Only things you can gather need one.
+    struct StackBake {
+        const char *name;
+        StackCfg cfg;
+    };
+    static const std::vector<StackBake> &stackBakes() {
+        static const std::vector<StackBake> t = {
+            //          cell     across      up      tilt
+            {"seeds", {0.0110f, 0.100f, 0.205f, 0.000f}},
+            {"wheat", {0.0110f, -0.145f, 0.313f, 0.000f}},
+        };
+        return t;
+    }
+
+    // Applied once, after the kit is built -- the only moment every tool has a
+    // name AND a slot. A name in the table that is not in the kit is ignored
+    // rather than an error: the table outlives any one build of the kit.
+    void applyStackBakes() {
+        stackCfg_.assign(size_t(held_.count()), StackCfg{});
+        for (const StackBake &b : stackBakes())
+            for (int i = 0; i < held_.count(); ++i)
+                if (std::string(held_.tool(i).name) == b.name) stackCfg_[size_t(i)] = b.cfg;
+    }
+
+    // The row for a tool, minted on first use. Never called from the render
+    // loop with an id the kit does not have -- see stackOf below, which is.
+    StackCfg &stackFor(int tool) {
+        if (stackCfg_.size() < size_t(held_.count())) stackCfg_.resize(size_t(held_.count()));
+        return stackCfg_[size_t(tool)];
+    }
+    // ...and the read-only side, which IS called from the render loop.
+    const StackCfg &stackOf(int tool) const {
+        static const StackCfg kBase;
+        return (tool >= 0 && size_t(tool) < stackCfg_.size()) ? stackCfg_[size_t(tool)] : kBase;
+    }
+    // NOT a slider: how bright a label is was settled for the room's own
+    // words and there is no reason for this one to differ. See kLabelNits.
+    static constexpr float kStackNits = 3.0f;
+
+    void setStackBadge() {
+        V2Holo &h = tracer_.holo[kHoloHand];
+        h = V2Holo{};
+        // NOTHING IN THE ROOM. The panel owns the screen there and a number
+        // hanging in front of it is the hand intruding on a menu.
+        if (pauseOpen_ || menuOpen_ || !held_.ready() || !held_.shown) return;
+        const int sel = held_.selected();
+        if (sel < 0) return;
+        const Tool &t = held_.tool(sel);
+        // FORCED WHILE THE PANEL IS OPEN, so there is something to aim the
+        // sliders at -- almost everything in the kit sits at one.
+        const int n = (stackPanelOpen_ && stackPanelForce_) ? maxi(2, t.stack) : t.stack;
+        if (!t.carried || n < 2) return;
+
+        char word[8];
+        std::snprintf(word, sizeof(word), "x%d", n);
+        // THE HAND'S OWN WORLD POINT -- the same three terms the Q drop uses.
+        const Vec3 rt = camRight(), up = camUp(), fw = forward();
+        const Vec3 hand =
+            pos_ + rt * lastHeld_.cam.x + up * lastHeld_.cam.y + fw * lastHeld_.cam.z;
+        // Half the model's own width, so a long item does not wear its number
+        // over itself. The box is in the tool's voxels; VOXEL_M turns it into
+        // metres, and the pose scale is already in lastHeld_.
+        const StackCfg &cfg = stackOf(sel);
+        const float halfW = 0.5f * float(t.sx) * VOXEL_M + cfg.across;
+        const Vec3 at = hand + rt * halfW + up * cfg.up;
+        // THE TILT IS A ROLL OF THE PAGE, not of the glyphs: holoSetWord takes
+        // the two axes the word is laid out on, so turning both of them in
+        // their own plane turns the whole number. v1's `tilt` is the same
+        // quantity -- its default is -0.26, a slight lean, and this starts at
+        // zero because a world-space label has the model's own perspective on
+        // it already.
+        const float c = cosf(cfg.tilt), sn = sinf(cfg.tilt);
+        const Vec3 rt2 = rt * c + up * sn;
+        const Vec3 up2 = up * c - rt * sn;
+        holoSetWord(h, word, float3(at.x, at.y, at.z), float3(rt2.x, rt2.y, rt2.z),
+                    float3(up2.x, up2.y, up2.z), cfg.cell,
+                    float3(kStackNits, kStackNits, kStackNits));
+    }
+
     void setRoomLabels() {
-        for (int b = 0; b < 3; ++b) {
-            // Normalised on its brightest channel and then scaled: the three
-            // colours were chosen as surfaces and have quite different lumas, so
-            // scaling them as they stand would make "back" half the brightness
-            // of "quit" for no reason anybody could see.
-            float lin[3], m = 0.0f;
-            for (int k = 0; k < 3; ++k) {
-                lin[k] = srgbToLinearF(float(World::kBtnRgb[b][k]) / 255.0f);
-                m = maxf(m, lin[k]);
-            }
-            const float s = (m > 0.0f) ? (2.0f / m) : 0.0f;
-            const float3 tint(lin[0] * s, lin[1] * s, lin[2] * s);
-            const Vec3 mid = World::buttonLabelMid(b);
-            const Vec3 rt = World::buttonLabelRight();
-            const Vec3 up = World::buttonLabelUp();
-            holoSetWord(tracer_.holo[b], World::buttonLabel(b),
-                        float3(mid.x, mid.y, mid.z), float3(rt.x, rt.y, rt.z),
-                        float3(up.x, up.y, up.z), World::kBtnLabelCellM, tint);
+        for (int b = 0; b < 3; ++b) setRoomLabel(b, World::buttonLabel(b));
+    }
+
+    // ONE WORD OVER ONE BUTTON, in that button's own colour. Split out of
+    // setRoomLabels so the green one can say something other than "back" while
+    // it waits -- see leaveRoom.
+    void setRoomLabel(int b, const char *word) {
+        if (b < 0 || b >= 3) return;
+        // Normalised on its brightest channel and then scaled: the three
+        // colours were chosen as surfaces and have quite different lumas, so
+        // scaling them as they stand would make "back" half the brightness of
+        // "quit" for no reason anybody could see.
+        float lin[3], m = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+            lin[k] = srgbToLinearF(float(World::kBtnRgb[b][k]) / 255.0f);
+            m = maxf(m, lin[k]);
         }
+        const float s = (m > 0.0f) ? (kLabelNits / m) : 0.0f;
+        const float3 tint(lin[0] * s, lin[1] * s, lin[2] * s);
+        // ALL THREE OFF THE PANEL, so a word cannot end up facing a way its
+        // button is not. The page is read along the panel and stands up it.
+        const Vec3 mid = panelLabelMid(b);
+        const Vec3 rt = panelRight_;
+        const Vec3 up = panelUp_;
+        holoSetWord(tracer_.holo[b], word, float3(mid.x, mid.y, mid.z),
+                    float3(rt.x, rt.y, rt.z), float3(up.x, up.y, up.z),
+                    World::kBtnLabelCellM, tint);
     }
 
     // Back to the wood from the asset deck: the position, heading and flight
@@ -4907,26 +6417,108 @@ class ForestApp : public SampleApp {
     // -----------------------------------------------------------------------
     // WHAT STANDS ON THE DECK.
     //
-    // THE BUNNY HAS THE MIDDLE (user 2026-09-13: "put the bunny in the middle
-    // of the asset editor"), and it is not standing there to be looked at --
-    // the editor's tools operate on it. See render/assetedit.h.
+    // THE PORCUPINE HAS THE MIDDLE (user 2026-09-14: "put the porcupine on the
+    // asset editor in the middle and remove the bunny from it"), and it is not
+    // standing there to be looked at -- the editor's tools operate on it.
+    // WHICH animal that is lives in one table, kEditSubjects in
+    // render/assetedit.h; this function only clears the deck and lets the
+    // editor publish onto it.
     //
-    // THE CARDINAL STEPS ASIDE RATHER THAN OUT. It was the only thing on this
-    // deck until now and placing the rabbit at the same coordinates would have
-    // put one inside the other; a metre and a half to the right keeps the bird
-    // available to look at, which was the whole of what the stage did before.
+    // THE BUNNY IS GONE FROM IT, and the despawn below is most of how: the
+    // wild rabbits were already cleared here, and with the editor no longer
+    // publishing one either, there is no rabbit left on the deck at all. Its
+    // STRIPS are still compiled and still played -- the rabbits in the wood hop
+    // out of them -- they are simply not a subject this deck offers now.
     //
-    // AND THE WILD RABBITS LET GO OF THEIR SLOTS. The editor draws through the
-    // FIRST of them (kBunnySlot0), so the ten that were following you round the
-    // pines have to be cleared or nine of them keep standing wherever they were
-    // -- four kilometres away and, on this deck's coordinates, under the floor.
+    // THE CARDINAL STEPPED ASIDE RATHER THAN OUT when the deck first grew a
+    // subject; it has since been removed outright (2026-09-13). See the body.
+    //
+    // AND EVERY ANIMAL LETS GO OF ITS SLOTS. The editor draws through
+    // kBunnySlot0, so the ten rabbits that were following you round the pines
+    // have to be cleared or nine keep standing wherever they were -- four
+    // kilometres away and, on this deck's coordinates, under the floor.
+    //
+    // THE MARCHERS NOW MATTER TWICE OVER. Their band was already cleared for
+    // that reason; it also has to be, because the porcupine the editor stands
+    // in the middle is drawn from the SAME STRIP the wild ones walk on. Leave
+    // them live and the deck holds two porcupines out of one animation, only
+    // one of which is posed by the bake you are editing.
     // update() stops ticking them while the stage is up, so nothing refills.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHERE YOU ARRIVE ON THE DECK, AND WHY IT IS NOT STRAIGHT ON.
+    //
+    // It used to be three metres down +Z with yaw 0 -- square to the subject,
+    // for the sound reason that yaw 0 looks down -Z here (Camera::direction) so
+    // standing on the other side put it behind the camera. That reason is
+    // untouched; what changed is that there are HANDLES on the deck now, and a
+    // square-on camera is the one angle from which a three-axis gizmo does not
+    // work.
+    //
+    // A TRANSLATE ARROW IS DRAGGED ALONG ITS SCREEN DIRECTION, so an axis
+    // pointing straight at the eye has no screen direction and cannot be
+    // pulled at all. At yaw 0 that is the Z arrow -- and Z is the axis a bound
+    // travels along, so the handle you reach for first was the dead one. The
+    // pitch ring was edge-on for the same reason, a violet bar rather than a
+    // ring. Both were photographed before this changed.
+    //
+    // A THREE-QUARTER VIEW IS THE STANDARD ANSWER and every 3D tool opens on
+    // one. Off the corner, all three axes have a screen direction and both
+    // rings read as rings.
+    //
+    // THE AIM IS COMPUTED, NOT TYPED. The eye is two metres over the body it is
+    // carried by and the subject is a rabbit on the floor, so a hand-picked
+    // pitch is a guess that has to be re-guessed the moment anything moves. Ask
+    // for the angles that point at the subject and they are right by
+    // construction -- which is also what makes the eye height below the only
+    // number here worth choosing by eye.
+    // -----------------------------------------------------------------------
+    void standOnDeck() {
+        const Vec3 c = World::stageCentre();
+        // A COUPLE OF METRES OFF EACH OF THE TWO NEAR CORNERS, which is what
+        // gives the three-quarter view a gizmo needs: at yaw 0 the Z arrow
+        // points straight at the eye and cannot be dragged at all.
+        const float back = 2.35f;
+        // -- ON ITS FEET, NOT HOVERING --------------------------------------
+        //
+        // "let the player stand on the asset editor platform." It used to
+        // arrive FLYING, and not as a choice: the walk collider reads the
+        // terrain, the terrain under the deck is 640 m down, and a walking
+        // body would simply have fallen off the world. Flight was the only
+        // thing holding anybody up. See clampToStage, which is the floor --
+        // and the fence -- that makes standing possible.
+        //
+        // THE EYE HEIGHT IS NO LONGER A COMPOSITION. It was 1.30 m, measured
+        // off a render because the deck's own horizon ran through the rabbit at
+        // 0.95; it is now the player's own 2.00 m, because a person standing on
+        // a platform is exactly what was asked for. The subject sits lower in
+        // the frame than it did, which is what looking down at something on the
+        // floor looks like -- and the aim below still points at the middle of
+        // it rather than at the deck.
+        player_.pos = Vec3(c.x - back, c.y, c.z + back);
+        player_.fly = false;
+        player_.onGround = true;
+        player_.vy = 0.0f;
+        pos_ = player_.eyePosition();
+        // The middle of the rabbit rather than its feet, so it sits on the
+        // crosshair instead of under it.
+        lookAt(Vec3(c.x, c.y + 0.25f, c.z));
+    }
+
     void stageSubject() {
         const Vec3 c = World::stageCentre();
         bunnies_.despawnAll();
-        bunnies_.publish(world_, kBunnySlot0);   // every slot, written empty
-        edit_.enter(c);
+        bunnies_.publish(world_, kBunnySlot0);        // every slot, written empty
+        // ...AND THE MARCHERS AND THE BEES TOO, or the deck keeps whatever the
+        // band was holding when you pressed the key. despawnAll clears the
+        // POPULATION; only a publish clears the BAND, and the live path stops
+        // writing these runs the moment the stage is up.
+        bunnies_.publishSkunks(world_, kMarchSlot0);
+        bees_.despawnAll();
+        bees_.publish(world_, kBeeSlot0);
+        critters_.despawnAll();
+        critters_.publish(world_, kCritterSlot0);
+        edit_.enter(world_, c);
         edit_.publish(world_, kBunnySlot0);
         // -- AND NOTHING ELSE STANDS ON IT ------------------------------
         //
@@ -4953,85 +6545,162 @@ class ForestApp : public SampleApp {
         pos_ = player_.eyePosition();
     }
 
+    // -----------------------------------------------------------------------
+    // ARRIVING AT THE BUILDING -- on the slab, on foot, facing it.
+    //
+    // standOnDeck's sibling, and the differences are the interesting part. The
+    // deck has to be given its floor height as a constant because it IS a
+    // constant; this level's ground is its own voxels, so the spawn asks the
+    // asset's heightfield where the top of that column is (World::levelSpawn)
+    // and a re-voxelised building moves the player with it rather than leaving
+    // them buried in a slab that got thicker.
+    //
+    // ON FOOT rather than flying, which the deck cannot manage -- see the note
+    // on the [O] handler, and Solid::interior for what makes the walk work in
+    // a place the terrain function has never heard of.
+    // -----------------------------------------------------------------------
+    void standInLevel() {
+        player_.pos = world_.levelSpawn();
+        player_.fly = false;
+        player_.onGround = true;
+        player_.vy = 0.0f;
+        yaw_ = world_.levelSpawnYaw();
+        // The wood's own default rather than dead level -- Options::pitch is 7
+        // and a body standing still looks very slightly up, not at its feet.
+        pitch_ = 7.0f;
+        pos_ = player_.eyePosition();
+    }
+
+    void leaveLevel() {
+        world_.setLevel(false);
+        player_.pos = woodPos_;
+        player_.fly = woodFly_;
+        yaw_ = woodYaw_;
+        pitch_ = woodPitch_;
+        player_.vy = 0.0f;
+        player_.onGround = false;   // the wood's ground decides, not this
+        pos_ = player_.eyePosition();
+    }
+
+    // -----------------------------------------------------------------------
+    // THE FENCE ROUND THE LEVEL -- clampToStage's sibling, and it is here for
+    // exactly the reason that one is.
+    //
+    // The walk asks the TERRAIN what is under the body, and what the terrain
+    // says is under this slab is six hundred and forty metres of nothing. On
+    // the platform the level's own voxels answer first and the terrain never
+    // wins; step OFF the platform and they stop answering, and the body falls
+    // the whole way into a wood it was supposed to have left -- streaming the
+    // forest in behind it, which is the one thing a separate world is for
+    // avoiding.
+    //
+    // So the slab's footprint is the edge of the world while you are here. The
+    // asset IS the platform -- the .glb's biggest mesh by far is the slab, and
+    // every wall stands inside it -- so clamping to the asset's own bounds is
+    // clamping to the concrete, with no second description of where it is.
+    // -----------------------------------------------------------------------
+    void clampToLevel() {
+        if (!world_.levelOn()) return;
+        const float r = 0.32f;   // shoulders -- clampToStage's number
+        Vec3 p = player_.pos;
+        p.x = clampf(p.x, world_.levelMinX() + r, world_.levelMaxX() - r);
+        p.z = clampf(p.z, world_.levelMinZ() + r, world_.levelMaxZ() - r);
+        // ...AND A FLOOR UNDER THE WHOLE OF IT. The slab's underside is the
+        // bottom of this world; nothing below it is anywhere.
+        const float floorY = World::levelOrigin().y;
+        if (p.y <= floorY) {
+            p.y = floorY;
+            player_.vy = 0.0f;
+            player_.onGround = true;
+        }
+        player_.pos = p;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE PAUSE PANEL: THREE BUTTONS, IN THE WOOD, IN FRONT OF YOU.
+    //
+    // "Remove the esc room from the sky. Instead, put the 3 balls in front of
+    // the player IN GAME, along with the floating text above the balls just
+    // like how it was in the esc room. When the user hits escape, the 3 balls
+    // appear in a line horizontally. Pressing esc again removes them."
+    // (user 2026-09-14.)
+    //
+    // WHAT WENT. A sealed white box at (-4096, 2048, -4096) that REPLACED the
+    // world in the structure, a teleport in and out of it, the saved wood
+    // position that trip needed, a point light invented because a closed box
+    // has no sun in it, and a six-plane collider because the walk cannot see a
+    // room the terrain does not contain. All of it was in service of one idea
+    // -- that a pause menu you can see the wood through is a HUD rather than a
+    // place -- and the answer to that is simply that this one IS in the wood.
+    //
+    // THE PANEL IS PINNED WHERE YOU WERE LOOKING, ONCE. Not carried on the
+    // camera: a panel that follows your head is a HUD again, and the whole
+    // point of these being models in the world is that you can step round them,
+    // that the sun lights them, and that a tree can stand between you and the
+    // discord button. Walk away and they stay where you left them until you
+    // press the key again.
+    //
+    // THE MOUSE IS TAKEN, exactly as the room took it, and for the same reason:
+    // the buttons are picked by the CROSSHAIR -- see buttonUnderCrosshair -- and
+    // the outer two sit well off centre, so a player who cannot turn their head
+    // can only ever press the middle one.
+    // -----------------------------------------------------------------------
     void setRoomOpen(bool on) {
-        if (on == world_.inRoom()) return;
-        if (on) {
-            woodPos_ = player_.pos;
-            woodYaw_ = yaw_;
-            woodPitch_ = pitch_;
-            woodFly_ = player_.fly;
-        }
-        world_.setRoom(on);
-        // -- AND THE LIGHT GOES ON WITH IT ------------------------------
-        //
-        // AFTER setRoom, NOT BEFORE. The palette index the shader matches on
-        // does not exist until buildRoom has asked for it, and setRoom is what
-        // runs buildRoom -- reading it first gets kNoBulb and a black room, and
-        // only on the FIRST open, which is the kind of bug that gets called
-        // intermittent.
-        //
-        // 12 IN WORKING UNITS, and it was MEASURED rather than reasoned to.
-        // The first guess was 62, on the argument that the sun delivers 22 of
-        // irradiance (Sky::SUN_IRRADIANCE) and a point source falls off -- and
-        // it came back with a mean pixel of 234 and a fifth of the frame at
-        // full white, the buttons bleached to pastel. What the arithmetic left
-        // out is the SHELL: a closed white box returns almost everything it is
-        // given, so the walls are lit far more by each other than by the lamp,
-        // and the box multiplies whatever goes into it.
-        //
-        // WARM. 3000 K-ish, because every other light in this engine is
-        // daylight and a room lit by the same white as the sky reads as a void
-        // with walls rather than as somewhere indoors.
-        if (on) {
-            tracer_.bulbPos = World::bulbCenter();
-            // 15 cm: lightbulb.vox is three voxels across. The radius is only
-            // the floor on the inverse-square law -- see sampleBulbSplit -- so
-            // it matters exactly when somebody puts their head in the lamp.
-            tracer_.bulbRadius = 0.15f;
-            tracer_.bulbRadiance = Vec3(1.00f, 0.86f, 0.66f) * 12.0f;
-            tracer_.bulbMtl = world_.bulbMtl();
-            setRoomLabels();
-        } else {
-            tracer_.bulbMtl = 0xFFFFFFFFu;   // kNoBulb
-            tracer_.clearHolos();
-        }
-        // The other level first, for the reason the editor's own note gives:
-        // one saved wood position cannot serve two doors.
-        if (on && world_.staged()) leaveStage();
-        // Nothing half-pressed carries across the doorway -- see tickButtons.
+        if (on == pauseOpen_) return;
+        pauseOpen_ = on;
+        // Nothing half-pressed carries across -- see tickButtons.
         btnPress_[0] = btnPress_[1] = btnPress_[2] = 0.0f;
         btnHeld_ = -1;
         btnPend_ = -1;
-        if (on) {
-            // ...and the look, which the room needs and a panel gives away.
-            captureBeforeRoom_ = looking_;
-            if (!looking_) setCapture(true);
-            player_.pos = World::roomStand();
-            // ON THEIR FEET, NOT HOVERING. Flight was how the first version
-            // avoided the fact that the walk collider cannot see this room --
-            // it reads the terrain, and the room is a separate structure four
-            // kilometres from the nearest chunk. Reported as "the player falls
-            // through the floor on the esc room": that is what happens the
-            // moment anything turns flight off. clampToRoom below is the floor.
-            player_.fly = false;
-            player_.vy = 0.0f;
-            // Facing the wall the buttons are on. Yaw 0 looks down -Z in this
-            // engine, which is where they were put -- see kBtnZ.
-            yaw_ = 0.0f;
-            pitch_ = 0.0f;
-        } else {
-            // Back exactly as they came: if the mouse was free when ESC was
-            // pressed, it is free again.
+        if (!on) {
+            tracer_.clearHolos();
             if (!captureBeforeRoom_ && looking_) setCapture(false);
-            player_.pos = woodPos_;
-            yaw_ = woodYaw_;
-            pitch_ = woodPitch_;
-            player_.fly = woodFly_;
-            player_.vy = 0.0f;
+            return;
         }
-        pos_ = player_.eyePosition();
-        tracer_.resetAccumulation();
+
+        // -- WHERE IT STANDS -------------------------------------------------
+        //
+        // A panel's width in front of the eye, level with it, and square to the
+        // way you are facing. The heading is taken FLAT: pitch is deliberately
+        // dropped, so looking at your feet when you press the key does not bury
+        // the buttons in the ground or hang them over your head.
+        const Vec3 f = forward();
+        const float fl = sqrtf(f.x * f.x + f.z * f.z);
+        const Vec3 flat = (fl > 1e-3f) ? Vec3(f.x / fl, 0.0f, f.z / fl) : Vec3(0.0f, 0.0f, -1.0f);
+        panelUp_ = Vec3(0.0f, 1.0f, 0.0f);
+        // -- forward x up, AND THE ORDER OF THE THREE IS WHY -------------
+        //
+        // It was up x forward, and that is the player's LEFT: facing -Z, which
+        // is where the camera points at a yaw of zero, cross((0,1,0),(0,0,-1))
+        // is (-1,0,0). The row came out MIRRORED -- discord, back, quit from
+        // left to right, where the room's wall had always read quit, back,
+        // discord -- and it is only visible because button 0 and button 2 are
+        // different colours; a symmetric panel would have hidden it.
+        //
+        // forward x up gives (1,0,0) for the same facing, which is +X, which is
+        // the player's right. Button 0 is then on the left where it was.
+        panelRight_ = normalize(cross(flat, panelUp_));
+        // The face looks BACK at you, so the press travels away from you.
+        panelInto_ = flat;
+        panelAt_ = player_.eyePosition() + flat * kPanelReachM;
+
+        captureBeforeRoom_ = looking_;
+        if (!looking_) setCapture(true);
+        setRoomLabels();
     }
+
+    // WHERE BUTTON b STANDS, and the one place that says so. The picker, the
+    // publisher and the words above them all read this: three descriptions of
+    // one object is the drift World::buttonAt was written to prevent, and the
+    // panel moving into the world does not make that less true.
+    Vec3 panelButtonAt(int b) const {
+        return panelAt_ + panelRight_ * (float(b - 1) * World::kBtnSpacingM);
+    }
+    // ...and where its word hangs: a hand's width above the button it names.
+    Vec3 panelLabelMid(int b) const {
+        return panelButtonAt(b) + panelUp_ * World::kBtnLabelRiseM;
+    }
+
 
     // -----------------------------------------------------------------------
     // WHICH BUTTON THE PLAYER IS LOOKING AT, or -1.
@@ -5042,7 +6711,7 @@ class ForestApp : public SampleApp {
     // and the click cannot disagree about which one is under the cursor.
     // -----------------------------------------------------------------------
     int buttonUnderCrosshair() const {
-        if (!world_.inRoom()) return -1;
+        if (!pauseOpen_) return -1;
         const Vec3 o = pos_;
         const Vec3 d = Camera::direction(yaw_, pitch_);
         const float r = World::buttonRadiusM();
@@ -5055,7 +6724,7 @@ class ForestApp : public SampleApp {
         int best = -1;
         float bestT = 1e9f;
         for (int b = 0; b < 3; ++b) {
-            const Vec3 c = World::buttonAt(b);
+            const Vec3 c = panelButtonAt(b);
             const float ox = o.x - c.x, oy = o.y - c.y, oz = o.z - c.z;
             const float half = ox * d.x + oy * d.y + oz * d.z;
             const float cq = ox * ox + oy * oy + oz * oz - r * r;
@@ -5096,6 +6765,45 @@ class ForestApp : public SampleApp {
     // creature that needs to know asks it the same way. A second definition is
     // how a bunny and a lily pad end up disagreeing about where a lake is.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // ...AND HOW HIGH THAT WATER STANDS, for anything that has to fly OVER it.
+    //
+    // wetColumnAt answers "is this a lake", which is all a walker or a spawn
+    // site needs. A flyer needs the number: `ground` is the top of the SOLID
+    // column, which in a lake is the BED, and a creature holding a metre over
+    // that is a metre above the bottom of the lake. See Critters::flyFloor and
+    // the ladybug that was reported swimming.
+    //
+    // Deliberately NOT -infinity on a dry column: the caller takes a max
+    // against the ground and a real sentinel keeps that honest without needing
+    // a second flag.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // IS THE GROUND HERE A BEACH?
+    //
+    // The surface material, asked the way the mesher asks it -- topMaterial of
+    // the column's own height -- so this cannot disagree with what is drawn.
+    // Both the single sand id and the four grains the device spreads it over,
+    // because either can be the surface of a shore. See Bunnies::blocked.
+    // -----------------------------------------------------------------------
+    bool sandAt(float x, float z) {
+        const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
+        TerrainMemo memo;
+        const int h = world_.terrain.heightVox(ci, cj, memo);
+        return isSand(world_.terrain.topMaterial(ci, cj, h, memo));
+    }
+
+    float waterTopAt(float x, float z) {
+        const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
+        TerrainMemo memo;
+        const int line =
+            world_.terrain.lakeLineAt(world_.terrain.wx(ci), world_.terrain.wx(cj), memo);
+        if (line == VoxelTerrain::kNoWaterVox) return -1.0e30f;
+        const int h = world_.terrain.heightVox(ci, cj, memo);
+        if (!world_.terrain.wetColumn(ci, cj, h, line, memo)) return -1.0e30f;
+        return float(line + 1) * VOXEL_M;
+    }
+
     bool wetColumnAt(float x, float z) {
         const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
         TerrainMemo memo;
@@ -5106,37 +6814,86 @@ class ForestApp : public SampleApp {
         return world_.terrain.wetColumn(ci, cj, h, line, memo);
     }
 
-    void clampToRoom() {
-        if (!world_.inRoom()) return;
-        const float r = 0.32f;                                  // shoulders
-        const float floorY = World::roomFloorY();
-        const float ceilY = World::roomCeilY() - player_.eye;
+    // -----------------------------------------------------------------------
+    // A LOOSE BODY, AS A SWING.
+    //
+    // The one place a DebrisHit becomes something the tools, the audio and the
+    // log can all read -- so a felled tree answers every question they ask in
+    // exactly the words a standing one does. What it is MADE of comes out of
+    // the body (World::DebrisTakes) rather than out of its material id: a
+    // boulder's grey is a palette entry and not mat::ROCK, so the material
+    // could never have told anybody which tool to use.
+    // -----------------------------------------------------------------------
+    static Swing looseSwing(const DebrisHit &h, const Vec3 &eye, const Vec3 &dir) {
+        Swing s;
+        s.hit = true;
+        s.kind = Swing::Loose;
+        s.debris = h.slot;
+        s.takesAs = h.takes == kDebrisWood   ? Takes::Wood
+                    : h.takes == kDebrisSoil ? Takes::Soil
+                                             : Takes::Stone;
+        // ...AND WHETHER IT IS A MUSHROOM, which Takes above cannot say: a cap
+        // answers to the axe AND the pick, and that enum holds one tool's worth
+        // of material. Swing::soft is the same flag a STANDING cap arrives with
+        // (swingRayModels, off Solid::bouncy), so toolTakes needs one rule for
+        // both and the fallen half of a mushroom cannot end up cuttable by a
+        // different tool than the standing half. See kDebrisSoft.
+        s.soft = h.takes == kDebrisSoft;
+        s.dist = h.t;
+        s.point = h.point;
+        s.material = h.mat;
+        s.eye = eye;
+        s.dir = dir;
+        s.reach = swingReachM(dir);
+        return s;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE DECK IS A FLOOR AND A FENCE.
+    //
+    // clampToRoom, asked of the other place that is not the world. The room is
+    // a box and this is a plate, so it is the same function with the walls and
+    // the ceiling taken out -- and one thing put in that the room gets for
+    // free.
+    //
+    // THE FENCE, WHICH THE ROOM GETS FROM ITS WALLS. The deck has none, and it
+    // has nothing underneath it either: one step in any direction is six
+    // hundred metres of clear air and no ground at the bottom of it. So the rim
+    // stops you. An eight metre deck is as far as walking round a model ever
+    // goes, and flight is still there and still unclamped upwards for the view
+    // from above.
+    //
+    // IT RUNS WHILE FLYING TOO. A body that can be flown through its own floor
+    // is a body that can be left under the deck when flight goes off, which is
+    // the one way back into the fall this exists to prevent.
+    // -----------------------------------------------------------------------
+    void clampToStage() {
+        if (!world_.staged()) return;
+        const float r = 0.32f;   // shoulders -- clampToRoom's number
         Vec3 p = player_.pos;
-        p.x = clampf(p.x, World::roomMinX() + r, World::roomMaxX() - r);
-        p.z = clampf(p.z, World::roomMinZ() + r, World::roomMaxZ() - r);
-        // Out of the three balls, in the horizontal only: they are wider than
-        // a person is tall at the height they sit, so a circle is the whole
-        // shape as far as walking into one is concerned.
-        const float br = World::buttonRadiusM() + r;
-        for (int b = 0; b < 3; ++b) {
-            const Vec3 c = World::buttonAt(b);
-            const float dx = p.x - c.x, dz = p.z - c.z;
-            const float d2 = dx * dx + dz * dz;
-            if (d2 >= br * br || d2 < 1e-6f) continue;
-            const float d = sqrtf(d2);
-            p.x = c.x + dx / d * br;
-            p.z = c.z + dz / d * br;
-        }
+        p.x = clampf(p.x, World::stageMinX() + r, World::stageMaxX() - r);
+        p.z = clampf(p.z, World::stageMinZ() + r, World::stageMaxZ() - r);
+        const float floorY = World::stageFloorY();
         if (p.y <= floorY) {
             p.y = floorY;
             player_.vy = 0.0f;
             player_.onGround = true;
-        } else if (p.y > ceilY) {
-            p.y = ceilY;
-            if (player_.vy > 0.0f) player_.vy = 0.0f;
         }
         player_.pos = p;
     }
+
+    // -- AND NOTHING CLAMPS THE PLAYER ANY MORE ---------------------------
+    //
+    // clampToRoom was here: six planes and three cylinders, the pause room's
+    // whole physics, written because the walk collider reads the TERRAIN and
+    // the room was a separate structure four kilometres from the nearest chunk
+    // -- so without it the player fell out of the bottom of a sealed box.
+    //
+    // The panel stands in the wood now, on ground the walk already understands,
+    // so there is nothing left to clamp to. YOU CAN WALK THROUGH THE BUTTONS,
+    // deliberately: they are 50 cm of light at eye height in the middle of a
+    // path, and a pause menu that can shove you off a ledge or wedge you
+    // against a trunk would be a worse thing than one you can step through.
 
     // -----------------------------------------------------------------------
     // THE BUTTONS' OWN CLOCK.
@@ -5191,32 +6948,80 @@ class ForestApp : public SampleApp {
             btnPend_ = -1;
             btnHeld_ = -1;              // ...and it springs back from here
             btnPress_[b] = 1.0f;
-            world_.publishButtons(true, btnPress_);
+            publishPanel(true);
             pressButton(b);
             return;
         }
-        world_.publishButtons(world_.inRoom(), btnPress_);
+        publishPanel(pauseOpen_);
+    }
+
+    // The three of them, where the panel put them. One call, so the press ramp
+    // and the panel's pose cannot be handed over from two different places.
+    void publishPanel(bool show) {
+        const Vec3 at[3] = {panelButtonAt(0), panelButtonAt(1), panelButtonAt(2)};
+        world_.publishButtons(show, btnPress_, at, panelRight_, panelUp_, panelInto_);
     }
 
     // 0 red = quit, 1 green = back to the wood, 2 blue = the Discord server.
+    // -----------------------------------------------------------------------
+    // SWITCH THE TUBE OFF, AND LET tickQuit CLOSE THE DOOR.
+    //
+    // Not shutdown(0). The window would be gone on the same frame the press
+    // landed, and the last thing anybody saw would be a button halfway down --
+    // which is the same complaint the press animation was added to fix, one
+    // level further in.
+    //
+    // ONE FUNCTION BECAUSE THERE ARE TWO WAYS OUT AND THEY MUST NOT DIFFER:
+    // the red button on the wall, and the third ESC. A quit that collapsed the
+    // picture when pressed with the mouse and blinked out when pressed with the
+    // keyboard would read as a bug in whichever one you found second.
+    //
+    // IDEMPOTENT. ESC held down, or pressed again while the picture is going,
+    // must not restart the collapse from full brightness.
+    // -----------------------------------------------------------------------
+    void beginQuit() {
+        if (quitting_) return;
+        quitT_ = 0.0f;
+        quitting_ = true;
+    }
+
     void pressButton(int b) {
         if (b == 0) {
-            // -- THE TUBE GOES OUT FIRST ---------------------------------
-            //
-            // Not shutdown(0). The window would be gone on the same frame the
-            // button bottomed out, and the last thing anybody saw would be a
-            // button halfway down -- which is the same complaint the press
-            // animation was added to fix, one level further in.
-            //
-            // quitAt_ is what the frame loop counts against; see tickQuit.
-            quitT_ = 0.0f;
-            quitting_ = true;
+            beginQuit();
         } else if (b == 1) {
-            setRoomOpen(false);
+            leaveRoom();
         } else if (b == 2) {
             openDiscord();
         }
     }
+
+    // -----------------------------------------------------------------------
+    // THE GREEN BUTTON PUTS THE PANEL AWAY, and that is the whole of it.
+    //
+    // IT USED TO BE A JOURNEY. The room stood four kilometres off the wood, so
+    // "back" was a teleport, and a teleport is only safe once the chunks it
+    // lands in exist. The press therefore armed a WAIT -- the button held at
+    // the bottom of its travel, the word over it changed to "loading",
+    // tickRoomExit letting the player out on the first frame chunkAt(woodPos_)
+    // was true with nothing missing and nothing in flight, and a 15 s giveup so
+    // a stalled streamer could not be a room with no door. That was written
+    // for a real fault: ESC in the first seconds of a launch, or out of the
+    // asset deck, used to drop the player into an empty grey hole.
+    //
+    // THERE IS NOWHERE TO COME BACK FROM NOW. The panel hangs in the wood the
+    // player never left, on chunks they were standing in a moment ago, so the
+    // wait would wait on nothing -- and worse than nothing: woodPos_ is now
+    // only ever the ASSET DECK's saved spot, so a panel opened by somebody who
+    // has not visited the deck would test the ORIGIN, find no chunk there, and
+    // sit on "loading" for the full fifteen seconds before letting go.
+    //
+    // THE DECK'S DOOR IS UNCHANGED and still teleports on the frame it is
+    // pressed -- leaveStage never had this wait, it borrowed the room's by
+    // being reachable through it. If an empty ring is ever seen stepping off
+    // the deck, the wait belongs THERE, keyed on the position leaveStage is
+    // about to restore, and the shape of it is in this note.
+    // -----------------------------------------------------------------------
+    void leaveRoom() { setRoomOpen(false); }
 
     // THE ONE PLACE THE LINK LIVES. docs/discord-integration.md is where it
     // came from; the browser is the shell's business, not ours.
@@ -5288,6 +7093,46 @@ class ForestApp : public SampleApp {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // THE POINTER GOES BACK THE MOMENT THIS IS NOT THE WINDOW IN FRONT.
+    //
+    // Reported 2026-09-13: "when the user goes to discord and the discord
+    // screen pops up, the game still has my mouse."
+    //
+    // Nothing in the capture noticed the window had gone to the back. `looking_`
+    // stayed true, so every frame afterwards applyMouseLook WARPED THE CURSOR
+    // back to the middle of this window -- across whatever the user was trying
+    // to click in -- and the cursor stayed hidden, because ShowCursor's count is
+    // per PROCESS and does not care which window has focus. Two separate ways of
+    // holding a mouse that is not ours, and an alt-tab breaks neither.
+    //
+    // GetForegroundWindow, NOT GetActiveWindow: active is per thread and stays
+    // set on our own window while another process is in front, which is exactly
+    // the state being fixed. GA_ROOTOWNER keeps a dialog of our own as ours.
+    //
+    // THIS IS ALSO WHAT MAKES THE BLUE BUTTON WORK. The pause room opens Discord
+    // with ShellExecute and then goes on rendering; the room is the one place in
+    // this program that TAKES the cursor rather than handing it back, so without
+    // this the button summoned a window the mouse could not reach.
+    //
+    // holdLook_ goes with it: right-button hold-to-look ends on a button-up that
+    // a window without focus is never sent, and a flag left set there is a view
+    // that keeps turning after the hand has gone.
+    //
+    // The way back in is unchanged and is the one a game uses -- click the
+    // window. See the ButtonDown handler, which re-takes the cursor and disarms
+    // the swing, so the click that returns is not also an axe blow.
+    // -----------------------------------------------------------------------
+    void releaseMouseOffFocus() {
+        if (!looking_ || !getWindow()) return;
+        HWND hwnd = (HWND)getWindow()->getApiHandle();
+        const HWND fg = ::GetForegroundWindow();
+        const bool ours = fg && (fg == hwnd || ::GetAncestor(fg, GA_ROOTOWNER) == hwnd);
+        if (ours && !::IsIconic(hwnd)) return;
+        setCapture(false);
+        holdLook_ = false;
+    }
+
     void centreCursor() {
         if (!getWindow()) return;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
@@ -5336,16 +7181,52 @@ class ForestApp : public SampleApp {
         float rx = 0.0f, ry = 0.0f;
         if (!getWindow()) return false;
         HWND hwnd = (HWND)getWindow()->getApiHandle();
+        // -- A MINIMISED WINDOW HAS NO CENTRE TO MEASURE AGAINST -----------
+        //
+        // The look here is a DELTA FROM THE MIDDLE OF THE CLIENT AREA, and a
+        // minimised window's client rect is 0 x 0. So the middle is (0, 0) in
+        // client space, every cursor position on the desktop is hundreds of
+        // pixels away from it, and the camera is turned by that difference on
+        // every frame for as long as the window stays down.
+        //
+        // FOUND BY A CAPTURE THAT CAME BACK BLANK. --room --shot-ui renders
+        // minimised (main.cpp minimises any automated capture, deliberately),
+        // and the pause room is the one place in this program that TAKES the
+        // cursor rather than handing it back -- so those two together spun the
+        // camera to pitch -89 and photographed the floor. Three renders of a
+        // blank white wall, and the room was never the thing that was wrong.
+        //
+        // IT IS NOT ONLY THE HARNESS. Anybody who minimises the game with the
+        // mouse captured is in the same state, and gets their view thrown at
+        // the floor while they are not looking at it.
+        if (::IsIconic(hwnd)) return false;
         RECT rc{};
         POINT p{};
         if (::GetClientRect(hwnd, &rc) && ::GetCursorPos(&p)) {
-            ::ScreenToClient(hwnd, &p);
             const int cx = (rc.right - rc.left) / 2, cy = (rc.bottom - rc.top) / 2;
+            if (cx <= 0 || cy <= 0) return false;   // ...and a zero-size client, however caused
+            ::ScreenToClient(hwnd, &p);
             rx = float(p.x - cx);
             ry = float(cy - p.y);
             if (rx != 0.0f || ry != 0.0f) centreCursor();
         }
         if (rx == 0.0f && ry == 0.0f) return false;
+
+        // -- A GIZMO DRAG TAKES THE MOUSE OFF THE CAMERA --------------------
+        //
+        // Not a special case bolted on: it is what dragging a handle MEANS.
+        // v1 returns out of its mousemove the same way, with the same one-line
+        // reason ("suppress camera look while dragging"). Turning your head at
+        // the same time as pulling an arrow would move the handle under the
+        // pointer and make the drag chase itself.
+        //
+        // The delta this hands over is the raw pixel pair, +right and +UP --
+        // `ry` is already measured that way just below, where v1's browser
+        // movementY had to be negated.
+        if (edit_.dragging()) {
+            edit_.dragBy(rx, ry, yaw_, pitch_);
+            return false;   // the view did not move, so nothing to re-accumulate
+        }
 
         // Wrapped rather than left to grow: a long session spinning one way
         // otherwise walks yaw into the thousands, where a float's steps get
@@ -5422,6 +7303,9 @@ class ForestApp : public SampleApp {
     // -----------------------------------------------------------------------
     bool processInput(float dt) {
         const Falcor::InputState &in = getInputState();
+        // BEFORE THE LOOK. applyMouseLook is what warps the cursor, so asking
+        // afterwards would still spend one frame with the pointer in our fist.
+        releaseMouseOffFocus();
         bool turned = applyMouseLook();
 
         // The arrows scrub the CLOCK, not the sun directly: with a cycle
@@ -5490,7 +7374,8 @@ class ForestApp : public SampleApp {
 
         const Vec3 before = player_.eyePosition();
         player_.update(walkWorld(), move, sprint, jump, down, crouch, dt);
-        clampToRoom();
+        clampToStage();
+        clampToLevel();
         tickButtons(dt);
         pos_ = player_.eyePosition();
 
@@ -5545,12 +7430,48 @@ class ForestApp : public SampleApp {
                 // is the verdict and nothing else -- see the header of
                 // render/helditem.h for why there is nothing to carve.
                 lastSwing_ = swingRay(walkWorld(), pos_, forward());
-                // ...and what it sounded like. The tool declares what it can
-                // take (Takes, in render/helditem.h) and the blow decides the
-                // rest, exactly as toolTakesFor and playToolHit split the job
-                // in the engine this comes from.
-                const Blow heard = toolSfx_.blow(held_.takes(), lastSwing_);
+                // -- ...AND THE THINGS THAT ARE NOT PART OF THE WORLD ANY MORE -
+                //
+                // "when a tree falls ... the player is unable to interact with
+                // that felled object." swingRay walks the terrain and
+                // `w.solids`, which is the list of things PLACED in the world,
+                // and a felled tree left that list the moment it came down.
+                // Nothing the tool asked could see it.
+                //
+                // Asked here rather than folded into swingRay because the ray
+                // lives in render/helditem.h, which knows about a world you can
+                // walk on and nothing about the debris band -- and because the
+                // answer is compared on DISTANCE like any other: a log in front
+                // of a rock wins, a rock in front of a log does not.
+                lastDebris_ = DebrisHit{};
+                {
+                    const Vec3 eye = pos_, dir = forward();
+                    DebrisHit dh;
+                    if (world_.debrisRay(eye, dir, swingReachM(dir), &dh) &&
+                        (!lastSwing_.hit || dh.t < lastSwing_.dist)) {
+                        lastDebris_ = dh;
+                        lastSwing_ = looseSwing(dh, eye, dir);
+                    }
+                }
                 felled_ = false;   // per blow, not per fell -- see the swing log
+                // -- ...AND A LIVING THING UNDER THE CROSSHAIR TAKES IT FIRST -
+                //
+                // (user 2026-09-14: "when hitting life, it turns an emmisive
+                // red".)
+                //
+                // AHEAD OF EVERYTHING, which is v1's order -- its left click
+                // calls tryKillCreature before the world bite. A rabbit
+                // standing on grass is nearer than the grass, and a swing has
+                // to spend itself on the first thing it meets or you dig a pit
+                // through the animal you were aiming at.
+                //
+                // SPENDING THE SWING IS WHAT SILENCES THE REST. An emptied
+                // lastSwing_ takes the tool knock, the amber sparks and the
+                // whole bite chain with it -- the same idiom breakWheat and
+                // tillGround use below, and the reason a blow on flesh throws
+                // v1's RED embers instead of the rocks' amber ones rather than
+                // both.
+                if (strikeLife()) lastSwing_ = Swing{};
                 // -- AND A CHUNK COMES OUT OF IT ------------------------------
                 //
                 // The impact frame is where the JS engine takes its bite, and
@@ -5591,20 +7512,77 @@ class ForestApp : public SampleApp {
                 // boulder's shoulder misses it entirely while the stone is
                 // plainly under the crosshair. Both cases end the same way,
                 // with the blow doing nothing, so both ask the same question.
-                if (lastSwing_.kind != Swing::Rock && lastSwing_.kind != Swing::Trunk) {
+                // THE TEST IS "WAS IT REFUSED", SAID IN ONE WORD. It used to be
+                // spelled out as "not a rock and not a trunk" plus the two
+                // wants below, which came to the same thing for four kinds and
+                // to the wrong thing for the fifth: an axe that had already
+                // found a felled tree would ask again and be handed the
+                // STANDING tree behind it, because Loose is not Trunk.
+                if (!toolTakes(held_.takes(), lastSwing_)) {
                     const Takes tk = held_.takes();
                     const bool wantStone =
                         tk == Takes::Stone &&
                         !(lastSwing_.kind == Swing::Ground && isStoneMat(lastSwing_.material));
+                    // ...AND AN AXE NOW WANTS A MUSHROOM AS WELL AS A TRUNK,
+                    // so the model re-ask below cannot test for Trunk alone:
+                    // aim down at a cap growing on a bank and the terrain wins
+                    // on distance every time, which is the exact failure the
+                    // note above describes for a pick beside a boulder.
                     const bool wantWood = tk == Takes::Wood;
                     if (wantStone || wantWood) {
-                        const Swing ms = swingRayModels(walkWorld(), player_.eyePosition(),
-                                                        forward());
+                        const Vec3 eye = player_.eyePosition(), dir = forward();
+                        Swing best;
+                        const Swing ms = swingRayModels(walkWorld(), eye, dir);
                         if (ms.hit && ((wantStone && ms.kind == Swing::Rock) ||
-                                       (wantWood && ms.kind == Swing::Trunk)))
-                            lastSwing_ = ms;
+                                       (wantWood && (ms.kind == Swing::Trunk ||
+                                                     (ms.kind == Swing::Rock && ms.soft)))))
+                            best = ms;
+                        // ...AND THE LOOSE BODIES ON THE SAME TERMS, which is
+                        // the case that matters most: a log is ON THE GROUND,
+                        // so the terrain march wins on distance more often than
+                        // not and the axe was refused for grass while the log
+                        // was plainly under the crosshair.
+                        DebrisHit dh;
+                        if (world_.debrisRay(eye, dir, swingReachM(dir), &dh)) {
+                            const Swing ls = looseSwing(dh, eye, dir);
+                            if (toolTakes(tk, ls) && (!best.hit || ls.dist < best.dist)) {
+                                best = ls;
+                                lastDebris_ = dh;
+                            }
+                        }
+                        if (best.hit) lastSwing_ = best;
                     }
                 }
+                // ...AND WHAT IT SOUNDED LIKE, decided on the swing that is
+                // finally going to be acted on. The tool declares what it can
+                // take (Takes, in render/helditem.h) and the blow decides the
+                // rest, exactly as toolTakesFor and playToolHit split the job in
+                // the engine this comes from.
+                //
+                // AFTER THE SECOND ASK, NOT BEFORE IT. It used to ring off the
+                // first swingRay, which is a verdict the block above exists to
+                // overturn -- so a tool that was refused by the ground and then
+                // accepted by the rock behind it played the WRONG-TOOL knock
+                // over a blow that carved. "A sound that disagrees with the
+                // swing is worse than no sound, because it teaches the player
+                // the wrong thing about their tool" -- and it is a felled log,
+                // which is nearly always lying ON something, that made it
+                // happen every time instead of occasionally.
+                const Blow heard = toolSfx_.blow(held_.takes(), lastSwing_);
+                // -- ...AND FOUR SPARKS OFF IT ---------------------------
+                //
+                // (user 2026-09-14: "everytime a tool hits something, play 4
+                // sparks just like in v1. you can import the v1 spark
+                // settings.")
+                //
+                // BESIDE THE SOUND AND FOR THE SAME REASON THE SOUND IS HERE:
+                // this is the one line every landed swing passes through, after
+                // the second ask has settled WHAT was struck. Fired on the
+                // blow rather than on the bite, so a tool that rings off stone
+                // it cannot cut still throws sparks -- which is what sparks
+                // are, and v1 fires them above its own wound/kill split for
+                // exactly that reason.
+                if (lastSwing_.hit) particles_.toolSparks(lastSwing_.point, simMs_);
                 // Hoisted out of the block below so the log can say WHICH of
                 // these refused the blow -- see the NO BITE line.
                 const bool stone =
@@ -5619,6 +7597,56 @@ class ForestApp : public SampleApp {
                 // knocks. See isSoilMat.
                 const bool soil =
                     lastSwing_.kind == Swing::Ground && isSoilMat(lastSwing_.material);
+                // -- THE WHEAT BREAKS FIRST, AND FOR ANY TOOL -------------
+                //
+                // (user 2026-09-14: "when the player left clicks the wheat, the
+                // wheat breaks, and the seeds and wheat drop.")
+                //
+                // AHEAD OF THE BITE CHAIN, because a blade is nearer than the
+                // ground it grows on and the swing has to spend itself on the
+                // first thing it meets. Without that, standing in a field and
+                // swinging a shovel would dig a pit THROUGH the wheat, which is
+                // the ground winning an argument it should not have been in.
+                //
+                // AND FOR ANY TOOL, which is why this is not a Takes. `left
+                // clicks the wheat` is the whole condition -- straw does not
+                // care whether you brought an axe -- and an empty hand works
+                // too, since the swing is what lands, not the head on it.
+                //
+                // A MISS IS ORDINARY. mow() returns zero on a column with
+                // nothing standing on it, and this then falls through to the
+                // ordinary blow below exactly as if the wheat had not been
+                // asked about. That is also what stops one plant paying out
+                // twice: the second swing finds it already cut.
+                // -- ...AND A HOE TURNS THE EARTH INSTEAD OF BREAKING IT ---
+                //
+                // BESIDE THE WHEAT AND FOR THE SAME REASON: both are swings
+                // that spend themselves without taking a bite, so both have to
+                // be settled before the chain below decides what came out of
+                // the ground. The hoe is FIRST of the two -- a hoe swung at a
+                // stand of wheat should turn the earth under it, not harvest
+                // it, because that is the tool you chose.
+                // -- THE WHEAT IS ASKED FIRST NOW, AND ONLY THE HOE CUTS IT -
+                //
+                // (user 2026-09-14: "make it where only the hoe can break the
+                // wheat. if any other tool does it, play the antibreak sound.")
+                //
+                // THE ORDER IS THE OTHER WAY ROUND FROM YESTERDAY, and the note
+                // that stood here argued for the old one: "a hoe swung at a
+                // stand of wheat should turn the earth under it, not harvest
+                // it, because that is the tool you chose." That was written
+                // when ANY tool harvested, so the hoe needed protecting from
+                // the wheat. Now the hoe is the only thing that harvests, and a
+                // hoe swung at a stand of wheat is a player harvesting -- there
+                // would be no other way to do it.
+                //
+                // Ground with nothing standing on it still tills, because
+                // breakWheat answers false there and the chain falls through.
+                if (breakWheat()) {
+                    lastSwing_ = Swing{};   // the blow is spent
+                } else if (tillGround()) {
+                    lastSwing_ = Swing{};
+                }
                 if (lastSwing_.hit) {
                     const Takes t = held_.takes();
                     // ONE RULE, AND THE AUDIO ASKS THE SAME ONE. This was
@@ -5648,7 +7676,21 @@ class ForestApp : public SampleApp {
                         // So the decision is one statement with two braced
                         // arms, and anything that wants to run afterwards runs
                         // AFTER it.
-                        if (lastSwing_.kind == Swing::Rock || lastSwing_.kind == Swing::Trunk) {
+                        // A FELLED TREE IS A THIRD EDIT PATH, and it goes at
+                        // the FRONT of the chain for the reason the note above
+                        // gives: anything squeezed between the arms re-binds
+                        // the else. A body has no chunk, no instance and no
+                        // stump to leave -- what it has is its own voxels, and
+                        // World::carveDebris takes the bite out of those and
+                        // then asks whether what is left is still one thing.
+                        // That question is the "break": see World::breakDebris.
+                        if (lastSwing_.kind == Swing::Loose) {
+                            dug = world_.carveDebris(physics_, lastDebris_, kDigRadiusVox, simMs_,
+                                                     &spoilVol_, &spoilN_, &spoilAt_, &spoilYaw_)
+                                      ? 1u
+                                      : 0u;
+                        } else if (lastSwing_.kind == Swing::Rock ||
+                                   lastSwing_.kind == Swing::Trunk) {
                             dug = world_.carveModel(lastSwing_.solid, lastSwing_.eye,
                                                     lastSwing_.dir, lastSwing_.reach,
                                                     kDigRadiusVox, &spoilVol_, &spoilN_,
@@ -5683,8 +7725,25 @@ class ForestApp : public SampleApp {
                         // the ground away instead of the model was the one way
                         // to leave a tree hanging that nothing ever asked
                         // about. See World::dropUndermined.
-                        else if (dug && physics_.available())
+                        // THE GROUND AND ONLY THE GROUND. This was the else of
+                        // the test above, which used to mean "anything that is
+                        // not a model" and now would also mean a body -- and
+                        // asking what a felled log has undermined is asking the
+                        // terrain about a hole that is not in it.
+                        else if (dug && physics_.available() &&
+                                 lastSwing_.kind == Swing::Ground) {
                             world_.dropUndermined(physics_, lastSwing_.point, simMs_);
+                            // ...AND THE SCATTER, WHICH THAT ONE CANNOT SEE.
+                            //
+                            // (user 2026-09-14: "flowers are still floating
+                            // sometimes".) dropUndermined walks the COLLIDERS,
+                            // and a flower has none -- it is drawn and walked
+                            // through. Same question, second list. See
+                            // World::dropScatterUndermined.
+                            world_.dropScatterUndermined(
+                                physics_, lastSwing_.point,
+                                float(kDigRadiusVox) * VOXEL_M + 0.4f, simMs_);
+                        }
 
                         // ...AND IT DOES NOT SIMPLY VANISH. The piece that came
                         // out becomes a rigid body: thrown a little back toward
@@ -5702,6 +7761,15 @@ class ForestApp : public SampleApp {
                             // then lifts. See World::updateDebris.
                             //
                             // NO THROW, NO SPIN, NO NUDGE CLEAR.
+                            //
+                            // ...AND IT IS STILL COLLECTED, mushroom or not
+                            // (user 2026-09-14: "the chunks themselves obey the
+                            // physics temporarily before getting absorbed from
+                            // the player, just like it was before"). Nothing
+                            // here marks the body scenery -- only the hanger
+                            // spawn below does, because only the thing that
+                            // came OFF the ground is the mushroom rather than a
+                            // piece of it. See World::markScenery.
                             //
                             // It stops being part of the rock and starts being
                             // a body in the same instant and in the same place,
@@ -5725,8 +7793,26 @@ class ForestApp : public SampleApp {
                                  lastSwing_.kind == Swing::Trunk)
                                     ? &lastSwing_.solid
                                     : nullptr;
+                            // ...AND WHAT IT IS MADE OF GOES WITH IT, so the
+                            // chip can be hit by the tool that cut it and not
+                            // by the other one. Nothing in the spoil could say:
+                            // the materials in it are the MODEL's palette ids,
+                            // and a boulder's grey is not mat::ROCK. The swing
+                            // knows, and this is the only moment it is asked.
+                            // A MUSHROOM IS ASKED BEFORE THE KIND IS, because
+                            // a cap arrives as Swing::Rock and the Rock arm
+                            // would call it stone -- which would leave a chip
+                            // of mushroom that only the pick could break up,
+                            // off a cap that both tools had just cut.
+                            const uint8_t spoilTakes =
+                                lastSwing_.kind == Swing::Loose  ? lastDebris_.takes
+                                : lastSwing_.soft                 ? uint8_t(kDebrisSoft)
+                                : lastSwing_.kind == Swing::Trunk ? uint8_t(kDebrisWood)
+                                : lastSwing_.kind == Swing::Rock  ? uint8_t(kDebrisStone)
+                                : isSoilMat(lastSwing_.material)  ? uint8_t(kDebrisSoil)
+                                                                  : uint8_t(kDebrisStone);
                             world_.spawnDebris(physics_, spoilVol_, spoilN_, at, kNoVel, kNoSpin,
-                                               simMs_, spoilYaw_, srcRock);
+                                               simMs_, spoilYaw_, srcRock, spoilTakes);
                         }
                         // ...AND THE GROUND THE BITE UNDERCUT COMES DOWN AS A
                         // BODY, not as a deletion. dropTerrainHangers finds
@@ -5740,15 +7826,56 @@ class ForestApp : public SampleApp {
                             Vec3 hat{0.0f, 0.0f, 0.0f};
                             float hyaw = 0.0f;
                             const Vec3 kStill{0.0f, 0.0f, 0.0f};
-                            if (world_.takeHangers(&hv, &hn, &hat, &hyaw))
-                                world_.spawnDebris(physics_, *hv, hn, hat, kStill, kStill,
-                                                   simMs_, hyaw, nullptr);
+                            // AND THIS IS THE BODY THAT WAS FLYING. A model
+                            // smaller than dropModelHangers' 39-voxel box has
+                            // its whole severed half taken as hangers -- the
+                            // wall never seeds, only the model's own floor does
+                            // -- so cutting a mushroom's stem sends the entire
+                            // cap down THIS path and never reaches fellTree.
+                            // Called stone, it was a small chip of stone, and
+                            // small chips are collected: half a second on the
+                            // ground and then a curve into the player's hands.
+                            if (world_.takeHangers(&hv, &hn, &hat, &hyaw)) {
+                                const int hslot = world_.spawnDebris(
+                                    physics_, *hv, hn, hat, kStill, kStill, simMs_, hyaw, nullptr,
+                                    lastSwing_.soft ? uint8_t(kDebrisSoft)
+                                    : isSoilMat(lastSwing_.material)
+                                        ? uint8_t(kDebrisSoil)
+                                        : uint8_t(kDebrisStone));
+                                // ...AND A MUSHROOM THAT CAME OFF THE GROUND
+                                // STAYS ON IT. This is the body that was
+                                // flying: a model smaller than
+                                // dropModelHangers' 39-voxel box never seeds
+                                // from the box WALL, only from its own floor,
+                                // so the whole severed cap arrives here in one
+                                // piece -- and small enough to be collected.
+                                //
+                                // THE BITE IS NOT MARKED AND THIS IS, which is
+                                // the whole distinction: what a blow knocks
+                                // OUT is loot, what a blow cuts FREE is the
+                                // mushroom.
+                                //
+                                // EVERY SOFT HANGER, NOT THE BIG ONES ONLY,
+                                // and a size test is what that replaces: the
+                                // bite is a radius-3 sphere, 113 voxels, and
+                                // a small cap is about a hundred -- they
+                                // overlap, so no threshold can tell a crumb
+                                // from a cap. In practice there are no crumbs.
+                                // Hangers appear only where a bite DISCONNECTS
+                                // something, and a cap has been solid since it
+                                // stopped being hollow, so the one place a
+                                // mushroom comes apart is the stem. If a rim
+                                // ever does nick off, it lies on the ground
+                                // instead of being collected -- which is the
+                                // safe way round to be wrong.
+                                if (hslot >= 0 && lastSwing_.soft) world_.markScenery(hslot);
+                            }
                         }
                     }
                 }
 
                 if (opt_.swingLog) {
-                    static const char *kWhat[] = {"air", "ground", "trunk", "rock"};
+                    static const char *kWhat[] = {"air", "ground", "trunk", "rock", "loose"};
                     static const char *kHeard[] = {"silent", "wood", "rock", "knock"};
                     std::printf("v2: swing -> %s", kWhat[int(lastSwing_.kind)]);
                     if (lastSwing_.hit) std::printf("  %.2f m", lastSwing_.dist);
@@ -6220,6 +8347,597 @@ class ForestApp : public SampleApp {
         return "other";
     }
 
+    // -----------------------------------------------------------------------
+    // DIG STRAIGHT DOWN AND WATCH WHERE THE SPOIL GOES.
+    //
+    // (user 2026-09-14, twice: "digging up dirt seems to teleport the chunks to
+    // the surface" / "still, when diging deep tin the ground, dirt voxels
+    // teleport to the surface instantly this is wrong".)
+    //
+    // WRITTEN BECAUSE TWO FIXES WERE GUESSED AND SHIPPED. Both were reasoned
+    // from the code and neither was measured, and the report came back
+    // unchanged both times. A chip that is thrown out of a shaft is a NUMBER --
+    // its height against the shaft floor it was born in -- and nothing in this
+    // engine was asking for that number.
+    //
+    // IT RUNS THE LIVE FLOOR, NOT THE GENERATOR'S. --float-test hands
+    // updateDebris a terrainAt built from heightVox alone, which is the world
+    // as it was before anybody dug; under that backstop a chip in a shaft is
+    // below the ground BY DEFINITION and is clamped to the surface every
+    // frame. That would have shown this "bug" on a perfectly good engine and
+    // hidden it on a broken one. The lambda here is the one the frame loop
+    // uses -- walkGroundM, which has the holes in it.
+    // -----------------------------------------------------------------------
+    void runShaftTest() {
+        std::printf("\n=== SHAFT TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        const float x = player_.pos.x, z = player_.pos.z;
+        TerrainMemo memo;
+        const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
+        const float surf = float(world_.terrainTopAt(ci, cj, memo) + 1) * VOXEL_M;
+        std::printf("  standing at (%.1f, %.1f)  surface %.2f m\n", x, z, surf);
+
+        // ---- a shaft, one bite every 15 cm ---------------------------------
+        //
+        // DEEPER THAN THE DIRT IS. The report is about DIRT, and the crust is
+        // eleven voxels now -- a shaft that bottoms out on stone in the first
+        // half metre is not the thing being tested.
+        const float depthM = 4.0f;
+        long blows = 0;
+        for (float y = surf - 0.05f; y > surf - depthM; y -= 0.15f)
+            if (world_.dig(Vec3(x, y, z), kDigRadiusVox, &spoilVol_, &spoilN_, &spoilAt_))
+                ++blows;
+        const WalkWorld ww0 = walkWorld();
+        const float floorNow = walkGroundM(ww0, x, z);
+        std::printf("  %ld bites, floor now %.2f m -- %.2f m down\n", blows, floorNow,
+                    surf - floorNow);
+        // ---- ...AND WHERE THE PLAYER STANDS WHILE DIGGING IT ---------------
+        //
+        // HALF THE QUESTION, AND IT WAS NOT BEING ASKED. Spoil flies to the
+        // EYE, so "where does the dirt go" is "where is the player" -- and a
+        // body has a radius while a bite is three voxels across. If the walk
+        // keeps you standing on the rim of your own shaft, every chip you cut
+        // four metres down travels four metres up through solid ground to
+        // reach you, which is exactly what was reported.
+        player_.placeOnGround(walkWorld(), x, z);
+        std::printf("  the player stands at %.2f m -- %s\n", player_.pos.y,
+                    player_.pos.y < floorNow + 0.5f ? "in the shaft"
+                                                    : "ON THE RIM, over their own hole");
+        if (surf - floorNow < 1.0f) {
+            std::printf("  the shaft is under a metre deep; nothing here is worth "
+                        "measuring\n");
+            return;
+        }
+
+        // ---- one more bite, and this one keeps its spoil -------------------
+        const float birthY = floorNow + 0.10f;
+        if (!world_.dig(Vec3(x, birthY, z), kDigRadiusVox, &spoilVol_, &spoilN_, &spoilAt_)) {
+            std::printf("  the last bite took nothing -- bedrock?\n");
+            return;
+        }
+        const Vec3 still{0.0f, 0.0f, 0.0f};
+        const int slot =
+            world_.spawnDebris(physics_, spoilVol_, spoilN_, spoilAt_, still, still, simMs_,
+                               0.0f, nullptr, uint8_t(kDebrisSoil));
+        if (slot < 0) {
+            std::printf("  no free debris slot\n");
+            return;
+        }
+        rebuildGroundPatch();
+        Vec3 p0{0, 0, 0};
+        float q0[4] = {0, 0, 0, 1};
+        if (!world_.debrisPose(slot, &p0, q0)) {
+            std::printf("  the chip has no pose\n");
+            return;
+        }
+        std::printf("\n  the chip is born at %.2f m, %.2f m under the surface\n", p0.y,
+                    surf - p0.y);
+        std::printf("  frame    chip y   vs floor   vs surface   backstop  state\n");
+
+        // ---- and now watch it, on the frame loop's own terms ---------------
+        const float dt = 1.0f / 60.0f;
+        float highest = p0.y;
+        // ...AND WHERE IT WAS WHEN THE COLLECT TOOK IT, which is the only
+        // number here that says anything about the PHYSICS. Everything after
+        // that moment is a scripted lerp to the eye and proves nothing.
+        bool wasFlying = false;
+        float atAbsorb = p0.y;
+        Vec3 p = p0;
+        for (int f = 1; f <= 180; ++f) {
+            if (world_.takeGroundDirty() ||
+                !physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M, kGroundMarginM))
+                rebuildGroundPatch();
+            physics_.step(dt);
+            simMs_ += double(dt) * 1000.0;
+            {
+                const WalkWorld ww = walkWorld();
+                world_.updateDebris(physics_, player_.eyePosition(), simMs_,
+                                    [&](float ax, float az) { return walkGroundM(ww, ax, az); });
+            }
+            float qq[4] = {0, 0, 0, 1};
+            if (!world_.debrisPose(slot, &p, qq)) {
+                std::printf("  the chip is gone at frame %d\n", f);
+                break;
+            }
+            if (p.y > highest) highest = p.y;
+            // EVERY EARLY FRAME, AND THE FLOOR THE BACKSTOP WOULD USE.
+            //
+            // The two ways a chip leaves a hole look nothing alike frame by
+            // frame and identical every thirty: updateDebris' clampAbove is a
+            // TELEPORT -- one frame, any distance -- and a heightfield the
+            // solver thinks the body is inside is a shove, fast but continuous.
+            // The backstop column is printed beside it because that is the
+            // number clampAbove compares against: if it reads the shaft floor,
+            // the clamp is innocent and the patch is not.
+            const bool flying = world_.debrisAbsorbing(slot);
+            if (flying && !wasFlying) {
+                wasFlying = true;
+                atAbsorb = p.y;
+            }
+            if (f <= 40 || f % 30 == 0) {
+                const WalkWorld wq = walkWorld();
+                std::printf("  %5d  %7.2f  %+8.2f  %+10.2f  %8.2f  %s\n", f, p.y,
+                            p.y - floorNow, p.y - surf, walkGroundM(wq, p.x, p.z),
+                            flying ? "collected" : "falling");
+            }
+        }
+
+        // ---- the verdict ---------------------------------------------------
+        //
+        // TWO THINGS, AND THE FIRST IS THE REPORT. A chip born four metres down
+        // must never be seen at the surface -- not at the end, at any point, so
+        // the highest it ever reached is what is tested. The second is that it
+        // is still down there when the dust settles, which rules out a chip
+        // that is ejected and falls back in.
+        // MEASURED AT THE MOMENT THE COLLECT TOOK IT, not at the end. A chip
+        // that is picked up has left the simulation: it is a kinematic lerp to
+        // the eye from there on, it passes through the ground by design, and
+        // judging the physics by where that lerp ends would fail every engine.
+        const bool stayedDown = atAbsorb < surf - 0.5f;
+        const bool restedLow = atAbsorb > floorNow - 1.0f;
+        std::printf("\n  the solver left it at %.2f m (%+.2f m against the surface)  %s\n",
+                    atAbsorb, atAbsorb - surf,
+                    stayedDown ? "stayed in the shaft" : "CAME OUT -- THIS IS THE BUG");
+        std::printf("  the highest it ever reached, the collect included, was %.2f m\n",
+                    highest);
+        std::printf("  %s\n",
+                    (stayedDown && restedLow)
+                        ? "PASS -- the spoil stayed in the hole it came out of."
+                        : "FAIL -- the spoil was thrown to the surface.");
+    }
+
+    // -----------------------------------------------------------------------
+    // KILL ONE OF EVERYTHING AND CHECK WHAT IT LEFT BEHIND.
+    //
+    // (user 2026-09-14, the five-part ask that this whole feature is.)
+    //
+    // FIVE THINGS HAPPEN WHEN AN ANIMAL DIES and four of them are invisible to
+    // any test that only looks at whether it is gone: the flash, the pieces,
+    // the sparks, the smoke and the steak. So this walks the /locate table,
+    // teleports to each species in turn, aims at it, and swings until it is
+    // down -- reporting every one of the five against what v1's rules say that
+    // species should do.
+    //
+    // THE MEAT RULE IS THE POINT OF THE SPECIES LOOP. "there are unique animals
+    // that dont drop anything, like the song birds and worms" -- so a test that
+    // kills one rabbit proves the half that is easy. The column that matters is
+    // the one where a songbird and a worm leave NOTHING and the frog beside
+    // them leaves a steak.
+    // -----------------------------------------------------------------------
+    void runKillTest() {
+        std::printf("\n=== KILL TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+        // AN AXE, so one blow is one kill and the test is about the death
+        // rather than about counting to three. The three-blow path is checked
+        // on its own below.
+        for (int i = 0; i < held_.count(); ++i)
+            if (held_.tool(i).takes == Takes::Wood) held_.select(i);
+        // AND THE POPULATIONS HAVE TO HAVE RUN. The first version of this
+        // primed the CHUNKS and then asked where the nearest bunny was, which
+        // is a question about a population that had never ticked: every one of
+        // the twenty-four answered "none", the loop skipped them all in
+        // silence, and the report was a header with nothing under it.
+        warmLife(player_.pos, 3);
+        publishLife();
+        std::printf("  the %s wood, steak slot %d\n",
+                    world_.terrain.birchAt(pos_.x) ? "birch" : "pine", steakTool_);
+
+        std::printf("\n  %-10s  %-5s  %-6s  %-6s  %-5s  %s\n", "species", "hits", "pieces",
+                    "sparks", "smoke", "meat");
+        int tried = 0, killed = 0, wrong = 0;
+        for (const LifeName &ln : lifeNames()) {
+            // THE HIVE AND THE LILY PAD ARE NOT ALIVE. One is decor in a crown
+            // and the other is a leaf; neither answers the band's life table.
+            if (ln.life == Life::Hive || ln.life == Life::LilyPad) continue;
+            Vec3 at{0, 0, 0};
+            // NOT SILENT. A species this world has none of is an ordinary
+            // outcome -- the frog is birch-only, the armadillo pine-only -- but
+            // it is not the same outcome as a kill that went wrong, and a run
+            // that skipped everything in silence is what this line is for.
+            if (!nearestLife(ln.life, &at)) {
+                std::printf("  %-10s  none in this wood\n", ln.name);
+                continue;
+            }
+            teleportToLife(at, ln.stand);
+            // STREAM THE GROUND, THEN LET THE POPULATION FIND IT. Both are
+            // needed and in that order: an animal is placed against terrain
+            // that has to exist first, and a population that has not ticked
+            // since the jump still has its members back where you came from.
+            for (int w = 0; w < 120; ++w) {
+                world_.update(player_.pos);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            warmLife(player_.pos, 2);
+            publishLife();
+            // ...and find it again, because it has been walking while the
+            // chunks streamed in.
+            if (!nearestLife(ln.life, &at)) {
+                std::printf("  %-10s  gone by the time the chunks landed\n", ln.name);
+                continue;
+            }
+            // -- ...AND THEN WALK UP TO IT --------------------------------
+            //
+            // teleportToLife stands you at the species' OWN distance, which is
+            // a number chosen so the animal does not bolt before you have seen
+            // it (see the `stand` column) -- five metres for a bunny and ten
+            // for a mouse. The melee reach is 5.3 m, so half the table was out
+            // of range before the first swing and reported "not drawn" for a
+            // reason that had nothing to do with the kill path.
+            //
+            // NO WARM AFTER THIS, deliberately: the animal is where the line
+            // above found it, and ticking the populations again would move it
+            // while this closes the distance. The publish is so the BAND knows
+            // where the player is standing -- see flyerAt.
+            {
+                const float dx = player_.pos.x - at.x, dz = player_.pos.z - at.z;
+                const float d = maxf(0.001f, std::sqrt(dx * dx + dz * dz));
+                teleportTo(at.x + dx / d * 1.6f, at.z + dz / d * 1.6f);
+                publishLife();
+            }
+            // AIM AT IT. Everything downstream reads forward(), so this is the
+            // whole of "look at the animal" -- the same trick --hoe-test uses
+            // to stop its ray landing somewhere it never approved.
+            pos_ = player_.eyePosition();
+            const Vec3 d = normalize(Vec3(at.x - pos_.x, at.y - pos_.y, at.z - pos_.z));
+            yaw_ = atan2f(d.x, -d.z) * 180.0f / PI;
+            pitch_ = asinf(d.y) * 180.0f / PI;
+            const int slot = lifeHits_.aim(world_, pos_, forward());
+            if (slot < 0) {
+                // WHY, rather than that it happened. The two reasons are not
+                // the same bug: an animal out of REACH is this test standing in
+                // the wrong place, and one not DRAWN is a population that
+                // published nothing into the band -- which would be a real
+                // fault in the thing being tested.
+                const float dxq = at.x - pos_.x, dyq = at.y - pos_.y, dzq = at.z - pos_.z;
+                int drawn = 0;
+                for (int q = 0; q < kFlyerInstances; ++q)
+                    if (lifeAtSlot(q).alive() && world_.flyerAt(q, nullptr, nullptr)) ++drawn;
+                std::printf("  %-10s  no aim: it is %.1f m off (%.1f m up), %d animals drawn\n",
+                            ln.name, std::sqrt(dxq * dxq + dzq * dzq), dyq, drawn);
+                continue;
+            }
+            const LifeKind kind = lifeKindAt(slot);
+            ++tried;
+            // AN EMPTY FIELD BEFORE EACH ONE -- see Drops::clearAll and
+            // World::clearDebris. Both pools are small and a corpse fills a
+            // good part of one, so without this the later species in the table
+            // report a shatter and a steak that the pools simply had no room
+            // for -- which reads exactly like the feature not working.
+            drops_.clearAll();
+            world_.clearDebris(physics_);
+            const int drops0 = drops_.count();
+            int hits = 0;
+            bool died = false;
+            for (int k = 0; k < 6 && !died; ++k) {
+                ++hits;
+                if (!strikeLife()) break;
+                died = !lifeHits_.flashing(slot) || lifeHits_.dying(slot);
+                // A NEW SWING EACH TIME. One swing lands one hit -- v1 guards
+                // that with a token; here the guard is that this test is the
+                // only thing swinging.
+            }
+            const int sparks = particles_.live();
+            int smoke = 0;
+            for (int q = 0; q < kParticleSlots; ++q) {
+                Vec3 pp{0, 0, 0};
+                bool sm = false;
+                if (particles_.at(q, &pp, &sm, simMs_) && sm) ++smoke;
+            }
+            const int got = drops_.count() - drops0;
+            const bool meatRight = kind.meat ? (got > 0) : (got == 0);
+            if (died) ++killed;
+            if (!died || !meatRight) ++wrong;
+            std::printf("  %-10s  %-5d  %-6d  %-6d  %-5d  %s%s\n", kind.name ? kind.name : ln.name,
+                        hits, lastPieces_, sparks - smoke, smoke,
+                        kind.meat ? (got > 0 ? "steak" : "NONE -- WRONG")
+                                  : (got == 0 ? "none, correct" : "A STEAK -- WRONG"),
+                        died ? "" : "   IT DID NOT DIE");
+            particles_.update(simMs_ + 4000.0);   // clear the air before the next one
+        }
+        // ---- ...AND THE THREE-BLOW RULE, WHICH THE AXE HIDES -------------
+        //
+        // Everything above swings an AXE, because that is how a test kills one
+        // of twenty-four species without spending a minute on each -- and it
+        // means every line of it reports "1 hit", which proves nothing about
+        // v1's HITS_TO_KILL. So this does one more kill with a PICK: three
+        // blows, flashing after each, and dead on the third and not before.
+        int need = 0, gotHits = 0;
+        bool needRight = false;
+        {
+            for (int i = 0; i < held_.count(); ++i)
+                if (held_.tool(i).takes == Takes::Stone) held_.select(i);
+            Vec3 at{0, 0, 0};
+            // A BUNNY: not frail, so it is the case the rule is about. Any of
+            // the marchers would do; the bunny is simply the most common.
+            if (nearestLife(Life::Bunny, &at)) {
+                teleportToLife(at, 5.0f);
+                for (int w = 0; w < 120; ++w) {
+                    world_.update(player_.pos);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+                warmLife(player_.pos, 2);
+                publishLife();
+                if (nearestLife(Life::Bunny, &at)) {
+                    const float dx = player_.pos.x - at.x, dz = player_.pos.z - at.z;
+                    const float d = maxf(0.001f, std::sqrt(dx * dx + dz * dz));
+                    teleportTo(at.x + dx / d * 1.6f, at.z + dz / d * 1.6f);
+                    publishLife();
+                    pos_ = player_.eyePosition();
+                    const Vec3 look =
+                        normalize(Vec3(at.x - pos_.x, at.y - pos_.y, at.z - pos_.z));
+                    yaw_ = atan2f(look.x, -look.z) * 180.0f / PI;
+                    pitch_ = asinf(look.y) * 180.0f / PI;
+                    const int slot = lifeHits_.aim(world_, pos_, forward());
+                    if (slot >= 0) {
+                        need = kHitsToKill;
+                        for (int k = 0; k < 5; ++k) {
+                            if (!strikeLife()) break;
+                            ++gotHits;
+                            if (lifeHits_.dying(slot)) break;
+                            // ...AND IT IS STILL ALIVE AND STILL FLASHING,
+                            // which is the other half of "every hit flashes".
+                            if (!lifeHits_.flashing(slot)) break;
+                        }
+                        needRight = gotHits == need;
+                    }
+                }
+            }
+        }
+        std::printf("\n  -- and with a pick, which does not kill outright --\n");
+        if (!need)
+            std::printf("  no bunny in reach; the three-blow rule was not exercised\n");
+        else
+            std::printf("  a bunny took %d blows, v1 says %d  %s\n", gotHits, need,
+                        needRight ? "correct" : "WRONG");
+
+        std::printf("\n  %d species tried, %d died, %d wrong\n", tried, killed, wrong);
+        std::printf("  %s\n", (tried > 0 && wrong == 0 && (!need || needRight))
+                                   ? "PASS -- every blow landed, every carcass was right."
+                                   : "FAIL -- see the lines above.");
+    }
+
+
+    // -----------------------------------------------------------------------
+    // WHAT A BITE OF DIRT DOES THAT A BITE OF STONE DOES NOT.
+    //
+    // (user 2026-09-14: "digging dirt voxels is very glitchy. just match the
+    // pick to stone mechanics, but for shovel to dirt.")
+    //
+    // THE TWO TOOLS ALREADY SHARE EVERY LINE OF THE EDIT. toolTakes lets the
+    // pick at stone and the shovel at soil, and both arrive at the same
+    // World::dig with the same radius -- so "match the pick's mechanics" cannot
+    // be done by copying a path, because it is already the same path. Whatever
+    // differs is in what the bite MEETS, and that is a measurement.
+    //
+    // Twelve bites into each, reported side by side: how much came out, how
+    // many chunks had to be re-meshed, and -- the one that is not symmetric --
+    // how many loose BODIES the bite cut free of the world.
+    // -----------------------------------------------------------------------
+    void runSoilTest() {
+        std::printf("\n=== SOIL TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        const float x = player_.pos.x, z = player_.pos.z;
+        TerrainMemo memo;
+        const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
+        const int h = world_.terrainTopAt(ci, cj, memo);
+        const auto matAt = [&](int i, int j, int y) {
+            TerrainProbe pr(&world_.terrain, &world_.editStore());
+            return pr.material(i, j, y);
+        };
+        std::printf("  standing at (%.0f, %.0f), surface voxel %d\n", x, z, h);
+        // WHERE THE CRUST ENDS, which is the whole geometry of the question: a
+        // shovel works in a layer a few voxels thick over stone, and a pick
+        // works inside a solid that goes down for ever.
+        int crust = 0;
+        for (int y = h; y > h - 40; --y) {
+            const uint8_t m = matAt(ci, cj, y);
+            if (isStoneMat(m) || m == mat::BEDROCK) break;
+            ++crust;
+        }
+        std::printf("  the crust here is %d voxels; a bite is %d across\n", crust,
+                    kDigRadiusVox * 2 + 1);
+
+        std::printf("\n  %-8s  %-6s  %-7s  %-7s  %s\n", "bite", "spoil", "chunks", "bodies",
+                    "what it cut loose");
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool soil = pass == 0;
+            std::printf("  -- %s --\n", soil ? "SHOVEL into the dirt, from the surface down"
+                                              : "PICK into the stone, well below it");
+            // A FRESH COLUMN for each pass, so the second is not digging in the
+            // first one's hole.
+            const float bx = x + (soil ? 6.0f : -6.0f), bz = z;
+            const int bi = int(std::floor(bx / VOXEL_M)), bj = int(std::floor(bz / VOXEL_M));
+            TerrainMemo m2;
+            const int top = world_.terrainTopAt(bi, bj, m2);
+            int y = soil ? top : (top - crust - 8);
+            world_.clearDebris(physics_);
+            for (int k = 0; k < 12; ++k, y -= 2) {
+                const int before = world_.looseCount();
+                spoilN_ = 0;
+                const size_t chunks =
+                    world_.dig(Vec3(bx, (float(y) + 0.5f) * VOXEL_M, bz), kDigRadiusVox,
+                               &spoilVol_, &spoilN_, &spoilAt_);
+                int vox = 0;
+                for (uint8_t v : spoilVol_)
+                    if (v != mat::AIR) ++vox;
+                const int bodies = world_.looseCount() - before;
+                // ...and how big the biggest of them is, because one chip is
+                // ordinary and a slab of hillside coming away is not.
+                int biggest = 0;
+                for (int b = 0; b < kDebrisInstances; ++b) {
+                    const int n = world_.debrisVoxels(b);
+                    if (n > biggest) biggest = n;
+                }
+                std::printf("  %-8d  %-6d  %-7zu  %-7d  %s\n", k + 1, vox, chunks, bodies,
+                            bodies > 0 ? (biggest > 200 ? "A SLAB -- this is the glitch"
+                                                        : "a chip")
+                                       : "nothing");
+            }
+        }
+        // ---- ...AND WHAT THE COLLISION FLOOR DID AROUND THE HOLE ---------
+        //
+        // THE OTHER HALF OF THE QUESTION, and the half a shovel shows and a
+        // pick cannot. groundPatch dilates a dug sample onto its eight
+        // neighbours so a narrow shaft has a floor a body can rest on rather
+        // than a funnel it slides out of -- see the note there. The samples are
+        // 0.4 m apart, so that widens the solver's crater to about 1.2 m, and
+        // everything in this world that DIGS AT THE SURFACE leaves its spoil
+        // lying inside that radius. A chip resting on ground that is plainly
+        // still there, sinking into a hole the eye cannot see, is exactly what
+        // "digging dirt is very glitchy" would look like.
+        //
+        // So: a chip is put down on UNDUG ground beside the pit and watched.
+        {
+            world_.clearDebris(physics_);
+            const float bx = x + 6.0f, bz = z;
+            TerrainMemo m3;
+            const int bi = int(std::floor(bx / VOXEL_M)), bj = int(std::floor(bz / VOXEL_M));
+            const float lip = float(world_.terrainTopAt(bi, bj, m3) + 1) * VOXEL_M;
+            std::printf("\n  -- a chip set down beside the pit --\n");
+            std::printf("  %-8s  %-9s  %-9s  %s\n", "away", "ground", "rested at", "verdict");
+            for (int k = 0; k < 4; ++k) {
+                const float away = 0.4f + float(k) * 0.4f;
+                const float cx = bx + away, cz = bz;
+                TerrainMemo m4;
+                const int qi = int(std::floor(cx / VOXEL_M)), qj = int(std::floor(cz / VOXEL_M));
+                const float g = float(world_.terrainTopAt(qi, qj, m4) + 1) * VOXEL_M;
+                // A LUMP OF THE GROUND IT IS LYING ON, born just above it.
+                spoilN_ = 3;
+                spoilVol_.assign(27, mat::DIRT);
+                const Vec3 still{0.0f, 0.0f, 0.0f};
+                const int slot = world_.spawnDebris(physics_, spoilVol_, spoilN_,
+                                                    Vec3(cx, g + 0.12f, cz), still, still, simMs_,
+                                                    0.0f, nullptr, uint8_t(kDebrisSoil));
+                if (slot < 0) continue;
+                rebuildGroundPatch();
+                const float dt = 1.0f / 60.0f;
+                Vec3 pp{0, 0, 0};
+                float qq[4] = {0, 0, 0, 1};
+                // WHERE THE SOLVER LEFT IT, not where it ended up. Half a
+                // second after it is born every small body is COLLECTED -- a
+                // kinematic lerp to the player's eye, through anything in the
+                // way -- so reading the last frame measures the pickup. The
+                // shaft test learned this the same way. See debrisAbsorbing.
+                float restY = pp.y;
+                for (int f = 0; f < 90; ++f) {
+                    if (world_.takeGroundDirty() ||
+                        !physics_.groundCovers(player_.pos.x, player_.pos.z, VOXEL_M,
+                                               kGroundMarginM))
+                        rebuildGroundPatch();
+                    physics_.step(dt);
+                    simMs_ += double(dt) * 1000.0;
+                    const WalkWorld ww = walkWorld();
+                    world_.updateDebris(physics_, player_.eyePosition(), simMs_,
+                                        [&](float ax, float az) { return walkGroundM(ww, ax, az); });
+                    if (!world_.debrisPose(slot, &pp, qq)) break;
+                    if (world_.debrisAbsorbing(slot)) break;
+                    restY = pp.y;
+                }
+                pp.y = restY;
+                const float sank = g - pp.y;
+                std::printf("  %-8.1f  %-9.2f  %-9.2f  %s\n", double(away), double(g),
+                            double(pp.y),
+                            sank > 0.25f ? "SANK INTO GROUND THAT IS STILL THERE -- WRONG"
+                                         : "rested on the surface");
+                world_.clearDebris(physics_);
+            }
+            (void)lip;
+        }
+
+        // ---- ...AND WHETHER A FLOWER OVER THE HOLE CAME DOWN WITH IT -----
+        //
+        // (user 2026-09-14: "flowers are still floating sometimes. investigate
+        // and fix this.")
+        //
+        // THE SAME SWING, A DIFFERENT LIST. dropUndermined has been dropping
+        // trees and rocks and caps since it was written, and it walks the
+        // COLLIDERS -- so a flower, which is drawn and walked through and has
+        // no collider at all, was never on any list the question was asked of.
+        // This digs the ground out from under one and asks whether it is still
+        // being drawn.
+        {
+            Vec3 spot{0, 0, 0};
+            int had = 0;
+            for (int r = 1; r < 240 && !had; ++r)
+                for (int d = -r; d <= r && !had; ++d) {
+                    const float o[4][2] = {{float(d), float(-r)}, {float(d), float(r)},
+                                           {float(-r), float(d)}, {float(r), float(d)}};
+                    for (int k = 0; k < 4 && !had; ++k) {
+                        const Vec3 c(x + o[k][0] * VOXEL_M, 0.0f, z + o[k][1] * VOXEL_M);
+                        const int m = world_.scatterShownNear(c, 0.25f);
+                        if (!m) continue;
+                        TerrainMemo fm;
+                        const int fi = int(std::floor(c.x / VOXEL_M));
+                        const int fj = int(std::floor(c.z / VOXEL_M));
+                        spot = Vec3(c.x, float(world_.terrainTopAt(fi, fj, fm)) * VOXEL_M, c.z);
+                        had = m;
+                    }
+                }
+            std::printf("\n  -- a flower over a fresh hole --\n");
+            if (!had) {
+                std::printf("  no scatter in reach -- this run proved nothing\n");
+            } else {
+                world_.clearDebris(physics_);
+                const int loose0 = world_.looseCount();
+                // STRAIGHT DOWN THROUGH THE COLUMN IT STANDS ON. One bite
+                // takes the surface and the next three take what is under it,
+                // so there is nothing left within the three voxels of slack
+                // dropScatterUndermined allows for a slope.
+                for (int k = 0; k < 4; ++k) {
+                    const Vec3 at2(spot.x, spot.y - float(k) * 3.0f * VOXEL_M, spot.z);
+                    world_.dig(at2, kDigRadiusVox, &spoilVol_, &spoilN_, &spoilAt_);
+                    world_.dropScatterUndermined(physics_, at2,
+                                                 float(kDigRadiusVox) * VOXEL_M + 0.4f, simMs_);
+                }
+                const int after = world_.scatterShownNear(spot, 0.25f);
+                std::printf("  standing before  %d\n", had);
+                std::printf("  still drawn      %d  %s\n", after,
+                            after == 0 ? "it came down, correct"
+                                       : "STILL IN THE AIR OVER A HOLE -- WRONG");
+                std::printf("  bodies it left   %d\n", world_.looseCount() - loose0);
+            }
+        }
+
+        std::printf("\n  Read the BODIES column. A bite that cuts the world loose spawns one;\n");
+        std::printf("  a bite fully inside a solid spawns none.\n");
+    }
+
     void runFloatTest() {
         std::printf("\n=== UNDERMINE TEST ===\n");
         player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
@@ -6545,6 +9263,1778 @@ class ForestApp : public SampleApp {
                                      : "PASS -- nothing is left in the air.");
     }
 
+    // -----------------------------------------------------------------------
+    // TICK EVERY POPULATION AT A POINT, the way one frame of the wood does.
+    //
+    // WHY A WARMUP EXISTS AT ALL is written out at length in the offline
+    // report, which does the same thing for the same reason: a population that
+    // FILLS ITSELF OVER TIME reports its spawn state if you tick it once, and
+    // most of these have a settling time measured in tens of seconds -- the
+    // flying flock is born on a ring at 0.78-0.94 of 105 m and needs to cross
+    // it before it is distributed the way play sees it.
+    //
+    // ONE LOOP RATHER THAN SIX, which is the one thing this does differently:
+    // the report warms each population separately with its own count because
+    // it is making a PICTURE and each system has its own settling time. A test
+    // of where the animals ARE wants the state a running frame produces, and
+    // that is all six advancing on one clock.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // EVERY POPULATION ONTO THE BAND, IN ONE CALL.
+    //
+    // The frame loop publishes them where each is ticked, which is six places;
+    // a headless test ticks them all in one loop (warmLife) and then has to do
+    // the same. It exists because --kill-test asks the BAND what is under the
+    // crosshair -- see render/lifehit.h -- and an animal that has not been
+    // published is, as far as that question is concerned, not there.
+    // -----------------------------------------------------------------------
+    void publishLife() {
+        flock_.publish(world_);
+        birds_.publish(world_);
+        lake_.publish(world_);
+        flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
+        bunnies_.publish(world_, kBunnySlot0);
+        bunnies_.publishSkunks(world_, kMarchSlot0);
+        bees_.publish(world_, kBeeSlot0);
+        critters_.publish(world_, kCritterSlot0);
+        world_.flushFlyerInstances();
+    }
+
+    void warmLife(const Vec3 &at, int seconds) {
+        const auto groundAt = [this](float x, float z) {
+            return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
+                                                  int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+        };
+        world_.collidersNear(at, kBirdKeepM, &perches_);
+        world_.decorNear(5, at, kBeeHiveM, &hivesNear_);
+        world_.decorNear(2, at, kBeeHiveM + kBeeFlowerM, &bloomsNear_);
+        const float dt = 1.0f / 60.0f;
+        for (int i = 0; i < seconds * 60; ++i) {
+            flock_.update(dt, world_, at);
+            birds_.update(dt, perches_, at);
+            lake_.update(dt, world_.terrain, at);
+            flock2_.update(dt, at, groundAt, &perches_);
+            bunnies_.update(dt, at, groundAt,
+                            [this](float x, float z) { return wetColumnAt(x, z); }, perches_,
+                            [this](float x) { return world_.terrain.birchMix(x); },
+                            // ...AND NOT ON THE BEACH -- see Bunnies::blocked.
+                            [this](float x, float z) { return sandAt(x, z); });
+            bees_.update(dt, at, hivesNear_, bloomsNear_, &perches_);
+            lake_.bankSpots(uint32_t(frameTick_), 8, &banksNear_);
+            critters_.update(dt, at, groundAt,
+                             [this](float x, float z) { return wetColumnAt(x, z); },
+                             [this](float x) { return world_.terrain.birchMix(x); }, banksNear_,
+                             perches_, isNight(), Vec3(0.0f, 0.0f, 0.0f),
+                             [this](float x, float z) { return waterTopAt(x, z); });
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PUT A SEED IN THE GROUND UNDER THE CROSSHAIR.
+    //
+    // (user 2026-09-14: "have it where the player can right click tilled land
+    // with seeds to place down seeds. however if there is no water present, the
+    // tilled land goes back to dirt/grass like it does currently.")
+    //
+    // WHAT PLANTING ACTUALLY IS HERE: the till's revert is CANCELLED. Turned
+    // earth grows back over after kTillSec "since nothing was ever planted in
+    // it" -- v1's own words for its own rule -- so the whole of "something has
+    // been planted in it" is that the clock stops. Nothing new is drawn, no
+    // second kind of voxel exists, and there is no crop system behind this.
+    //
+    // AND ONLY IF THERE IS WATER. That is the second half of the ask and it is
+    // what makes a seed bed a PLACE rather than a thing you do anywhere: a bed
+    // out of reach of water is turned earth with a seed in it, and turned earth
+    // grows back. So a dry planting costs you the seed and the bed reverts on
+    // its own clock, exactly as it does now.
+    //
+    // THE SEED IS SPENT EITHER WAY, which is deliberate. Refusing to plant
+    // without water would need the rule explained in the moment -- there is no
+    // UI here to explain it in -- and "I planted it and it did not take" is a
+    // thing a player can see happen and learn from.
+    // -----------------------------------------------------------------------
+    bool plantSeed() {
+        if (seedsTool_ < 0 || !held_.ready()) return false;
+        if (held_.selected() != seedsTool_) return false;
+        if (!held_.tool(seedsTool_).carried) return false;
+
+        const Vec3 eye = player_.eyePosition(), dir = forward();
+        const Swing aim = swingRay(walkWorld(), eye, dir);
+        // TILLED ONLY, NOT SEEDED. A bed that already has a seed in it is not
+        // a bed to put a second one in -- and saying so here is what stops a
+        // held stack draining into one square metre of dirt.
+        if (!aim.hit || aim.kind != Swing::Ground || aim.material != mat::TILLED) return false;
+
+        const bool wet = waterWithin(aim.point, kSeedWaterM);
+        const size_t held = world_.plantAt(aim.point, kTillRadiusM, wet);
+        if (!held) return false;
+
+        // ONE SEED PER PLANTING, taken through the same door a drop leaves by:
+        // dropSelected is what decrements a stack and gives the slot up when
+        // the last one goes. See HeldItem::take.
+        held_.dropSelected();
+        std::printf("v2: planted at (%.1f, %.1f, %.1f) -- %s, %zu columns\n", aim.point.x,
+                    aim.point.y, aim.point.z,
+                    wet ? "water in reach, the bed keeps" : "NO WATER, it will grow back over",
+                    held);
+        std::fflush(stdout);
+        return true;
+    }
+
+    // IS THERE WATER WITHIN REACH OF THIS BED. A ring search rather than a
+    // square, and it stops at the first wet column -- the answer is a bool and
+    // the nearest one is not more true than any other.
+    bool waterWithin(const Vec3 &at, float reachM) {
+        for (float r = 0.0f; r <= reachM; r += 0.5f) {
+            const int steps = (r < 0.5f) ? 1 : maxi(8, int(2.0f * PI * r / 0.5f));
+            for (int k = 0; k < steps; ++k) {
+                const float a = float(k) / float(steps) * 2.0f * PI;
+                if (wetColumnAt(at.x + cosf(a) * r, at.z + sinf(a) * r)) return true;
+            }
+        }
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // A CARCASS LEAVES ONE STEAK -- v1's dropMeat.
+    //
+    // (user 2026-09-14: "then lastly, have life drop a raw steak".)
+    //
+    // AN ORDINARY DROP, which is v1's own choice and its own words: "lands as
+    // an ordinary drop, so it hovers, spins and can be picked up like anything
+    // else". Nothing about meat needs a second kind of object -- the wheat and
+    // the seeds already come off the world this way.
+    //
+    // AT THE ANIMAL, which for a fish means ON THE WATER. v1 special-cases that
+    // and says why: every other kill drops at the ground height of the column,
+    // and for a fish that is the SEABED, so the meat would sink out of sight
+    // under however many voxels it was swimming in -- "the one drop the player
+    // cannot walk to is the one they have to swim down for". Drops::spill takes
+    // a world point and the body it came off was AT the surface it died at, so
+    // handing it the animal's own position is that rule for free.
+    // -----------------------------------------------------------------------
+    void dropMeatAt(const Vec3 &at) {
+        if (steakTool_ < 0) return;
+        const Tool &st = held_.tool(steakTool_);
+        if (st.models.empty()) return;
+        drops_.spill(steakTool_, st.models[0], st.sx, st.sy, st.sz, at, 0.0f);
+    }
+
+    // -----------------------------------------------------------------------
+    // WHAT IS IN THIS BAND SLOT, WITH THE ONE THING THE TABLE CANNOT KNOW.
+    //
+    // render/lifehit.h answers from the band's LAYOUT, which is exact for every
+    // population but one: the six marchers share a run and which one a slot
+    // holds is a property of the marcher, not of the slot. A worm and a skunk
+    // are neighbours in it, and one of them leaves a carcass.
+    // -----------------------------------------------------------------------
+    LifeKind lifeKindAt(int slot) const {
+        LifeKind k = lifeAtSlot(slot);
+        if (!k.alive() || slot < kMarchSlot0 || slot >= kMarchSlot0 + kMarchSlots) return k;
+        switch (bunnies_.marchKindAt(slot - kMarchSlot0)) {
+            case kMarchSkunk:      return {"skunk", true, false};
+            case kMarchArmadillo:  return {"armadillo", true, false};
+            case kMarchPorcupine:  return {"porcupine", true, false};
+            case kMarchMouse:      return {"mouse", true, false};
+            // v1's WORM band: one hit, and nothing left behind.
+            case kMarchWorm:       return {"worm", false, true};
+            case kMarchSnake:      return {"snake", true, false};
+            default:               return {};
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND WHICH POPULATION OWNS IT.
+    //
+    // The same switch shape as nearestLife, and it exists for the same reason:
+    // the one thing a band slot cannot tell you is which container the animal
+    // standing in it came out of. Six classes, one line each.
+    // -----------------------------------------------------------------------
+    bool killLifeAt(int slot) {
+        if (slot < 0 || slot >= kFlyerInstances) return false;
+        int s = slot;
+        if (s < kButterflySlots) return flock_.killSlot(s);
+        s -= kButterflySlots;
+        if (s < kBirdSlots) return birds_.killSlot(s);
+        s -= kBirdSlots;
+        if (s < kLakeSlots) return lake_.killSlot(s);
+        s -= kLakeSlots;
+        if (s < kFlockSlots) return flock2_.killSlot(s);
+        s -= kFlockSlots;
+        if (s < kBunnySlots) return bunnies_.killSlot(s);
+        s -= kBunnySlots;
+        if (s < kMarchSlots) return bunnies_.killMarcher(s);
+        s -= kMarchSlots;
+        if (s < kBeeSlots) return bees_.killSlot(s);
+        s -= kBeeSlots;
+        if (s < kButtonSlots) return false;   // a button is not alive
+        s -= kButtonSlots;
+        if (s < kCritterSlots) return critters_.killSlot(s);
+        return false;   // the particles
+    }
+
+    // -----------------------------------------------------------------------
+    // A BLOW ON A LIVING THING -- v1's hitCreature, with v2's consequences.
+    //
+    // Returns whether the swing landed on an animal at all, which is what
+    // spends it. Everything below the split is what v1 does in the same order:
+    // the sparks and the flash on EVERY blow, wounding or fatal, and the
+    // carcass, the poof and the meat only on the one that kills.
+    //
+    // THE AXE KILLS OUTRIGHT, which is v1's rule for its own axe: "the axe is
+    // the killing tool and ignores this entirely". Everything else -- a pick, a
+    // shovel, a hoe, an empty hand -- wears the animal down over three, and the
+    // frail species die to anything in one.
+    // -----------------------------------------------------------------------
+    bool strikeLife() {
+        if (!world_.flyersLoaded()) return false;
+        const int slot = lifeHits_.aim(world_, pos_, forward());
+        if (slot < 0) return false;
+        const LifeKind kind = lifeKindAt(slot);
+        if (!kind.alive()) return false;
+        const bool axe = held_.ready() && held_.carrying() && held_.takes() == Takes::Wood;
+        const LifeHits::Blow b = lifeHits_.strike(world_, slot, kind, axe, simMs_);
+        if (!b.landed) return false;
+
+        // ---- every blow: the red embers ----------------------------------
+        //
+        // v1 fires these above its own wound/kill split and says why: "SPARKS
+        // ON EVERY BLOW -- the same embers a shaft already threw, now on any
+        // hit, wounding or killing. Fired here, before the wound/kill split, so
+        // hits one, two and three all show it."
+        particles_.hitSparks(b.at, simMs_, /*red=*/true);
+        if (!b.killed) {
+            std::printf("v2: hit the %s -- %d of %d\n", kind.name, b.hits, b.needed);
+            std::fflush(stdout);
+            return true;
+        }
+
+        // ---- ...and the one that kills -----------------------------------
+        //
+        // IN v1'S ORDER, WHICH MATTERS FOR THE FIRST TWO. The corpse comes
+        // apart AT THE HIT, not when the flash ends: "shattering at reap meant
+        // the animal stayed whole for the entire half-second of red and only
+        // burst once the red was over, so the two never shared a frame." The
+        // pieces are in the air while the red is still running.
+        const int pieces = world_.shatterFlyer(physics_, slot, pos_, simMs_);
+        lastPieces_ = pieces;
+        particles_.deathBurst(b.at, simMs_);
+        if (kind.meat) dropMeatAt(b.at);
+        killLifeAt(slot);
+        lifeHits_.clear(slot);
+        std::printf("v2: killed the %s -- %d pieces%s\n", kind.name, pieces,
+                    kind.meat ? ", left a steak" : "");
+        std::fflush(stdout);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // TURN THE EARTH UNDER THE CROSSHAIR -- v1'S hoeTill, AS A SWING.
+    //
+    // True when a column actually turned, which is the caller's signal that the
+    // blow is spent. False is ordinary: a hoe swung at rock, at a beach, at the
+    // sky, or at ground it has already been over does nothing at all and says
+    // so, and the swing then falls through to the wheat and to the ordinary
+    // bite chain exactly as if this had not been asked.
+    //
+    // THE GROUND, NOT A MODEL. v1 marches its own ray here rather than reusing
+    // the chop; this reuses `lastSwing_`, which has already resolved the trunks
+    // and the boulders against the terrain on distance -- so a hoe swung at a
+    // rock standing in a field turns nothing, which is right, instead of
+    // tilling the dirt behind it.
+    // -----------------------------------------------------------------------
+    bool tillGround() {
+        if (held_.takes() != Takes::Earth) return false;
+        if (!lastSwing_.hit || lastSwing_.kind != Swing::Ground) return false;
+        const size_t n = world_.till(lastSwing_.point, kTillRadiusM, simMs_ * 0.001);
+        if (!n) return false;
+        if (opt_.swingLog) {
+            std::printf("v2: tilled %zu columns at (%.1f, %.1f, %.1f), %zu still turned\n", n,
+                        lastSwing_.point.x, lastSwing_.point.y, lastSwing_.point.z,
+                        world_.tilledCount());
+            std::fflush(stdout);
+        }
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // CUT THE WHEAT UNDER THE CROSSHAIR, AND DROP WHAT IT WAS MADE OF.
+    //
+    // True when a plant actually broke -- which is the caller's signal that the
+    // swing is spent and the ground behind it must be left alone.
+    //
+    // THE BLADE RAY, NOT lastSwing_.material. A blade is not solid (see
+    // bladeRay), so the ordinary swing goes straight through a field and lands
+    // on the dirt -- its material is the SOIL, every time, and asking it about
+    // wheat would never be true. The second march is what finds the plant, and
+    // it is bounded by however far the first one got, so wheat on the far side
+    // of a boulder is not cut through the boulder.
+    //
+    // WHEAT ONLY, not every blade. isBlade covers the green ramps too and
+    // mowing the lawn is not what was asked for; isWheat is the straw, in
+    // either wood.
+    //
+    // ONE OF EACH, AND THEY LAND APART. The two drops leave on opposite
+    // bearings from the stalk -- "one a piece", and two items spilling onto the
+    // same square read as one.
+    // -----------------------------------------------------------------------
+    bool breakWheat() {
+        const Vec3 eye = player_.eyePosition(), dir = forward();
+        const float reach = lastSwing_.hit ? lastSwing_.dist : swingReachM(dir);
+        const BladeHit bh = bladeRay(walkWorld(), eye, dir, reach);
+        if (!bh.hit || !isWheat(bh.material)) return false;
+
+        // -- ONLY THE HOE, AND EVERYTHING ELSE KNOCKS ---------------------
+        //
+        // AND IT STILL SPENDS THE BLOW. Returning false here would let the
+        // chain fall through to the bite, so an axe swung at a stand of wheat
+        // would knock AND dig a hole in the dirt behind it -- two answers to
+        // one swing, and the second one is a crater the player did not ask for.
+        // The plant is what the crosshair was on; it is what the swing meets.
+        //
+        // ASKED AFTER THE RAY, not before it, so a tool that cannot harvest
+        // still has to be AIMED at wheat to be told so. A knock on every swing
+        // anywhere would be worse than silence.
+        if (held_.takes() != Takes::Earth) {
+            toolSfx_.knock();
+            return true;
+        }
+        if (wheatTool_ < 0 && seedsTool_ < 0) return false;
+
+        // -- ONE PATCH, ONE PAYOUT (user 2026-09-14: "have one patch of wheat
+        //    drop one seed and one wheat. not multiple per patch.") ----------
+        //
+        // A TUFT IS THE PATCH, and it is the only grouping this world has --
+        // see VoxelTerrain::tuftAt. Blades are a per-column hash with no
+        // grouping at all, so the first cut of this mowed a fixed 0.5 m bite,
+        // which is SMALLER THAN A TUFT: every swing found more of the same
+        // plant standing and paid out again.
+        //
+        // THE FIX IS NOT A TALLY, IT IS CUTTING THE WHOLE PLANT. Take the tuft
+        // at its own radius and there is nothing left to swing at -- the
+        // "already cut" test in mow() then does the bookkeeping for free, and
+        // it stays correct across a save, a chunk unload, or two players.
+        float rad = 0.0f, want = 0.0f, sx = bh.point.x, sz = bh.point.z;
+        if (!world_.terrain.tuftAt(bh.point.x, bh.point.z, &rad, &want, &sx, &sz))
+            rad = kLooseWheatM;   // a stray tall blade outside any tuft
+        if (!world_.mow(Vec3(sx, bh.point.y, sz), rad)) return false;
+
+        // A BEARING OFF THE PLANT, not off the player: two swings at the same
+        // tuft from two sides should not throw the drops the same way, and the
+        // stalk's own position is the only thing in this that is about the
+        // plant rather than about you.
+        const float base = std::atan2(bh.point.x, bh.point.z);
+        int n = 0;
+        for (int k = 0; k < 2; ++k) {
+            const int slot = k ? seedsTool_ : wheatTool_;
+            if (slot < 0) continue;
+            const Tool &t = held_.tool(slot);
+            if (t.models.empty()) continue;
+            drops_.spill(slot, t.models[0], t.sx, t.sy, t.sz,
+                         Vec3(bh.point.x, bh.point.y + 0.15f, bh.point.z),
+                         base + (k ? 2.2f : -2.2f));
+            ++n;
+        }
+        if (n) {
+            std::printf("v2: wheat broken at (%.1f, %.1f, %.1f) -- %d dropped\n", bh.point.x,
+                        bh.point.y, bh.point.z, n);
+            std::fflush(stdout);
+        }
+        return true;
+    }
+
+    // Is a body standing here inside a trunk? The arrival check -- gathered at
+    // the SPOT rather than at the player, for the reason teleportTo carries.
+    bool trunkAt(float x, float z) {
+        std::vector<Solid> around;
+        world_.collidersNear(Vec3(x, player_.pos.y, z), 8.0f, &around);
+        WalkWorld w;
+        w.terrain = &world_.terrain;
+        w.edits = &world_.editStore();
+        w.solids = around.data();
+        w.solidCount = int(around.size());
+        return player_.blocked(w, x, z);
+    }
+
+    // -----------------------------------------------------------------------
+    // === LOCATE TEST === -- what /locate can find, and where it puts you.
+    //
+    // WHAT THIS IS FOR. /locate <animal> is nineteen rows of a table wired to
+    // six populations, and a row wired to the WRONG ONE still compiles, still
+    // teleports, and still prints a confident reply. The six fish are the
+    // sharpest case: they share one vector and are told apart by an integer,
+    // so `catfish` pointing at species 5 would quietly take you to a blue gill
+    // for ever. Nothing about that is visible from a screenshot -- the two are
+    // fish-shaped and both are in the water.
+    //
+    // SO THE SURVEY IS THE TEST. Every row is asked, once, from one spawn:
+    // what it found, how far off, and -- for the fish -- whether the six
+    // answers are six DIFFERENT animals, checked against the lake's own
+    // census. A row that finds nothing is not a failure by itself (half the
+    // table is gated to one wood) but it must find nothing for the reason the
+    // table says, which is the `wood` column printed beside it.
+    //
+    // AND THEN ONE ARRIVAL OF EACH KIND, because the survey never moves: the
+    // land case proves standNear's ordinary answer is the stand-off on dry
+    // ground outside a trunk, and the water case proves the same loop walks
+    // out of a lake instead of dropping the player on the bed.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // === CLIP TEST === -- is any animal inside a tree or a rock?
+    //
+    // WHAT THIS IS FOR. "the flys were caught flying inside a big rock." The
+    // fix for that is spread over five files and nine populations, and every
+    // one of those populations is a loop that runs a few hundred times a
+    // second in a world nobody is looking at. A rule of that shape is not
+    // verified by a screenshot -- you would have to be standing next to the
+    // one boulder that has a swarm in it, on the frame it is there.
+    //
+    // SO THE CHECK IS THE ENGINE'S OWN QUESTION ASKED BACK. solidsTouch is
+    // what the animals are now steered by; this walks every live creature
+    // every frame and asks it, which means a population that is exempted by
+    // accident fails here rather than in a report months later. The list comes
+    // from livePoints, which every population had to grow -- nine structs in
+    // seven files with nothing in common but a position.
+    //
+    // WHAT IS ALLOWED TO BE INSIDE SOMETHING. One thing: a perched songbird,
+    // which is sitting on a branch in a crown. It is counted and printed
+    // rather than skipped -- see LifeAt::inTree.
+    //
+    // IT MUST BE RUN IN BOTH WOODS. Half the table is gated to one of them
+    // (--pine pins the other), and a bee, a frog, a mouse and a snake do not
+    // exist at all in the pine band.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // === HOE TEST === -- does a swing turn the earth, and does it grow back?
+    //
+    // WHAT THIS IS FOR. v1's hoeTill is five rules in one function and four of
+    // them are refusals -- only soil, never sand, one layer only, and put it
+    // all back after forty-five seconds. A refusal that does not fire looks
+    // exactly like a refusal that does until you are standing on a tilled
+    // beach, and the one that puts it back cannot be watched at all without
+    // waiting three quarters of a minute in front of the right square metre.
+    //
+    // THE REVERT IS TESTED BY MOVING THE CLOCK, not by waiting: World::till
+    // stamps each column with the time it was turned and tillRevert takes a
+    // time, so handing it one three minutes later is the same arithmetic the
+    // engine does and needs no frames at all.
+    // -----------------------------------------------------------------------
+    void runHoeTest() {
+        std::printf("\n=== HOE TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+
+        int hoe = -1;
+        for (int i = 0; i < held_.count(); ++i)
+            if (held_.tool(i).takes == Takes::Earth) hoe = i;
+        std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood, hoe in slot %d\n", pos_.x,
+                    pos_.y, pos_.z, world_.terrain.birchAt(pos_.x) ? "birch" : "pine", hoe);
+        if (hoe < 0) {
+            std::printf("  FAIL -- the hoe did not load.\n");
+            return;
+        }
+        held_.select(hoe);
+
+        // -- WHETHER A WHOLE BITE IS TURNABLE, ASKED IN ONE PLACE ----------
+        //
+        // ONE COLUMN IS NOT THE BITE. A till is a disc of kTillRadiusM and a
+        // shore is a metre of soil against a metre of sand, so a centre that
+        // passes on its own can sit in a bite that is mostly refused -- and
+        // the test then measures the column under the crosshair, which may be
+        // one of the refused ones. That reported "surface 4 -> 4" and "DUG
+        // ITSELF DEEPER" on a hoe that had done exactly the right thing.
+        //
+        // IT IS A LAMBDA BECAUSE TWO PLACES NEED IT and they were not the
+        // same place: the site search asks it of the column it walks to, and
+        // the swing asks it of the column the RAY LANDS ON, which is a metre
+        // further on and was never checked at all.
+        // The column the search approves, for the aim below to point at.
+        Vec3 site{0.0f, 0.0f, 0.0f};
+        const auto discTurnable = [&](int i, int j) {
+            TerrainMemo dm;
+            const int rv = int(kTillRadiusM / VOXEL_M) + 1;
+            for (int dz = -rv; dz <= rv; ++dz)
+                for (int dx = -rv; dx <= rv; ++dx) {
+                    if (dx * dx + dz * dz > rv * rv) continue;
+                    const int qi = i + dx, qj = j + dz;
+                    const int qh = world_.terrain.heightVox(qi, qj, dm);
+                    const uint8_t qt = world_.terrain.topMaterial(qi, qj, qh, dm);
+                    if (isSand(qt) || !isSoilMat(qt)) return false;
+                }
+            return true;
+        };
+
+        // -- STAND ON GRASS, because half the rule is about the grass ---
+        //
+        // v1 lifts the strands off a column it turns and lays them back on
+        // the revert; v2 gets both for free from the mesher's own rule (an
+        // edited column grows nothing), which is exactly the kind of thing
+        // that is true until it is not. A pine floor is bare in patches, so
+        // a spawn picked at random tests it about half the time -- this
+        // walks to a column that definitely has blades on it.
+        {
+            // -- A GRASSY SPOT, AND BESIDE WATER IF THERE IS ANY --------
+            //
+            // TWO PASSES, AND THE SECOND ONE IS WHY. The planting rule has
+            // two halves -- a bed keeps if water is in reach and grows back
+            // if it is not -- and a test that walks to the nearest grass
+            // lands four metres from a lake about never. Three seeds in a
+            // row all reported the dry case, which is the half that would
+            // still pass on an engine that ignored water altogether.
+            //
+            // So: look for grass NEAR WATER first, and settle for plain
+            // grass only if the wood has no shore in reach. The report says
+            // which it got, and the verdict asserts whichever that was.
+            TerrainMemo gm;
+            bool got = false, nearWater = false;
+            // -- GO TO THE SHORE FIRST, IF THE WORLD HAS ONE ------------
+            //
+            // A RING SEARCH FROM THE SPAWN IS THE WRONG TOOL. Sixty metres
+            // of it found no water on four seeds running, because the
+            // nearest lake was a hundred and seventy metres off -- and
+            // widening the ring is quadratic in something that was already
+            // the slowest part of this test.
+            //
+            // nearestWater spirals six kilometres and is what /locate uses
+            // for exactly this. Move there, stream it, and let the two
+            // passes below pick a grassy column off the shore.
+            {
+                float wx = 0.0f, wz = 0.0f;
+                if (nearestWater(&wx, &wz)) {
+                    for (int w = 0; w < 300; ++w) {
+                        world_.update(Vec3(wx, pos_.y, wz));
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                    player_.placeOnGround(walkWorld(), wx, wz);
+                    pos_ = player_.eyePosition();
+                    std::printf("  walked to the nearest shore (%.0f, %.0f)\n",
+                                double(wx), double(wz));
+                }
+            }
+            const int a0 = int(std::floor(pos_.x / VOXEL_M));
+            const int b0 = int(std::floor(pos_.z / VOXEL_M));
+            for (int pass = 0; pass < 3 && !got; ++pass)
+                for (int r = 2; r < 600 && !got; ++r)
+                    for (int d = -r; d <= r && !got; ++d) {
+                        const int cand[4][2] = {{a0 + d, b0 - r}, {a0 + d, b0 + r},
+                                                {a0 - r, b0 + d}, {a0 + r, b0 + d}};
+                        for (int k = 0; k < 4 && !got; ++k) {
+                            const int i = cand[k][0], j = cand[k][1];
+                            const int h = world_.terrain.heightVox(i, j, gm);
+                            const uint8_t t = world_.terrain.topMaterial(i, j, h, gm);
+                            // -- THE TWO PASSES WANT DIFFERENT COLUMNS ---
+                            //
+                            // A SHORE IS SAND AND SAND GROWS NOTHING, so
+                            // 'grass within four metres of water' is a
+                            // column this world mostly does not have --
+                            // which is why demanding both found neither.
+                            //
+                            // So each pass asks for the thing its half of
+                            // the test needs: pass 0 wants WATER in reach
+                            // (the planting rule) and does not care about
+                            // blades; pass 1 wants BLADES (the strand
+                            // removal) and does not care about water. The
+                            // verdict then asserts whichever it got --
+                            // between the two runs everything is covered,
+                            // and neither run pretends to cover the other.
+                            if (isSand(t)) continue;   // the hoe refuses it anyway
+                            // -- THREE PASSES, THREE THINGS TO PROVE ----
+                            //
+                            //   0  water in reach   -- the planting rule
+                            //   1  grass AND a flower standing in the bed
+                            //      -- the strand removal AND the scatter
+                            //   2  grass alone      -- the fallback
+                            //
+                            // PASS 1 EXISTS BECAUSE PASS 2 PASSED WITHOUT
+                            // PROVING ANYTHING. 'scatter standing 0 -> 0'
+                            // is a green tick on a disc that never had a
+                            // flower in it, which is exactly the shape of
+                            // the bug being tested for -- reported twice,
+                            // and the second time the code was wrong in a
+                            // way no test here could see.
+                            if (pass >= 1 && world_.terrain.strandRows(i, j, t, gm) <= 0)
+                                continue;
+                            // -- AND THE WHOLE DISC HAS TO BE TURNABLE ---
+                            //
+                            // ONE COLUMN IS NOT THE BITE. A till is a disc
+                            // of kTillRadiusM and a shore is a metre of
+                            // soil against a metre of sand, so a centre
+                            // that passes on its own can sit in a bite that
+                            // is mostly refused -- 35 columns of 81 -- and
+                            // the test then measures the column under the
+                            // crosshair, which may be one of the refused
+                            // ones. That reported 'surface 4 -> 4' and
+                            // 'DUG ITSELF DEEPER' on a hoe that had done
+                            // exactly the right thing.
+                            if (!discTurnable(i, j)) continue;
+                            const Vec3 c((float(i) + 0.5f) * VOXEL_M, 0.0f,
+                                         (float(j) + 0.5f) * VOXEL_M);
+                            // The first pass demands a shore; the second
+                            // takes anything. 2 m rather than the rule's 4,
+                            // so the swing lands inside it with room.
+                            const bool wet = waterWithin(c, 2.0f);
+                            if (pass == 0 && !wet) continue;
+                            // ASKED OF THE RESIDENT WORLD, which the ring
+                            // around a streamed spawn is. A column the
+                            // streamer has not reached answers zero and is
+                            // simply not chosen by this pass.
+                            if (pass == 1 &&
+                                world_.scatterShownNear(c, kTillRadiusM) <= 0)
+                                continue;
+                            // STREAM IT FIRST -- the walk and the mow both
+                            // read resident chunks, and a shore six hundred
+                            // voxels off is outside the spawn's ring.
+                            for (int w = 0; w < 200; ++w) {
+                                world_.update(Vec3(c.x, pos_.y, c.z));
+                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            }
+                            // STAND BACK FROM IT AND REMEMBER IT. Standing back
+                            // is what a player does; remembering it is what stops
+                            // the ray landing on a shore nobody checked.
+                            player_.placeOnGround(walkWorld(), c.x, c.z - 1.2f);
+                            pos_ = player_.eyePosition();
+                            site = c;
+                            got = true;
+                            nearWater = wet;
+                        }
+                    }
+            std::printf("  moved to grass: %s%s\n", got ? "yes" : "none found",
+                        (got && nearWater) ? " (beside water)" : "");
+        }
+        // LOOK DOWN AND FORWARD, which is how anybody tills.
+        pitch_ = -55.0f;
+        yaw_ = 180.0f;
+
+        TerrainMemo memo;
+        const auto matAt = [&](int i, int j, int y) {
+            TerrainProbe pr(&world_.terrain, &world_.editStore());
+            return pr.material(i, j, y);
+        };
+
+        // THE COLUMN THE SWING LANDS ON, not the one under your boots.
+        // The first cut of this measured the player's own column and read
+        // "surface 13 -> 13" while eighty-one columns a metre in front had
+        // plainly turned. A hoe is swung at the ground AHEAD -- that is
+        // what a ray aimed sixty degrees down means -- so the test has to
+        // look where the tool lands and not where the feet are.
+        // -- AND THE RAY IS AIMED AT THE BITE THAT WAS CHOSEN -------------
+        //
+        // IT WAS NOT LANDING ON IT. The search approves a column, the player
+        // stands back from it and looks down at a FIXED ANGLE -- and where
+        // that ray comes down depends on the slope and on the eye height. One
+        // run landed 1.1 m from the column it had just approved, on sand, and
+        // reported the hoe broken; sweeping the pitch to find a landing was
+        // the same guess with more tries.
+        //
+        // SO IT IS POINTED AT THE COLUMN, which is what "swing at that spot"
+        // means and what a player does with a mouse. Everything downstream
+        // still reads lastSwing_, so the tool is exercised exactly as it is in
+        // the game -- only the aiming stops being a coincidence.
+        const auto aimAtSite = [&]() {
+            const Vec3 t((float(int(std::floor(site.x / VOXEL_M))) + 0.5f) * VOXEL_M,
+                         walkGroundM(walkWorld(), site.x, site.z) - 0.05f,
+                         (float(int(std::floor(site.z / VOXEL_M))) + 0.5f) * VOXEL_M);
+            Vec3 d{t.x - pos_.x, t.y - pos_.y, t.z - pos_.z};
+            const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            if (len > 1e-4f) { d.x /= len; d.y /= len; d.z /= len; }
+            // KEPT IN SYNC so anything that reads the camera rather than the
+            // swing -- the held tool, the log line -- agrees with the ray.
+            yaw_ = atan2f(d.x, -d.z) * 180.0f / PI;
+            pitch_ = asinf(d.y) * 180.0f / PI;
+            lastSwing_ = swingRay(walkWorld(), pos_, d);
+        };
+        aimAtSite();
+        std::printf("  swing hit %s, material %u\n",
+                    lastSwing_.hit ? (lastSwing_.kind == Swing::Ground ? "ground" : "a model")
+                                   : "NOTHING",
+                    unsigned(lastSwing_.material));
+        if (!lastSwing_.hit) {
+            std::printf("  FAIL -- the swing found no ground to aim at.\n");
+            return;
+        }
+        if (!discTurnable(int(std::floor(lastSwing_.point.x / VOXEL_M)),
+                          int(std::floor(lastSwing_.point.z / VOXEL_M)))) {
+            std::printf("  the ray landed on ground the hoe refuses -- "
+                        "this run proved nothing\n");
+            return;
+        }
+        const int i0 = int(std::floor(lastSwing_.point.x / VOXEL_M));
+        const int j0 = int(std::floor(lastSwing_.point.z / VOXEL_M));
+        const int h0 = world_.terrain.heightVox(i0, j0, memo);
+        const uint8_t top0 = matAt(i0, j0, h0);
+        // -- COUNTED OVER THE WHOLE DISC, NOT AT THE LANDING COLUMN ----
+        //
+        // Blades are a per-column hash and the pine floor is patchy, so a
+        // single column is bare about as often as not -- two runs of this
+        // in a row reported "0 blade rows" from a spot the player had been
+        // walked to BECAUSE it had grass on it, because the swing lands a
+        // column further on than the feet. The disc is what the hoe turns,
+        // so the disc is what to count.
+        const auto discGrass = [&]() {
+            const int rv = int(kTillRadiusM / VOXEL_M) + 1;
+            int n = 0;
+            for (int dz = -rv; dz <= rv; ++dz)
+                for (int dx = -rv; dx <= rv; ++dx)
+                    if (dx * dx + dz * dz <= rv * rv) n += bladeRowsAt(i0 + dx, j0 + dz);
+            return n;
+        };
+        const int grass0 = discGrass();
+        // WHAT IS STANDING ON THIS BED. Flowers, caps and cones -- the
+        // scatter that has no support of its own. Reported twice as not
+        // going away, so it is counted rather than looked at.
+        const int scatter0 = world_.scatterShownNear(lastSwing_.point, kTillRadiusM);
+        std::printf("  it lands on (%d, %d): surface %u at y %d, %d blade voxels in the disc\n",
+                    i0, j0, unsigned(top0), h0, grass0);
+
+        const bool turned = tillGround();
+        const uint8_t topA = matAt(i0, j0, h0);
+        const uint8_t belowA = matAt(i0, j0, h0 - 1);
+        const int grassA = discGrass();
+        const int scatterA = world_.scatterShownNear(lastSwing_.point, kTillRadiusM);
+        std::printf("\n  -- the swing --\n");
+        std::printf("  tilled            %s, %zu columns still turned\n",
+                    turned ? "yes" : "NO", world_.tilledCount());
+        std::printf("  surface voxel     %u -> %u (air is %u)\n", unsigned(top0), unsigned(topA),
+                    unsigned(mat::AIR));
+        std::printf("  the one below     -> %u (tilled is %u)\n", unsigned(belowA),
+                    unsigned(mat::TILLED));
+        std::printf("  blade voxels      %d -> %d\n", grass0, grassA);
+        std::printf("  scatter standing  %d -> %d\n", scatter0, scatterA);
+
+        // ---- one layer only -------------------------------------------------
+        //
+        // ASKED OF THE COLUMN, NOT OF THE COUNT. A second swing legitimately
+        // turns MORE columns -- the ground under the crosshair just dropped a
+        // voxel, so the ray lands slightly differently and catches fresh rim
+        // that the first disc missed. v1 does the same and its `tillSet` is
+        // per CELL for exactly this reason. What must not happen is this
+        // column going down a second voxel.
+        lastSwing_ = swingRay(walkWorld(), pos_, forward());
+        tillGround();
+        const uint8_t topB = matAt(i0, j0, h0);
+        const uint8_t belowB = matAt(i0, j0, h0 - 1);
+        const bool deeper = !(topB == mat::AIR && belowB == mat::TILLED);
+        std::printf("  swung again       %s (surface %u, below %u)\n",
+                    deeper ? "DUG ITSELF DEEPER -- WRONG" : "one layer only, correct",
+                    unsigned(topB), unsigned(belowB));
+
+        // ---- ...AND A SEED STOPS IT GROWING BACK, IF THERE IS WATER --------
+        //
+        // (user 2026-09-14: "if there is no water present, the tilled land
+        // goes back to dirt/grass like it does currently.")
+        //
+        // BOTH HALVES, ON THE SAME BED. A test that only planted where
+        // there is water would pass on an engine that ignored water
+        // entirely, which is the more likely mistake of the two -- there is
+        // nothing to write to make a seed take, only something to write to
+        // make it NOT take.
+        const bool wetHere = waterWithin(lastSwing_.point, kSeedWaterM);
+        const size_t bed = world_.plantAt(lastSwing_.point, kTillRadiusM, wetHere);
+        // WHAT A SOWN BED LOOKS LIKE, COUNTED RATHER THAN SAMPLED. Three
+        // seed voxels lie somewhere ON the bed -- not at a spot this test can
+        // name, and deliberately not over the column under the crosshair -- so
+        // the disc is swept for them. The band is generous in y because the
+        // till lowers a column by one and the ground is not flat.
+        int seedVox = 0;
+        {
+            const int rr = maxi(1, int(std::ceil(kTillRadiusM / VOXEL_M)));
+            for (int dj = -rr; dj <= rr; ++dj)
+                for (int di = -rr; di <= rr; ++di) {
+                    if (di * di + dj * dj > rr * rr) continue;
+                    for (int y = h0 - 3; y <= h0 + 2; ++y)
+                        if (isSeed(matAt(i0 + di, j0 + dj, y))) ++seedVox;
+                }
+        }
+        // AND THE BED IS STILL A BED. This is the whole of the report -- the
+        // seed used to be written OVER the tilled voxel, so planting read as
+        // the till coming undone.
+        const uint8_t sown = matAt(i0, j0, h0 - 1);
+        std::printf("\n  -- planting --\n");
+        std::printf("  water within %.0f m  %s\n", double(kSeedWaterM),
+                    wetHere ? "yes" : "no");
+        std::printf("  bed found         %zu columns\n", bed);
+        // A SOWN BED HAS TO LOOK SOWN -- the whole of the report was that
+        // planting changed nothing you could see.
+        std::printf("  seed voxels       %d  %s\n", seedVox,
+                    seedVox == 3 ? "three, correct" : "SHOULD BE THREE -- WRONG");
+        std::printf("  the bed still     %u (tilled is %u, seed is %u)\n",
+                    unsigned(sown), unsigned(mat::TILLED), unsigned(mat::SEED_0));
+
+        // ---- and it grows back ----------------------------------------------
+        std::vector<Vec3> back;
+        world_.tillRevert(simMs_ * 0.001 + 300.0, &back);
+        const uint8_t topR = matAt(i0, j0, h0);
+        // A KEPT BED IS AIR *OR A SEED LYING IN IT*. The till empties the
+        // surface voxel and a planting puts three seeds back into it, so on a
+        // bed that kept, the column under the crosshair reads a seed about
+        // a third of the time -- which this called "GREW BACK" on a bed that
+        // had plainly done nothing of the kind.
+        const bool keptTop = topR == mat::AIR || isSeed(topR);
+        const int grassR = discGrass();
+        const int scatterR = world_.scatterShownNear(lastSwing_.point, kTillRadiusM);
+        std::printf("\n  -- five minutes later --\n");
+        std::printf("  surface voxel     %u -> %u (was %u before the hoe)\n", unsigned(topA),
+                    unsigned(topR), unsigned(top0));
+        std::printf("  blade voxels      %d -> %d (was %d)\n", grassA, grassR,
+                    grass0);
+        std::printf("  scatter standing  %d -> %d (was %d)\n", scatterA, scatterR,
+                    scatter0);
+        std::printf("  still turned      %zu\n", world_.tilledCount());
+        std::printf("  seeds handed back %zu\n", back.size());
+        std::printf("  the bed %s\n",
+                    wetHere ? (keptTop ? "KEPT -- planted beside water, correct"
+                                                : "GREW BACK -- a planted bed must not")
+                            : (topR == top0 ? "grew back -- no water, correct"
+                                            : "KEPT -- it has no water, WRONG"));
+
+        // grass0 > 0 IS PART OF THE PASS. Without it a run that happened to
+        // land on bare dirt reports a green tick for a rule it never exercised,
+        // which is the failure this whole file is written against.
+        // THE REVERT'S EXPECTATION FLIPS ON THE WATER. A bed beside a lake is
+        // SUPPOSED not to grow back once a seed is in it, so asserting the
+        // restoration unconditionally would fail the very case the feature
+        // exists for. Which case this spawn is came out of waterWithin, so the
+        // test asserts whichever one it got rather than demanding one.
+        // tilledCount() GOES TO ZERO EITHER WAY, and asserting otherwise was
+        // this test contradicting its own engine: tillRevert DROPS a planted
+        // record from the list without undoing it -- it has nothing left to do,
+        // and leaving it would walk it again on every frame for the session.
+        // So what says a planted bed kept is the GROUND, not the bookkeeping.
+        const bool revertRight = wetHere ? keptTop
+                                         : (topR == top0 && grassR == grass0 &&
+                                            world_.tilledCount() == 0);
+        // ---- ...AND THE WET CASE, FORCED --------------------------------
+        //
+        // THE HARNESS COULD NOT GET TO A WET ONE ON ITS OWN. A shore in
+        // this world is SAND, sand grows nothing and the hoe refuses it, so
+        // the nearest column a till can even touch is metres inland -- four
+        // seeds and a walk to the nearest lake all came back dry. Waiting
+        // for a world that happens to have turnable soil within four metres
+        // of water is a test that passes by not running.
+        //
+        // SO THE WATER ANSWER IS SUPPLIED RATHER THAN FOUND. plantAt takes
+        // `keep` as an argument precisely because the caller decides it,
+        // and handing it true here exercises the half that can actually go
+        // wrong: whether a planted bed survives its own revert.
+        //
+        // WHAT THIS DOES NOT TEST is waterWithin -- whether the engine
+        // AGREES there is water. That is a ring search over wetColumnAt,
+        // the same predicate the frogs and the lake are placed from, and it
+        // is exercised everywhere else. The join between the two is the one
+        // line plantSeed writes, and it is not covered here.
+        // ...AND ON A WET RUN THE BED ABOVE ALREADY PROVED IT. The forced
+        // block below cannot run there -- the ground is still turned, so a
+        // second till finds nothing to turn and never gets as far as planting.
+        bool keptWhenPlanted = wetHere;
+        {
+            aimAtSite();
+            if (tillGround()) {
+                const size_t n2 = world_.plantAt(lastSwing_.point, kTillRadiusM, true);
+                const size_t before2 = world_.tilledCount();
+                world_.tillRevert(simMs_ * 0.001 + 600.0);
+                // A PLANTED RECORD IS DROPPED FROM THE LIST WITHOUT BEING
+                // UNDONE, so the count going to zero is expected -- what is
+                // being asked is whether the GROUND came back.
+                const uint8_t topP = matAt(i0, j0, h0);
+                keptWhenPlanted = n2 > 0 && (topP == mat::AIR || isSeed(topP));
+                std::printf("\n  -- planted, then five more minutes --\n");
+                std::printf("  bed planted       %zu columns of %zu\n", n2, before2);
+                std::printf("  surface voxel     %u (air is %u, a seed is %u)\n",
+                            unsigned(topP), unsigned(mat::AIR), unsigned(mat::SEED_0));
+                std::printf("  the planted bed   %s\n",
+                            keptWhenPlanted ? "KEPT, correct"
+                                            : "GREW BACK -- a seed must stop the revert");
+            }
+        }
+
+        // ---- ...AND THE FLOWERS, ON A BED THAT ACTUALLY HAS SOME --------
+        //
+        // (user 2026-09-14, twice: "the flowers are still not dissapering
+        // when being tilled under".)
+        //
+        // ASKED WHERE THE FLOWERS ARE, NOT WHERE THE SWING WENT. Three
+        // runs of the sequence above reported 'scatter standing 0 -> 0',
+        // which is a green tick on a disc that never had a flower in it --
+        // the same vacuous pass the grass count had before it was made to
+        // go looking. Walking the player somewhere floral fought the
+        // streamer; this does not move at all, it scans the chunks that are
+        // ALREADY resident for a spot with scatter on it and tills that.
+        //
+        // NOT THROUGH A SWING, deliberately. The swing is covered above;
+        // what is unproven here is hideScatterOn, and reaching it through a
+        // ray means a second thing that can fail to find anything.
+        bool flowersWent = false, flowersBack = false, flowersStayedDown = false;
+        {
+            Vec3 spot{0, 0, 0};
+            int had = 0;
+            for (int r = 1; r < 240 && !had; ++r)
+                for (int d = -r; d <= r && !had; ++d) {
+                    const float o[4][2] = {{float(d), float(-r)}, {float(d), float(r)},
+                                           {float(-r), float(d)}, {float(r), float(d)}};
+                    for (int k = 0; k < 4 && !had; ++k) {
+                        const Vec3 c(pos_.x + o[k][0] * VOXEL_M, 0.0f,
+                                     pos_.z + o[k][1] * VOXEL_M);
+                        const int m = world_.scatterShownNear(c, kTillRadiusM);
+                        if (!m) continue;
+                        // ...AND ON GROUND THE HOE WILL ACTUALLY TURN, or
+                        // the till does nothing and the flowers stay for a
+                        // reason that is not the one being tested.
+                        TerrainMemo fm;
+                        const int fi = int(std::floor(c.x / VOXEL_M));
+                        const int fj = int(std::floor(c.z / VOXEL_M));
+                        const int fh = world_.terrain.heightVox(fi, fj, fm);
+                        const uint8_t ft = world_.terrain.topMaterial(fi, fj, fh, fm);
+                        if (isSand(ft) || !isSoilMat(ft)) continue;
+                        spot = Vec3(c.x, (float(fh) + 0.5f) * VOXEL_M, c.z);
+                        had = m;
+                    }
+                }
+            std::printf("\n  -- the scatter --\n");
+            if (!had) {
+                std::printf("  no flowers, caps or cones on turnable ground in reach -- this run proved nothing\n");
+            } else {
+                const size_t n3 = world_.till(spot, kTillRadiusM, simMs_ * 0.001 + 1000.0);
+                const int after3 = world_.scatterShownNear(spot, kTillRadiusM);
+                // -- ...AND STILL DOWN AFTER THE CHUNK COMES BACK ----------
+                //
+                // THE COUNT ABOVE IS NOT THE TEST. It reads the masks in the
+                // same breath as the till, and this bug lives entirely in what
+                // happens NEXT: a till edits the ground, editing the ground
+                // re-meshes the chunk, and adoptMany rebuilds decorDesc from
+                // the scatter with every mask back on. Twice this test passed
+                // on an engine where the flowers came back a frame later --
+                // which is exactly what was being reported, and the only thing
+                // the test could not see.
+                //
+                // SO THE MESHER IS LET ANSWER. update() takes what the workers
+                // have finished and adopts it; sixty passes is far more than
+                // the handful of chunks one bite touches needs.
+                for (int k = 0; k < 60; ++k) world_.update(player_.pos);
+                const int adopted3 = world_.scatterShownNear(spot, kTillRadiusM);
+                world_.tillRevert(simMs_ * 0.001 + 2000.0);
+                const int back3 = world_.scatterShownNear(spot, kTillRadiusM);
+                flowersWent = n3 > 0 && after3 == 0;
+                flowersStayedDown = adopted3 == 0;
+                flowersBack = back3 == had;
+                std::printf("  standing on the bed  %d\n", had);
+                std::printf("  after the till       %d  %s\n", after3,
+                            flowersWent ? "gone, correct"
+                                        : "STILL STANDING OVER TURNED EARTH -- WRONG");
+                std::printf("  after the re-mesh    %d  %s\n", adopted3,
+                            flowersStayedDown
+                                ? "still down, correct"
+                                : "STOOD BACK UP ON ADOPT -- WRONG (this is the bug)");
+                std::printf("  after it grew back   %d  %s\n", back3,
+                            flowersBack ? "back, correct" : "DID NOT COME BACK -- WRONG");
+            }
+        }
+
+        // grass0 > 0 IS ASSERTED ONLY ON THE DRY RUN, which is the one that
+        // went looking for blades. The wet run stood on a shore to test the
+        // planting rule and a shore has no grass on it -- insisting on both
+        // would fail the run that is testing the thing it was sent to test.
+        // ONE SEED BACK PER PLANTING, and only on the run whose bed actually
+        // reverted -- a kept bed still has the seed in it.
+        const bool seedBack = wetHere ? (back.empty()) : (back.size() == 1);
+        const bool pass = turned && topA == mat::AIR && belowA == mat::TILLED && !deeper &&
+                          grassA == 0 && bed > 0 && revertRight && keptWhenPlanted &&
+                          seedVox == 3 && sown == mat::TILLED && seedBack &&
+                          (wetHere || grass0 > 0) &&
+                          // NOTHING LEFT STANDING ON TURNED EARTH, and it all
+                          // comes back with the ground -- unless the bed kept,
+                          // in which case it is still turned and they stay down.
+                          scatterA == 0 && (wetHere ? true : scatterR == scatter0) &&
+                          flowersWent && flowersStayedDown && flowersBack;
+        std::printf("\n  %s\n", pass ? "PASS -- it turned the earth, refused to dig itself "
+                                       "deeper, and grew back."
+                                     : "FAIL -- see the lines above.");
+    }
+
+    // -----------------------------------------------------------------------
+    // === WHEAT TEST === -- does a swing break a plant, and does it pay out?
+    //
+    // WHAT THIS IS FOR. The feature is five pieces in five files -- a second
+    // ray, an edit that removes nothing solid, a mesher rule that was already
+    // there, two kit slots and the drop pool -- and every one of them fails
+    // QUIETLY. A ray that never meets a blade, a mow that takes no cells, a
+    // probe that goes on reporting the plant it just cut, a drop spilled into a
+    // slot nothing can pick up: all four look identical from outside, which is
+    // a swing that does nothing.
+    //
+    // So this walks the whole chain with no window: find a stand of wheat, aim
+    // at it, swing, and check each link by what it left behind.
+    //
+    // IT AIMS THE REAL CAMERA AND CALLS THE REAL HANDLER. breakWheat reads
+    // forward() and eyePosition(), so pointing the player at the plant is the
+    // only honest way to exercise the ray -- calling mow() directly would test
+    // everything except the part most likely to be wrong.
+    // -----------------------------------------------------------------------
+    void runWheatTest() {
+        std::printf("\n=== WHEAT TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+        std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood\n", pos_.x, pos_.y, pos_.z,
+                    world_.terrain.birchAt(pos_.x) ? "birch" : "pine");
+        std::printf("  kit: wheat slot %d, seeds slot %d\n", wheatTool_, seedsTool_);
+        if (wheatTool_ < 0 || seedsTool_ < 0) {
+            std::printf("  FAIL -- the drop models did not load.\n");
+            return;
+        }
+
+        // ---- find a stand of wheat within arm's reach ----------------------
+        //
+        // WHEAT IS NOT EVERYWHERE. It is the tall band of the blade ramp, so
+        // most columns have none -- this walks outward from the player and
+        // takes the first one that has some, then stands next to it.
+        // A PERIMETER WALK, NOT A FILLED SQUARE. The first cut of this scanned
+        // every cell of every ring and was therefore cubic in the radius, which
+        // is why it only reached nine metres -- and nine metres of pine wood
+        // very often has no wheat in it at all. Walking the ring itself is
+        // linear per ring, so forty metres costs less than nine did.
+        TerrainMemo memo;
+        int wi = 0, wj = 0, wy = 0;
+        bool found = false;
+        const int p0i = int(std::floor(pos_.x / VOXEL_M));
+        const int p0j = int(std::floor(pos_.z / VOXEL_M));
+        const auto tryCell = [&](int i, int j) {
+            if (found) return;
+            const int h = world_.terrain.heightVox(i, j, memo);
+            const uint8_t top = world_.terrain.topMaterial(i, j, h, memo);
+            const int sr = world_.terrain.strandRows(i, j, top);
+            if (sr <= 0) return;
+            if (!isWheat(world_.terrain.bladeMaterial(i, j, sr))) return;
+            int lo = 0, hi = 0;
+            VoxelTerrain::bladeSpan(h, sr, &lo, &hi);
+            wi = i;
+            wj = j;
+            wy = (lo + hi) / 2;
+            found = true;
+        };
+        for (int r = 1; r < 400 && !found; ++r) {
+            for (int d = -r; d <= r && !found; ++d) {
+                tryCell(p0i + d, p0j - r);
+                tryCell(p0i + d, p0j + r);
+                tryCell(p0i - r, p0j + d);
+                tryCell(p0i + r, p0j + d);
+            }
+        }
+        if (!found) {
+            std::printf("  NO WHEAT WITHIN 40 m -- this run proved nothing. Try another "
+                        "--spawn.\n");
+            return;
+        }
+        // STREAM THE GROUND UNDER IT before standing there: the walk below and
+        // the mow both read the edit layer through resident chunks, and a stand
+        // of wheat forty metres off may be outside the ring the spawn built.
+        for (int i = 0; i < 200; ++i) {
+            world_.update(Vec3((float(wi) + 0.5f) * VOXEL_M, pos_.y,
+                               (float(wj) + 0.5f) * VOXEL_M));
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const Vec3 stalk((float(wi) + 0.5f) * VOXEL_M, (float(wy) + 0.5f) * VOXEL_M,
+                         (float(wj) + 0.5f) * VOXEL_M);
+        std::printf("  wheat at (%.1f, %.1f, %.1f), %.1f m off\n", stalk.x, stalk.y, stalk.z,
+                    std::hypot(stalk.x - pos_.x, stalk.z - pos_.z));
+
+        // ---- stand next to it and look at it -------------------------------
+        player_.placeOnGround(walkWorld(), stalk.x + 0.9f, stalk.z + 0.9f);
+        pos_ = player_.eyePosition();
+        // DEGREES, AND -Z IS FORWARD. Camera::direction takes degrees and
+        // builds (cos p sin y, sin p, -cos p cos y) -- so a yaw taken as
+        // atan2(x, z) points the wrong way round the compass and a pitch in
+        // radians is a rounding error away from level. Either one aims the
+        // swing at the sky, which reads as "breakWheat found nothing" with
+        // the wheat plainly standing in front of it.
+        const Vec3 to = stalk - pos_;
+        yaw_ = std::atan2(to.x, -to.z) * 57.29578f;
+        pitch_ = std::atan2(to.y, std::hypot(to.x, to.z)) * 57.29578f;
+        const Vec3 aim = forward();
+        std::printf("  standing at (%.1f, %.1f, %.1f), aim (%.2f, %.2f, %.2f)\n", pos_.x,
+                    pos_.y, pos_.z, aim.x, aim.y, aim.z);
+        {
+            const BladeHit pr = bladeRay(walkWorld(), pos_, aim, swingReachM(aim));
+            std::printf("  blade ray         %s %s at %.2f m\n",
+                        pr.hit ? "hit" : "MISSED",
+                        pr.hit ? (isWheat(pr.material) ? "wheat" : "green grass") : "",
+                        double(pr.dist));
+        }
+
+        const int before = bladeRowsAt(wi, wj);
+        const int drops0 = drops_.count();
+
+        // ---- FIRST, THE WRONG TOOL ------------------------------------------
+        //
+        // (user 2026-09-14: "make it where only the hoe can break the wheat.
+        // if any other tool does it, play the antibreak sound.")
+        //
+        // TESTED BEFORE THE HOE IS EVEN PICKED UP, because the failure this
+        // guards against is not that the axe does nothing -- it is that the
+        // axe HARVESTS, which is what it did until now and which a test that
+        // only swings the right tool would never see.
+        //
+        // THE SOUND IS NOT ASSERTED and cannot usefully be: there is no audio
+        // device on this path. What is asserted is that the blow was SPENT --
+        // breakWheat returning true is what stops the chain digging a crater in
+        // the dirt behind the plant -- and that nothing was cut and nothing paid.
+        int axeSlot = -1;
+        for (int i = 0; i < held_.count(); ++i)
+            if (held_.tool(i).takes == Takes::Wood) axeSlot = i;
+        bool axeSpent = false, axeQuiet = true;
+        if (axeSlot >= 0) {
+            held_.select(axeSlot);
+            axeSpent = breakWheat();
+            axeQuiet = (bladeRowsAt(wi, wj) == before) && (drops_.count() == drops0);
+            std::printf("\n  -- the axe --\n");
+            std::printf("  blow spent        %s\n",
+                        axeSpent ? "yes -- it knocks and stops there"
+                                 : "NO -- it would fall through and dig");
+            std::printf("  took nothing      %s\n",
+                        axeQuiet ? "correct" : "IT HARVESTED -- WRONG");
+        }
+
+        // ---- ...AND NOW THE HOE ---------------------------------------------
+        int hoeSlot = -1;
+        for (int i = 0; i < held_.count(); ++i)
+            if (held_.tool(i).takes == Takes::Earth) hoeSlot = i;
+        std::printf("  hoe in slot %d\n", hoeSlot);
+        if (hoeSlot < 0) {
+            std::printf("  FAIL -- no hoe in the kit, so nothing can harvest.\n");
+            return;
+        }
+        held_.select(hoeSlot);
+
+        // ---- the swing ------------------------------------------------------
+        const bool broke = breakWheat();
+        const int after = bladeRowsAt(wi, wj);
+        const int drops1 = drops_.count();
+        std::printf("\n  -- the swing --\n");
+        std::printf("  breakWheat        %s\n", broke ? "yes" : "NO -- it found nothing");
+        std::printf("  blade rows here   %d -> %d\n", before, after);
+        std::printf("  drops in flight   %d -> %d\n", drops0, drops1);
+
+        // ---- and a second swing must pay NOTHING ---------------------------
+        //
+        // The half of this that is easy to get wrong: the mesher stops drawing
+        // a cut column but the PROBE has its own copy of the rule, and if the
+        // two disagree the plant is gone from the screen and still there to
+        // swing at. That is a field that pays out for ever.
+        const bool again = breakWheat();
+        std::printf("  swung again       %s\n",
+                    again ? "PAID OUT TWICE -- WRONG" : "nothing left, correct");
+
+        // ---- ...AND NOWHERE ELSE IN THE SAME PATCH EITHER ------------
+        //
+        // THIS IS THE REPORT, and re-swinging at the same column does not
+        // test it: "have one patch of wheat drop one seed and one wheat.
+        // not multiple per patch." A tuft is a metre or so across and the
+        // old bite was half that, so the way to farm one plant for ever was
+        // to aim a step to the left. So this walks the tuft's own radius
+        // and swings at every remaining stalk it can find in it.
+        float trad = 0.0f, twant = 0.0f, tsx = stalk.x, tsz = stalk.z;
+        const bool inTuft =
+            world_.terrain.tuftAt(stalk.x, stalk.z, &trad, &twant, &tsx, &tsz);
+        int extra = 0, stalksLeft = 0;
+        if (inTuft) {
+            const int rv = int(trad / VOXEL_M) + 1;
+            const int c0 = int(std::floor(tsx / VOXEL_M)), d0 = int(std::floor(tsz / VOXEL_M));
+            for (int dz = -rv; dz <= rv; ++dz)
+                for (int dx = -rv; dx <= rv; ++dx) {
+                    if (dx * dx + dz * dz > rv * rv) continue;
+                    if (bladeRowsAt(c0 + dx, d0 + dz) <= 0) continue;
+                    ++stalksLeft;
+                    player_.placeOnGround(walkWorld(), (float(c0 + dx) + 0.5f) * VOXEL_M + 0.9f,
+                                          (float(d0 + dz) + 0.5f) * VOXEL_M + 0.9f);
+                    pos_ = player_.eyePosition();
+                    const Vec3 t2(((float(c0 + dx) + 0.5f) * VOXEL_M) - pos_.x, 0.0f,
+                                  ((float(d0 + dz) + 0.5f) * VOXEL_M) - pos_.z);
+                    yaw_ = std::atan2(t2.x, -t2.z) * 57.29578f;
+                    pitch_ = -35.0f;
+                    held_.select(hoeSlot);   // the only thing that can pay out
+                    if (breakWheat()) ++extra;
+                }
+        }
+        std::printf("  tuft %.1f m across: %d stalks still standing in it, %d more payouts\n",
+                    double(trad * 2.0f), stalksLeft, extra);
+        // A STALK LEFT IS A FAILURE EVEN IF IT PAYS NOTHING. It was reported as
+        // "one strand of wheat was left" -- the player sees the plant, not the
+        // ledger, and a patch that is cut except for one stem reads as a bug
+        // whether or not swinging at it again would hand out a second seed.
+        if (stalksLeft) std::printf("      ^ A CUT PATCH MUST BE EMPTY -- WRONG\n");
+
+        // ---- walk over them -------------------------------------------------
+        std::printf("\n  -- absorbing --\n");
+        int got = 0;
+        float firstAt = -1.0f, lastAt = -1.0f;
+        for (int f = 0; f < 60 * 12 && got < drops1 - drops0; ++f) {
+            drops_.update(1.0f / 60.0f, walkWorld(), player_.pos, player_.eyePosition());
+            // EVERY ARRIVAL ON THE FRAME, not the first -- see
+            // Drops::arrivedThisTick. The old loop took one per tick, which
+            // was a complete answer while only one item could be in flight
+            // and is a silent leak now that a pile converges together.
+            for (const int back : drops_.arrivedThisTick()) {
+                const float at = float(f) / 60.0f;
+                if (firstAt < 0.0f) firstAt = at;
+                lastAt = at;
+                std::printf("  picked up %s (slot %d) after %.2f s\n",
+                            held_.tool(back).name, back, double(at));
+                held_.give(back);
+                ++got;
+            }
+        }
+        // -- AND HOW FAR APART THEY LANDED, which is the whole of the ask
+        //    (user 2026-09-14: "absorb multiple object at once, instead of
+        //    one at a time in a line") -------------------------------------
+        //
+        // ONE FLIGHT IS kGrabSec, so two items absorbed one after the other
+        // land a whole flight apart and two absorbed together land on the
+        // same frame or within a step of it. The gap is the measurement; the
+        // count never changed and never would have.
+        std::printf("  first at %.2f s, last at %.2f s -- %.2f s apart\n",
+                    double(firstAt), double(lastAt), double(lastAt - firstAt));
+        std::printf("  carrying wheat    %s\n", held_.tool(wheatTool_).carried ? "yes" : "NO");
+        std::printf("  carrying seeds    %s\n", held_.tool(seedsTool_).carried ? "yes" : "NO");
+
+        // TOGETHER MEANS TOGETHER: the two drops leave the plant on the same
+        // frame and are the same distance from the player, so if they are
+        // absorbed concurrently they arrive within a few frames of each other.
+        // A whole kGrabSec apart is the old one-at-a-time behaviour wearing a
+        // passing count.
+        const bool together = (lastAt - firstAt) < 0.5f * kGrabSec;
+        const bool pass = broke && after == 0 && before > 0 && (drops1 - drops0) == 2 &&
+                          !again && extra == 0 && stalksLeft == 0 && axeSpent && axeQuiet &&
+                          together && got == 2 &&
+                          held_.tool(wheatTool_).carried && held_.tool(seedsTool_).carried;
+        std::printf("\n  %s\n", pass ? "PASS -- the wheat broke, paid one of each, and both "
+                                        "were absorbed."
+                                      : "FAIL -- see the lines above.");
+    }
+
+    // How many blade voxels are still standing on this column, as the PROBE
+    // sees it -- which is the same answer the mesher draws. See mow().
+    int bladeRowsAt(int i, int j) {
+        TerrainProbe probe(&world_.terrain, &world_.editStore());
+        TerrainMemo memo;
+        const int h = world_.terrain.heightVox(i, j, memo);
+        const uint8_t top = world_.terrain.topMaterial(i, j, h, memo);
+        const int sr = world_.terrain.strandRows(i, j, top);
+        if (sr <= 0) return 0;
+        int lo = 0, hi = 0;
+        VoxelTerrain::bladeSpan(h, sr, &lo, &hi);
+        int n = 0;
+        for (int y = lo; y <= hi; ++y) n += isBlade(probe.material(i, j, y)) ? 1 : 0;
+        return n;
+    }
+
+    void runClipTest() {
+        std::printf("\n=== CLIP TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+        const bool birch = world_.terrain.birchAt(pos_.x);
+        std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood, %04.1fh, sun %.1f deg (%s)\n",
+                    pos_.x, pos_.y, pos_.z, birch ? "birch" : "pine",
+                    double(opt_.timeOfDay * 24.0f), double(world_.sky.elevationDeg()),
+                    isNight() ? "night" : "day");
+
+        // THE WOOD AROUND THE SPAWN, gathered once and wide. This is the same
+        // list the animals themselves are given (see the perch gather in
+        // update) -- if the check gathered its own, the two could disagree and
+        // a pass would mean nothing.
+        world_.collidersNear(pos_, kBirdKeepM, &perches_);
+        int rocks = 0;
+        for (const Solid &sd : perches_) rocks += sd.standable ? 1 : 0;
+        std::printf("  %d solids in reach -- %d standable (rocks), %d not (trunks)\n",
+                    int(perches_.size()), rocks, int(perches_.size()) - rocks);
+
+        // ---- settle, then watch --------------------------------------------
+        //
+        // A POPULATION REPORTS ITS SPAWN STATE IF YOU ONLY TICK IT ONCE, which
+        // is the lesson the bunny report and the bee report each had to learn
+        // separately. Thirty seconds to fill and settle, then sixty watched --
+        // long enough for a fly bunch to cross a clearing at 1 m/s and for
+        // every bee to run two full errands.
+        warmLife(pos_, 30);
+
+        // -- WHAT THE THREE NUMBERS MEAN, because "inside" alone said too
+        //    little to act on.
+        //
+        //    touch   the body's rim met a model -- a wing clipping a corner
+        //    centre  the animal's own position is in the solid, which is the
+        //            report ("caught flying INSIDE a big rock") and is the one
+        //            that matters
+        //    deep    how far it would have to rise to get out, walked upward
+        //            in tenths -- a centimetre is a surface, a metre is a
+        //            creature living in the stone
+        //
+        // The first cut of this printed a fourth number that was nonsense: the
+        // radius at which solidsTouch stopped firing, walked outward to six
+        // metres. That probes the RIM of a circle, so it reports whether there
+        // is a model within six metres of the animal, which there usually is in
+        // a wood. It read 6.00 m for every single hit, which is what a metric
+        // that is measuring nothing looks like.
+        struct Worst {
+            int touch = 0, centre = 0, wet = 0;
+            float deep = 0.0f;
+            Vec3 at{0, 0, 0};
+            bool rock = false;
+        };
+        std::map<std::string, Worst> bad;
+        std::map<std::string, long> seen;
+        // -- HOW FAR EACH SPECIES ACTUALLY WENT -----------------------------
+        //
+        // THE OTHER HALF OF THE ANSWER, and without it a pass means nothing.
+        // Every fix in this change is a REFUSAL -- do not take that step, do
+        // not hold that line -- and the way a refusal fails is by refusing
+        // everything. A wood where no animal is inside a rock because no
+        // animal has moved since it was born passes the check above perfectly.
+        //
+        // Matched by INDEX and only while the count is steady, which is as much
+        // identity as livePoints has: a slot that dies renumbers the rest. Any
+        // jump over two metres in a frame is a birth or a recycle rather than a
+        // step, and is dropped.
+        std::map<std::string, double> went;
+        std::map<std::string, long> wentN;
+        // -- AND HOW HIGH IT FLIES, which is the other thing a report of
+        //    "the flys are too low" or "the ducks sit too deep" needs a
+        //    number for. Height above the local ground, averaged.
+        std::map<std::string, double> agl;
+        std::vector<LifeAt> prev;
+        std::vector<LifeAt> who;
+        long samples = 0, inTree = 0;
+
+        const auto groundAt = [this](float x, float z) {
+            return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
+                                                  int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+        };
+        // -- THE BROAD PHASE, WHICH THE ANIMALS DO NOT NEED AND THIS DOES --
+        //
+        // A creature is handed a list gathered at 2.8 m and this one is
+        // gathered at 115, because the check has to see every animal at once
+        // and they are spread over the whole streaming ring. Walking two
+        // thousand models per creature per frame through the voxel test is a
+        // minute of arithmetic to answer a question about a metre of space.
+        //
+        // REJECTED ON THE MODEL'S OWN EXTENT, not on the collider's. The
+        // ellipse is measured over the first two metres of a model and a domed
+        // boulder is WIDER higher up (see measureCollider), so a reject built
+        // from hx/hz would quietly stop testing the overhangs -- which are
+        // exactly the shapes this is here to catch.
+        const auto insideAny = [this](const Vec3 &p, float r, const Solid **which) {
+            for (const Solid &sd : perches_) {
+                if (p.y > sd.top) continue;
+                float reach = (sd.hx > sd.hz ? sd.hx : sd.hz);
+                if (sd.msx > 0 && sd.msz > 0) {
+                    const float ex = float(sd.msx) * VOXEL_M, ez = float(sd.msz) * VOXEL_M;
+                    const float diag = std::sqrt(ex * ex + ez * ez) * 0.5f;
+                    if (diag > reach) reach = diag;
+                }
+                reach += r + 0.5f;
+                const float dx = p.x - sd.cx, dz = p.z - sd.cz;
+                if (dx * dx + dz * dz > reach * reach) continue;
+                if (solidsTouch(&sd, 1, p.x, p.y, p.z, r, VOXEL_M)) {
+                    if (which) *which = &sd;
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const float dt = 1.0f / 60.0f;
+        for (int frame = 0; frame < 30 * 60; ++frame) {
+            birds_.update(dt, perches_, pos_);
+            lake_.update(dt, world_.terrain, pos_);
+            flock2_.update(dt, pos_, groundAt, &perches_);
+            bunnies_.update(dt, pos_, groundAt,
+                            [this](float x, float z) { return wetColumnAt(x, z); }, perches_,
+                            [this](float x) { return world_.terrain.birchMix(x); },
+                            // ...AND NOT ON THE BEACH -- see Bunnies::blocked.
+                            [this](float x, float z) { return sandAt(x, z); });
+            bees_.update(dt, pos_, hivesNear_, bloomsNear_, &perches_);
+            flock_.update(dt, world_, pos_);
+            lake_.bankSpots(uint32_t(frame), 8, &banksNear_);
+            critters_.update(dt, pos_, groundAt,
+                             [this](float x, float z) { return wetColumnAt(x, z); },
+                             [this](float x) { return world_.terrain.birchMix(x); }, banksNear_,
+                             perches_, isNight(), Vec3(0.0f, 0.0f, 0.0f),
+                             [this](float x, float z) { return waterTopAt(x, z); });
+
+            who.clear();
+            critters_.livePoints(&who);
+            bees_.livePoints(&who);
+            flock_.livePoints(&who);
+            bunnies_.livePoints(&who);
+            flock2_.livePoints(&who);
+            birds_.livePoints(&who);
+            lake_.livePoints(&who);
+
+            if (prev.size() == who.size())
+                for (size_t q = 0; q < who.size(); ++q) {
+                    if (prev[q].what != who[q].what) continue;
+                    const float dx = who[q].p.x - prev[q].p.x, dz = who[q].p.z - prev[q].p.z;
+                    const float d2 = dx * dx + dz * dz;
+                    if (d2 > 4.0f) continue;
+                    went[who[q].what] += double(std::sqrt(d2));
+                    ++wentN[who[q].what];
+                }
+            prev = who;
+
+            for (const LifeAt &a : who) {
+                ++samples;
+                ++seen[a.what];
+                agl[a.what] += double(a.p.y - groundAt(a.p.x, a.p.z));
+                // -- IS IT UNDER THE LAKE ---------------------------------
+                //
+                // The second invariant, and it exists because of a report the
+                // first one could never have caught: "a lady bug was caught
+                // swimming in water". Nothing was inside a solid -- a lake is
+                // not a solid -- and the animal was a foot under the surface
+                // holding exactly the altitude it had been told to hold.
+                if (!a.inWater) {
+                    const float top = waterTopAt(a.p.x, a.p.z);
+                    if (a.p.y < top) ++bad[a.what].wet;
+                }
+                if (a.inTree) { ++inTree; continue; }
+                const Solid *hit = nullptr;
+                if (!insideAny(a.p, a.r, &hit)) continue;
+                Worst &w = bad[a.what];
+                ++w.touch;
+                // -- THE FIRST ONE OF EACH KIND, IN FULL ---------------------
+                //
+                // A count says a rule is broken and says nothing about which
+                // rule. One line naming the model, its footprint, its base and
+                // its top against the creature's own position is the whole
+                // diagnosis, and the first offence is as good as any: these
+                // failures come in runs of one animal over many frames, so the
+                // hundredth is the same animal as the first.
+                if (w.touch == 1 && hit) {
+                    std::printf("    first %-10s at (%.1f, %.1f, %.1f) r %.2f -- %s "
+                                "centre (%.1f, %.1f) h (%.1f, %.1f) base %.1f top %.1f "
+                                "model %dx%d vol %s\n",
+                                a.what, a.p.x, a.p.y, a.p.z, double(a.r),
+                                hit->standable ? "ROCK" : "tree", hit->cx, hit->cz, hit->hx,
+                                hit->hz, hit->baseY, hit->top, int(hit->msx), int(hit->msz),
+                                hit->vol ? "yes" : "NO");
+                }
+                if (!insideAny(a.p, 0.0f, nullptr)) continue;   // a graze, not a burial
+                ++w.centre;
+                // HOW FAR IN, which is the number that says whether this is a
+                // wing clipping a corner or a swarm living in a boulder. Walked
+                // outward rather than solved: the shape is a voxel grid and has
+                // no inside-distance to ask for.
+                // STRAIGHT UP UNTIL IT IS OUT, which is a distance the shape
+                // can actually answer: every model in this world has air over
+                // it eventually, and the climb crosses exactly the stone that
+                // is on top of the animal.
+                float d = 0.0f;
+                for (float up = 0.1f; up <= 8.0f; up += 0.1f) {
+                    if (!insideAny(Vec3(a.p.x, a.p.y + up, a.p.z), 0.0f, nullptr)) break;
+                    d = up;
+                }
+                if (d >= w.deep) {
+                    w.deep = d;
+                    w.at = a.p;
+                    w.rock = hit && hit->standable;
+                }
+            }
+        }
+
+        // ---- the report ----------------------------------------------------
+        std::printf("\n  -- 30 s watched, %ld creature-frames --\n", samples);
+        std::printf("  %-11s %9s %6s %6s %6s %7s %7s   %s\n", "species", "frames", "touch",
+                    "centre", "wet", "m/s", "agl", "deepest");
+        long hitTotal = 0;
+        for (const auto &kv : seen) {
+            const auto it = bad.find(kv.first);
+            const long wn = wentN.count(kv.first) ? wentN[kv.first] : 0;
+            const double mps = wn ? went[kv.first] / (double(wn) * double(dt)) : 0.0;
+            const double up = kv.second ? agl[kv.first] / double(kv.second) : 0.0;
+            if (it == bad.end()) {
+                std::printf("  %-11s %9ld %6d %6d %6d %7.2f %7.2f   -\n", kv.first.c_str(),
+                            kv.second, 0, 0, 0, mps, up);
+                continue;
+            }
+            hitTotal += it->second.centre + it->second.wet;
+            std::printf("  %-11s %9ld %6d %6d %6d %7.2f %7.2f   %.1f m under a %s at "
+                        "(%.0f, %.0f, %.0f)\n",
+                        kv.first.c_str(), kv.second, it->second.touch, it->second.centre,
+                        it->second.wet, mps, up, double(it->second.deep),
+                        it->second.rock ? "rock" : "tree", it->second.at.x, it->second.at.y,
+                        it->second.at.z);
+        }
+        std::printf("\n  %ld perched-songbird frames in a crown (expected, not counted)\n",
+                    inTree);
+        if (perches_.empty())
+            std::printf("  NO SOLIDS IN REACH -- this run proved nothing. Move the spawn.\n");
+        else if (hitTotal == 0)
+            std::printf("  PASS -- nothing was ever inside a tree or a rock, or under the "
+                        "lake.\n");
+        else
+            std::printf("  FAIL -- %ld creature-frames with the animal ITSELF in a solid or "
+                        "under water.\n", hitTotal);
+    }
+
+    void runLocateTest() {
+        std::printf("\n=== LOCATE TEST ===\n");
+        // The spawn first -- runFellTest's own note: this runs before the
+        // player has been placed, so streaming round pos would stream the
+        // origin and survey a wood nobody is standing in.
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+        const bool birch = world_.terrain.birchAt(pos_.x);
+        std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood\n", pos_.x, pos_.y, pos_.z,
+                    birch ? "birch" : "pine");
+
+        warmLife(pos_, 30);
+
+        // ---- the survey ---------------------------------------------------
+        std::printf("\n  -- what /locate finds from here --\n");
+        std::printf("  %-11s %-6s %8s   %s\n", "name", "lives", "distance", "at");
+        int found = 0, expectedMisses = 0, wrong = 0;
+        for (const LifeName &ln : lifeNames()) {
+            Vec3 at{0, 0, 0};
+            const char *lives = ln.water ? "water" : ln.wood < 0 ? "both" : ln.wood ? "birch"
+                                                                                    : "pine";
+            if (nearestLife(ln.life, &at)) {
+                const float d = std::hypot(at.x - pos_.x, at.z - pos_.z);
+                std::printf("  %-11s %-6s %6.0f m   (%.0f, %.0f, %.0f)\n", ln.name, lives, d,
+                            at.x, at.y, at.z);
+                ++found;
+                // A row gated to the OTHER wood that finds one anyway means
+                // the gate in the table disagrees with the gate in the engine.
+                if (!ln.water && ln.wood >= 0 && (ln.wood == 1) != birch) {
+                    std::printf("      ^ TABLE WRONG: found in the %s wood\n",
+                                birch ? "birch" : "pine");
+                    ++wrong;
+                }
+                continue;
+            }
+            // Nothing found. Expected when the row is gated elsewhere.
+            const bool elsewhere =
+                ln.water ? true : (ln.wood >= 0 && (ln.wood == 1) != birch);
+            std::printf("  %-11s %-6s %8s   %s\n", ln.name, lives, "-",
+                        elsewhere ? "(not this wood -- /locate will travel)" : "NONE, AND IT "
+                                                                              "SHOULD BE HERE");
+            if (elsewhere) ++expectedMisses; else ++wrong;
+        }
+        std::printf("  %d found, %d away in another wood, %d WRONG\n", found, expectedMisses,
+                    wrong);
+
+        // ---- the six fish are six different fish ---------------------------
+        //
+        // The census counts by the species field; the table reaches them by
+        // the same integer. If a row has the wrong one, two names return the
+        // same animal and a name with fish in the lake returns nothing.
+        {
+            int byFish[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            int pads = 0, flies = 0;
+            lake_.census(byFish, &pads, &flies);
+            std::printf("\n  -- the lake's own census, against the table --\n");
+            static const char *kFish[6] = {"salmon", "bass", "koi", "minnow", "catfish",
+                                           "bluegill"};
+            for (int s = 0; s < 6; ++s) {
+                Vec3 at{0, 0, 0};
+                float d = 0.0f;
+                const bool got = lake_.nearestFish(pos_, s, &at, &d);
+                std::printf("  species %d  %-9s %2d alive   /locate %-9s %s\n", s, kFish[s],
+                            byFish[s], kFish[s],
+                            got ? "finds one" : (byFish[s] ? "FINDS NOTHING -- WRONG" : "none"));
+                if (!got && byFish[s]) ++wrong;
+            }
+            std::printf("  %d lily pads, %d dragonflies, %d ducks\n", pads, flies,
+                        lake_.ducksLiving(true));
+        }
+
+        // ---- and where it puts you -----------------------------------------
+        std::printf("\n  -- the arrival --\n");
+        for (int pass = 0; pass < 2; ++pass) {
+            // Pass 0 takes the first LAND row that is here, pass 1 the first
+            // WATER row: the two halves of standNear, and the water half is
+            // the one that has a lake bed to avoid.
+            const LifeName *pick = nullptr;
+            Vec3 at{0, 0, 0};
+            for (const LifeName &ln : lifeNames()) {
+                if (ln.water != (pass == 1)) continue;
+                if (!nearestLife(ln.life, &at)) continue;
+                pick = &ln;
+                break;
+            }
+            if (!pick) {
+                std::printf("  no %s life in range to try -- /locate would travel\n",
+                            pass ? "water" : "land");
+                continue;
+            }
+            const Vec3 target = at;
+            const std::string reply = runCommand(std::string("/locate ") + pick->name);
+            // THE GROUND YOU LANDED ON HAS TO BE STREAMED BEFORE IT CAN BE
+            // ASKED ABOUT. collidersNear only sees RESIDENT chunks, so a trunk
+            // check run on the frame of the teleport reads an empty list and
+            // reports "no trunk" whatever is standing there -- a check that
+            // always passes, which is worse than no check. The terrain and
+            // water questions are generated rather than resident and do not
+            // care, but they may as well wait with it.
+            for (int i = 0; i < 200; ++i) {
+                world_.update(player_.pos);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            const float off = std::hypot(target.x - pos_.x, target.z - pos_.z);
+            const bool wet = wetColumnAt(pos_.x, pos_.z);
+            const bool tree = trunkAt(pos_.x, pos_.z);
+            std::printf("  /locate %-10s -> \"%s\"\n", pick->name, reply.c_str());
+            // "from" RATHER THAN "asked", because the stand-off is where the
+            // ring STARTS and not what the answer has to be: a fish five
+            // metres out from the bank is reached from the bank, which is
+            // 2.0 m asked and 5.0 m arrived at and nothing wrong. Only the
+            // land rows should land on their own number.
+            std::printf("      stood (%.0f, %.0f)  %.1f m off (ring from %.1f)  "
+                        "in water: %s  in a trunk: %s\n",
+                        pos_.x, pos_.z, off, pick->stand, wet ? "YES -- FAIL" : "no",
+                        tree ? "YES -- FAIL" : "no");
+            // Facing it. The whole point of the aim is that the animal is on
+            // the crosshair, and a yaw that is 180 degrees out looks exactly
+            // like a teleport that went nowhere.
+            const Vec3 f = forward();
+            const Vec3 to = normalize(Vec3(target.x - pos_.x, target.y - pos_.y,
+                                           target.z - pos_.z));
+            const float dot = f.x * to.x + f.y * to.y + f.z * to.z;
+            std::printf("      facing it: %s (cos %.3f)\n", dot > 0.999f ? "yes" : "NO -- FAIL",
+                        dot);
+            if (wet || tree || dot <= 0.999f) ++wrong;
+            // Put the world back under the player before the second pass --
+            // the survey above moved them, and the next row is chosen from
+            // populations that were filled somewhere else.
+            for (int i = 0; i < 120; ++i) world_.update(player_.pos);
+        }
+
+        // ---- THE FROG, WHICH IS GATED BY A WOOD *AND* BY WATER -------------
+        //
+        // (user 2026-09-14: "I dont see any frogs even when doing /locate
+        // frog.")
+        //
+        // ITS ROW USED TO SAY `water = false`, so a miss fell through to the
+        // birch BAND CENTRE -- dry birch wood, where fillFrogs cannot place one
+        // because it places from a bank and from nothing else. The command ran,
+        // reported success, moved you, and took you to the one kind of place
+        // the animal does not live. Every time. So the check is not "does
+        // /locate answer" but "does where it puts you have frogs in it a moment
+        // later", which is the only thing the player was ever asking.
+        {
+            const LifeName *fr = nullptr;
+            for (const LifeName &ln : lifeNames())
+                if (std::string(ln.name) == "frog") fr = &ln;
+            std::printf("\n  -- /locate frog, the one row gated by a wood AND by water --\n");
+            if (!fr) {
+                std::printf("  NO FROG ROW -- WRONG\n");
+                ++wrong;
+            } else {
+                const std::string said = locateLife(*fr);
+                std::printf("  said: %s\n", said.c_str());
+                pos_ = player_.eyePosition();
+                const bool birchThere = world_.terrain.birchAt(pos_.x);
+                // HOW FAR THE WATER IS FROM WHERE IT PUT YOU. A frog stands
+                // within kFrogShoreM of a bank, so an arrival that is not
+                // beside one is an arrival with no frogs in its future.
+                float best = 1e9f;
+                for (float r = 0.0f; r <= 40.0f; r += 1.0f) {
+                    const int steps = (r < 1.0f) ? 1 : maxi(8, int(2.0f * PI * r));
+                    for (int k = 0; k < steps; ++k) {
+                        const float a = float(k) / float(steps) * 2.0f * PI;
+                        if (!wetColumnAt(pos_.x + cosf(a) * r, pos_.z + sinf(a) * r)) continue;
+                        best = r;
+                        r = 41.0f;
+                        break;
+                    }
+                }
+                std::printf("  arrived (%.0f, %.0f) -- the %s wood, water %.0f m away\n", pos_.x,
+                            pos_.z, birchThere ? "birch" : "PINE", double(best));
+                // ...AND THEN GIVE IT THE MOMENT THE REPLY PROMISES.
+                warmLife(pos_, 20);
+                Vec3 at{0, 0, 0};
+                const bool got = nearestLife(Life::Frog, &at);
+                std::printf("  frogs after 20 s  %s\n",
+                            got ? "yes -- and that is the whole point" : "NONE -- WRONG");
+                if (!got || !birchThere || best > 20.0f) ++wrong;
+            }
+        }
+
+        // ---- ...AND IS ANY OF IT ACTUALLY ON SCREEN ------------------------
+        //
+        // (user 2026-09-14, three times: "I dont see the frog on the field.")
+        //
+        // EVERY CHECK IN THIS FILE UNTIL NOW READ THE HOST. livePoints, the
+        // census, /locate, the speeds -- all of them ask the population where
+        // it thinks it is, and all of them were perfectly happy about a frog
+        // that has never once been drawn. The thing none of them touched is the
+        // PUBLISH: setFlyerInstance drops a slot past the end of a population's
+        // run in silence, and the critters' run was two short before the frog
+        // was even added.
+        //
+        // So this walks the band itself. It is the only test here that would
+        // have caught it, and it is four lines.
+        {
+            // PUBLISHED FIRST, AND THAT IS NOT A DETAIL. warmLife TICKS the
+            // populations and never publishes them -- it settles behaviour, it
+            // does not draw -- so asking the band straight after it reports
+            // every run empty, which is a test that fails on everything and
+            // therefore says nothing. The first cut of this did exactly that and
+            // read "0 drawn" for the bunnies too.
+            critters_.publish(world_, kCritterSlot0);
+            bunnies_.publish(world_, kBunnySlot0);
+            bunnies_.publishSkunks(world_, kMarchSlot0);
+            bees_.publish(world_, kBeeSlot0);
+            std::printf("\n  -- published into the flyer band --\n");
+            const int runs[][3] = {
+                {kCritterSlot0, kCritterSlots, 0},
+                {kBunnySlot0, kBunnySlots, 1},
+                {kMarchSlot0, kMarchSlots, 2},
+                {kBeeSlot0, kBeeSlots, 3},
+            };
+            static const char *kRun[4] = {"critters", "bunnies", "marchers", "bees"};
+            for (const auto &r : runs) {
+                int on = 0;
+                for (int k = 0; k < r[1]; ++k) on += world_.flyerShown(r[0] + k) ? 1 : 0;
+                std::printf("  %-9s slots %3d..%-3d  %d drawn\n", kRun[r[2]], r[0],
+                            r[0] + r[1] - 1, on);
+            }
+            // THE FROG IS THE LAST RUN INSIDE THE CRITTERS' RUN, which is why it
+            // was the one that fell off. Counted on its own, by the same
+            // arithmetic Critters::publish walks.
+            const int frog0 = kCritterSlot0 + kFireflyCount + kAntCount + kHouseflyCount +
+                              kLbugCount;
+            int frogsDrawn = 0;
+            for (int k = 0; k < kFrogCount; ++k)
+                frogsDrawn += world_.flyerShown(frog0 + k) ? 1 : 0;
+            Vec3 fat{0, 0, 0};
+            const int frogsAlive = nearestLife(Life::Frog, &fat) ? 1 : 0;
+            std::printf("  frog run  slots %3d..%-3d  %d drawn, %s alive on the host\n", frog0,
+                        frog0 + kFrogCount - 1, frogsDrawn, frogsAlive ? "some" : "none");
+            if (frogsAlive && !frogsDrawn) {
+                std::printf("      ^ ALIVE AND NOT DRAWN -- the band is too short\n");
+                ++wrong;
+            }
+        }
+
+        std::printf("\n  %s\n", wrong ? "FAIL" : "PASS -- every row is wired to its own animal.");
+    }
+
     void runFellTest() {
         std::printf("\n=== FELL TEST ===\n");
         // WHERE THE SPAWN IS, BEFORE ANYTHING ELSE. This runs before the
@@ -6635,8 +11125,8 @@ class ForestApp : public SampleApp {
             return;
         }
         std::printf("  felled after %d blows\n\n", blows);
-        std::printf("  %6s %9s %9s %9s %9s %9s %9s\n", "ms", "x", "y", "z", "pitch", "fall m/s",
-                    "spin r/s");
+        std::printf("  %6s %9s %9s %9s %9s %9s %9s %9s\n", "ms", "x", "y", "z", "pitch",
+                    "fall m/s", "spin r/s", "in ground");
 
         // ---- and then watch it -------------------------------------------
         //
@@ -6664,9 +11154,18 @@ class ForestApp : public SampleApp {
                 const float uy = 1.0f - 2.0f * (q[0] * q[0] + q[2] * q[2]);
                 const float pitch = acosf(uy < -1.0f ? -1.0f : (uy > 1.0f ? 1.0f : uy)) *
                                     57.29578f;
-                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f\n",
+                // HOW MUCH OF THE DRAWN TREE IS UNDER THE GROUND RIGHT NOW.
+                // Per voxel, per column -- see World::debrisSink. A body that
+                // sweeps through the hillside on its way over and comes out
+                // clean is a different fault from one that settles buried, and
+                // without this column they look identical in a trace.
+                const WalkWorld wwT = walkWorld();
+                const World::Sink sk = world_.debrisSink(
+                    i, [&](float x, float z) { return walkGroundM(wwT, x, z); });
+                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f  %5.1f%% %.1fm\n",
                             double(f) * dt * 1000.0, p.x, p.y, p.z, pitch, -lin.y,
-                            sqrtf(ang.x * ang.x + ang.y * ang.y + ang.z * ang.z));
+                            sqrtf(ang.x * ang.x + ang.y * ang.y + ang.z * ang.z),
+                            100.0 * double(sk.under) / double(maxi(1, sk.solid)), double(sk.worst));
                 break;
             }
         }
@@ -6685,6 +11184,30 @@ class ForestApp : public SampleApp {
         std::printf("\n  collider boxes inside a rock or a trunk at rest: %d"
                     "   (static window %d boxes)\n",
                     clipped, boxes);
+
+        // -- ...AND HOW MUCH OF THE TREE IS INSIDE THE HILLSIDE --------------
+        //
+        // The line above asks the SOLVER's shape about ROCKS. This asks the
+        // DRAWN tree about the GROUND, which is the question "the tree clips
+        // through the terrain" is actually about -- and the one nothing here
+        // has ever asked. See World::debrisSink for why it is per voxel and
+        // per column rather than a bounding box against a corner height.
+        {
+            const WalkWorld wwS = walkWorld();
+            for (int i = 0; i < kDebrisInstances; ++i) {
+                Vec3 p{0, 0, 0};
+                float q[4] = {0, 0, 0, 1};
+                if (!world_.debrisPose(i, &p, q)) continue;
+                const World::Sink sk = world_.debrisSink(
+                    i, [&](float x, float z) { return walkGroundM(wwS, x, z); });
+                if (!sk.solid) continue;
+                std::printf("  slot %d: %d of %d voxels are under the ground (%.1f%%), "
+                            "deepest %.2f m at (%.1f, %.1f, %.1f)\n",
+                            i, sk.under, sk.solid,
+                            100.0 * double(sk.under) / double(maxi(1, sk.solid)), double(sk.worst),
+                            double(sk.worstAt[0]), double(sk.worstAt[1]), double(sk.worstAt[2]));
+            }
+        }
 
         // ---- AND THE ONE NUMBER THAT SAYS "IT LANDED" ---------------------
         //
@@ -6723,6 +11246,220 @@ class ForestApp : public SampleApp {
             break;
         }
         std::printf("\n  (pitch 0 = still standing, 90 = flat on the ground)\n");
+
+        // -------------------------------------------------------------------
+        // ...AND NOW CHOP THE LOG THAT IS LYING THERE.
+        //
+        // "the player should be able to hit a fellen tree with an axe for
+        // example and it break even when felled on the ground."
+        //
+        // Two separate things to prove, and the first one is the whole of the
+        // reported bug: can the swing SEE it. Before World::debrisRay the
+        // answer was no and could not be anything else -- a felled tree is not
+        // in w.solids, which is the only list the swing walked.
+        //
+        // The second is the break. Nothing counts blows: the bite is carved out
+        // of the body's own voxels and the body is re-made as however many
+        // six-connected pieces that left, so "it broke" is the loose count
+        // going up on the blow that reached the far side of the trunk.
+        // -------------------------------------------------------------------
+        std::printf("\n=== CHOP TEST -- the axe against the log on the ground ===\n");
+        int log = -1;
+        Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            Vec3 p{0, 0, 0};
+            float q[4] = {0, 0, 0, 1};
+            if (!world_.debrisPose(i, &p, q)) continue;
+            if (!world_.debrisBounds(physics_, i, &lo, &hi)) continue;
+            log = i;
+            break;
+        }
+        if (log < 0) {
+            std::printf("  nothing loose left to chop\n");
+            return;
+        }
+
+        // STAND BESIDE THE WOOD, NOT BESIDE THE BOX.
+        //
+        // A felled tree is a long thin thing lying at an angle inside a big
+        // box, so the middle of its bounds is a point in the air next to the
+        // log about as often as it is the log -- and the swing reaches 5.3 m,
+        // which the far side of that box is not within. Same trap runFellTest
+        // hit aiming at a standing birch, same answer: aim at where the model
+        // is SOLID. See World::debrisAim.
+        Vec3 wood{0, 0, 0};
+        if (!world_.debrisAim(log, &wood, /*butt=*/true)) {
+            std::printf("  the body has no voxels to aim at\n");
+            return;
+        }
+        // ACROSS THE TRUNK, NOT ALONG IT. The collider's longest horizontal
+        // side is the log's own axis, and the cut plane is perpendicular to it.
+        const bool alongX = (hi.x - lo.x) >= (hi.z - lo.z);
+        const Vec3 mid = wood;
+        const Vec3 dir = alongX ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{1.0f, 0.0f, 0.0f};
+        const Vec3 eye0 = alongX ? Vec3{mid.x, mid.y, mid.z - 2.5f}
+                                 : Vec3{mid.x - 2.5f, mid.y, mid.z};
+        std::printf("  log slot %d   collider %.1f x %.1f x %.1f m   axis %c   %d voxels\n", log,
+                    double(hi.x - lo.x), double(hi.y - lo.y), double(hi.z - lo.z),
+                    alongX ? 'X' : 'Z', world_.debrisVoxels(log));
+        std::printf("  wood at (%.1f, %.1f, %.1f) -- the THICK end -- swinging from 2.5 m %s\n",
+                    wood.x, wood.y, wood.z, alongX ? "-Z" : "-X");
+
+        // ---- 1. CAN THE SWING SEE IT AT ALL --------------------------------
+        {
+            DebrisHit dh;
+            const bool saw = world_.debrisRay(eye0, dir, swingReachM(dir), &dh);
+            std::printf("  the swing ray %s\n",
+                        saw ? "FINDS the log" : "FINDS NOTHING -- this is the reported bug");
+            if (saw)
+                std::printf("    slot %d at %.2f m   voxel (%d, %d, %d)   material %u   %s\n",
+                            dh.slot, double(dh.t), dh.vox[0], dh.vox[1], dh.vox[2],
+                            unsigned(dh.mat),
+                            dh.takes == kDebrisWood   ? "wood -- an axe takes it"
+                            : dh.takes == kDebrisSoft ? "mushroom -- either tool takes it"
+                                                      : "stone");
+            else
+                return;
+        }
+
+        // ---- 2. AND DOES IT BREAK ------------------------------------------
+        //
+        // ONE CUT PLANE, AND THE BLOW GOES WHEREVER THERE IS STILL WOOD IN IT.
+        //
+        // A FIXED SWEEP DOES NOT SEVER ANYTHING, which cost a run to learn: a
+        // band of seventeen heights cut seventeen tunnels through the trunk, the
+        // rays then passed clean through the holes they had made, and the log
+        // sat there at 63,388 voxels for another three hundred and sixty blows.
+        // The wood that was holding it together was ABOVE AND BELOW the band --
+        // branches, and on a pine a great deal of needle -- and nothing was ever
+        // aimed at it.
+        //
+        // So each blow scans the cut plane for whatever is still there and hits
+        // that. A player does this without thinking about it; a test has to be
+        // told. When the scan comes back empty the plane is clear, which is the
+        // same thing as the log being in two pieces.
+        const int before = world_.looseCount();
+        const int vox0 = world_.debrisVoxels(log);
+        int cuts = 0, landed = 0, broke = -1;
+        double carveMs = 0.0;
+        const float dt2 = 1.0f / 60.0f;
+        for (; cuts < 600 && broke < 0; ++cuts) {
+            const float slide = (float(cuts % 5) - 2.0f) * 0.05f;
+            DebrisHit dh;
+            bool found = false;
+            for (int step = 0; step < 61 && !found; ++step) {
+                // Outwards from the middle of the trunk, so the kerf is worked
+                // from the wood the aim found rather than from the top down.
+                const int k = (step + 1) / 2;
+                const float rise = ((step & 1) ? -1.0f : 1.0f) * float(k) * 0.1f;
+                Vec3 eye = eye0;
+                eye.y = mid.y + rise;
+                if (alongX)
+                    eye.x = mid.x + slide;
+                else
+                    eye.z = mid.z + slide;
+                found = world_.debrisRay(eye, dir, swingReachM(dir), &dh);
+            }
+            if (found) {
+                // WHAT A BLOW ON A LOG COSTS. The bite re-meshes the body's
+                // whole volume and rebuilds its structure, which is the same
+                // work felling one does -- once per swing, so half a second
+                // apart, but it is on the frame and worth a number.
+                const auto t0 = std::chrono::steady_clock::now();
+                const bool bit = world_.carveDebris(physics_, dh, kDigRadiusVox, simMs_,
+                                                    &spoilVol_, &spoilN_, &spoilAt_, &spoilYaw_);
+                carveMs += std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - t0)
+                               .count();
+                if (bit) ++landed;
+            }
+            // A few frames between blows, the way a swing is half a second
+            // apart -- so a piece that has come away has somewhere to fall.
+            for (int f = 0; f < 6; ++f) {
+                physics_.step(dt2);
+                simMs_ += double(dt2) * 1000.0;
+                world_.updateDebris(physics_, player_.eyePosition(), simMs_, [&](float x, float z) {
+                    return player_.surfaceAt(walkWorld(), x, z);
+                });
+            }
+            if (world_.looseCount() > before) broke = cuts + 1;
+            if (((cuts + 1) % 150) == 0)
+                std::printf("    %3d blows: %d landed, %d voxels left\n", cuts + 1, landed,
+                            world_.debrisVoxels(log));
+        }
+        std::printf("  %d blows, %d of them carved wood\n", cuts, landed);
+        std::printf("  bodies %d -> %d\n", before, world_.looseCount());
+        if (landed)
+            std::printf("  %.2f ms per blow -- the bite, the re-mesh and the break together\n",
+                        carveMs / double(landed));
+        if (broke > 0)
+            std::printf("  PASS -- the log came apart on blow %d\n", broke);
+        else if (landed > 0)
+            std::printf("  the axe bit %d times but the log held (voxels %d -> %d)\n", landed,
+                        vox0, world_.debrisVoxels(log));
+        else
+            std::printf("  FAIL -- no blow landed on it\n");
+        if (broke <= 0) return;
+
+        // ---- AND WHAT THE PIECES DO AFTERWARDS -----------------------------
+        //
+        // A break that leaves two bodies in the debris band is only half of it.
+        // Each piece has to be a REAL body: its own collider, resting on the
+        // ground rather than hanging where the log used to be (the rule is that
+        // nothing floats), and hittable again -- because "chop it in half and
+        // then chop the halves" is the next thing anybody does.
+        for (int f = 0; f < 240; ++f) {
+            physics_.step(dt2);
+            simMs_ += double(dt2) * 1000.0;
+            world_.updateDebris(physics_, player_.eyePosition(), simMs_, [&](float x, float z) {
+                return player_.surfaceAt(walkWorld(), x, z);
+            });
+        }
+        std::printf("\n  four seconds later:\n");
+        const WalkWorld ww2 = walkWorld();
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            Vec3 p{0, 0, 0}, bl{0, 0, 0}, bh{0, 0, 0};
+            float q[4] = {0, 0, 0, 1};
+            if (!world_.debrisPose(i, &p, q)) continue;
+            if (!world_.debrisBounds(physics_, i, &bl, &bh)) continue;
+            float g = walkGroundM(ww2, bl.x, bl.z);
+            g = maxf(g, walkGroundM(ww2, bh.x, bl.z));
+            g = maxf(g, walkGroundM(ww2, bl.x, bh.z));
+            g = maxf(g, walkGroundM(ww2, bh.x, bh.z));
+            // ...and can it be hit again. Asked from right beside the piece,
+            // which is where the player is standing by now.
+            Vec3 aim{0, 0, 0};
+            bool again = false;
+            if (world_.debrisAim(i, &aim)) {
+                DebrisHit dh2;
+                const Vec3 e2{aim.x - 2.0f, aim.y, aim.z};
+                again = world_.debrisRay(e2, Vec3{1.0f, 0.0f, 0.0f}, swingReachM(Vec3{1, 0, 0}),
+                                         &dh2);
+            }
+            // ...AND WHETHER SOMETHING IS HOLDING IT UP. "Above the ground" is
+            // not "in the air": a branch cut off a trunk that is still standing
+            // on its end can quite properly come to rest against the next tree,
+            // and the static window round the body is exactly the boxes of the
+            // wood near it. So the piece is asked what is UNDER it and how fast
+            // it is moving, and only a piece with nothing under it and nothing
+            // happening to it is floating.
+            Vec3 lin{0, 0, 0}, ang{0, 0, 0};
+            world_.debrisVel(physics_, i, &lin, &ang);
+            const float speed = sqrtf(lin.x * lin.x + lin.y * lin.y + lin.z * lin.z);
+            float under = 0.0f;
+            const int what = physics_.typeBelow(Vec3{(bl.x + bh.x) * 0.5f, bl.y - 0.05f,
+                                                     (bl.z + bh.z) * 0.5f},
+                                                40.0f, &under);
+            const bool held = (what >= 0 && under < 1.0f) || speed > 0.05f;
+            std::printf("    slot %2d  %6d voxels  %4.1f x %4.1f x %4.1f m  underside %+.2f m of "
+                        "ground  %-8s  %.2f m/s  under: %s\n",
+                        i, world_.debrisVoxels(i), double(bh.x - bl.x), double(bh.y - bl.y),
+                        double(bh.z - bl.z), double(bl.y - g),
+                        (bl.y - g > 0.5f && !held) ? "FLOATING" : "resting", double(speed),
+                        what < 0 ? "nothing within 40 m"
+                                 : (what == 5 ? "the ground" : "a static box"));
+            if (!again) std::printf("      CANNOT BE HIT\n");
+        }
     }
 
     void renderOffline(Falcor::RenderContext *ctx) {
@@ -6800,8 +11537,15 @@ class ForestApp : public SampleApp {
                 // 5.5 m/s is a hundred metres of flight, which is the ring
                 // crossed: by then they are distributed the way they are in
                 // play rather than the way they are spawned.
+                // THE GATHER MOVED UP HERE FROM ABOVE THE BUNNIES, because
+                // the flock reads it now too and the bunnies used to be the
+                // first population in this block that did. A warmup handed an
+                // empty list is the "900 ticks of a blind animal" the note
+                // below is about, and it fails silently -- the birds fly, the
+                // render looks right, and nothing has been checked.
+                world_.collidersNear(cam.origin, kBirdKeepM, &perches_);
                 for (int i = 0; i < 1200; ++i)
-                    flock2_.update(1.0f / 60.0f, cam.origin, groundAt);
+                    flock2_.update(1.0f / 60.0f, cam.origin, groundAt, &perches_);
                 flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
                 // ...AND THE BUNNIES, warmed the same way and for the same
                 // reason: a population with a settling time reports its SPAWN
@@ -6810,13 +11554,140 @@ class ForestApp : public SampleApp {
                 // the pose it was born in.
                 // ...and the offline path gathers the same list, or the warmup
                 // would run 900 ticks of a blind animal and report where a blind
-                // animal ended up.
-                world_.collidersNear(cam.origin, kBirdKeepM, &perches_);
+                // animal ended up. Gathered above the flock now -- same point,
+                // same radius, one call.
                 for (int i = 0; i < 900; ++i)
                     bunnies_.update(1.0f / 60.0f, cam.origin, groundAt,
                                     [this](float x, float z) { return wetColumnAt(x, z); },
-                                    perches_);
+                                    perches_,
+                                    [this](float x) { return world_.terrain.birchMix(x); },
+                                    [this](float x, float z) { return sandAt(x, z); });
                 bunnies_.publish(world_, kBunnySlot0);
+                bunnies_.publishSkunks(world_, kMarchSlot0);
+                // ...AND THE BEES, off the same two lists the live path
+                // gathers. Ticked for long enough that the errands have
+                // run: a bee sits on a flower for three seconds and
+                // orbits for twenty, so a warmup shorter than that
+                // reports the state every one of them was born in.
+                world_.decorNear(5, cam.origin, kBeeHiveM, &hivesNear_);
+                world_.decorNear(2, cam.origin, kBeeHiveM + kBeeFlowerM, &bloomsNear_);
+                for (int i = 0; i < 1800; ++i)
+                    bees_.update(1.0f / 60.0f, cam.origin, hivesNear_, bloomsNear_, &perches_);
+                bees_.publish(world_, kBeeSlot0);
+                {
+                    Vec3 bat{0, 0, 0};
+                    float bd = 0.0f;
+                    long mt[5] = {0, 0, 0, 0, 0};
+                    bees_.modeShare(mt);
+                    const double tot = double(mt[0] + mt[1] + mt[2] + mt[3] + mt[4]) + 1e-9;
+                    if (bees_.nearest(cam.origin, &bat, &bd)) {
+                        std::printf("  bee      %d bees at %zu hives (%zu blooms in range), "
+                                    "nearest %.0f m at (%.0f, %.0f, %.0f)\n",
+                                    bees_.living(), hivesNear_.size(), bloomsNear_.size(),
+                                    double(bd), double(bat.x), double(bat.y),
+                                    double(bat.z));
+                        // A SNAPSHOT OF A STATE MACHINE REPORTS NOTHING --
+                        // see Bees::modeShare. This is bee-ticks over the
+                        // whole warmup, which is the only way to see
+                        // whether the flower errand ever runs at all.
+                        std::printf("  bee      time spent: %.0f%% wandering, %.0f%% flying "
+                                    "to a flower, %.0f%% sitting on one, %.0f%% flying "
+                                    "home, %.0f%% orbiting\n",
+                                    100.0 * mt[0] / tot, 100.0 * mt[1] / tot,
+                                    100.0 * mt[2] / tot, 100.0 * mt[3] / tot,
+                                    100.0 * mt[4] / tot);
+                    } else {
+                        std::printf("  bee      none -- %zu hives and %zu blooms in "
+                                    "range\n",
+                                    hivesNear_.size(), bloomsNear_.size());
+                    }
+                }
+                // -- AND THE FOUR SMALL ONES ---------------------------
+                //
+                // WARMED ON THEIR OWN CLOCK, like the bees above and for the
+                // same reason: a ladybug's cruise-descend-sit is tens of
+                // seconds long and a frog picks a new cycle roughly every
+                // second, so a single tick reports the state every one of them
+                // was BORN in rather than the state play sees.
+                {
+                    const auto cgr = [this](float x, float z) {
+                        return float(world_.terrain.heightVox(
+                                         int(std::floor(x / VOXEL_M)),
+                                         int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+                    };
+                    lake_.bankSpots(7u, 8, &banksNear_);
+                    for (int i = 0; i < 1800; ++i)
+                        critters_.update(1.0f / 60.0f, cam.origin, cgr,
+                                         [this](float x, float z) { return wetColumnAt(x, z); },
+                                         [this](float x) { return world_.terrain.birchMix(x); },
+                                         banksNear_, perches_, isNight(),
+                                         Vec3(0.0f, 0.0f, 0.0f),
+                                         [this](float x, float z) {
+                                             return waterTopAt(x, z);
+                                         });
+                    critters_.publish(world_, kCritterSlot0);
+                    float gap = 0.0f, worst = 0.0f;
+                    const int pairs = critters_.antSpacing(&gap, &worst);
+                    // A HEAD-COUNT PROVES THE COLUMN EXISTS; ONLY THE SPACING
+                    // PROVES IT IS A COLUMN. Six ants in a heap and six ants in
+                    // a line report the same number of ants.
+                    std::printf("  ant      %d walking, %d links at %.2f m mean "
+                                "(worst %.2f, want %.2f)\n",
+                                critters_.livingAnts(), pairs, double(gap), double(worst),
+                                double(kAntGap));
+                    long lt[3] = {0, 0, 0};
+                    critters_.lbugPhaseShare(lt);
+                    const double lsum = double(lt[0] + lt[1] + lt[2]) + 1e-9;
+                    // ...AND HOW FAR APART THEY ARE. "You have ladybugs flying
+                    // together in a pack" was a missing line in the claim --
+                    // six slots filling on one frame all took the same
+                    // lowest-hash cell. A head-count could never have shown
+                    // it; nearest-neighbour spacing is what does.
+                    float lmin = 0.0f, lmean = 0.0f;
+                    critters_.bugSpread(&lmin, &lmean);
+                    std::printf("  ladybug  %d flying, %d down now, nearest two %.1f m "
+                                "apart (mean %.1f) -- time spent: %.0f%% "
+                                "cruising, %.0f%% descending, %.0f%% landed\n",
+                                critters_.livingBugs(), critters_.landedBugs(),
+                                double(lmin), double(lmean),
+                                100.0 * lt[0] / lsum, 100.0 * lt[1] / lsum, 100.0 * lt[2] / lsum);
+                    long ft[4] = {0, 0, 0, 0};
+                    critters_.frogCycleShare(ft);
+                    const double fsum = double(ft[0] + ft[1] + ft[2] + ft[3]) + 1e-9;
+                    // THE WANT IS NOT kFrogMix. Those are SELECTION weights and
+                    // these are TICKS, and the four cycles are different lengths
+                    // (17/14/24/17) -- so 40/40/10/10 of PICKS is 41/34/15/10 of
+                    // TIME. Comparing against the raw mix would read as a fault on
+                    // every run of a machine that is working correctly.
+                    std::printf("  frog     %d on the bank -- time spent: %.0f%% hopping, "
+                                "%.0f%% ribbeting, %.0f%% tongue, %.0f%% turning "
+                                "(want 41/34/15/10 -- the 40/40/10/10 mix weighted "
+                                "by cycle length)\n",
+                                critters_.livingFrogs(), 100.0 * ft[0] / fsum,
+                                100.0 * ft[1] / fsum, 100.0 * ft[2] / fsum, 100.0 * ft[3] / fsum);
+                    float ymin = 0.0f, ymean = 0.0f;
+                    critters_.flySpread(&ymin, &ymean);
+                    // WHERE the nearest one is, so a camera can be aimed at a
+                    // wing. Half a metre of insect at thirty metres is a
+                    // pixel, and a render nobody can find the subject in
+                    // proves nothing about how the subject looks.
+                    Vec3 yat{0, 0, 0};
+                    float yd = 0.0f;
+                    if (critters_.nearestFly(cam.origin, &yat, &yd))
+                        std::printf("  fly      nearest %.0f m at (%.1f, %.1f, %.1f)\n",
+                                    double(yd), double(yat.x), double(yat.y), double(yat.z));
+                    std::printf("  fly      %d in the air, bunches of %d, closest two %.2f m "
+                                "apart (mean %.2f, body is 0.30)\n",
+                                critters_.livingFlies(), kHouseflyPerBunch, double(ymin),
+                                double(ymean));
+                    float fmin = 0.0f, fmean = 0.0f;
+                    critters_.fireflySpread(&fmin, &fmean);
+                    std::printf("  firefly  %d alight, nearest two %.1f m apart "
+                                "(mean %.1f) (%s)\n",
+                                critters_.livingFireflies(), double(fmin), double(fmean),
+                                isNight() ? "after dark"
+                                                             : "daylight -- none expected");
+                }
                 Vec3 uat{0, 0, 0};
                 float ud = 0.0f;
                 if (bunnies_.nearest(cam.origin, &uat, &ud))
@@ -6824,6 +11695,66 @@ class ForestApp : public SampleApp {
                                 "(%.0f, %.0f, %.0f)\n",
                                 bunnies_.living(), double(ud), double(uat.x), double(uat.y),
                                 double(uat.z));
+                // THE SECOND LAND MAMMAL, REPORTED SEPARATELY. There is no
+                // way to tell "no skunks placed" from "a skunk ninety
+                // metres away and four pixels across" out of a picture,
+                // which is the whole reason every population here prints a
+                // nearest.
+                for (int mk = 0; mk < kMarchKinds; ++mk) {
+                    Vec3 kat{0, 0, 0};
+                    float kd = 0.0f;
+                    if (bunnies_.nearestSkunk(mk, cam.origin, &kat, &kd))
+                        std::printf("  %-8s %d marching, nearest %.0f m at "
+                                    "(%.0f, %.0f, %.0f)\n",
+                                    kMarchSpec[mk].name, bunnies_.skunksLiving(mk),
+                                    double(kd), double(kat.x), double(kat.y),
+                                    double(kat.z));
+                    else
+                        std::printf("  %-8s none placed%s\n", kMarchSpec[mk].name,
+                                    kMarchSpec[mk].wood < 0
+                                        ? ""
+                                        : (kMarchSpec[mk].wood == 0 ? " (pine only)"
+                                                                    : " (birch only)"));
+                }
+                // -- DOES THE HOP IN PLACE MATCH THE HOP FORWARD? ------------
+                //
+                // A TURN IS A HOP THAT GOES NOWHERE, and the wood draws both
+                // from the same eleven frames, so the body has to leave the
+                // ground by the same amount in both or one animal is jumping
+                // two different ways. That is a difference between two STATES,
+                // which is why no still frame catches it -- each one on its own
+                // looks right.
+                //
+                // Sampled over six hundred more ticks rather than read once: at
+                // any instant most of the population is sitting, and a snapshot
+                // of a state nobody is in reports nothing at all.
+                {
+                    float peak[3] = {0, 0, 0};
+                    long long seen[3] = {0, 0, 0};
+                    for (int f = 0; f < 600; ++f) {
+                        // THE SAME FIVE PREDICATES THE WOOD RUNS ON. A report
+                        // that measures an animal with a different set of rules
+                        // is measuring a different animal -- the birch gate and
+                        // the beach gate both change where a marcher may go.
+                        bunnies_.update(1.0f / 60.0f, cam.origin, groundAt,
+                                        [this](float x, float z) { return wetColumnAt(x, z); },
+                                        perches_,
+                                        [this](float x) { return world_.terrain.birchMix(x); },
+                                        [this](float x, float z) { return sandAt(x, z); });
+                        for (int k = 0; k < bunnies_.slots(); ++k) {
+                            Bunnies::Probe pr;
+                            if (!bunnies_.probe(k, &pr)) continue;
+                            ++seen[pr.state];
+                            if (pr.lift > peak[pr.state]) peak[pr.state] = pr.lift;
+                        }
+                    }
+                    std::printf("  bunny    arc peak: sit %.3f m, turn %.3f m, hop %.3f m"
+                                "   (%lld / %lld / %lld samples)\n",
+                                double(peak[0]), double(peak[1]), double(peak[2]), seen[0],
+                                seen[1], seen[2]);
+                    if (seen[1] && seen[2] && fabsf(peak[1] - peak[2]) > 0.005f)
+                        std::printf("    ^ THE TURN AND THE HOP DO NOT MATCH\n");
+                }
                 Vec3 bat{0, 0, 0};
                 float bd = 0.0f;
                 if (flock2_.nearest(cam.origin, &bat, &bd))
@@ -6853,6 +11784,19 @@ class ForestApp : public SampleApp {
                                 "(%s)   %.2f m off station on average\n",
                                 ns, ns == 1 ? "" : "s", sch, nm, nm == 1 ? "" : "s", smin,
                                 double(lake_.stationErr()));
+                    // A DUCK DOES NOT SWIM THROUGH A LILY PAD, and the only
+                    // way to say that is to count it -- see
+                    // LakeLife::duckOffPads. The NEAR count is what makes
+                    // the clash count mean anything: zero clashes over a run
+                    // where nothing ever met a leaf is not a result.
+                    long dnear = 0, dclash = 0;
+                    float dworst = 0.0f, dgap = 0.0f;
+                    lake_.duckPads(&dnear, &dclash, &dworst, &dgap);
+                    std::printf("  ducks    closest a duck ever came to a lily pad %.2f m; "
+                                "%ld duck-ticks within half a metre of one, %ld of them "
+                                "INSIDE it (deepest %.3f m)%s\n",
+                                double(dgap), dnear, dclash, double(dworst),
+                                dclash ? "  <-- CLIPPING" : "");
                 }
             }
             world_.refitTlas();
@@ -7883,19 +12827,31 @@ class ForestApp : public SampleApp {
             "  W A S D               walk (hold shift to sprint)\n"
             "  space                 jump\n"
             "  caps lock             crouch -- and descend, in fly mode\n"
+            "                        KEEP HOLDING IT to go PRONE; release and you rise\n"
+            "                        back through the crouch to standing in one go\n"
             "  F                     toggle fly mode\n"
             "  arrow keys            scrub time (up/down = fast)\n"
             "  X + scroll wheel      day/night speed -- scroll down past 0.25x to REWIND\n"
             "  Y                     SETTINGS MENU\n"
+            // The console had never been listed here at all, which is most of
+            // why /locate needed telling about twice.
+            "  K                     the stack count beside the hand -- size, place, tilt\n"
+            "  T                     CONSOLE -- /locate <animal|biome|water> takes\n"
+            "                        you to the nearest one, /where says where you\n"
+            "                        are, /help lists them. ENTER runs, ESC cancels\n"
             "  I  or  U             ASSET EDITOR -- a deck in the sky, with the\n"
-            "                        bunny standing in the middle of it\n"
+            "                        porcupine standing in the middle of it\n"
             "  R                     RECORD -- press again to stop and save\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
             "  P                     screenshot            F1   this help\n"
-            "  O                     water panel\n"
-            "  ESC                   PAUSE ROOM -- ESC again quits\n"
-            "                        red quits, green returns, blue is Discord\n\n");
+            // The water panel had this line and no longer has a key at all --
+            // it is `--water-ui` now. See onKeyEvent, where L used to be.
+            "  O                     THE BUILDING -- a level in its own sky;\n"
+            "                        press again to come back to the wood\n"
+            "  ESC                   free the mouse -- again for the PAUSE BUTTONS,\n"
+            "                        a third time to quit\n"
+            "                        red quits, green returns, purple is Discord\n\n");
         // THE EDITOR'S OWN, out of the class that binds them, so this list
         // cannot go on describing a key after it has moved.
         std::printf("  ...and on the asset editor\'s deck:\n");

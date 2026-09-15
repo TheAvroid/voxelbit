@@ -146,12 +146,32 @@ uint groundShade(uint packed, float3 p, float3 ng)
 {
     const uint mtl = triMaterial(packed);
     uint base, count;
+    // -----------------------------------------------------------------------
+    // THIS IS A COPY OF Trace.cs.slang's groundShade AND IT HAD DRIFTED.
+    //
+    // Its own note below says the probes "have to agree with the camera", and
+    // by 2026-09-14 they did not, in two ways that both pre-date the wheat
+    // ramp: the BIRCH grass and the SAND ramp were added to the camera's copy
+    // and never to this one, so a birch blade and a whole beach fell through to
+    // `return mtl` and bounced the darkest shade of their family flat. Both
+    // families are here now.
+    //
+    // The third was the strand row itself -- see the note over it below.
+    //
+    // A THIRD COPY IS WHAT WOULD FIX THIS PROPERLY: one function in
+    // Shared.slang, included by both. Not done here because that is a change to
+    // the camera's hot path, and this pass is about a colour.
+    // -----------------------------------------------------------------------
     if (mtl >= kGrass0 && mtl < kGrass0 + kGrassCount) { base = kGrass0; count = kGrassCount; }
+    else if (mtl >= kBGrass0 && mtl < kBGrass0 + kBGrassCount) { base = kBGrass0; count = kBGrassCount; }
+    else if (mtl >= kWheat0 && mtl < kWheat0 + kWheatCount) { base = kWheat0; count = kWheatCount; }
+    else if (mtl >= kBWheat0 && mtl < kBWheat0 + kBWheatCount) { base = kBWheat0; count = kBWheatCount; }
     else if (mtl >= kSoil0 && mtl < kSoil0 + kSoilCount) { base = kSoil0; count = kSoilCount; }
     else if (mtl >= kLitter0 && mtl < kLitter0 + kLitterCount) { base = kLitter0; count = kLitterCount; }
     // Rock is one id and six shades, and the probes must agree with the camera
     // about which -- see the ramp note in Trace.cs.slang.
     else if (mtl == kRock) { base = kStone0; count = kStoneCount; }
+    else if (mtl == kSand) { base = kSand0; count = kSandCount; }
     else return mtl;
     const int3 v = int3(floor((p - ng * (0.5f * kVoxelM)) / kVoxelM));
     // A blade takes its shade from its height above the soil rather than from
@@ -159,9 +179,20 @@ uint groundShade(uint packed, float3 p, float3 ng)
     // with the camera about this: a blade lit as a flat green here and shaded
     // as a gradient there is a floor whose bounce light does not match the
     // surface it came off.
+    //
+    // AND THE ROW HAS TO BE HALVED THE WAY THE HOST HALVED THE BASE. The camera
+    // gained `>> kStrandRowShift` when STRAND_ROW_STEP went to 2 to buy 32-voxel
+    // blades; this copy did not, so it was subtracting a halved base from a
+    // full y and every blade in the probes read a row roughly twice what it is
+    // -- which the mask then wrapped. Every blade bounced an arbitrary shade.
     const uint strand = triStrand(packed);
-    if (strand != 0u && base == kGrass0)
-        return kGrass0 + min((uint(v.y) - (strand - 1u)) & kStrandRowMask, kGrassCount - 1u);
+    if (strand != 0u &&
+        (base == kGrass0 || base == kBGrass0 || base == kWheat0 || base == kBWheat0))
+    {
+        const uint row =
+            (uint(int(v.y) >> kStrandRowShift) - (strand - 1u)) & kStrandRowMask;
+        return base + min(row, count - 1u);
+    }
     return base + hashVoxel(v) % count;
 }
 

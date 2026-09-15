@@ -284,6 +284,16 @@ uint groundShade(uint packed, float3 p, float3 ng)
         base = kBGrass0;
         count = kBGrassCount;
     }
+    else if (mtl >= kWheat0 && mtl < kWheat0 + kWheatCount)
+    {
+        base = kWheat0;
+        count = kWheatCount;
+    }
+    else if (mtl >= kBWheat0 && mtl < kBWheat0 + kBWheatCount)
+    {
+        base = kBWheat0;
+        count = kBWheatCount;
+    }
     else if (mtl >= kSoil0 && mtl < kSoil0 + kSoilCount)
     {
         base = kSoil0;
@@ -347,9 +357,13 @@ uint groundShade(uint packed, float3 p, float3 ng)
     // arithmetic, so it is right below sea level too, where v.y is negative.
     // -----------------------------------------------------------------------
     const uint strand = triStrand(packed);
-    // EITHER WOOD'S GRASS READS ITS RAMP ALONG THE BLADE. `base` already says
-    // which ramp this is, so the gradient is written once for both.
-    if (strand != 0u && (base == kGrass0 || base == kBGrass0))
+    // ALL FOUR BLADE RAMPS READ ALONG THE BLADE. `base` and `count` already say
+    // which one this is, so the gradient is written once for every wood and for
+    // both the green and the gone-over -- the straw ramps are the same
+    // mechanism on a taller blade with a longer ramp (ten shades instead of
+    // six, so it reaches a tuft's tip rather than running out halfway up it).
+    if (strand != 0u &&
+        (base == kGrass0 || base == kBGrass0 || base == kWheat0 || base == kBWheat0))
     {
         // HALVED, THE SAME WAY THE HOST HALVED THE BASE -- see the note over
         // STRAND_MAX_ROWS in voxelworld.h. `>>` on a signed int is arithmetic,
@@ -458,6 +472,10 @@ struct Hit
     // The tool in the player's hand, which the motion vector has to know about
     // and nothing else does. See the write in the guide block.
     bool held;
+    // ...and whether this surface is an animal that has just been struck, which
+    // only the emission at the bottom of the path loop reads. See
+    // V6Instance::hurt.
+    float hurt;
     // ...and how far this surface's instance travelled since the last frame,
     // which the motion vector is the only reader of as well. Zero for all of
     // the wood; a butterfly is the only thing in this scene that moves through
@@ -996,6 +1014,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.mat.roughness = 1.0f;
     h.mat.specular = 0.0f;
     h.mat.translucency = 0.0f;
+    h.mat.alpha = 1.0f;   // a miss is opaque; nothing may see through nothing
     h.mat.ior = 1.0f;
 
     RayDesc ray;
@@ -1054,6 +1073,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.ng = ng;
     h.ns = ng;
     h.held = (inst.kind == KIND_HELD);
+    h.hurt = inst.hurt;
     // HOW FAR THIS SURFACE'S INSTANCE TRAVELLED SINCE THE LAST FRAME, and no
     // test on the kind: the host derives this for everything it PLACES and
     // leaves it at zero for everything it builds once, so the wood, the water
@@ -1293,6 +1313,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.mat.roughness = L.roughness;
     h.mat.specular = L.specular;
     h.mat.translucency = L.translucency;
+    h.mat.alpha = L.alpha;
 
     if (inst.kind == KIND_TREE)
     {
@@ -1301,6 +1322,20 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
         // making the stand look like a paint chart.
         h.mat.albedo *= inst.tint;
     }
+
+    // -- ...AND AN ANIMAL THAT HAS JUST BEEN HIT IS RED ---------------------
+    //
+    // REPLACED, NOT MULTIPLIED. "all the voxels that make up the life turn
+    // red" -- a multiply leaves a black eye black and a white wing pink, which
+    // reads as a red LIGHT on the animal rather than as the animal flashing.
+    // v1 mixes to the same constant for the same reason.
+    //
+    // THE WHOLE INSTANCE, which is what makes this cost nothing to decide: the
+    // flash is a property of the animal, not of where the blow landed, so there
+    // is no box to test a surface point against. v1 needs one -- its mammals
+    // are stamped into the world grid and have no instance to hang this on --
+    // and most of the size of its hit-flash block is that box being got right.
+    if (inst.hurt > 0.0f) h.mat.albedo = kHurtRed;
 
     // Foliage is thin enough to light from behind, so its faces are treated as
     // two-sided: turn the normal to the viewer rather than letting a backfacing
@@ -2160,6 +2195,67 @@ void main(uint3 tid: SV_DispatchThreadID)
             h = traceRadiance(o, d);
         }
 
+        // -- A SURFACE YOU CAN SEE THROUGH ---------------------------------
+        //
+        // "Make their wings 50% transparent." A fly's wing is the only material
+        // in this world with alpha under 1, and this is the whole mechanism:
+        // with probability 1 - alpha the ray simply CARRIES ON as though the
+        // surface were not there, and we trace again from just past it.
+        //
+        // -- AND AS OF 2026-09-14 NOTHING IN THE WORLD SETS alpha BELOW 1 ----
+        //
+        // "can you just make the fly wings a solid white voxel. just like
+        // everything else in the world." The wing was this block's only
+        // subject, through two designs -- a flat 50% pass-through and then a
+        // Fresnel dielectric -- and it is now an ordinary opaque white voxel
+        // with no material of its own at all.
+        //
+        // So this is dead until something wants it again. It is kept rather
+        // than cut because it costs exactly one compare on a ray that hit
+        // something, and because the mechanism is sound and was not the
+        // problem; what was wrong was having it at all. If nothing has claimed
+        // it by the next time somebody reads this, delete it.
+        //
+        // STOCHASTIC RATHER THAN BLENDED, and in a path tracer that is not a
+        // compromise -- it is the cheaper and more correct of the two. A blend
+        // needs the surface behind the wing, which means tracing it anyway, and
+        // then has to decide what a half-wing does to a motion vector and to
+        // the denoiser's guides. Passing through means the pixel is EITHER the
+        // wing or what is behind it, every guide it writes is that surface's
+        // own, and the average over the samples the accumulator and Ray
+        // Reconstruction already take is the blend.
+        //
+        // IT DOES NOT SPEND A BOUNCE. This sits before `depth` is used for
+        // anything, so a ray that slips through three wings still has its full
+        // path length -- a wing is not an interaction, it is a gap.
+        //
+        // AND THE DISTANCE IS KEPT. h.t comes back measured from the new
+        // origin, so the skipped run is added on: primaryDist, the motion
+        // vector and gViewZ all read h.t, and a wing three centimetres thick
+        // would otherwise pull the whole surface behind it that much nearer.
+        //
+        // THE CAP IS THREE. Two wings and a margin; past that the ray takes the
+        // surface whatever its alpha, which is invisible at any thickness a
+        // wing has and bounds the worst case.
+        if (h.hit && h.mat.alpha < 1.0f)
+        {
+            float skipped = 0.0f;
+            [loop] for (int wing = 0; wing < 3; ++wing)
+            {
+                if (!h.hit || h.mat.alpha >= 1.0f) break;
+                if (rng.nextFloat() < h.mat.alpha) break;   // this one stopped it
+                // Past the face, not on it: a ray restarted exactly at the hit
+                // finds the same triangle again.
+                const float3 through = h.p + d * 0.004f;
+                skipped += h.t + 0.004f;
+                // WORLD ONLY. The held tool has already won or lost the pixel
+                // in the branch above, and re-running that argument here would
+                // let an axe reappear behind a wing it was never in front of.
+                h = traceRadiance(through, d, depth == 0 ? MASK_WORLD : 0xFFu);
+            }
+            h.t += skipped;
+        }
+
         // -- AND A LABEL IN FRONT OF ALL OF IT TAKES THE PIXEL FROM BOTH ----
         //
         // The words over the pause room's buttons -- see holoNearest above, and
@@ -2476,6 +2572,51 @@ void main(uint3 tid: SV_DispatchThreadID)
         // bulb has no albedo worth dividing out -- it is a light, and filing it
         // as diffuse radiance would have the denoiser try to average a 60 nit
         // surface across its neighbours.
+        // ...AND THE FIREFLY, on the same branch and for the same reason: it
+        // is a light rather than a surface, so it must not be demodulated by an
+        // albedo it does not have. What is different is that nothing samples
+        // it -- see V6Params::glowMtl.
+        // -- THE HIT FLASH EMITS, so a wound reads under a canopy ---------
+        //
+        // AT THE PRIMARY HIT ONLY, and added rather than returned: unlike a
+        // spark or a firefly this is a SURFACE that also glows -- the animal
+        // goes on taking the sun, the sky and its own shadow, and the red is
+        // laid over that. Returning here instead would flatten a dying animal
+        // into a silhouette.
+        if (h.hurt > 0.0f && depth == 0)
+        {
+            const float3 he = kHurtRed * (kHurtNits * h.hurt);
+            L += beta * he;
+            Lemit += beta * he;
+        }
+        if (h.mtl == gParams.glowMtl && gParams.glowMtl != kNoBulb)
+        {
+            if (depth == 0)
+            {
+                L += beta * gParams.glowRadiance;
+                Lemit += beta * gParams.glowRadiance;
+            }
+            break;
+        }
+        // ...AND THE SPARKS, on the same branch and for the third time the same
+        // reason: a burning fleck is a light rather than a surface, so it must
+        // not be demodulated by an albedo it does not have. See
+        // V6Params::emitters -- the table is packed from 0, so this stops at
+        // the first empty slot and a world with no sparks pays one compare.
+        bool emitHit = false;
+        for (int em = 0; em < kEmitSlots; ++em)
+        {
+            if (gParams.emitters[em].w < 0.0f) break;
+            if (h.mtl != (uint)(gParams.emitters[em].w + 0.5f)) continue;
+            if (depth == 0)
+            {
+                L += beta * gParams.emitters[em].xyz;
+                Lemit += beta * gParams.emitters[em].xyz;
+            }
+            emitHit = true;
+            break;
+        }
+        if (emitHit) break;
         if (h.mtl == gParams.bulbMtl && gParams.bulbMtl != kNoBulb)
         {
             if (depth == 0)

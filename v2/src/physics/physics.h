@@ -702,16 +702,23 @@ class Physics {
     // the inertia of a twenty-six metre lever is what sets how slowly it goes
     // over.
     // -----------------------------------------------------------------------
+    // `quat`, WHEN GIVEN, REPLACES THE YAW -- and it is what a body BORN OUT OF
+    // ANOTHER ONE needs. A tree is felled standing, so a quarter turn describes
+    // it completely; a log chopped in half is lying wherever it came to rest,
+    // and the two halves have to be born wearing the rotation the solver had
+    // already given their parent or they snap upright on the frame they part.
+    // xyzw, matching World::Debris::quat and Physics::poseOf.
     int addCompoundBody(const VoxBox *boxes, int n, const Vec3 &origin, float yawRad,
-                        float density) {
+                        float density, const float *quat = nullptr) {
 #if !V2_HAS_PHYSX
-        (void)boxes; (void)n; (void)origin; (void)yawRad; (void)density;
+        (void)boxes; (void)n; (void)origin; (void)yawRad; (void)density; (void)quat;
         return -1;
 #else
         if (!ready_ || !boxes || n <= 0) return -1;
+        const physx::PxQuat rot = quat ? physx::PxQuat(quat[0], quat[1], quat[2], quat[3])
+                                       : physx::PxQuat(yawRad, physx::PxVec3(0.0f, 1.0f, 0.0f));
         physx::PxRigidDynamic *a = physics_->createRigidDynamic(
-            physx::PxTransform(physx::PxVec3(origin.x, origin.y, origin.z),
-                               physx::PxQuat(yawRad, physx::PxVec3(0.0f, 1.0f, 0.0f))));
+            physx::PxTransform(physx::PxVec3(origin.x, origin.y, origin.z), rot));
         if (!a) return -1;
         for (int k = 0; k < n; ++k) {
             const VoxBox &b = boxes[k];
@@ -807,6 +814,25 @@ class Physics {
     // A piece born with a shove leaves its own cut sideways, which is the one
     // thing a cut trunk must not do.
     // -----------------------------------------------------------------------
+    // GIVE A BODY THE MOTION OF THE ONE IT CAME OUT OF.
+    //
+    // The other half of the note on addCompoundBody's quat. A log cut in two
+    // while it is still rolling has to keep rolling, or the cut reads as the
+    // world stopping for a moment -- and a piece born at rest inside a moving
+    // parent is a piece the solver has to push out of the way.
+    void setVelocity(int h, const Vec3 &lin, const Vec3 &ang) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        if (a->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) return;
+        a->setLinearVelocity(physx::PxVec3(lin.x, lin.y, lin.z));
+        a->setAngularVelocity(physx::PxVec3(ang.x, ang.y, ang.z));
+        a->wakeUp();
+#else
+        (void)h; (void)lin; (void)ang;
+#endif
+    }
+
     void stopBody(int h) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;

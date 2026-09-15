@@ -74,7 +74,7 @@ tasklist /FI "IMAGENAME eq v2.exe" 2>nul | find /I "v2.exe" >nul
 if not errorlevel 1 (
   echo.
   echo v2: v2.exe is still running, and the linker cannot overwrite a running exe.
-  echo     Quit it first -- ESC twice in the window -- then run this again.
+  echo     Quit it first -- ESC, then the red button -- then run this again.
   echo.
   echo     Nothing has been changed. The build you have still works.
   exit /b 1
@@ -213,5 +213,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo built %OUT%\bin\%CONFIG%\v2.exe
+REM --- ...AND SAY WHEN THE EXE WAS WRITTEN ------------------------------------
+REM
+REM "built" is not the same as "relinked". A build that finds nothing to do
+REM prints exactly the same cheerful line as one that recompiled the world, and
+REM on 2026-09-14 that cost a full round trip: an app.h change was reported as
+REM built, the engine that got launched was the one from before it, and the
+REM behaviour report that came back described code that no longer existed.
+REM Reading the SOURCE cannot settle that question -- only the binary can.
+REM
+REM The write time is the one fact that separates the two. If it is not within
+REM a few seconds of now, nothing was linked and whatever you are about to test
+REM is the previous build.
+for %%F in ("%OUT%\bin\%CONFIG%\v2.exe") do echo built %%~fF  ^(written %%~tF^)
 exit /b 0

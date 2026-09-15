@@ -36,6 +36,9 @@ struct Surface
     float specular;
     float translucency;
     float ior;
+    // See V6Material::alpha. 1 is opaque; Surface is a shader-side struct with
+    // no layout to keep, so this is free.
+    float alpha;
 };
 
 struct BsdfSample

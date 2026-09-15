@@ -227,6 +227,29 @@ int main(int argc, char **argv) {
     //
     // Hence: missing must be zero, extras are reported and categorised.
     // ---------------------------------------------------------------------
+    // THE DEFAULT CHUNK FAILS THIS, AND IT IS meshChunk THAT IS WRONG
+    // (2026-09-13). Chunk (0, 0) straddles the band seam. It used to be dry, so
+    // the water-side disagreements below never reached it; once heightM started
+    // carving basins through the seam it became wet and joined a set of chunks
+    // that were ALREADY failing. Measured over the same 60 chunks, before and
+    // after that terrain change:
+    //
+    //     before   4 of 60 fail   (-12,17)=12  (1,-17)=111  (6,-8)=1  (12,-8)=34
+    //     after    5 of 60 fail   the same four, plus (0,0)=24
+    //
+    // So this is a standing meshChunk-vs-bricks disagreement that the default
+    // chunk happened to miss, not a new one. What settles WHICH path is wrong
+    // is voxel_parity_test, which checks the bricks against a brute-force walk
+    // of the terrain function rather than against the retired mesher: it
+    // PASSES on all five, in both builds. The bricks match the world; meshChunk
+    // draws faces the world does not have. On (0,0) all 24 are POS_Y faces on
+    // the top voxel of lake bed 5.2 m under the line -- water meshChunk cannot
+    // see. useBricks is true, so none of this is what the game renders.
+    //
+    // Left failing ON PURPOSE. Moving the default chunk to a passing one would
+    // hide a real disagreement, and this test exists to list what flipping the
+    // flag changes.
+    // ---------------------------------------------------------------------
     check(missing == 0, "the bricks draw every face the old mesher draws");
     std::printf("  (extras: %zu water, %zu ground -- the latter are faces meshChunk drops\n",
                 strayWater, stray - strayWater);

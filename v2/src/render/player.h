@@ -176,17 +176,11 @@ inline bool insideWorld(const WalkWorld &w, const Vec3 &p) {
     // surface over a hole and a flier used to turn away from ground that was
     // no longer there -- the same fault as the walk, in two more verbs.
     if (y <= walkTopVox(w, i, j)) return true;
-    for (int k = 0; k < w.solidCount; ++k) {
-        const Solid &s = w.solids[k];
-        if (s.hx <= 0.0f || s.hz <= 0.0f || p.y > s.top) continue;
-        if (s.vol) {
-            if (solidAtWorld(s, p.x, p.y, p.z, VOXEL_M)) return true;
-            continue;
-        }
-        const float dx = (p.x - s.cx) / s.hx, dz = (p.z - s.cz) / s.hz;
-        if (dx * dx + dz * dz < 1.0f) return true;
-    }
-    return false;
+    // THE MODELS ARE ONE LINE NOW, and that is the point rather than the
+    // tidiness: this loop used to be written out here, again in Bunnies, and
+    // again nowhere at all in the four populations that needed it. See
+    // solidsContain in scene/collide.h.
+    return solidsContain(w.solids, w.solidCount, p.x, p.y, p.z, VOXEL_M);
 }
 
 class Player {
@@ -400,16 +394,57 @@ class Player {
     // smoothing has to be kept away from.
     static constexpr float kCrouchRate = 13.0f;
 
+    // -- AND A THIRD ONE: PRONE, which the JS engine does not have ----------
+    //
+    // KEEP HOLDING THE CROUCH AND YOU LIE DOWN. Not a second key and not a
+    // toggle: the crouch is already a held key, so the only thing a held
+    // crouch can escalate into is the next stance down. kProneHold is measured
+    // from the moment the key goes down, and it is long enough that the crouch
+    // has visibly SETTLED first -- at kCrouchRate the eye is within a few
+    // centimetres of the crouch by 150 ms, so 350 ms reads as "crouched, then
+    // decided to go flat" rather than one long slide past a height nobody saw.
+    //
+    // FIVE VOXELS, in the same vocabulary as the 20 and the 13 above: a head
+    // lifted off the ground looking forward, not a camera buried in the dirt.
+    // It is a fraction for the same reason kCrouchEyeMul is -- it has to
+    // survive the eye slider.
+    static constexpr float kProneEyeMul = 5.0f / 20.0f;  // PR_HEIGHT / HEIGHT
+    static constexpr float kProneSpeed = 0.18f;          // a crawl, not a creep
+    // FIVE PER SECOND against the crouch's THIRTEEN, because going flat is a
+    // move you commit to: roughly half a second to lie down and half a second
+    // to get back up, where the crouch is 150 ms of dipping your head. It
+    // belongs to the crouch<->prone SEGMENT and applies in both directions --
+    // see the ease in update(), where a segment also owns a SPEED CAP for a
+    // reason that is not obvious.
+    static constexpr float kProneRate = 5.0f;
+    static constexpr float kProneHold = 0.35f;  // seconds held before lying down
+
     // How high the eye is standing right now -- `eye` full up, kCrouchEyeMul of
     // it fully down, and interpolated between while the crouch eases. The JS
     // engine's eyeH, and the reason the crouch is a smooth sink rather than a
     // cut. NOT written back into `eye`, which is a TUNING value the menu edits
     // and a bake writes: folding a crouch into it would bake a crouched player
     // as the height everyone spawns at.
-    float eyeHeight() const { return eye * (1.0f - crouchT_ * (1.0f - kCrouchEyeMul)); }
+    //
+    // ONE NUMBER FOR THREE STANCES: stanceT_ runs 0..2, standing to crouched to
+    // prone, and the height is the piecewise walk down that line. A single
+    // scalar is what makes the release work -- easing it from 2 to 0 passes
+    // THROUGH the crouch height on the way up without ever latching there, so
+    // there is no second stance to release and no state that can be left
+    // half-standing.
+    float eyeHeight() const {
+        const float t = stanceT_;
+        const float mul = (t <= 1.0f)
+                              ? 1.0f - t * (1.0f - kCrouchEyeMul)
+                              : kCrouchEyeMul - (t - 1.0f) * (kCrouchEyeMul - kProneEyeMul);
+        return eye * mul;
+    }
     // How far into the crouch the eye is, 0..1 -- for anything that wants to
     // show it. The movement itself does not go through here.
-    float crouchAmount() const { return crouchT_; }
+    float crouchAmount() const { return stanceT_ < 1.0f ? stanceT_ : 1.0f; }
+    // ...and how far past it, 0..1 again, so a caller that only knows about the
+    // crouch keeps the answer it always got.
+    float proneAmount() const { return stanceT_ > 1.0f ? stanceT_ - 1.0f : 0.0f; }
 
     // stepLag_ is carried here and NOT in pos, so the physics still sees the
     // feet exactly on the ground while the eye is still catching up.
@@ -440,8 +475,37 @@ class Player {
         // therefore rises back to full the moment F is pressed, which is what
         // you want -- a flying crouch is a camera dropped for no reason.
         const bool crouching = crouch && !fly;
-        crouchT_ += ((crouching ? 1.0f : 0.0f) - crouchT_) * (1.0f - expf(-kCrouchRate * dt));
-        if (crouchT_ < 0.001f) crouchT_ = 0.0f;
+        // HELD LONG ENOUGH AND THE CROUCH BECOMES A PRONE. The clock is reset by
+        // the release and by taking off, so a flight always lands you standing
+        // and a tap can never accumulate its way to the floor.
+        holdT_ = crouching ? holdT_ + dt : 0.0f;
+        const float target = crouching ? (holdT_ >= kProneHold ? 2.0f : 1.0f) : 0.0f;
+        // THE RATE BELONGS TO THE SEGMENT THE EYE IS IN, not to the stance it is
+        // heading for: above the crouch line the eye moves at the slow prone
+        // rate in both directions, below it at the crouch's.
+        //
+        // AND THE SEGMENT OWNS A SPEED CAP, which is the part that is not
+        // obvious. An exponential ease moves at rate * DISTANCE REMAINING, and
+        // on the way up from prone the distance remaining is 2 and not 1 --
+        // so the body left the ground at twice the speed it lay down at, purely
+        // because it was aimed further, and crossed the entire prone segment in
+        // 108 ms. Capping the step at rate * dt -- exactly the speed the same
+        // ease would have over ONE segment -- makes a segment take its own time
+        // no matter where the body is ultimately going, and changes nothing at
+        // all about a plain crouch, whose distance is 1 already.
+        //
+        // That is the whole of the "in one go": the release aims straight at
+        // standing, spends 200 ms getting off the ground, PASSES the crouch
+        // height without stopping at it, and finishes at the crouch's own
+        // brisker rate. There is nothing to press in between and no stance left
+        // over to release.
+        const float rate = (stanceT_ > 1.0f || target > 1.0f) ? kProneRate : kCrouchRate;
+        float ds = (target - stanceT_) * (1.0f - expf(-rate * dt));
+        const float cap = rate * dt;
+        if (ds > cap) ds = cap;
+        if (ds < -cap) ds = -cap;
+        stanceT_ += ds;
+        if (stanceT_ < 0.001f) stanceT_ = 0.0f;
         // THE CROUCH BEATS THE SPRINT rather than the two multiplying out to
         // something between them -- `sprint = keys.has(binds.sprint) &&
         // !crouching` in that engine, and holding both should not be a way to
@@ -503,9 +567,19 @@ class Player {
             // unchanged. Wading is deliberately still in the chain -- you do not
             // get to bunny hop across a lake.
             const bool bounding = sprint && !onGround && !swimming_;
+            // THE CROUCH STILL SNAPS AND THE PRONE STILL EASES, which is not
+            // an inconsistency: the crouch is 0.7 m of eye and 150 ms, short
+            // enough that the gait can follow the KEY, while the prone is a
+            // metre of eye and the best part of half a second, long enough that
+            // a body still visibly on the ground sprinting at full speed is the
+            // thing you would notice. So the prone segment is driven off the
+            // EASE and the crouch off the input, and while stanceT_ never
+            // passes 1 this is the same expression it always was.
+            float stanceMul = crouching ? kCrouchSpeed : 1.0f;
+            if (stanceT_ > 1.0f)
+                stanceMul = kCrouchSpeed - (stanceT_ - 1.0f) * (kCrouchSpeed - kProneSpeed);
             const float spd = walk * (sprint ? sprintMul : 1.0f) *
-                              (bounding ? sprintJumpMul : 1.0f) *
-                              (crouching ? kCrouchSpeed : 1.0f) *
+                              (bounding ? sprintJumpMul : 1.0f) * stanceMul *
                               (wading ? waterSpeed : 1.0f);
             // Approached exponentially rather than set outright, and far more
             // slowly in the air (3.2 against 14): that difference IS the sense
@@ -636,6 +710,36 @@ class Player {
         }
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
+            // -- A MODEL WITH ROOMS IS ASKED A DIFFERENT QUESTION -----------
+            //
+            // The floor under the FEET, not the top of the column: see
+            // solidColumnTopBelow, and Solid::interior for why a building is
+            // the one thing in this engine that needs it. The ceiling of the
+            // search is how far this body could have climbed since last frame,
+            // which is the same reach moveAxis allows a step -- so the tread
+            // of a stair is found and the storey above it is not.
+            //
+            // `top` is not a rejection here. A building's highest voxel is its
+            // mast, thirty metres over every floor in it.
+            if (s.interior) {
+                if (!overModel(s, x, z, VOXEL_M, hw)) continue;
+                float hit = -1e9f;
+                bool any = false;
+                for (int c = 0; c < 5; ++c) {
+                    const float sx = x + ((c == 4) ? 0.0f : ((c & 1) ? hw : -hw));
+                    const float sz = z + ((c == 4) ? 0.0f : ((c & 2) ? hw : -hw));
+                    float y = 0.0f;
+                    if (solidColumnTopBelow(s, sx, sz, pos.y + upMax(), VOXEL_M, &y)) {
+                        hit = maxf(hit, y);
+                        any = true;
+                    }
+                }
+                if (any && hit > g.y) {
+                    g.y = hit;
+                    g.bouncy = false;
+                }
+                continue;
+            }
             // `top` is the model's highest voxel, so it still works as a cheap
             // rejection: nothing in this model can be above it.
             if (!s.standable || s.top <= g.y) continue;
@@ -719,6 +823,31 @@ class Player {
         const float feet = fly ? pos.y : (w.terrain ? walkGroundM(w, x, z) : pos.y);
         for (int i = 0; i < w.solidCount; ++i) {
             const Solid &s = w.solids[i];
+            // -- A WALL AND A FLOOR AT ONCE ---------------------------------
+            //
+            // `standable` solids fall out of this loop below, which is right
+            // for a rock -- walking into one is meant to put you ON it, and
+            // moveAxis's step-up is what does that. A building cannot take
+            // that deal: it is standable on every storey and a wall between
+            // them, and skipping it here would let you walk through the
+            // masonry to whatever floor happened to be under your feet.
+            //
+            // ANCHORED TO THE BODY, NOT TO THE TERRAIN. `feet` above is the
+            // height of the GROUND at (x, z), and the ground under this level
+            // is the generator's hillside six hundred metres below it -- so
+            // the box would be tested somewhere the building is not. Inside a
+            // building the body's own height is the only honest anchor.
+            //
+            // From the step-up to the top of the head: below that a threshold,
+            // a kerb or a stair tread is something you walk onto rather than
+            // into, which is the whole difference between a doorway and a
+            // wall.
+            if (s.interior) {
+                if (solidBoxOverlap(s, x, pos.y + stepUp, z, pos.y + kBodyHeightM, halfWidth,
+                                    VOXEL_M))
+                    return true;
+                continue;
+            }
             if (s.standable) continue;
             if (s.vol) {
                 if (solidBoxOverlap(s, x, feet, z, feet + kBodyHeightM, halfWidth, VOXEL_M))
@@ -794,8 +923,12 @@ class Player {
     // How long this body has been DESCENDING, in seconds. Zero on the ground,
     // in water, and at every apex -- see fallRamp.
     float fallT_ = 0.0f;
-    // 0 standing, 1 fully crouched, and every value between while it eases.
-    float crouchT_ = 0.0f;
+    // 0 standing, 1 fully crouched, 2 flat on the ground, and every value
+    // between while it eases. See eyeHeight for why it is one number.
+    float stanceT_ = 0.0f;
+    // How long the crouch key has been held, in seconds -- the only thing that
+    // decides whether the stance stops at the crouch or carries on to prone.
+    float holdT_ = 0.0f;
 
     // How far the eye is still behind the feet after a step, in metres. Always
     // decaying toward zero; never read by anything that decides where the body

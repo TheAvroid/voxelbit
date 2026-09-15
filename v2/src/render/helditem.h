@@ -162,6 +162,15 @@ enum class Takes : uint8_t {
     // sand, silt. See isSoilMat in scene/voxelworld.h, which is where the list
     // lives so the swing and the audio cannot hold different opinions of it.
     Soil,     // a shovel
+    // -- AND A HOE, WHICH DOES NOT BREAK ANYTHING AT ALL ------------------
+    //
+    // v1's line is the whole design: "the HOE does not chop -- it tills". It is
+    // the first entry here that is not a BITE, so `toolTakes` answers false for
+    // it against every swing -- correctly, because there is no material it
+    // removes. What it does instead happens before the bite chain, beside the
+    // wheat, which is the other thing a swing can spend itself on without
+    // digging anything. See App::tillGround.
+    Earth,    // a hoe
 };
 
 struct Tool {
@@ -171,6 +180,17 @@ struct Tool {
     // models and the pose stay loaded either way, because a dropped axe is the
     // same axe and picking it up must not cost a reload.
     bool carried = true;
+    // -- HOW MANY OF IT (user 2026-09-14) ----------------------------------
+    //
+    // `carried` is the same fact for the first one and this is the rest of it.
+    // Kept as a SECOND field rather than replacing the bool with `n > 0`,
+    // because `carried` is read in eight places that mean "is this in the
+    // wheel" and none of them wants to learn about counting.
+    //
+    // THE TWO MOVE TOGETHER AND ONLY give/take/stow MOVE THEM. A tool the
+    // player has never dropped sits at 1, which is why the badge is hidden
+    // below 2 -- "x1" beside an axe is noise.
+    int stack = 1;
     // Where the model was read from. Only the bow needs it -- see retuneArrow,
     // which recomposes the whole strip from the file every time the arrow moves
     // -- but it is on the Tool rather than beside the bow because "which file
@@ -255,7 +275,12 @@ inline constexpr float kReach3dVox = 107.0f;
 // hit -- ground, trunk, rock, or thin air.
 // ---------------------------------------------------------------------------
 struct Swing {
-    enum Kind { None, Ground, Trunk, Rock };
+    // LOOSE IS THE FIFTH, and it is a kind rather than a flag on Trunk because
+    // it is edited down a different path entirely: a placed model is an
+    // instance in a chunk with a stump to leave behind, and a felled tree is a
+    // rigid body that has neither. What it IS made of is `takesAs` below --
+    // wood, stone or soil, exactly the same three the tools declare.
+    enum Kind { None, Ground, Trunk, Rock, Loose };
     Kind kind = None;
     bool hit = false;
     float dist = 0.0f;   // metres from the eye
@@ -274,6 +299,16 @@ struct Swing {
     // for one cap. The audio is the only reader: the engine this came from
     // leaves a mushroom cap silent.
     bool soft = false;
+
+    // WHAT A LOOSE BODY IS MADE OF, on a Loose hit and only then.
+    //
+    // A Solid answers this by being standable or not; a body cannot, because a
+    // felled tree is lying down and so is a boulder that has rolled. So the
+    // body remembers what it was cut from and hands it out here -- see
+    // World::DebrisTakes, which these mirror one for one.
+    Takes takesAs = Takes::Nothing;
+    // WHICH BODY, so the carve can find it again. -1 unless kind is Loose.
+    int debris = -1;
 
     // THE INSTANCE THE BLOW LANDED ON, on a Trunk or Rock hit and only then.
     // Carried whole because breaking a model needs its transform to find the
@@ -326,16 +361,26 @@ struct Swing {
 // So a tool that has been refused can ask this instead: is there a model under
 // the crosshair at all, within reach. Same voxels, same reach, same order --
 // only without the ground winning on distance.
+// HOW FAR A SWING REACHES, POINTED THAT WAY.
+//
+// The reach opens up as you look down, so the ground at your feet is always in
+// range without the horizontal reach having to be long enough to hit a tree two
+// body lengths away.
+//
+// SAID ONCE because three different rays need the same answer -- the terrain
+// march, the models, and the loose bodies -- and a body you can hit half a
+// metre further away than the rock behind it is a bug nobody would ever think
+// to look for here.
+inline float swingReachM(const Vec3 &dir) {
+    const float cp = sqrtf(maxf(0.0f, dir.x * dir.x + dir.z * dir.z));
+    return minf(kReach3dVox, kReachHorizVox / maxf(0.15f, cp)) * VOXEL_M;
+}
+
 inline Swing swingRayModels(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
     Swing out;
     if (!w.terrain) return out;
 
-    // The reach opens up as you look down, so the ground at your feet is always
-    // in range without the horizontal reach having to be long enough to hit a
-    // tree two body lengths away.
-    const float cp = sqrtf(maxf(0.0f, dir.x * dir.x + dir.z * dir.z));
-    const float reach =
-        minf(kReach3dVox, kReachHorizVox / maxf(0.15f, cp)) * VOXEL_M;
+    const float reach = swingReachM(dir);
 
     // -- the trunks and the boulders ----------------------------------------
     //
@@ -402,12 +447,38 @@ inline Swing swingRayModels(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir
 // while the audio still called the ground unbreakable would play the WRONG-TOOL
 // knock on a blow that worked.
 //
-// SOFTNESS IS NOT ASKED HERE. A mushroom cap is a material nobody recorded a
-// sound for, which is a fact about the audio and not about what a tool can
-// take -- so it stays where it was, as blow()'s own early-out.
+// SOFTNESS IS ASKED HERE NOW, AND THE AUDIO STILL ASKS IT SEPARATELY. Those
+// are two different questions about the same flag and they were conflated in
+// the note this replaces: "nobody recorded a sound for a mushroom cap" is a
+// fact about the audio, and blow() keeps its own early-out for it. WHICH TOOLS
+// CAN CUT ONE is a fact about the tools, and it belongs here.
 // ---------------------------------------------------------------------------
 inline bool toolTakes(Takes t, const Swing &s) {
     if (!s.hit) return false;
+    // -----------------------------------------------------------------------
+    // A MUSHROOM ANSWERS TO BOTH TOOLS (user 2026-09-14: "let the axe take a
+    // chunk out of the mushrooms just like the pick can").
+    //
+    // It is not stone and it is not wood, and the only honest thing to do with
+    // a material that is neither is to let both edged tools cut it -- which is
+    // what "just like the pick can" asks for: the pick keeps working, the axe
+    // starts. A shovel and a bow still do nothing, which is why this is not
+    // simply `return t != Takes::Nothing`.
+    //
+    // BEFORE THE Loose ARM AND BEFORE THE SWITCH, so it covers a cap still
+    // standing on its stem (a soft Swing::Rock -- see swingRayModels, which
+    // takes it from Solid::bouncy) and one lying on the ground (a soft
+    // Swing::Loose -- see kDebrisSoft) with one line instead of an arm in each.
+    // Standing and fallen disagreeing about which tool works is exactly the
+    // shape of bug the note above this function exists to prevent.
+    // -----------------------------------------------------------------------
+    if (s.soft) return t == Takes::Wood || t == Takes::Stone;
+    // A LOOSE BODY CARRIES ITS OWN ANSWER, so this is one comparison and not a
+    // fourth arm in every case below. A felled tree is wood wherever it is
+    // lying and whatever it is lying on, which is precisely what the player
+    // means by "hit a felled tree with an axe": the same tool that cut it down
+    // is the tool that breaks it up.
+    if (s.kind == Swing::Loose) return t != Takes::Nothing && s.takesAs == t;
     switch (t) {
         case Takes::Wood:
             return s.kind == Swing::Trunk;
@@ -430,12 +501,7 @@ inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
     Swing out;
     if (!w.terrain) return out;
 
-    // The reach opens up as you look down, so the ground at your feet is always
-    // in range without the horizontal reach having to be long enough to hit a
-    // tree two body lengths away.
-    const float cp = sqrtf(maxf(0.0f, dir.x * dir.x + dir.z * dir.z));
-    const float reach =
-        minf(kReach3dVox, kReachHorizVox / maxf(0.15f, cp)) * VOXEL_M;
+    const float reach = swingReachM(dir);
 
     // The models first -- see swingRayModels, which owns that pass now.
     out = swingRayModels(w, eye, dir);
@@ -474,6 +540,62 @@ inline Swing swingRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir) {
             // looking at. See TerrainProbe::material for why it is not the
             // column's surface any more.
             out.material = probe.material(vx, vz, vy);
+            out.dist = t * VOXEL_M;
+            out.point = eye + dir * out.dist;
+            return out;
+        }
+        if (tx <= ty && tx <= tz) { t = tx; tx += ax; vx += sx; }
+        else if (ty <= tz) { t = ty; ty += ay; vy += sy; }
+        else { t = tz; tz += az; vz += sz; }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// WHAT THE SWING WENT THROUGH ON ITS WAY TO THE GROUND.
+//
+// A BLADE IS NOT SOLID AND MUST NOT BECOME SOLID. swingRay stops on
+// TerrainProbe::solid, which is the column height -- grass and wheat stand
+// ABOVE that, so a swing passes straight through a field and lands on the dirt.
+// That is correct for everything else in the engine and is exactly why it is:
+// making a blade solid would stop the player walking through long grass, stop
+// arrows, and stop the march every flying animal's floor is built on.
+//
+// So this is a SECOND march, run only when something wants to know. It stops on
+// the first voxel whose material is a blade, which is the plant you were
+// actually aiming at -- and it stops short of `maxDist`, which the caller sets
+// to however far the ordinary swing got, so wheat behind a rock is not cut
+// through the rock.
+// ---------------------------------------------------------------------------
+struct BladeHit {
+    bool hit = false;
+    uint8_t material = 0;
+    Vec3 point{0, 0, 0};
+    float dist = 0.0f;
+};
+
+inline BladeHit bladeRay(const WalkWorld &w, const Vec3 &eye, const Vec3 &dir, float maxDist) {
+    BladeHit out;
+    if (!w.terrain) return out;
+    const float ox = eye.x / VOXEL_M, oy = eye.y / VOXEL_M, oz = eye.z / VOXEL_M;
+    int vx = int(floorf(ox)), vy = int(floorf(oy)), vz = int(floorf(oz));
+    const int sx = dir.x > 0.0f ? 1 : -1, sy = dir.y > 0.0f ? 1 : -1,
+              sz = dir.z > 0.0f ? 1 : -1;
+    const float kInf = 1e30f;
+    const float ax = fabsf(dir.x) < 1e-9f ? kInf : 1.0f / fabsf(dir.x);
+    const float ay = fabsf(dir.y) < 1e-9f ? kInf : 1.0f / fabsf(dir.y);
+    const float az = fabsf(dir.z) < 1e-9f ? kInf : 1.0f / fabsf(dir.z);
+    float tx = (ax == kInf) ? kInf : (dir.x > 0.0f ? float(vx) + 1.0f - ox : ox - float(vx)) * ax;
+    float ty = (ay == kInf) ? kInf : (dir.y > 0.0f ? float(vy) + 1.0f - oy : oy - float(vy)) * ay;
+    float tz = (az == kInf) ? kInf : (dir.z > 0.0f ? float(vz) + 1.0f - oz : oz - float(vz)) * az;
+    const float maxT = maxDist / VOXEL_M;
+    float t = 0.0f;
+    TerrainProbe probe(w.terrain, w.edits);
+    for (int guard = 0; guard < 4096 && t <= maxT; ++guard) {
+        const uint8_t m = probe.material(vx, vz, vy);
+        if (isBlade(m)) {
+            out.hit = true;
+            out.material = m;
             out.dist = t * VOXEL_M;
             out.point = eye + dir * out.dist;
             return out;
@@ -541,14 +663,23 @@ class HeldItem {
     // goes in first so slot one is what the player holds when the world
     // appears.
     // -----------------------------------------------------------------------
+    // -- WHICH HELD MODELS MAY SHARE A PALETTE ENTRY ---------------------
+    //
+    // FOOD MAY, TOOLS MAY NOT. See World::addHeldVox for the argument and the
+    // measurement; the rule is by PATH because the reservation in
+    // prewarmColors has nothing but the path to go on, and the two have to ask
+    // the same question or the reservation reserves entries the load will not
+    // use.
+    static bool foodPath(const std::string &p) { return p.find("/food/") != std::string::npos; }
+
     bool add(World &world, const char *name, const std::string &voxPath, const HeldPose &pose,
-             Takes takes = Takes::Nothing) {
+             Takes takes = Takes::Nothing, int matchTol = 0) {
         Tool t;
         t.name = name;
         t.takes = takes;
         t.pose = pose;
         t.path = voxPath;
-        const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz);
+        const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz, matchTol);
         if (m < 0) return false;
         t.models.push_back(m);
         tools_.push_back(t);
@@ -574,6 +705,92 @@ class HeldItem {
         t.takes = Takes::Nothing;
         tools_.push_back(t);
         return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // CLAIM THE KIT'S COLOURS BEFORE THE WOOD IS FULL OF ANIMALS.
+    //
+    // THE BOW WAS RENDERING WITH A COLOUR MISSING (user 2026-09-14, "the bow is
+    // broken, missing voxels") and this is why. The measurement, taken on a
+    // plain start:
+    //
+    //     palette  255 of 255 entries used  -- FULL
+    //     v2: PALETTE FULL -- 14 colours could not be registered
+    //
+    // Fourteen is not fourteen colours. overflowed() counts failed CALLS, and
+    // the bow is fourteen models -- seven nocked, seven bare -- each of which
+    // asked for ONE colour it could not have. The composed frames want 12
+    // distinct entries nocked and 9 bare; the engine reported 11 and 8. So the
+    // table ran out EXACTLY at the bow, one distinct colour short, and one
+    // shade of it stopped being drawn in every frame of the draw.
+    //
+    // THE RULE IS THE ONE prewarmRoom ALREADY FOLLOWS, and it is written on
+    // that function: colours are served first-come, so ORDER OF REGISTRATION IS
+    // PRIORITY, and whatever asks last is what you cannot see. The pause room
+    // was moved to the front for this exact reason and the held kit is now the
+    // thing at the back of the queue -- it loads after the terrain, after the
+    // trees, after the butterflies, birds, lake, flock and bunnies.
+    //
+    // NOT A RESERVED TAIL, which is the fix that suggests itself and is the
+    // wrong one: a ceiling held below mat::COUNT steals from whoever asks last,
+    // which is this kit, which is the bug. The note over Palette::forModelColor
+    // says so from the last time it happened to the stone heads.
+    //
+    // COLOURS ONLY. The geometry still loads where it always did -- addHeldVox
+    // needs the pool and the structures, and those do not exist yet here. This
+    // asks Palette for exactly the entries that load will ask for, with the
+    // same `exact` key, so the later call is a cache hit and mints nothing.
+    //
+    // AFTER deriveGroundFromTrees, WHICH IS WHY IT IS NOT EARLIER STILL. That
+    // pass reads back the entries the TREES minted to decide what a hillside is
+    // made of, and the note on the flyer band records the hazard in as many
+    // words: a model registered ahead of it becomes a candidate for soil. A
+    // hillside the colour of a stone axe head is a real outcome of getting this
+    // one line's position wrong.
+    //
+    // Returns how many entries it took, for the report at the call site.
+    // -----------------------------------------------------------------------
+    static int prewarmColors(World &world, const std::vector<std::string> &toolPaths,
+                             const std::string &bowPath) {
+        const int before = world.palette.used();
+        // The same walk addHeldVox does: only the entries some voxel actually
+        // wears, and `exact` because a held colour never merges. See the note
+        // there for why the whole kit is exempt and not just the stone greys.
+        auto mint = [&](const VoxModel &mo, int tol) {
+            std::vector<bool> used(256, false);
+            for (uint8_t v : mo.m) used[v] = true;
+            for (int e = 1; e <= 255; ++e)
+                if (used[size_t(e)])
+                    world.palette.forModelColor(mo.pal[size_t(e) - 1], true,
+                                                /*exact=*/tol == 0, tol);
+        };
+        for (const std::string &p : toolPaths) {
+            if (p.empty()) continue;
+            VoxModel mo;
+            std::string err;
+            // SILENT ON FAILURE, and deliberately: this is a reservation, not a
+            // load. A path that will not open is reported with its reasons by
+            // the real load a few hundred lines later, and saying it twice
+            // would only make the start-up look like it failed twice.
+            // THE FOOD SHARES AND THE TOOLS DO NOT -- see the note over
+            // World::addHeldVox. The reservation has to ask the same question
+            // the load will ask, or it reserves entries the load then does not
+            // use and the table is full for nothing.
+            if (voxLoad(p, &mo, &err)) mint(mo, foodPath(p) ? Palette::kModelMatch : 0);
+        }
+        // THE BOW IS COMPOSED, NOT READ, so it has to be cut here to be asked
+        // about -- parseBowStrip touches no device and the strip is thrown away
+        // again. Both halves: the bare frames carry a colour the nocked ones do
+        // not need to have claimed for them, and it was one of the two that
+        // went missing.
+        if (!bowPath.empty()) {
+            std::string err;
+            const BowStrip strip = parseBowStrip(bowPath, &err);
+            // THE BOW IS A TOOL: exact, like the rest of the kit.
+            for (const VoxModel &m : strip.withArrow) mint(m, 0);
+            for (const VoxModel &m : strip.bowOnly) mint(m, 0);
+        }
+        return world.palette.used() - before;
     }
 
     // -----------------------------------------------------------------------
@@ -636,6 +853,16 @@ class HeldItem {
         // so it is the right thing to ask.
         if (tools_[size_t(sel_)].models.empty()) return -1;
         const int gone = sel_;
+        // ONE OF THE PILE, NOT THE PILE. Dropping the top stalk of nine leaves
+        // eight in the hand and the hand where it was -- only the LAST one out
+        // takes the slot out of the wheel and moves the selection on.
+        if (tools_[size_t(gone)].stack > 1) {
+            --tools_[size_t(gone)].stack;
+            drawing_ = false;
+            loosed_ = false;
+            return gone;
+        }
+        tools_[size_t(gone)].stack = 0;
         tools_[size_t(gone)].carried = false;
         drawing_ = false;
         loosed_ = false;
@@ -653,10 +880,35 @@ class HeldItem {
         return gone;
     }
 
+    // -----------------------------------------------------------------------
+    // ...AND PUT ONE IN THE KIT WITHOUT PUTTING IT IN THE WHEEL.
+    //
+    // take() is how a tool leaves the hand and it does two things at once --
+    // clears `carried` AND moves the selection on. A slot that has never been
+    // held needs only the first: the wheat and the seeds are loaded at startup
+    // so that picking one up costs no load, and until you cut some there is
+    // nothing to scroll to. Calling take() for that would also change what the
+    // hand opens with, which is the one thing that must not move.
+    // -----------------------------------------------------------------------
+    void stow(int tool) {
+        if (tool < 0 || tool >= int(tools_.size())) return;
+        tools_[size_t(tool)].carried = false;
+        tools_[size_t(tool)].stack = 0;
+    }
+
     // ...and take it back. The hand only changes to it if it was empty, so
     // walking over a pick while swinging an axe does not swap the axe out.
+    // ...and how deep one goes. v1's STACK_MAX, which it moved from 8 to 10.
+    static constexpr int kStackMax = 10;
+
     void give(int tool) {
         if (tool < 0 || tool >= int(tools_.size())) return;
+        Tool &t = tools_[size_t(tool)];
+        // A SECOND ONE STACKS; THE FIRST ONE IS A PICKUP. Walking over wheat
+        // while already carrying some must not reset the pile to one, which is
+        // what the bare `carried = true` did -- every stalk you gathered was
+        // the only stalk you had.
+        t.stack = t.carried ? mini(kStackMax, t.stack + 1) : 1;
         tools_[size_t(tool)].carried = true;
         if (!shown) {
             sel_ = tool;

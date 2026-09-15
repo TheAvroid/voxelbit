@@ -382,7 +382,47 @@ class Tracer {
     Vec3 bulbRadiance{0.0f, 0.0f, 0.0f};
     float bulbRadius = 0.3f;
     uint32_t bulbMtl = 0xFFFFFFFFu;   // kNoBulb
+    // THE FIREFLY'S LAMP: a material that renders bright and lights nothing.
+    // Its own pair of fields rather than a second bulb, because the bulb is an
+    // ESTIMATOR as well as a test -- see V6Params::glowMtl in Shared.slang.
+    uint32_t glowMtl = 0xFFFFFFFFu;
+    Vec3 glowRadiance{0.0f, 0.0f, 0.0f};
+    // ...AND THE SPARKS. One row per emissive particle material -- see
+    // V6Params::emitters for why this is a table where the two above are
+    // fields. Packed from 0; a negative `mtl` ends it.
+    struct Emit {
+        Vec3 radiance{0.0f, 0.0f, 0.0f};
+        float mtl = -1.0f;
+    };
+    Emit emitters[kEmitSlots];
+    // Set one, by material id. Returns false if the table is full, which is a
+    // fact worth having rather than a silently dropped spark.
+    bool addEmitter(uint8_t mtl, const Vec3 &radiance) {
+        for (int i = 0; i < kEmitSlots; ++i) {
+            if (emitters[i].mtl >= 0.0f && int(emitters[i].mtl + 0.5f) != int(mtl)) continue;
+            emitters[i].mtl = float(mtl);
+            emitters[i].radiance = radiance;
+            return true;
+        }
+        return false;
+    }
     bool lit() const { return bulbMtl != 0xFFFFFFFFu; }
+
+    // -- ...AND THAT THERE IS NO WEATHER IN HERE --------------------------
+    //
+    // The pause room is a sealed box, but the SKY is not something the box is
+    // between you and: the cloud deck is drawn on the miss path and the fog is
+    // marched along every primary ray from the camera, wherever the camera is.
+    // The room stands at y 2048, which is above the deck -- so the wood's
+    // atmosphere was being applied inside it, and with the shell missing (see
+    // World::prewarmRoom) what the user was looking at was literally the cloud
+    // layer from above: "it also looks like the room is above the clouds?"
+    //
+    // A FLAG OF ITS OWN RATHER THAN lit(). The bulb is deliberately a general
+    // hook -- the note above says it is what a torch or a campfire should reuse
+    // -- and a campfire in the wood must not switch the sky off. This says the
+    // one thing it means: the camera is somewhere with a roof on it.
+    bool indoors = false;
 
     // -- AND THE WORDS THAT HANG OVER ITS BUTTONS -------------------------
     //
@@ -638,6 +678,11 @@ class Tracer {
         p.bulbRadiance =
             float3(bulbRadiance.x, bulbRadiance.y, bulbRadiance.z);
         p.bulbMtl = bulbMtl;
+        p.glowMtl = glowMtl;
+        p.glowRadiance = float3(glowRadiance.x, glowRadiance.y, glowRadiance.z);
+        for (int i = 0; i < kEmitSlots; ++i)
+            p.emitters[i] = float4(emitters[i].radiance.x, emitters[i].radiance.y,
+                                   emitters[i].radiance.z, emitters[i].mtl);
         for (int i = 0; i < kHoloSlots; ++i) p.holo[i] = holo[i];
         p.waterTime = waterTime;
         p.waterFlags = waterFlags;
@@ -763,7 +808,8 @@ class Tracer {
         // ReSTIR: collect from the first frame, but only SHADE from the
         // reservoirs once there is a resampled result to shade from.
         // The froxel grid, and the limits the tracer must map depth through.
-        p.volFog = (volfog_ && volfog_->active()) ? 1 : 0;
+        // ...AND NO WEATHER INDOORS. See Tracer::indoors.
+        p.volFog = (volfog_ && volfog_->active() && !indoors) ? 1 : 0;
         p.fogFar = volfog_ ? volfog_->farD : 400.0f;
         // The phase lobe and the dome moved into the tracer with the radiance:
         // the volume stores only what each cell can SEE. See VolFog.slang.
@@ -787,7 +833,7 @@ class Tracer {
         // filled a band of slices at a time over the first few frames, and a
         // march against a half-written volume shows as the sky growing clouds
         // in from one end.
-        p.clouds = (clouds_ && clouds_->active() && clouds_->filled()) ? 1 : 0;
+        p.clouds = (clouds_ && clouds_->active() && clouds_->filled() && !indoors) ? 1 : 0;
         p.cloudWindT = clouds_ ? clouds_->windT() : 0.0f;
         p.cloudSun = clouds_ ? clouds_->sunStrength : 2.2f;
         p.cloudAmb = clouds_ ? clouds_->ambStrength : 0.55f;

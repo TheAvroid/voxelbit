@@ -78,6 +78,20 @@ void usage() {
         "  --dig-test                with no window: what a column is made of, which\n"
         "                            tool takes which band, and twelve swings at one\n"
         "                            spot to prove a pit is dug rather than repeated\n"
+        "  --locate-test             with no window: ask /locate for every animal it\n"
+        "                            knows, print what each found and how far off, and\n"
+        "                            check that standing next to one is dry and clear\n"
+        "  --clip-test               with no window: tick every population for a minute\n"
+        "  --hoe-test                with no window: swing the hoe at your own feet and\n"
+        "  --shaft-test              with no window: dig four metres straight down\n"
+        "                            and follow the spoil out of the hole\n"
+        "                            check it turns the earth, refuses to dig itself\n"
+        "                            deeper, and grows back over\n"
+        "  --wheat-test              with no window: find a stand of wheat, swing at it,\n"
+        "                            and check it breaks, pays one wheat and one seed, and\n"
+        "                            that both can be walked over and absorbed\n"
+        "                            and report any creature that is inside a tree or a\n"
+        "                            rock. Run it in BOTH woods -- see --pine\n"
         "  --tool N                  which tool the hand opens with (0 axe, 1 pick,\n"
         "                            2 shovel, 3 bow, 4 empty hand)\n"
         "  --bow PATH --arrow PATH   the bow's draw strip, and what it looses\n"
@@ -173,6 +187,12 @@ void usage() {
         "  --shot-ui PATH            photograph the WINDOW instead -- the crosshair and\n"
         "                            the menu live there, not in the render\n"
         "  --menu                    open the settings panel at startup\n"
+        // Listed now that it is the ONLY way in -- the panel had a key (I, then
+        // O, then L) and has none any more. See App::onKeyEvent.
+        "  --water-ui                open the water panel at startup; it has no key\n"
+        "  --level                   start in the BUILDING rather than the wood --\n"
+        "                            what [O] opens, for a shot that needs no keypress\n"
+        "  --stage                   ...and the same for the asset editor's deck\n"
         "  --ground-stats            print what the ground is made of, region by region,\n"
         "                            and what it is lit by -- sun against sky -- then exit\n"
         "  --fly                     start in fly mode -- no collision, so a scripted\n"
@@ -258,7 +278,24 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
         return true;
     }
     if (a == "--drop-frame") { argInt(argc, argv, i, &o->dropFrame); return true; }
+    if (a == "--spark-frame") { argInt(argc, argv, i, &o->sparkFrame); return true; }
+    if (a == "--hurt-frame") { argInt(argc, argv, i, &o->hurtFrame); return true; }
+    if (a == "--hurt-dim") { o->hurtDim = true; return true; }
     if (a == "--stage") { o->stageAtStart = true; return true; }
+    // --level: arrive in the building rather than the wood. See --stage, and
+    // Options::levelAtStart for why a key alone is not enough.
+    if (a == "--level") { o->levelAtStart = true; return true; }
+    // --gizmo move | rot: open the deck with the subject already selected and
+    // that handle up. See Options::gizmoAtStart for why it is a flag.
+    if (a == "--gizmo") {
+        o->stageAtStart = true;
+        o->gizmoAtStart = 1;
+        if (i + 1 < argc && argv[i + 1][0] != '-') {
+            const std::string g = argv[++i];
+            o->gizmoAtStart = (g == "rot" || g == "rotate" || g == "ring") ? 2 : 1;
+        }
+        return true;
+    }
     // A gain over the stride and breath in render/helditem.h -- see kHandSway.
     if (a == "--hand-sway") { argFloat(argc, argv, i, &o->handSway); return true; }
     if (a == "--bird-dir") { if (i + 1 < argc) o->birdDir = argv[++i]; return true; }
@@ -304,9 +341,20 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         // Anything new goes here, before it, and continues.
         if (a == "--water-ui") { o->waterPanelAtStart = true; continue; }
         // BEFORE THE CHAIN, like every flag added since the C1061 -- see the
-        // note above. Opens the pause room on the first frame so --shot-ui
-        // and --out can photograph it with no keystroke.
+        // note above. Puts the three pause buttons up as soon as the spawn has
+        // settled, so --shot-ui and --out can photograph them with no
+        // keystroke.
         if (a == "--room") { o->roomAtStart = true; continue; }
+        // BEFORE THE CHAIN, like every flag added since the C1061 -- see the
+        // note above. Surveys the /locate life table with no window at all.
+        if (a == "--locate-test") { o->locateTest = true; continue; }
+        // ...AND THE SAME, for the check that no animal is inside anything.
+        if (a == "--clip-test") { o->clipTest = true; continue; }
+        if (a == "--wheat-test") { o->wheatTest = true; continue; }
+        if (a == "--hoe-test") { o->hoeTest = true; continue; }
+        if (a == "--shaft-test") { o->shaftTest = true; continue; }
+        if (a == "--kill-test") { o->killTest = true; continue; }
+        if (a == "--soil-test") { o->soilTest = true; continue; }
         // The same NINE bits the panel sets, for a scripted A/B: 511 is all on,
         // and clearing one proves that term and only that term moved. 507 is
         // what v2 ships with -- everything but the world reflection.
@@ -584,7 +632,9 @@ int main(int argc, char **argv) {
     // ever needs pixels it should take a --shot like everything else, which is
     // covered by the minimise above.
     // -----------------------------------------------------------------------
-    c.headless = o.outGiven || o.fellTest || o.floatTest || o.digTest;
+    c.headless = o.outGiven || o.fellTest || o.floatTest || o.digTest || o.locateTest ||
+                 o.clipTest || o.wheatTest || o.hoeTest ||
+                 o.shaftTest || o.killTest || o.soilTest;
 
     // Every device failure in this engine arrives as an exception carrying the
     // call that failed and the driver's own description of why. Catching it

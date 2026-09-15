@@ -170,6 +170,21 @@ class ToolSounds {
     // the sound belongs to the frame the tool is at the bottom of its arc, not
     // to the click that started it.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE WRONG-TOOL KNOCK, ASKED FOR DIRECTLY.
+    //
+    // blow() decides this from a Swing, which is right for everything the bite
+    // chain resolves -- but wheat is not resolved there. A blade is not solid,
+    // so a swing at a stand of it lands on the DIRT behind and comes back as
+    // soil: the Swing has no idea the player was aiming at a plant, and blow()
+    // would answer Silent for a shovel or Wood for an axe.
+    //
+    // So the caller that DOES know says so. See App::breakWheat, which is the
+    // only one -- "make it where only the hoe can break the wheat. if any other
+    // tool does it, play the antibreak sound."
+    // -----------------------------------------------------------------------
+    void knock() { sfx_.play(block_); }
+
     Blow blow(Takes takes, const Swing &s) {
         if (!s.hit) return Blow::Silent;  // a whiff is silent over there too
         // A mushroom cap is one of the materials that engine never recorded,

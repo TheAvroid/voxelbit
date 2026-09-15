@@ -161,6 +161,26 @@ struct Solid {
     // Landing on this throws you back up instead of stopping you.
     bool bouncy = false;
 
+    // -- THIS MODEL HAS ROOMS IN IT ----------------------------------------
+    //
+    // Everything else in the wood is a FLOOR or a WALL and the two are
+    // exclusive: blocked() skips every standable solid outright, because a rock
+    // you walk into is meant to put you on top of itself and the step-up in
+    // moveAxis is what does that. A BUILDING is both at once -- you stand on
+    // its floors and you are stopped by its walls -- and it is the first thing
+    // here that is, which is why this is a flag and not a shape.
+    //
+    // It changes two answers and nothing else. The floor under you becomes the
+    // highest solid voxel AT OR BELOW the feet rather than the top of the
+    // column (see solidColumnTopBelow), or standing in the lobby would put you
+    // on the roof; and the body's box is tested against the voxels from the
+    // step-up height to the top of its head, which is the ordinary voxel rule
+    // and the reason a doorway is a doorway and a wall is not.
+    //
+    // NOTHING IN THE WOOD SETS IT. A tree, a rock, a mushroom and a hive go on
+    // being exactly what they were.
+    bool interior = false;
+
     // ---- the voxel-accurate surface --------------------------------------
     //
     // `col` is the model's column heightfield, BORROWED from the ModelTemplate
@@ -324,19 +344,36 @@ inline bool solidAtWorld(const Solid &s, float wx, float wy, float wz, float vox
 // rejections come first because this is asked of every nearby model on every
 // step, and only the one or two a body is actually near should pay for the
 // range.
+// AND THE SAME FOR A BODY THAT IS NOT SQUARE. A marcher is 0.5 m across and
+// 1.4 m long and calling that a square is wrong in both directions at once --
+// too fat to walk a gap it fits through, too thin along the nose to notice what
+// it is walking into. The quarter turn means a world box is a model box either
+// way round, so this is still a plain range and not a rotated test.
+inline bool solidBoxOverlap(const Solid &s, float x, float feetY, float z, float headY, float wx,
+                            float wz, float voxel);
+
 inline bool solidBoxOverlap(const Solid &s, float x, float feetY, float z, float headY, float w,
                             float voxel) {
+    return solidBoxOverlap(s, x, feetY, z, headY, w, w, voxel);
+}
+
+inline bool solidBoxOverlap(const Solid &s, float x, float feetY, float z, float headY, float wx,
+                            float wz, float voxel) {
     if (!s.vol) return false;
     if (headY < s.baseY || feetY > s.top) return false;
     float px = 0.0f, pz = 0.0f;
     solidModelSpace(s, x, z, &px, &pz);
+    // THE HALF EXTENTS TURN WITH THE MODEL. yaw 1 and 3 are quarter turns, so
+    // what was the body's x extent is its z extent in the model's frame --
+    // getting this wrong is invisible on three quarters of the placements.
+    const float w = ((s.yaw & 1) ? wz : wx), h = ((s.yaw & 1) ? wx : wz);
     const float ex = float(s.msx) * voxel, ez = float(s.msz) * voxel;
-    if (px + w < 0.0f || pz + w < 0.0f || px - w > ex || pz - w > ez) return false;
+    if (px + w < 0.0f || pz + h < 0.0f || px - w > ex || pz - h > ez) return false;
 
     const int x0 = maxi(0, int(floorf((px - w) / voxel)));
     const int x1 = mini(int(s.msx) - 1, int(floorf((px + w) / voxel)));
-    const int z0 = maxi(0, int(floorf((pz - w) / voxel)));
-    const int z1 = mini(int(s.msz) - 1, int(floorf((pz + w) / voxel)));
+    const int z0 = maxi(0, int(floorf((pz - h) / voxel)));
+    const int z1 = mini(int(s.msz) - 1, int(floorf((pz + h) / voxel)));
     const int y0 = maxi(0, int(floorf((feetY - s.baseY) / voxel)));
     const int y1 = mini(int(s.vsy) - 1, int(floorf((headY - s.baseY) / voxel)));
     for (int my = y0; my <= y1; ++my)
@@ -369,16 +406,18 @@ inline bool solidBoxOverlap(const Solid &s, float x, float feetY, float z, float
 // x/y/z in the model's own grid. The carve wants that rather than the distance:
 // re-deriving it from a point on a face is a rounding away from the voxel in
 // front or the one behind, and it is free here because the march already knows.
-inline bool rayModelVoxels(const Solid &s, const Vec3 &eye, const Vec3 &dir, float tMax,
-                           float voxel, float *tHit, int *voxOut = nullptr) {
-    if (!s.vol || s.msx <= 0 || s.vsy <= 0 || s.msz <= 0 || tMax <= 0.0f) return false;
-
-    float mox = 0.0f, moz = 0.0f, mdx = 0.0f, mdz = 0.0f;
-    solidModelSpace(s, eye.x, eye.z, &mox, &moz);
-    solidModelDir(s, dir.x, dir.z, &mdx, &mdz);
-    const float o[3] = {mox / voxel, (eye.y - s.baseY) / voxel, moz / voxel};
-    const float d[3] = {mdx / voxel, dir.y / voxel, mdz / voxel};
-    const int n[3] = {int(s.msx), int(s.vsy), int(s.msz)};
+//
+// IT TAKES A GRID AND NOT A MODEL, and that is not tidying. A SECOND kind of
+// thing needs this march and cannot be described as a Solid: a felled tree is
+// no longer a placed instance but a rigid body wearing whatever rotation the
+// solver gave it, and a Solid carries a quarter turn and nothing else. An axe
+// that could not hit one was the whole of "the player is unable to interact
+// with that felled object". One march, two callers, so a standing tree and the
+// one lying beside it cannot come to disagree about where their voxels are.
+// ---------------------------------------------------------------------------
+inline bool rayVoxelGrid(const uint8_t *vol, const int n[3], const float o[3], const float d[3],
+                         float tMax, float *tHit, int *voxOut = nullptr) {
+    if (!vol || n[0] <= 0 || n[1] <= 0 || n[2] <= 0 || tMax <= 0.0f) return false;
 
     // ---- the box, so the march starts at the model and not at the eye ------
     float t0 = 0.0f, t1 = tMax;
@@ -424,8 +463,8 @@ inline bool rayModelVoxels(const Solid &s, const Vec3 &eye, const Vec3 &dir, flo
     // the march ends at the model however long the reach is.
     for (int guard = 0; guard < 8192; ++guard) {
         if (t > t1) return false;
-        if (s.vol[size_t(v[0]) + size_t(v[2]) * size_t(n[0]) +
-                  size_t(v[1]) * size_t(n[0]) * size_t(n[2])] != 0) {
+        if (vol[size_t(v[0]) + size_t(v[2]) * size_t(n[0]) +
+                size_t(v[1]) * size_t(n[0]) * size_t(n[2])] != 0) {
             *tHit = maxf(0.0f, t);
             if (voxOut) { voxOut[0] = v[0]; voxOut[1] = v[1]; voxOut[2] = v[2]; }
             return true;
@@ -438,6 +477,21 @@ inline bool rayModelVoxels(const Solid &s, const Vec3 &eye, const Vec3 &dir, flo
         tNext[k] += tDelta[k];
     }
     return false;
+}
+
+// ...AND THE MODEL'S OWN GRID, WHICH IS THAT MARCH AFTER A CHANGE OF FRAME.
+// A placement is a translation and a quarter turn, so the ray is turned into
+// the model's axes once and the march does the rest.
+inline bool rayModelVoxels(const Solid &s, const Vec3 &eye, const Vec3 &dir, float tMax,
+                           float voxel, float *tHit, int *voxOut = nullptr) {
+    if (!s.vol || s.msx <= 0 || s.vsy <= 0 || s.msz <= 0) return false;
+    float mox = 0.0f, moz = 0.0f, mdx = 0.0f, mdz = 0.0f;
+    solidModelSpace(s, eye.x, eye.z, &mox, &moz);
+    solidModelDir(s, dir.x, dir.z, &mdx, &mdz);
+    const float o[3] = {mox / voxel, (eye.y - s.baseY) / voxel, moz / voxel};
+    const float d[3] = {mdx / voxel, dir.y / voxel, mdz / voxel};
+    const int n[3] = {int(s.msx), int(s.vsy), int(s.msz)};
+    return rayVoxelGrid(s.vol, n, o, d, tMax, tHit, voxOut);
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +532,256 @@ inline bool solidColumnTop(const Solid &s, float wx, float wz, float voxel, floa
     if (h <= 0) return false;
     *outY = s.baseY + float(h) * voxel;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// THE SURFACE UNDER A BODY THAT IS INSIDE THE MODEL -- the first solid voxel at
+// or below `ceilY`, rather than the top of the whole column.
+//
+// solidColumnTop above answers "how high is this model here", which is the only
+// question a rock can be asked: a boulder is convex from outside and there is
+// nothing under its skin to stand on. A BUILDING is the other case. Its column
+// runs roof, air, upper floor, air, ground floor, and the top of that column is
+// eleven metres over the head of anybody standing in the lobby -- so asked the
+// old question the walk puts them on the roof, instantly, the first time they
+// move. That is not a tuning problem, it is the wrong question.
+//
+// `ceilY` is how high the body could possibly have climbed to since last frame:
+// its feet plus the step-up. Scanning DOWN from there is what makes a stair a
+// stair (the next tread is inside the reach) and a wall a wall (the floor above
+// is not), with no per-storey knowledge anywhere.
+//
+// THE VOXELS, NOT THE HEIGHTFIELD, because the heightfield is one number per
+// column and the whole point here is that a column has several surfaces. False
+// when the body is off the footprint or there is nothing solid below it, which
+// is the same "nothing to stand on" solidColumnTop returns and is what makes a
+// walk off the edge a fall.
+// ---------------------------------------------------------------------------
+inline bool solidColumnTopBelow(const Solid &s, float wx, float wz, float ceilY, float voxel,
+                                float *outY) {
+    if (!s.vol) return false;
+    float px = 0.0f, pz = 0.0f;
+    solidModelSpace(s, wx, wz, &px, &pz);
+    const int mx = int(floorf(px / voxel));
+    const int mz = int(floorf(pz / voxel));
+    if (mx < 0 || mz < 0 || mx >= int(s.msx) || mz >= int(s.msz)) return false;
+    int my = int(floorf((ceilY - s.baseY) / voxel));
+    if (my < 0) return false;
+    if (my >= int(s.vsy)) my = int(s.vsy) - 1;
+    const size_t stride = size_t(s.msx) * size_t(s.msz);
+    const size_t col = size_t(mx) + size_t(mz) * size_t(s.msx);
+    for (int y = my; y >= 0; --y)
+        if (s.vol[col + size_t(y) * stride]) {
+            // The TOP of that voxel -- a body stands on the surface, not in it.
+            *outY = s.baseY + float(y + 1) * voxel;
+            return true;
+        }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// ONE LIVE CREATURE, FOR THE ONE CHECK THAT HAS TO SEE ALL OF THEM.
+//
+// Nine populations across seven files keep their members in nine different
+// structs, and "is any animal inside anything" cannot be asked of nine private
+// vectors. This is the only shape they have in common: where it is, how wide it
+// is, and what to call it in a report. See runClipTest in app.h, which is the
+// only caller and the reason this exists at all -- a rule nothing checks is a
+// rule that comes back.
+// ---------------------------------------------------------------------------
+struct LifeAt {
+    Vec3 p;
+    const char *what = "";
+    float r = 0.0f;         // half width, for solidsTouch
+    // A PERCHED SONGBIRD IS SUPPOSED TO BE IN THE TREE. It is sitting on a
+    // branch nine metres up, which is inside the crown by construction and is
+    // the one case where being inside a solid is the feature. Counted and
+    // printed, never failed.
+    bool inTree = false;
+    // ...AND A FISH IS SUPPOSED TO BE UNDER THE WATER. The second exemption,
+    // and it has the same shape as the first: being submerged is the animal for
+    // the nine populations in lake.h and a bug for every other one. See the
+    // ladybug that was reported swimming.
+    bool inWater = false;
+};
+
+// ---------------------------------------------------------------------------
+// ...AND THE SAME QUESTIONS ASKED OF A LIST OF SOLIDS.
+//
+// WHY THESE EXIST AT ALL: the answer above was being written out again by every
+// caller that needed it, and most of the callers needed it and did not know.
+// The player, the bunnies and the butterflies each walked their own copy of the
+// loop; the housefly, the firefly, the ladybug and the bee walked no loop at
+// all. So "the flys were caught flying inside a big rock" is a true report
+// about four species rather than about one, and the fix is not four guards --
+// it is one question with one answer that nothing can ask differently.
+//
+// ONE LIST, TWO ENDS. solidsContain is the VOLUME -- may a body be here --
+// and solidsFloor is the SURFACE -- what is under this column. A flying animal
+// needs both, and the difference is not cosmetic: the terrain height field does
+// not know a rock exists, so a fly told to hang 1.1 m over the ground hangs
+// 1.1 m over the ground UNDERNEATH a five-metre boulder, which is a metre
+// inside the stone. That is the reported bug exactly, and no amount of steering
+// away from obstacles would have fixed it -- the fly never flew in. It was born
+// there, and it stayed because the height it was holding was the height it was
+// asked to hold.
+// ---------------------------------------------------------------------------
+
+// Is this world point inside any of them? Voxel-accurate wherever the model
+// carries its own volume, and the inscribed ellipse only where it does not --
+// the same two cases in the same order as insideWorld, which now calls this.
+inline bool solidsContain(const Solid *list, int n, float x, float y, float z, float voxel) {
+    for (int k = 0; k < n; ++k) {
+        const Solid &s = list[k];
+        if (s.hx <= 0.0f || s.hz <= 0.0f || y > s.top) continue;
+        if (s.vol) {
+            if (solidAtWorld(s, x, y, z, voxel)) return true;
+            continue;
+        }
+        const float dx = (x - s.cx) / s.hx, dz = (z - s.cz) / s.hz;
+        if (dx * dx + dz * dz < 1.0f) return true;
+    }
+    return false;
+}
+
+// The highest surface over this column: the terrain height `g` handed in,
+// raised to the top of any model standing on it, by at most `rise`.
+//
+// A TRUNK IS NOT A FLOOR. Its column is nine metres of nothing and then twenty
+// of canopy, and a flyer told to hold a metre over THAT climbs out of the wood
+// the moment it passes a pine. Solid::standable is the distinction and it was
+// already drawn here for the ladybug's descent -- a rock is something you can
+// be on top of, a tree is something you go round.
+//
+// ...AND NEITHER IS A CLIFF, WHICH IS WHAT `rise` IS FOR. The first cut of this
+// had no cap, on the reasoning that a rock is by definition a thing you can be
+// on top of. That is true of a rock and this world has boulders TWENTY METRES
+// tall and thirteen across (measured: base 13.9, top 34.6, model 133x113). A
+// butterfly holding two metres over the ground was handed 34.6 as its ground,
+// spent four and a half seconds climbing the inside of the stone at its 3 m/s
+// cap, came off the top, and sank back into the flank at 0.9 m/s -- 85
+// creature-frames a minute, up to eight metres in, and every one of them the
+// FLOOR RULE working exactly as written.
+//
+// So the question a flyer is really asking is not "is this standable" but "is
+// this a step or a wall". Under `rise` it is ground and the animal goes over
+// it; above, this returns the terrain and the animal goes round -- which is
+// what solidsContain and flySlide are there to make it do. The two halves
+// cannot disagree because there is only one number.
+inline float solidsFloor(const Solid *list, int n, float x, float z, float voxel, float g,
+                         float rise) {
+    float top = g;
+    const float ceil = g + rise;
+    for (int k = 0; k < n; ++k) {
+        const Solid &s = list[k];
+        if (!s.standable || s.top <= top) continue;   // cannot raise the answer
+        float y = 0.0f;
+        if (solidColumnTop(s, x, z, voxel, &y) && y > top && y <= ceil) top = y;
+    }
+    return top;
+}
+
+// ...AND THE SAME QUESTION FOR A BODY THAT HAS A SIZE.
+//
+// Centre and four rim points, which is the fan Bunnies::blocked already probes
+// a marcher with and it is there for a reason worth repeating: a single centre
+// probe lets a boulder's OVERHANG sit inside the animal. The volume path cannot
+// be grown by a half-width the way an ellipse can -- a voxel grid has no
+// half extents to add to -- so the body is walked round instead.
+inline bool solidsTouch(const Solid *list, int n, float x, float y, float z, float r,
+                        float voxel) {
+    if (solidsContain(list, n, x, y, z, voxel)) return true;
+    if (r <= 0.0f) return false;
+    return solidsContain(list, n, x + r, y, z, voxel) ||
+           solidsContain(list, n, x - r, y, z, voxel) ||
+           solidsContain(list, n, x, y, z + r, voxel) ||
+           solidsContain(list, n, x, y, z - r, voxel);
+}
+
+// MOVE A FLYING BODY, AND NEVER INTO STONE. True if the whole step was taken.
+//
+// Three cases in this order, and the middle one is the one that is easy to
+// leave out and impossible to see afterwards:
+//
+//     the destination is clear    take the whole step
+//     the ORIGIN is inside too    take it anyway
+//     otherwise                   slide along whichever axis is free
+//
+// THE ESCAPE CLAUSE IS NOT A SAFETY NET, IT IS THE RECOVERY. A creature can be
+// inside a solid without ever having flown into one -- born there before this
+// rule existed, a tree felled across it, a player who built round it. A guard
+// that only refuses ENTRY would hold that body perfectly still inside the rock
+// for ever, which is a worse bug than the one being fixed and looks exactly
+// like it. Paired with solidsFloor, which lifts the line it is holding to the
+// top of the rock, an animal that starts inside one is out within a second.
+//
+// AND THE SLIDE IS WHAT KEEPS IT FROM STOPPING DEAD. An insect that refuses a
+// step and keeps its heading pushes at the same face every frame and reads as
+// stuck on an invisible wall; taking whichever axis is still free makes it
+// graze along the boulder instead, which is what an insect does.
+inline bool flySlide(const Solid *list, int n, float voxel, float r, float *x, float *y,
+                     float *z, float nx, float ny, float nz) {
+    if (!solidsTouch(list, n, nx, ny, nz, r, voxel)) {
+        *x = nx; *y = ny; *z = nz;
+        return true;
+    }
+    // KEYED ON THE CENTRE, NOT ON THE RIM. Written first as solidsTouch --
+    // "it is already in something, let it move" -- which hands the free pass to
+    // any creature whose WING is brushing a boulder, and a brushing creature is
+    // then free to keep brushing for as long as it likes. Measured at six
+    // butterfly-frames a minute against a 7 m rock in the pine wood: the animal
+    // itself was never inside anything, and a wingtip was, for a tenth of a
+    // second at a time.
+    //
+    // solidsContain is the honest test of "buried": the creature's own position
+    // is in the stone, there is no step out of it that is not also inside it,
+    // and refusing to move would hold it there for ever. A rim that touches is
+    // refused like any other and slides instead.
+    if (solidsContain(list, n, *x, *y, *z, voxel)) {
+        *x = nx; *y = ny; *z = nz;
+        return true;
+    }
+    if (!solidsTouch(list, n, nx, ny, *z, r, voxel)) { *x = nx; *y = ny; return false; }
+    if (!solidsTouch(list, n, *x, ny, nz, r, voxel)) { *y = ny; *z = nz; return false; }
+    if (!solidsTouch(list, n, *x, ny, *z, r, voxel)) *y = ny;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// THE MODEL'S FOOTPRINT IN WORLD AXES -- WHICH IS NOT THE COLLIDER'S.
+//
+// A pine's collider is its TRUNK: 40 to 80 cm across, because that is all a
+// walking body can ever meet. Its model is the whole tree, crowns included,
+// nine metres wide. Those two numbers being different is the entire design and
+// it is right -- but anything that gathers "the solids near p" by the collider
+// and then tests the VOXELS has quietly agreed to two different trees.
+//
+// That is what it did. World::collidersNear filtered on cx/hx, so a butterfly
+// 3.5 m from a trunk did not have that tree in its list at all, and flew
+// through the branches of a tree it could not see. Every guard in this change
+// was working perfectly on a list the crown was missing from.
+//
+// The model centre is not the collider centre either -- measureCollider offsets
+// one from the other, and the placement puts the model's CORNER at tx/tz -- so
+// this walks the corner through the instance transform rather than assuming.
+inline void solidWorldBox(const Solid &s, float voxel, float *cx, float *cz, float *hx,
+                          float *hz) {
+    if (!s.msx || !s.msz) {   // no model: the collider is all there is
+        *cx = s.cx;
+        *cz = s.cz;
+        *hx = s.hx;
+        *hz = s.hz;
+        return;
+    }
+    const float ex = float(s.msx) * voxel * 0.5f, ez = float(s.msz) * voxel * 0.5f;
+    solidWorldSpace(s, ex, ez, cx, cz);
+    // A quarter turn swaps the two extents and leaves the box axis-aligned.
+    *hx = (s.yaw & 1) ? ez : ex;
+    *hz = (s.yaw & 1) ? ex : ez;
+    // The collider is measured from the voxels, so it should already be inside
+    // this -- but it is a separate measurement and a max costs nothing.
+    if (s.hx > *hx) *hx = s.hx;
+    if (s.hz > *hz) *hz = s.hz;
 }
 
 // Does a body of half-width w, centred at (x, z), touch the footprint?

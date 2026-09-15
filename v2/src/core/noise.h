@@ -242,6 +242,36 @@ inline float warpedFbm(float x, float z, float warp, int octaves = 5) {
 // puts two pads in the same place and reintroduces the clumping the grid is
 // there to prevent.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ...AND IN WHAT ORDER THEY ARE CLAIMED, WHICH IS NOT "NEAREST FIRST".
+//
+// "The life seems to cluster around the player on spawn, but then further out
+// the life is sparse" (user 2026-09-14). Both halves of that are one bug, and
+// the butterflies already carry the diagnosis -- they are the only population
+// that was built with it:
+//
+//   "handing the flock the N closest homes packs every one of them into the
+//    inner fifth of the disc's AREA, and since homes are never re-rolled,
+//    standing still freezes that fill in place."
+//
+// THE ARITHMETIC IS BRUTAL AT SMALL COUNTS. Take the nearest N sites of an 11 m
+// lattice and they all fall inside a radius of about 11 * sqrt(N/pi): for TWO
+// rabbits that is nine metres, out of a spawn disc of ninety-six. Every land
+// animal in the wood is therefore standing on top of you the moment the world
+// loads, and there is nothing at all past the first few strides -- which is
+// exactly the two things reported, from one cause.
+//
+// AN ARBITRARY PER-CELL KEY FIXES IT. The candidate list is already uniform
+// over the disc (it is a lattice), so taking the smallest key picks uniformly
+// FROM it. The key is a hash of the cell and the population's own salt, so it
+// is stable: the same site wins every time, a population does not re-shuffle
+// while you stand still, and two species do not queue for the same cells.
+// ---------------------------------------------------------------------------
+inline float siteOrder(uint32_t salt, int cx, int cz) {
+    return hashUnit(salt ^ 0x51D3u,
+                    hashU32(uint32_t(cx) * 421u + 17u, uint32_t(cz) * 419u + 31u));
+}
+
 inline void siteOf(float cellM, uint32_t salt, int cx, int cz, float *x, float *z) {
     const uint32_t h = hashU32(salt ^ (uint32_t(cx) * 2654435761u), uint32_t(cz) * 40503u);
     const float inset = cellM * 0.2f;
@@ -249,6 +279,162 @@ inline void siteOf(float cellM, uint32_t salt, int cx, int cz, float *x, float *
     *x = float(cx) * cellM + inset + hashUnit(0xA71u, h) * span;
     *z = float(cz) * cellM + inset + hashUnit(0xA72u, h) * span;
 }
+
+// ---------------------------------------------------------------------------
+// ...AND NOTHING IS BORN WHERE YOU CAN WATCH IT ARRIVE.
+//
+// "I saw lillypads just appear in front of me. they seemed to just grow out of
+// nowhere ... every biome should share similar mechanics. make sure there are
+// no entities that do this, they all share the same spawning mechanics."
+//
+// THE LATTICE ABOVE SAYS WHERE A THING MAY BE. THIS SAYS WHEN IT MAY START
+// BEING THERE, and it is the half that was missing. A site is a fact about the
+// world at every distance, so the nearest unclaimed one is as likely to be at
+// your feet as at the horizon -- and a slot that frees up, because its holder
+// passed the drop radius behind you, is handed straight to it.
+//
+// A FADE DOES NOT COVER THIS. Eight tenths of a second growing up from 8% scale
+// is an arrival, and an arrival six metres in front of you is an event however
+// smoothly it is drawn. The fade is for a thing LEAVING at a hundred and eighty
+// metres, which is the distance it was measured at.
+//
+// THIRTY METRES, AND THE SAME THIRTY FOR EVERY POPULATION. That is the whole
+// request: a lily pad, a butterfly, a rabbit and a perched songbird are all
+// born outside it, so no creature in the world has a spawn rule of its own to
+// go wrong on its own.
+//
+// ONE EXEMPTION, AND IT IS NOT "THE POPULATION IS EMPTY". That was the first
+// form of this and it re-creates the very bug it is here to stop: walk out of a
+// dry birch wood -- where no pad is live anywhere, so the population IS empty --
+// up to a pond, and the rule is waived at exactly the moment you are looking at
+// the water. What the exemption is really for is being PUT somewhere: the world
+// loading, the pause room closing, the editor deck closing. There is no
+// previous frame to pop against then, and refusing to fill would leave the
+// place you were just dropped into bare.
+//
+// So it is a TELEPORT that waives it, measured as a jump no walk could make in
+// one tick, and it holds for a second afterwards -- a population that fills
+// over many frames rather than in one pass (the perched birds get six attempts
+// a frame) needs more than the single tick the jump happens on.
+// ---------------------------------------------------------------------------
+inline constexpr float kBirthMinM = 30.0f;
+inline constexpr float kBirthJumpM = 40.0f;   // in ONE tick; a sprint is 2.3 m/s
+inline constexpr float kBirthWaiveSec = 1.0f;
+// -- ...AND THE HALF THAT A DISTANCE CANNOT DO ------------------------------
+//
+// "The lillypads are still just appearing in." A floor is a PROXY for "where
+// you can watch it arrive" and it is a poor one, because the thing that decides
+// whether you see an arrival is not how far away it is, it is whether you are
+// looking at it. A lily pad is 0.9 m across: at the thirty-metre floor it is
+// still fifty pixels, and fifty pixels appearing out of nothing is an event
+// wherever it happens.
+//
+// So a population that can afford it refuses a birth inside the VIEW CONE as
+// well. Seventy degrees either side of the heading, which covers a ninety-
+// degree field of view with margin -- and leaves two hundred and twenty degrees
+// of world to be born into, so nothing starves. A pad born behind you is simply
+// THERE when you turn round, which is what scenery is supposed to be.
+//
+// IT IS OPT-IN, and that is not timidity. The cone is only worth its cost where
+// the thing being born is static and big enough to notice; a butterfly at
+// thirty metres is two pixels and its own flight is a bigger event than its
+// arrival. Pass no heading and the cone is not tested at all -- which is also
+// what the offline renders do, so their reports are unchanged.
+inline constexpr float kBirthConeCos = 0.342f;   // cos 70 degrees
+// -- ...AND THE CONE HAS TO STOP SOMEWHERE, OR THE LAKE NEVER FILLS ---------
+//
+// "The life in the water has a very delayed spawn" (user 2026-09-14), and the
+// cone above is the whole of it. Walk toward a lake LOOKING AT IT -- which is
+// what anyone does -- and every site on that water is inside the cone, so
+// every birth is refused. You arrive at an empty lake, turn away, and it fills
+// behind you. The rule meant to stop a pad appearing in view had quietly become
+// a rule that stops water in front of you having anything in it.
+//
+// So the cone applies only where an arrival could actually be SEEN as an
+// arrival. Past this, a lily pad is 0.9 m at ninety metres -- a dozen pixels,
+// in a wood, while you are walking -- and the population fills whatever you are
+// walking toward long before you get there. The place radius is 170 m, so a
+// lake entering range is claimed the moment it does, whichever way you face.
+//
+// THE THREE RULES TOGETHER, in the order they are asked: nothing inside thirty
+// metres ever; anything past ninety, whatever you are looking at; and between
+// the two, only behind you.
+inline constexpr float kBirthFarM = 90.0f;
+
+class BirthGate {
+  public:
+    // Once per update, before anything asks. It takes dt so the waiver is a
+    // DURATION rather than a frame count -- at 200 fps a tick-counted one would
+    // be over in five milliseconds.
+    // fx/fz: which way the player is FACING, normalised, or zero for a
+    // population that does not use the cone. Only the horizontal part matters
+    // -- a site is a place on the ground and looking up at the sky does not
+    // make the water in front of you unwatched.
+    void tick(float dt, float px, float pz, float fx = 0.0f, float fz = 0.0f) {
+        const float dx = px - lx_, dz = pz - lz_;
+        if (!had_ || dx * dx + dz * dz > kBirthJumpM * kBirthJumpM)
+            waive_ = kBirthWaiveSec;
+        else
+            waive_ = maxf(0.0f, waive_ - dt);
+        lx_ = px;
+        lz_ = pz;
+        const float fl = sqrtf(fx * fx + fz * fz);
+        fx_ = fl > 1e-4f ? fx / fl : 0.0f;
+        fz_ = fl > 1e-4f ? fz / fl : 0.0f;
+        had_ = true;
+    }
+
+    // May something be born this far from the player? SQUARED, because every
+    // caller has the square already and none of them wants a sqrt to compare.
+    bool may(float d2) const { return waive_ > 0.0f || d2 >= kBirthMinM * kBirthMinM; }
+
+    // ...and not in front of you, when a heading was given. See kBirthConeCos.
+    bool mayAt(float dx, float dz) const {
+        const float d2 = dx * dx + dz * dz;
+        if (waive_ > 0.0f) return true;
+        if (d2 < kBirthMinM * kBirthMinM) return false;
+        // FAR ENOUGH IS FAR ENOUGH, whichever way you are facing -- see
+        // kBirthFarM. This is what keeps a lake you are walking toward from
+        // being empty when you reach it.
+        if (d2 >= kBirthFarM * kBirthFarM) return true;
+        if (fx_ == 0.0f && fz_ == 0.0f) return true;
+        const float d = sqrtf(d2);
+        if (d <= 1e-4f) return false;
+        return (dx * fx_ + dz * fz_) / d <= kBirthConeCos;
+    }
+    bool waived() const { return waive_ > 0.0f; }
+
+  private:
+    float lx_ = 0.0f, lz_ = 0.0f, waive_ = 0.0f;
+    float fx_ = 0.0f, fz_ = 0.0f;
+    bool had_ = false;
+};
+
+// -- ...AND A SLOT HELD FAR AWAY YIELDS TO THE WATER YOU ARE STANDING IN -----
+//
+// The floor above is only half of it, and on its own it trades one wrong
+// picture for another. A population is a FIXED number of slots over an
+// unbounded lattice, so the slots go to whatever was nearest when they were
+// claimed -- and walking from one pond to the next, the first pond holds every
+// slot until its pads pass the drop radius, while the pond at your feet has
+// nothing in it at all. That is what the twelve-metre births actually were: the
+// moment the old holders finally died, the freed slots took the nearest free
+// sites, and the nearest free sites were the ones in front of you.
+//
+// So a live member much farther away than an unclaimed site RETIRES: it starts
+// the ordinary fade-out, at a distance where that fade is what it was measured
+// for, and its slot comes back for the near site on a later frame.
+//
+// THE MARGIN IS WHAT KEEPS IT FROM THRASHING. The holder has to be this much
+// farther than the site, not merely farther, or two sites at similar ranges
+// would hand one slot back and forth every frame. One retirement per population
+// per pass, for the same reason: a lake that is suddenly better than the one
+// behind you should refill over a few seconds rather than swap its whole
+// population in a frame.
+inline constexpr float kYieldMarginM = 55.0f;
+// ...and the site has to be somewhere the population is not already, or the
+// rule fires for ever on a lattice finer than the margin. See yieldSite.
+inline constexpr float kYieldLonelyM = 30.0f;
 
 
 }  // namespace v2

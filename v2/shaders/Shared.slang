@@ -87,6 +87,17 @@ static const uint kGrassCount = 6;
 // mat::BGRASS_0 exactly.
 static const uint kBGrass0 = 32;
 static const uint kBGrassCount = 6;
+// TALL GRASS, WHICH GOES OVER TO STRAW ON THE WAY UP. Two more blade ramps,
+// one per wood for the same reason GRASS and BGRASS are split -- each STARTS at
+// its own wood's GRASS_0, so the foot of a tuft is the colour of the short
+// blades around it and the tuft grows out of the sward instead of being planted
+// in it. TEN shades rather than six, because these grade a 15-to-20 voxel blade
+// rather than a 6-voxel one, and they get LIGHTER all the way up: green is a
+// dark albedo and straw is a bright one. Mirrors mat::WHEAT_0 / mat::BWHEAT_0.
+static const uint kWheat0 = 38;
+static const uint kWheatCount = 10;
+static const uint kBWheat0 = 48;
+static const uint kBWheatCount = 10;
 static const uint kSoil0 = 13;
 static const uint kSoilCount = 4;
 static const uint kLitter0 = 17;
@@ -327,7 +338,22 @@ struct V6Material
     float roughness;
     float specular;    // F0 at normal incidence
     float translucency; // fraction of the diffuse lobe that passes through
-    float pad0, pad1;
+    // -- HOW MUCH OF THE RAY THIS SURFACE ACTUALLY STOPS -------------------
+    //
+    // 1 is opaque, which every material in the world is but one. Below it the
+    // path loop passes the ray STRAIGHT THROUGH with probability 1 - alpha and
+    // traces again -- see the see-through block in Trace.cs.slang.
+    //
+    // NOT `translucency`, WHICH IS A DIFFERENT THING and already spoken for:
+    // that is the fraction of the diffuse lobe that scatters out of the far
+    // side, which is how a leaf glows with the sun behind it. A leaf is not
+    // see-through and a fly's wing is. One is about where the light goes, the
+    // other about whether the surface is there at all.
+    //
+    // It takes pad0 rather than growing the record, so V6Material stays at its
+    // asserted 32 bytes.
+    float alpha;
+    float pad1;
 };
 
 // ---------------------------------------------------------------------------
@@ -414,7 +440,47 @@ struct V6Instance
     //
     // The two readings are exclusive by construction: a wing step has no axis
     // and a spin has no wing.
+    //
+    // ...AND "BY CONSTRUCTION" HAS TO BE BUILT SOMEWHERE, WHICH IT WAS NOT.
+    // The perched songbirds publish their axis on EVERY frame and only turn on
+    // one frame in four (their eleven poses step every 66 ms), so three frames
+    // in four arrived here with a zero angle and a live axis -- read, by the
+    // branch below, as a wing measurement. flap.z is a world Z where the wing
+    // code expects an object-space centre, so outAlong came out in the
+    // thousands and every voxel took the far bucket: h.moved.y += flap.y, which
+    // is the bird's own ALTITUDE IN METRES. Ray Reconstruction went looking for
+    // history tens of metres above the bird, found nothing, and rebuilt those
+    // pixels from the current frame alone -- which at DLAA is a whole sample
+    // and at Balanced is 42% of one. That is the "the shading is flickering"
+    // report, and the reason it went away with upscaling switched off.
+    //
+    // World::setFlyerInstance now treats a spin with a zero angle as no spin at
+    // all and zeroes `flap` with it, in the one place that writes both fields.
     float flapPad;
+
+    // -- STRUCK, AND FOR HOW MUCH LONGER ------------------------------------
+    //
+    // (user 2026-09-14: "when hitting life, it turns an emmisive red. all the
+    // voxels that make up the life turn red".)
+    //
+    // 0 for everything in the world and for every animal that has not just been
+    // hit; 1 at the instant of the blow, fading to 0 across half a second. The
+    // shader reads it twice: it REPLACES the albedo, so every voxel of the
+    // animal is red rather than tinted red, and it adds an emission, so the
+    // flash reads in shadow -- which is v1's own two-part rule ("it lights
+    // itself -- see the sun/AO block"; "otherwise an animal hit under a canopy
+    // barely changed colour").
+    //
+    // A FIELD OF ITS OWN, AND THE RECORD GROWS BY A ROW FOR IT. There were two
+    // cheaper places to put this and both are traps. `tint` is free on a flyer
+    // -- it is only read for KIND_TREE -- but then "is this animal flashing" is
+    // "is its tint not white", which is exactly the implicit discriminator that
+    // made flapPad necessary one field above. And a new KIND would cost this
+    // instance its flap reprojection for the half second it is dying, which is
+    // the one thing this engine has been burned by three times. Sixteen bytes
+    // an instance is the honest price.
+    float hurt;
+    float3 hurtPad;
 };
 
 // ---------------------------------------------------------------------------
@@ -486,7 +552,37 @@ struct V6DdgiConsts
 // THE FONT IS ON THE HOST. What crosses is a bitmap per glyph, so changing a
 // label is a string literal in render/holotext.h and never a shader edit.
 // ---------------------------------------------------------------------------
-static const int kHoloSlots = 3;      // one per pause-room button
+// THREE FOR THE PAUSE-ROOM BUTTONS AND ONE FOR THE HAND. The fourth is the
+// stack count beside the held item (user 2026-09-14: "import the stacked item
+// numbers next to the hand held object ... similar to the current main menu
+// floating text") -- which is what that phrase means: the same world-space
+// glyphs the room's labels are drawn with, not a 2D overlay.
+//
+// THE TWO ARE NEVER UP TOGETHER, so this could have been slot 0 re-used. It is
+// not, because "never together" is a rule about two features that know nothing
+// about each other, and the day the room grows a fourth button the hand's
+// number would appear on it.
+// -- AND HOW MANY MATERIALS RENDER AS LIGHT WITHOUT BEING ONE -----------
+//
+// See V6Params::emitters. Four: v1's amber ember, the red one a blow on a
+// living thing throws, and two spare -- this is the table that stops the next
+// emissive particle being a fourth copy of the firefly's two fields.
+static const int kEmitSlots = 4;
+
+// -- THE WOUND RED -------------------------------------------------------
+//
+// v1's HURT_RED, unchanged, and its note is worth keeping with it: "it has to
+// stay <= 1 in every channel", because that engine writes sqrt(albedo) into an
+// rgba8unorm buffer and anything above 1 is clamped there and decodes as 1.0.
+// The same is true here for the albedo half of the flash; the EMISSION half is
+// scaled separately and may go as bright as it likes.
+static const float3 kHurtRed = float3(1.0f, 0.07f, 0.055f);
+// ...and how hard it glows. Far under the spark's 42: a spark is one voxel and
+// an animal is a few hundred, so the same radiance would be a flare.
+static const float kHurtNits = 6.0f;
+
+static const int kHoloSlots = 4;      // three pause-room buttons + the hand
+static const int kHoloHand = 3;       // ...and which one the hand's is
 static const int kHoloCols = 5;       // a glyph's own grid
 static const int kHoloRows = 6;       // five for the letter, a sixth for the tail of a g
 static const int kHoloAdvance = 6;    // ...and the sixth column is the gap between them
@@ -836,6 +932,44 @@ struct V6Params
     // the shader IS the palette entry buildRoom asked for.
     uint bulbMtl;
 
+    // -- AND A SECOND EMITTER, WHICH IS NOT A LIGHT ------------------------
+    //
+    // THE FIREFLY. bulbMtl above is a material test AND a point light: the
+    // shader returns radiance for a voxel wearing it, and sampleBulbSplit
+    // traces a shadow ray toward bulbPos on every bounce. The first half is
+    // exactly what a firefly wants; the second half means nothing for it, since
+    // there are six of them drifting apart and bulbPos is ONE position.
+    //
+    // So this is the material test alone. A voxel wearing glowMtl renders at
+    // glowRadiance, lights nothing, and costs no shadow ray -- and after dark a
+    // speck of yellow in an unlit wood is the whole of the effect anyway.
+    // kNoBulb is the off switch here too, so a world with no fireflies loaded
+    // pays one compare.
+    float3 glowRadiance;
+    uint glowMtl;
+
+    // -- ...AND THE PARTICLES, WHICH ARE THE SAME IDEA A THIRD TIME --------
+    //
+    // A SPARK IS A MATERIAL, NOT A LIGHT. v1 throws four bright voxels at every
+    // blow that lands and four more off a kill; they live under a second, there
+    // are at most twenty in the air, and each is one voxel. What they need is
+    // exactly what the firefly needs and nothing more: a voxel that renders at
+    // a radiance of its own, lights nothing, and costs no shadow ray.
+    //
+    // A TABLE RATHER THAN A THIRD PAIR OF FIELDS. The port needs TWO of these
+    // -- v1's amber ember and the RED one it throws when the thing struck is
+    // alive -- and a third hand-written copy of glowRadiance/glowMtl is the
+    // point at which to stop writing them out one at a time.
+    //
+    // glowMtl STAYS WHERE IT IS. It is the firefly's, it works, and folding it
+    // in here would be a change to something nobody asked to change.
+    //
+    // xyz IS THE RADIANCE AND w IS THE MATERIAL ID, as a float -- a material id
+    // is 0..255 and a float carries those exactly. A NEGATIVE w is an empty
+    // slot, and the table is filled from 0 up, so the shader stops at the first
+    // one: an engine with no sparks loaded pays a single compare.
+    float4 emitters[kEmitSlots];
+
     // -----------------------------------------------------------------------
     // THE WORDS OVER THE BUTTONS. All-zero everywhere but the pause room -- see
     // V2Holo, and V2Tracer::clearHolos.
@@ -932,9 +1066,19 @@ static_assert(sizeof(V2Held) == 80, "V2Held must fill whole 16-byte rows");
 static_assert(sizeof(V6Camera) == 64, "V6Camera must fill whole 16-byte rows");
 static_assert(sizeof(V6Sky) == 192, "V6Sky must fill whole 16-byte rows");
 static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows");
-static_assert(sizeof(V6Instance) == 48, "V6Instance must fill whole 16-byte rows");
+// 64, UP FROM 48, and the row is the hit flash -- see V6Instance::hurt.
+static_assert(sizeof(V6Instance) == 64, "V6Instance must fill whole 16-byte rows");
 static_assert(sizeof(V2Holo) == 112, "V2Holo must fill whole 16-byte rows");
-static_assert(sizeof(V6Params) == 640 + 3 * 112,
+// 656, UP FROM 640, and the sixteen are the firefly's glowRadiance + glowMtl
+// -- one row, because they are packed as the float3 + uint pair immediately
+// above them rather than as a lone uint that would cost a row to padding.
+// ...AND THE HOLO SLOTS ARE COUNTED RATHER THAN TYPED. It said 3, and adding a
+// fourth for the hand's stack badge broke this line rather than the struct --
+// which is the assert doing its job, and also a number that should never have
+// needed a person to notice. kHoloSlots is the one place that decides.
+// ...AND THE EMITTER TABLE IS COUNTED THE SAME WAY, for the same reason: it is
+// four float4s today and the number lives in exactly one place.
+static_assert(sizeof(V6Params) == 656 + kEmitSlots * 16 + kHoloSlots * 112,
               "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2

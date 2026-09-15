@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../gpu/world.h"
+#include "../scene/collide.h"
 #include "../scene/vox.h"
 #include "../scene/voxelworld.h"
 #include "birds.h"
@@ -55,6 +56,8 @@ inline constexpr float kSongFlapFps = 24.0f; //                    (JS BIRD_FLAP
 // So the same RULE with this engine's number: clear the tallest thing that
 // grows, plus the bob, plus a margin.
 inline constexpr float kSongFloorM = 28.0f;  // never closer to the ground than this
+// How far off its own centre a bird is probed -- see solidsTouch.
+inline constexpr float kSongBodyR = 0.25f;
 inline constexpr float kSongCruiseM = 30.0f; // ...and the height it aims for
 
 // The wander band, the soar band, and the dive -- all JS, all divided by ten.
@@ -156,7 +159,7 @@ class BirdFlock {
             Strip st;
             for (int f = 0; f < kFlightFrames; ++f) {
                 int sx = 0, sy = 0, sz = 0;
-                const int m = world.addFlyerModel(mo[size_t(f)], kNames[s], &sx, &sy, &sz);
+                const int m = world.addFlyerModel(mo[size_t(f)], kNames[s], &sx, &sy, &sz, true);
                 if (m < 0) { st.model.clear(); break; }
                 st.model.push_back(m);
             }
@@ -177,8 +180,24 @@ class BirdFlock {
     // loose bodies' floor follows.
     // -----------------------------------------------------------------------
     template <typename GroundF>
-    void update(float dt, const Vec3 &player, const GroundF &ground) {
+    // -----------------------------------------------------------------------
+    // ...AND THE SOLIDS, WHICH THIS POPULATION WAS ARGUED OUT OF NEEDING.
+    //
+    // THE ARGUMENT WAS RIGHT AND THE CONCLUSION WAS WRONG. kSongFloorM is 28 m
+    // and the tallest pine is 22, so a flock bird cannot meet a tree -- except
+    // that the floor is measured from `b->g`, which is the ground under the
+    // BIRD, and the tree is standing on the ground under the TREE. Cross a
+    // slope and the two are metres apart: a pine rooted twelve metres up the
+    // hill puts its crown through a band that is 28 m over the valley.
+    //
+    // --clip-test measured three creature-frames a minute at 0.2 m in. Small,
+    // and the kind of small that is a bird's head passing through a branch in
+    // front of you.
+    // -----------------------------------------------------------------------
+    void update(float dt, const Vec3 &player, const GroundF &ground,
+                const std::vector<Solid> *solids = nullptr) {
         if (!ready_) return;
+        solids_ = solids;
         clock_ += dt;
         // BEFORE the steps, so a bird that was paired this frame chases on this
         // frame -- and, more usefully, so a bird whose partner has just been
@@ -186,6 +205,22 @@ class BirdFlock {
         pairUp();
         for (size_t i = 0; i < birds_.size(); ++i) step(&birds_[i], uint32_t(i), dt, player, ground);
     }
+
+
+    // -----------------------------------------------------------------------
+    // EVERY LIVE MEMBER, FOR --clip-test. See LifeAt in scene/collide.h.
+    //
+    // Appends rather than assigns: the check wants every population in one
+    // list, and a population that clears the vector is a population that hides
+    // the eight before it.
+    // -----------------------------------------------------------------------
+    void livePoints(std::vector<LifeAt> *out) const {
+        for (const Bird &b : birds_)
+            if (b.live) out->push_back({Vec3(b.x, b.y, b.z), "flock", 0.25f, false});
+    }
+
+    const Solid *list() const { return solids_ ? solids_->data() : nullptr; }
+    int count() const { return solids_ ? int(solids_->size()) : 0; }
 
     void publish(World &world, int slot0) {
         if (!ready_) return;
@@ -228,6 +263,26 @@ class BirdFlock {
         int n = 0;
         for (const Bird &b : birds_) n += b.live;
         return n;
+    }
+
+    // -----------------------------------------------------------------------
+    // THAT ONE IS DEAD -- the population's half of a kill.
+    //
+    // (user 2026-09-14: "when killing life, the life breaks apart into multiple
+    // pieces".) render/lifehit.h owns the blow, the flash and the carcass; this
+    // is the one thing it cannot do, because whether a member is alive is this
+    // file's own business. `i` is the index within THIS population's run of the
+    // instance band -- App::killLifeAt does the arithmetic.
+    //
+    // THE SLOT IS FREED, NOT BLANKED. Retiring it is what every other escape in
+    // this file does, and the spawner refills it wherever it likes next -- v1
+    // goes further and marks the slot slain for the session, which needs a
+    // notion of a population roster this engine does not have.
+    // -----------------------------------------------------------------------
+    bool killSlot(int i) {
+        if (i < 0 || size_t(i) >= birds_.size() || !birds_[size_t(i)].live) return false;
+        birds_[size_t(i)] = Bird{};
+        return true;
     }
 
   private:
@@ -412,8 +467,19 @@ class BirdFlock {
         // metres: its -vyS * 0.045 on a voxel speed is -vyS * 0.45 on ours.
         const float spd = kSongSpeed * (1.0f + clampf(-b->vyS * 0.45f, -0.28f, 0.5f)) *
                           (b->chase >= 0 ? kSongChaseSpd : 1.0f);
-        b->x += hx * spd * dt;
-        b->z += hz * spd * dt;
+        // A REFUSED STEP IS A TURN HERE TOO -- see the long note in
+        // butterflies.h. A flock bird meets a crown far less often (it holds
+        // 28 m and the tallest pine is 22), but when it does it is doing 5.5
+        // m/s and the same thing happens: it slides along the branch until its
+        // next behaviour roll, which is up to ten seconds away.
+        if (!flySlide(list(), count(), VOXEL_M, kSongBodyR, &b->x, &b->y, &b->z,
+                      b->x + hx * spd * dt, b->y, b->z + hz * spd * dt)) {
+            const float side = (b->om != 0.0f) ? (b->om > 0.0f ? 1.0f : -1.0f) : 1.0f;
+            b->om = side * 2.6f;
+            b->omT = b->om;
+            b->mode = 0;             // not mid-swoop: a dive cannot be steered
+            b->reAt = clock_ + 0.5;  // ...and do not re-roll a behaviour over it
+        }
 
         // -- TERRAIN FOLLOW, AND IT IS ASYMMETRIC ---------------------------
         //
@@ -442,7 +508,13 @@ class BirdFlock {
         const float vy = (py - b->pyPrev) / maxf(dt, 1e-4f);
         b->pyPrev = py;
         b->vyS += (vy - b->vyS) * (1.0f - expf(-5.0f * dt));
-        b->y = py;
+        // THE HEIGHT IS A WRITE AND NOT A STEP, which is why it is guarded
+        // separately: everything above computes where the bird SHOULD be and
+        // this is the one line that puts it there. The escape term is
+        // flySlide's -- a bird already in a crown must be able to fly out.
+        if (!solidsTouch(list(), count(), b->x, py, b->z, kSongBodyR, VOXEL_M) ||
+            solidsContain(list(), count(), b->x, b->y, b->z, VOXEL_M))
+            b->y = py;
 
         // THE FLAP NEVER STOPS. The JS engine holds a glide frame on a flag
         // that is permanently false -- "COASTING REMOVED (user) -- the bird
@@ -499,13 +571,26 @@ class BirdFlock {
                             wz, bz, -Fz};
         const Strip &st = strips_[size_t(b.sp) % strips_.size()];
         const int fi = int(b.animClk) % int(st.model.size());
-        world.setFlyerInstance(slot, st.model[size_t(fi)], m, b.x, b.y, b.z, nullptr, true);
+        // THE BIRD, NOT ITS BOX, AND HERE IT MATTERS. This publish hands
+        // place() the bird's position as the TRANSLATION -- the model's corner
+        // -- and takes no half-box off at all, so the centre it derived was the
+        // corner plus half of whichever of the seven flight frames is up. They
+        // are not one size, so that centre bobbed a voxel or two a beat on top
+        // of the flight, and the bob went into the motion vector. See
+        // World::place, where the perched songbirds' version of this was
+        // measured.
+        const float anchor[3] = {b.x, b.y, b.z};
+        world.setFlyerInstance(slot, st.model[size_t(fi)], m, b.x, b.y, b.z, nullptr, true, nullptr,
+                               anchor);
     }
 
     bool ready_ = false;
     float clock_ = 0.0f;
     std::vector<Strip> strips_;
     std::vector<Bird> birds_;
+    // Borrowed for the length of one update() -- the same contract every other
+    // population in this engine has with this list.
+    const std::vector<Solid> *solids_ = nullptr;
 };
 
 }  // namespace v2

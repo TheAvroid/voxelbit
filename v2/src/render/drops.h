@@ -53,6 +53,16 @@ inline constexpr float kTossSpeed = 5.5f;  // TOSS_V 55 -- along the view
 inline constexpr float kTossUp = 1.8f;     // TOSS_UP 18 -- the up-kick over it
 inline constexpr float kTossG = -17.0f;    // TOSS_G -170
 
+// -- ...AND THE SPILL, WHICH IS NOT A THROW --------------------------------
+//
+// What comes out of a broken plant has not been thrown by anybody: it should
+// hop out of where the plant was and land beside it, not sail five metres down
+// your eyeline. Same integration, same landing, a tenth of the speed and most
+// of that upward -- so two items leaving the same tuft separate enough to read
+// as two things and stay within reach of the swing that freed them.
+inline constexpr float kSpillSpeed = 0.9f;
+inline constexpr float kSpillUp = 2.2f;
+
 // EIGHT, and that is the user's own number over there: "have the max number of
 // floating hand held items on the field 8 instead of 4" (2026-08-20). The
 // oldest is retired when a ninth is thrown, which is what that engine's
@@ -161,7 +171,8 @@ class Drops {
     // behaving as a pool rather than refusing the drop -- and is that engine's
     // drops.shift() by another name.
     // -----------------------------------------------------------------------
-    void toss(int tool, int model, int sx, int sy, int sz, const Vec3 &from, const Vec3 &dir) {
+    // Returns the slot it went into, or -1 -- see spill(), which relaunches it.
+    int toss(int tool, int model, int sx, int sy, int sz, const Vec3 &from, const Vec3 &dir) {
         int slot = -1;
         float oldest = -1.0f;
         for (int i = 0; i < kDropSlots; ++i) {
@@ -174,7 +185,7 @@ class Drops {
                 slot = i;
             }
         }
-        if (slot < 0) return;
+        if (slot < 0) return -1;
 
         Item &d = items_[size_t(slot)];
         d = Item{};
@@ -190,6 +201,29 @@ class Drops {
         d.spin = atan2f(dir.x, dir.z);  // it leaves facing the way you were
         d.phase = float(slot) * 0.79f;  // an arbitrary spread, not a random one
         d.flying = true;
+        return slot;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND ONE THAT FALLS OUT OF SOMETHING RATHER THAN OUT OF YOUR HAND.
+    //
+    // `at` is where the thing that broke was standing and `spread` is a bearing
+    // -- the caller gives each item of a set a different one, so a plant that
+    // pays out two does not stack them in the same spot. Everything after the
+    // launch is toss()'s: the same arc, the same landing, the same hover, the
+    // same walk-over pickup.
+    // -----------------------------------------------------------------------
+    void spill(int tool, int model, int sx, int sy, int sz, const Vec3 &at, float bearing) {
+        const Vec3 out(sinf(bearing), 0.0f, cosf(bearing));
+        const int slot = toss(tool, model, sx, sy, sz, at, out);
+        if (slot < 0) return;
+        // toss() left along the view at a throwing speed; this is the same
+        // launch at a spill's. Rewriting the velocity of the slot it USED --
+        // rather than hunting for the youngest item, which is two items on any
+        // frame a plant pays out twice -- keeps one arc in this file.
+        Item &d = items_[size_t(slot)];
+        d.vel = out * kSpillSpeed;
+        d.vel.y = kSpillUp;
     }
 
     // -----------------------------------------------------------------------
@@ -207,8 +241,21 @@ class Drops {
     // matters. Cleared at the top of every update.
     bool snatchedNow() const { return snatched_; }
 
+    // -----------------------------------------------------------------------
+    // ...AND WHAT ARRIVED THIS TICK, WHICH IS A LIST AND NOT A NUMBER.
+    //
+    // Returns how many, and arrivedThisTick() is what they were. It used to
+    // return a single tool index because only one item could ever be in flight
+    // -- see the gate below -- so "the one that landed" was a complete answer.
+    // With several converging it is not, and the failure mode of keeping the
+    // int would have been silent: the second and third items of a pile would
+    // vanish out of the world without ever reaching the kit.
+    //
+    // CLEARED AT THE TOP, the same idiom snatchedNow uses for the other end of
+    // the flight.
+    // -----------------------------------------------------------------------
     int update(float dt, const WalkWorld &w, const Vec3 &player, const Vec3 &eye) {
-        int got = -1;
+        arrived_.clear();
         snatched_ = false;
         const float h = minf(dt, 0.25f);
         for (Item &d : items_) {
@@ -234,7 +281,7 @@ class Drops {
                 d.spin += kAbsorbSpin * h;
                 d.dspin = d.spin - wasFly;
                 if (k >= 1.0f) {
-                    got = d.tool;
+                    arrived_.push_back(d.tool);
                     d = Item{};
                 }
                 continue;
@@ -343,11 +390,29 @@ class Drops {
             // HeldItem::give only CHANGES what is in the hand when the hand is
             // empty, so walking over a pick while swinging an axe puts the pick
             // back in the kit without swapping the axe out.
-            // ONE FLIGHT AT A TIME, which is that engine's rule too ("one
-            // flight at a time -- startGrab would clobber the item already in
-            // the air"). A pile therefore drains one item per trip rather than
-            // all of them converging at once.
-            if (d.age > kPickupArmSec && got < 0 && !anyTaken()) {
+            // -- AS MANY AT ONCE AS ARE IN REACH (user 2026-09-14: "have it
+            //    where the player can absorb multiple object at once, instead
+            //    of one at a time in a line") ------------------------------
+            //
+            // THIS WAS `got < 0 && !anyTaken()`, and both halves were v1's:
+            // "one flight at a time -- startGrab would clobber the item already
+            // in the air". Over there that is a real constraint, because
+            // grabAnim is ONE record -- a second grab would overwrite the
+            // first. Here every drop carries its own `taken`, `fly` and `from`,
+            // so nothing is shared and nothing can be clobbered; the rule came
+            // across with the code rather than with a reason.
+            //
+            // v1'S OWN NOTE PREDICTED THIS COMPLAINT AND NAMED THE FIX: "only
+            // ONE grab may be in the air at a time ... so a PILE of items
+            // drains at one per flight and the wait compounds. If that ever
+            // becomes the complaint, the fix is to allow concurrent grabs
+            // rather than to shorten the flight again."
+            //
+            // `got < 0` HAD TO GO WITH IT AND WAS THE HARDER HALF: update
+            // returned ONE tool index, so even with concurrent flights only one
+            // arrival per frame could be reported and the rest would be
+            // absorbed into nothing. See arrivedThisTick.
+            if (d.age > kPickupArmSec) {
                 const Vec3 o = d.pos - player;
                 if (lengthSq(o) < kPickupM * kPickupM) {
                     d.taken = true;
@@ -362,13 +427,34 @@ class Drops {
                 }
             }
         }
-        return got;
+        return int(arrived_.size());
     }
+
+    // The tools that reached the chest this tick, in the order they landed.
+    // Empty on almost every frame; never more than kDropSlots long.
+    const std::vector<int> &arrivedThisTick() const { return arrived_; }
 
     // -----------------------------------------------------------------------
     // Every slot onto the pipeline, empty ones included -- the band is a fixed
     // size and a slot just vacated has to be told it is empty.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // EVERY DROP OFF THE FIELD.
+    //
+    // For --kill-test, which asks "did this kill leave a steak" as a DELTA on
+    // the live count -- and there are eight slots (v1's own cap), so after the
+    // eighth carcass the ninth steak REPLACES one and the delta is zero. Two
+    // fish were reported as leaving nothing while the engine's own log beside
+    // them said they had left a steak, which is a test measuring the pool
+    // rather than the kill.
+    //
+    // publish() writes every slot including the dead ones, so nothing else has
+    // to be told: the instances go dark on the next frame.
+    // -----------------------------------------------------------------------
+    void clearAll() {
+        for (Item &d : items_) d = Item{};
+    }
+
     void publish(World &world) const {
         for (int i = 0; i < kDropSlots; ++i) {
             const Item &d = items_[size_t(i)];
@@ -418,6 +504,9 @@ class Drops {
         return true;
     }
 
+    // IS ANYTHING IN FLIGHT. No longer a gate on starting one -- see the note
+    // there -- and kept because it is still the honest answer to "is an absorb
+    // happening", which is what a test or a HUD would ask.
     bool anyTaken() const {
         for (const Item &d : items_)
             if (d.live && d.taken) return true;
@@ -443,6 +532,9 @@ class Drops {
 
     std::vector<Item> items_ = std::vector<Item>(size_t(kDropSlots));
     bool snatched_ = false;  // one frame, at the snatch -- see snatchedNow
+    // One frame, at the ARRIVAL -- see arrivedThisTick. Reserved once so a
+    // frame that absorbs a pile does not allocate in the middle of the tick.
+    std::vector<int> arrived_;
 };
 
 }  // namespace v2

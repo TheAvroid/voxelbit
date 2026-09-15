@@ -60,9 +60,19 @@ int main(int argc, char **argv) {
     // 1.0 = no flattening at all, i.e. the shore the basin carve alone leaves.
     if (argc > 6) terrain.bankFlat = float(std::atof(argv[6]));
     if (argc > 7) terrain.bankRiseM = float(std::atof(argv[7]));
+    // birchWater LAST, because it is the one the BIRCH shore is asked about
+    // and sweeping it is how that shore gets calibrated -- the same job argv[3]
+    // does for the pine. sandRiseM after it, since the two together are what
+    // decide how much bare sand a birch lake is ringed with.
+    if (argc > 8) terrain.birchWater = float(std::atof(argv[8]));
+    if (argc > 9) terrain.sandRiseM = float(std::atof(argv[9]));
+    if (argc > 10) terrain.birchSandRiseM = float(std::atof(argv[10]));
     std::printf("%d x %d columns at %.1f m (%.0f m square)\n", n, n, step, span);
-    std::printf("pineWater %.1f m, birchWater %s, basinT %.2f\n\n", terrain.pineWater,
-                terrain.birchWater == VoxelTerrain::kNoWater ? "dry" : "set", terrain.basinT);
+    char bw[32];
+    if (terrain.birchWater == VoxelTerrain::kNoWater) std::snprintf(bw, sizeof(bw), "dry");
+    else std::snprintf(bw, sizeof(bw), "%.1f m", terrain.birchWater);
+    std::printf("pineWater %.1f m, birchWater %s, basinT %.2f, sandRise %.1f / %.1f m\n\n",
+                terrain.pineWater, bw, terrain.basinT, terrain.sandRiseM, terrain.birchSandRiseM);
     std::printf("basinBed %.1f m below the line\n\n", terrain.basinBed);
 
     std::vector<float> pine, birch;
@@ -265,5 +275,41 @@ int main(int argc, char **argv) {
         if (bed == 0 && beach == 0)
             std::printf("  ^ BOTH ZERO: there is no water and no sand in this world at all.\n");
     }
+
+    // ---- HOW MUCH BARE SAND EACH WOOD IS RINGED WITH ----------------------
+    //
+    // THE SHORE BAND ABOVE IS NOT THE SAND. It counts +8 voxels, which is
+    // neither the sand band (14 voxels at 1.4 m) nor the flatten band (50 at 5 m)
+    // is a fixed proxy from before those two came apart. The question "is there
+    // too much empty sandy bank" is about the band topMaterial actually paints,
+    // so this asks it with sandRiseVoxAt, and per WOOD, because the two have
+    // different waterlines and the complaint is only ever about one of them.
+    //
+    // THE RATIO IS THE READING, not the column count. Sand scales with the
+    // water's perimeter, so a bigger lake has more of it and that is correct;
+    // what reads as "too much bank" is sand per unit of WATER.
+    std::printf("\n=== the sand, per wood ===\n");
+    {
+        TerrainMemo m4;
+        size_t sandP = 0, sandB = 0, bedP = 0, bedB = 0;
+        for (int j = 0; j < n; ++j) {
+            const float z = -half + float(j) * step;
+            for (int i = 0; i < n; ++i) {
+                const float x = -half + float(i) * step;
+                const int vi = int(std::lround(x / VOXEL_M)), vj = int(std::lround(z / VOXEL_M));
+                const int h = terrain.heightVox(vi, vj, m4);
+                const int wl = terrain.lakeLineAt(x, z, m4);
+                if (wl == VoxelTerrain::kNoWaterVox) continue;
+                const bool b = terrain.birchAt(x);
+                if (h <= wl) { if (b) ++bedB; else ++bedP; }
+                else if (h <= wl + terrain.sandRiseVoxAt(x)) { if (b) ++sandB; else ++sandP; }
+            }
+        }
+        std::printf("  pine    water %zu, sand %zu, sand per water %.2f\n", bedP, sandP,
+                    bedP ? double(sandP) / double(bedP) : 0.0);
+        std::printf("  birch   water %zu, sand %zu, sand per water %.2f\n", bedB, sandB,
+                    bedB ? double(sandB) / double(bedB) : 0.0);
+    }
+
     return 0;
 }

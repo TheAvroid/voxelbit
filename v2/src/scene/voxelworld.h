@@ -179,7 +179,99 @@ constexpr uint8_t SAND_COUNT = 4;  // 28..31
 // meadow can be the birches' green and a pine floor the pines'.
 constexpr uint8_t BGRASS_0 = 32;
 constexpr uint8_t BGRASS_COUNT = 6;  // 32..37
-constexpr uint8_t TREE_BASE = 38;  // model palette entries are allocated from here up
+
+// -- WHEAT: WHAT A TALL BLADE WEARS -----------------------------------------
+//
+// "can you make the tall grass have a more wheat color to them. maybe at the
+// tips at the top its a brown, then a lighter brown to yellow/tan on the way
+// back down." (user 2026-09-14), then, the same day: "actually make the base
+// of the tall wheat grass, the same green as the grass green. then from there,
+// go to wheat. a lighter color overal."
+//
+// IT ROOTS IN THE GREEN AND DRIES ON THE WAY UP, which is the whole shape:
+// shade 0 IS the wood's own GRASS_0, byte for byte, so the foot of a tuft and
+// the short blades standing around it are the same colour and the tuft grows
+// OUT of the sward instead of being planted in it. From there it crosses to
+// straw over four shades and spends the top half of the blade there.
+//
+// SO THERE ARE TWO RAMPS AFTER ALL, one per wood, and the first cut of this
+// had one and argued for it: "a dried seed head is not foliage, so splitting
+// it would be inventing a difference". That reasoning is sound about the DRY
+// end and says nothing about the wet one -- and the base is now required to
+// match a green that IS per-wood. A shared ramp would put the pines' green at
+// the foot of every birch tuft, which is the exact mismatch GRASS/BGRASS was
+// split to stop. The dry end still agrees between them; it is reached by
+// blending toward one shared straw table.
+//
+// TEN SHADES, AND THE COUNT IS REACH RATHER THAN RESOLUTION. The device reads
+// this ramp along the blade's height from the ground -- ABSOLUTE, not
+// normalised per blade; see groundShade() -- at one shade per STRAND_ROW_STEP
+// voxels. A tall blade is tallGrassMinRows..tallGrassMaxRows (15..20) voxels,
+// so ten shades at a step of two is exactly the reach needed to grade the whole
+// of one. Six, as the green ramps have, would be spent by voxel 12 and leave
+// the top third of every tuft one flat colour.
+//
+// IT GETS LIGHTER ALL THE WAY UP, unlike the first cut, which ran tan down to a
+// dark brown and was too heavy. Green is a dark albedo and straw is a bright
+// one, so a blade drying out is a blade getting lighter -- and that agrees with
+// the light field the green ramps already encode, where a base buried in its
+// own sward sees no sky and a tip sees all of it. The two used to pull against
+// each other; now they do not. The last two shades take the warm tan-brown of a
+// seed head, which is a HUE turn rather than a fall in value.
+//
+// See fillWheatRamp, which is the one place any of this is arithmetic.
+constexpr uint8_t WHEAT_0 = 38;
+constexpr uint8_t WHEAT_COUNT = 10;  // 38..47, off the pines' green
+constexpr uint8_t BWHEAT_0 = 48;
+constexpr uint8_t BWHEAT_COUNT = 10;  // 48..57, off the birches'
+// -- TURNED EARTH, WHICH THE HOE MAKES AND NOTHING ELSE DOES --------------
+//
+// v1 MINTS THIS AT RUNTIME and says so at length: "the one palette id in the
+// game minted at RUNTIME, so the sweeps that fill solidTab/digOnlyTab/SUP.CLASS
+// beside the material tables cannot see it and it has to write its own" -- and
+// then has to handle a FULL table by stealing the nearest existing shade, which
+// silently re-describes whatever owned it for the rest of the session.
+//
+// None of that is necessary here. v2's fixed ids are a compile-time block below
+// TREE_BASE with room in it, so tilled earth is simply one of them: authored
+// with the rest of the ground, checked by the same static_asserts, and unable
+// to collide with a model's colour by construction. The palette is at 227 of
+// 255 and this is the 228th -- see the kit's own warning line.
+constexpr uint8_t TILLED = 58;
+// ...AND THE SEED ITSELF, WHICH SITS ON THE BED RATHER THAN BEING IT.
+//
+// (user 2026-09-14: "planting grass turns the tilled dirt to regular dirt. this
+// is wrong. I should see 3 seeds in the form of 3 voxels on the tilled dirt".)
+//
+// THE FIRST CUT WROTE THIS OVER THE TILLED VOXEL, which is why it read as the
+// bed un-tilling itself: a sown bed was a DIFFERENT BROWN where a tilled one
+// had been, so the turned earth you had just made went away the moment you
+// planted in it. Two browns a shade apart is not "there is seed here", it is
+// "the thing you did came undone".
+//
+// A SEED GOES ON TOP. The till leaves the old surface voxel as AIR -- that is
+// what lowering the column means -- so there is a free voxel directly over
+// every tilled column, and three of them wearing this is three seeds lying on
+// the bed. Nothing about the bed changes.
+// -- THREE OF THEM, AND THEY ARE THE HELD MODEL'S OWN COLOURS ----------
+//
+// (user 2026-09-14: "have the seeds that are planted in the ground match the
+// color voxels as the seeds in hand. they are different colors.")
+//
+// THE FIRST CUT INVENTED A COLOUR. It was pale straw -- a reasonable guess at
+// what a seed looks like, and nothing to do with the art: seeds.vox is THREE
+// VOXELS IN THREE BRIGHT GREENS, sRGB (171,255,76), (110,255,84) and
+// (83,255,121). Holding one thing and planting another is exactly what was
+// reported.
+//
+// THREE IDS RATHER THAN ONE, because the model has three colours and a planting
+// puts down three voxels -- so each planted seed can be one of the model's own
+// voxels rather than an average of them. The ramp idiom is the engine's own:
+// see GRASS_0, SOIL_0, SAND_0, every one of which is a run of shades under one
+// name with an isX() predicate over it.
+constexpr uint8_t SEED_0 = 59;
+constexpr uint8_t SEED_COUNT = 3;   // 59..61
+constexpr uint8_t TREE_BASE = 62;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -191,7 +283,11 @@ struct MaterialLook {
     float roughness = 0.95f;
     float specular = 0.03f;
     float translucency = 0.0f;
-    float pad0 = 0.0f, pad1 = 0.0f;
+    // See V6Material::alpha in Shared.slang. OPAQUE BY DEFAULT and every
+    // material in the world leaves it alone -- Palette::setAlpha is the only
+    // writer and the fly's wing is its only subject.
+    float alpha = 1.0f;
+    float pad1 = 0.0f;
 };
 
 inline float srgbToLinearF(float c) {
@@ -253,16 +349,183 @@ class Palette {
     // step where two of its shades fall in one bucket, which on a six-shade
     // trunk is a trunk with five. That is the trade against a stone axe head
     // that is not drawn at all.
+    //
+    // -- AND AT TEN IT WAS COSTING TOO MUCH (user 2026-09-13: "the axe doesnt
+    // show the right pallette", and again "keep pursuing the stone tools
+    // pallete errors") -------------------------------------------------------
+    //
+    // MEASURED ON THE THING THAT WAS COMPLAINED ABOUT. The stone axe's head is
+    // a SEVEN STEP grey ramp -- 107, 113, 120, 127, 134, 140, 147 -- hand
+    // painted to give nineteen voxels a shape. Quantised at 10 it comes back as
+    // FIVE: 120 merges with 127 and 140 with 147, and two of the seven steps
+    // the artist drew stop existing. That is a palette error in the exact sense
+    // of the word, it was introduced by the fix for the overflow, and it is
+    // what "not right" is.
+    //
+    //     step 10   7 greys -> 5 entries
+    //     step  8   7 greys -> 6
+    //     step  6   7 greys -> 7      <-- the whole ramp survives
+    //
+    // AND SIX DOES NOT FIT. Measured, not guessed: at 6 the world asks for more
+    // than the table has and the start-up report reads
+    //
+    //     PALETTE FULL -- 61 colours could not be registered and render as AIR
+    //
+    // which is the disappearing-tools bug all over again, and worse. The step
+    // stays at TEN for the world, and what changes instead is that the HELD
+    // ITEMS stop going through it -- see `exact` below. Twenty-odd voxels in
+    // front of the eye are the art anybody actually looks at, and there are few
+    // enough of them to pay for in full.
+    //
+    // v1 SAYS THE SAME THING FROM THE OTHER SIDE. Its note on the view-model
+    // light refuses to apply the world's per-voxel grain to a held item because
+    // "it scrambles hand-authored .vox gradients (the axe handle steps by
+    // ~5%)". A 5% step is six units of 255 -- under this step, and over the
+    // exact one. Both engines end up protecting the same thing.
     static constexpr int kQuantStep = 10;
 
-    uint8_t forModelColor(const std::array<uint8_t, 4> &c, bool conifer = true) {
+    // -- AND A COARSER GRID FOR THE THINGS THAT MOVE ----------------------
+    //
+    // "The newly imported life is missing voxels" (user 2026-09-14), which is
+    // this table full and forModelColor handing back AIR -- measured at 255 of
+    // 255 with 16 distinct colours refused across 109 calls, and what goes
+    // without is whatever loaded last, which is the newest animal.
+    //
+    // MEASURED, PER GROUP, off the real art (the harness counts distinct keys
+    // at a range of steps):
+    //
+    //                                 step10  step14  step18  step24
+    //     world: trees, rocks, decor      91      87      76      66
+    //     the flyer band, deduplicated   158     136     113      97
+    //
+    // ...against a budget of about 194: the table is 255, the terrain ramps
+    // take the first 38, and the held kit reserves 23 EXACTLY (see `exact`).
+    // 91 + 158 does not fit and never did -- the band has been one animal away
+    // from this since the fish landed.
+    //
+    // -- AND SNAPPING TO A COARSER GRID IS THE WRONG WAY TO GET IT ---------
+    //
+    // The first fix rounded a band colour onto a 24-unit lattice before
+    // registering it. It fit -- and it broke the skunk, which is the one animal
+    // in the wood that is black and white. Rounding each channel INDEPENDENTLY
+    // pulls a near-neutral apart, because r, g and b sit near different bucket
+    // edges. MEASURED on the shipped art:
+    //
+    //     (  0,  0,  0) -> ( 12, 12, 12)   the black body, lifted to grey
+    //     ( 44, 44, 48) -> ( 36, 36, 60)   a neutral dark, gone BLUE
+    //     ( 50, 49, 43) -> ( 60, 60, 36)   a warm grey, gone OLIVE
+    //     (234,238,246) -> (228,228,252)   a cool white, gone blue
+    //
+    // A hue cast on a neutral is far more visible than a loss of gradient, and
+    // that is what "the skunk colours are broke, voxels are showing but colours
+    // are wrong" was.
+    //
+    // WHAT WORKS IS MATCHING, NOT MOVING. If a colour is within kModelMatch of
+    // one the table already holds, it gets that entry -- and if it is not, it
+    // is minted EXACTLY as authored. Black stays black, because nothing near
+    // black is in the table until the skunk puts it there. Same measurement,
+    // same art, nearest-match at 16:
+    //
+    //     (  0,  0,  0) -> (  0,  0,  0)   exact
+    //     ( 44, 44, 48) -> ( 47, 47, 47)   still neutral
+    //     worst error 12.9/255 against the snap's 20.8, and 160 entries
+    //     against its 177
+    //
+    // THIS IS v1'S palShare TOLERANCE, and v1's own warning comes with it: an
+    // id is a MATERIAL. Over there a pink bird landed 5/255 from the cactus
+    // flower, inherited cactusTab, and stung the player. Here the materials
+    // that MEAN something are the terrain families -- grass, soil, litter,
+    // stone, sand, water, foam -- and they are all below TREE_BASE, so the
+    // search starts there and can never hand a model a shade the world
+    // re-rolls per voxel in groundShade.
+    static constexpr int kModelMatch = 16;
+
+    // The nearest MODEL entry to this colour within `tol`, or 0 for none.
+    // Euclidean in sRGB, which is what the art was authored in.
+    uint8_t nearestModelColor(const std::array<uint8_t, 4> &c, int tol) const {
+        int best = tol * tol + 1;
+        uint8_t hit = 0;
+        for (int id = mat::TREE_BASE; id < int(next_); ++id) {
+            const Vec3 a = look_[size_t(id)].albedo;
+            const int dr = srgbByte(a.x) - int(c[0]);
+            const int dg = srgbByte(a.y) - int(c[1]);
+            const int db = srgbByte(a.z) - int(c[2]);
+            const int d = dr * dr + dg * dg + db * db;
+            if (d < best) {
+                best = d;
+                hit = uint8_t(id);
+            }
+        }
+        return hit;
+    }
+
+    // The inverse of what forModelColor stores. One place, so a comparison
+    // against an authored colour cannot drift from the conversion that made it.
+    static int srgbByte(float linear) {
+        const float s = (linear <= 0.0031308f) ? linear * 12.92f
+                                               : 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f;
+        const int q = int(s * 255.0f + 0.5f);
+        return q < 0 ? 0 : (q > 255 ? 255 : q);
+    }
+
+    // WHICH KEY SPACE AN ENTRY LIVES IN. An exact key is the colour itself and
+    // a quantised one is the colour over kQuantStep, and the two ranges OVERLAP
+    // numerically -- (18, 24, 20) exact is the same integer as (180, 240, 200)
+    // quantised. One bit above both keeps them apart, so an exact request can
+    // never be handed a bucket a rougher colour opened.
+    static constexpr uint32_t kExactKeyBit = 0x1000000u;
+
+    // `exact` -- DO NOT MERGE THIS COLOUR WITH ANYTHING. For the handful of
+    // models that are held in front of the eye, where a shading ramp is the
+    // whole of the art and losing a step of it is visible. Everything the WORLD
+    // is made of still quantises: there are 372 colours out there and 255
+    // places to put them.
+    // `matchTol` -- IF IT IS NOT IN THE TABLE, IS SOMETHING CLOSE ENOUGH?
+    // Zero for the world, which mints what it asks for; kModelMatch for the
+    // flyer band, whose 158 distinct colours do not fit beside the world's 91.
+    // See the note over kModelMatch for why this and not a coarser step.
+    uint8_t forModelColor(const std::array<uint8_t, 4> &c, bool conifer = true,
+                          bool exact = false, int matchTol = 0) {
         const uint32_t qr = uint32_t(c[0] / kQuantStep), qg = uint32_t(c[1] / kQuantStep),
                        qb = uint32_t(c[2] / kQuantStep);
-        const uint32_t key = (qr << 16) | (qg << 8) | qb;
+        const uint32_t key = exact ? (kExactKeyBit | (uint32_t(c[0]) << 16) |
+                                      (uint32_t(c[1]) << 8) | uint32_t(c[2]))
+                                   : ((qr << 16) | (qg << 8) | qb);
         auto it = index_.find(key);
         if (it != index_.end()) return it->second;
+        // NOT IN ITS OWN BUCKET, BUT NEAR SOMETHING. Cached under this key, so
+        // the next voxel of the same colour costs a hash lookup rather than a
+        // scan of the table.
+        //
+        // NOT NAMED `near`. windows.h still defines near and far as empty
+        // macros from the segmented-memory era, so the declaration compiles as
+        // `const uint8_t = ...` and the error names neither -- the FIFTH time
+        // in this project. birds.h, app.h and lake.h all carry the same note.
+        if (matchTol > 0) {
+            const uint8_t shared = nearestModelColor(c, matchTol);
+            if (shared) {
+                index_[key] = shared;
+                return shared;
+            }
+        }
         if (next_ >= mat::COUNT) {
             ++overflow_;
+            // ...AND HOW MANY DISTINCT COLOURS THAT REALLY IS, which is not the
+            // same number and is the only one worth acting on.
+            //
+            // overflow_ counts failed CALLS. Once the table is full, a colour
+            // that would have DEDUPED fails again on every lookup -- so a single
+            // refused shade that fifty models happen to share reports as fifty,
+            // and the total inflates nonlinearly with how many models ask rather
+            // than with how much you cannot see. Measured here: reserving the
+            // held kit early moved the shortfall off the bow and the count went
+            // from 14 to 240, which reads like a catastrophe and is ONE colour
+            // asked for by the whole flyer band.
+            //
+            // The keys are already the dedup identity, so a set of the refused
+            // ones is the honest count. It is bounded by how many distinct
+            // colours the world wanted and cannot grow without bound.
+            overflowKeys_.insert(key);
             return mat::AIR;
         }
 
@@ -376,6 +639,69 @@ class Palette {
     int stoneSampleCount() const { return stoneFromRocks_; }
 
     const MaterialLook &operator[](uint8_t id) const { return look_[id]; }
+
+    // -- WHAT ENTRY DID THAT COLOUR REALLY END UP ON? ------------------------
+    //
+    // WRITTEN BECAUSE AN ASSUMPTION ABOUT IT WAS WRONG, twice in one afternoon.
+    // A caller that wants a material to itself -- the firefly's glow, the fly's
+    // wing -- registers its colour with `exact` and then keeps the id. That id
+    // is NOT necessarily the one the model wears: exact stores under a key of
+    // its own (kExactKeyBit), while the model's own voxels come back through
+    // the SNAP, and nearestModelColor takes the first strictly-nearest entry it
+    // finds scanning upward. An earlier entry of the same colour therefore wins
+    // -- the asset deck's pure white beat a pure-white wing registered after it,
+    // and the wing's material sat in the table wearing nothing.
+    //
+    // The symptom was nothing at all: the render was pixel-for-pixel identical
+    // with the wing alpha at 0 and at 1, which is exactly what an orphaned
+    // material looks like.
+    //
+    // So ASK, rather than assume. This is the same resolution the snap does,
+    // without registering anything, and `sharing` says how many OTHER entries
+    // are close enough that the answer could have gone elsewhere -- which is the
+    // number that decides whether a private material is really private.
+    uint8_t resolveModelColor(const std::array<uint8_t, 4> &c, int tol, int *sharing = nullptr) const {
+        if (sharing) *sharing = 0;
+        uint8_t hit = nearestModelColor(c, tol);
+        if (sharing && hit) {
+            for (int id = mat::TREE_BASE; id < int(next_); ++id) {
+                const Vec3 a = look_[size_t(id)].albedo;
+                const int dr = srgbByte(a.x) - int(c[0]);
+                const int dg = srgbByte(a.y) - int(c[1]);
+                const int db = srgbByte(a.z) - int(c[2]);
+                if (dr * dr + dg * dg + db * db <= tol * tol) ++(*sharing);
+            }
+        }
+        return hit;
+    }
+
+    // -- THE ONE WAY A MATERIAL BECOMES SEE-THROUGH --------------------------
+    //
+    // A SETTER RATHER THAN A FIELD ON forModelColor, because being see-through
+    // is a property of one entry and not of the colour that asked for it: the
+    // caller has to REGISTER ITS COLOUR EXACTLY first (see kModelMatch), or the
+    // snap hands it an entry the rest of the world is already wearing and half
+    // the wood goes transparent. The firefly's emissive material is claimed the
+    // same way and for the same reason.
+    void setAlpha(uint8_t id, float a) {
+        if (!id) return;   // AIR
+        look_[size_t(id)].alpha = a;
+    }
+    // ...AND THE WHOLE SURFACE, for the one entry that is a DIELECTRIC rather
+    // than a see-through version of an ordinary one. See kHouseflyWingAlpha:
+    // being glass is four numbers that have to move together, and setting only
+    // the first is what made a fly's wing read as torn paper.
+    //
+    // The albedo is SCALED, not replaced: the hue is what the art authored and
+    // the lightness is what a dielectric is allowed to have of its own.
+    void setGlass(uint8_t id, float a, float rough, float spec, float diffuse) {
+        if (!id) return;   // AIR
+        MaterialLook &m = look_[size_t(id)];
+        m.alpha = a;
+        m.roughness = rough;
+        m.specular = spec;
+        m.albedo = m.albedo * diffuse;
+    }
     // Is this material id a LEAF rather than wood? False for everything that
     // is not a model colour, which is the right answer for all of them: the
     // ground, the water and the stone are none of them foliage.
@@ -383,6 +709,11 @@ class Palette {
     const std::vector<MaterialLook> &table() const { return look_; }
     int used() const { return next_; }
     int overflowed() const { return overflow_; }
+    // HOW MANY COLOURS YOU ACTUALLY CANNOT SEE, as against how many times the
+    // table said no. Prefer this one in any report a human reads: overflowed()
+    // is call count and inflates with the number of models that share a refused
+    // shade. See the overflow branch in forModelColor.
+    int overflowedColors() const { return int(overflowKeys_.size()); }
     // How many model entries have been handed out. Read by World::replaceHeldVox
     // to tell "this model brought a new colour" from "it brought the same ones
     // it did last time", which decides whether the GPU's copy of the table is
@@ -452,6 +783,81 @@ class Palette {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // A TALL BLADE'S RAMP: THIS WOOD'S GREEN AT THE FOOT, DRYING TO STRAW.
+    //
+    // Run once per wood, right after that wood's grass ramp, and it READS that
+    // ramp -- which is the whole point. "make the base of the tall wheat grass,
+    // the same green as the grass green": shade 0 is a copy of `grassBase`, so
+    // the foot of a tuft is the same colour as the short blades round it
+    // whatever the pines or the birches turned out to be. Authoring a green
+    // here instead would be a third opinion about what this wood's grass is,
+    // and it would be wrong the first time an artist re-exported a tree.
+    //
+    // THE STRAW END IS AUTHORED AND SHARED. Green belongs to the wood; straw
+    // does not -- grass that has gone over is the same colour whatever is
+    // growing near it -- so the two woods blend toward one table and only their
+    // wet ends differ. That is also why this is one function called twice.
+    //
+    // THE CROSSFADE IS OVER SHADES 1..5, so at STRAND_ROW_STEP = 2 a tall blade
+    // is green for its bottom ~4 voxels, turning over the next ~8, and straw for
+    // the top half. Short grass never sees any of it: a short blade tops out at
+    // row 3 and this family is only ever written on a tall one -- see
+    // bladeMaterial.
+    //
+    // IT RISES IN VALUE THE WHOLE WAY, which is both halves of the brief at
+    // once ("a lighter color overal"). Green is a dark albedo and straw is a
+    // bright one, so drying out IS getting lighter, and that now agrees with
+    // the light field the green ramps encode rather than fighting it. The last
+    // two shades turn warm for the seed head -- a change of HUE, not a fall in
+    // value.
+    // -----------------------------------------------------------------------
+    void fillWheatRamp(uint8_t base, uint8_t count, uint8_t grassBase, uint8_t grassCount) {
+        // WHAT A DRY BLADE IS, in sRGB because these are picked by eye and sRGB
+        // is what a colour picker shows. Only shades 2 and up are really used --
+        // 0 and 1 are almost entirely the green -- but the table is full length
+        // so the blend has something to aim at from the first step.
+        static const uint8_t kStraw[10][3] = {
+            {150, 150,  96},   // 0  (barely reached -- the green wins here)
+            {166, 162, 100},   // 1
+            {186, 176, 108},   // 2  the turn
+            {202, 188, 118},   // 3
+            {214, 197, 128},   // 4
+            {222, 203, 136},   // 5  straw
+            {226, 206, 141},   // 6
+            {228, 207, 144},   // 7  the palest of it
+            // -- THE HEAD, AND IT IS A HUE TURN RATHER THAN A FALL -----------
+            //
+            // The first cut of this ran the top third down to a dark brown and
+            // read as heavy, which is what "a lighter color overal" was about.
+            // These two are still the ripe tan the request asks for -- r/g
+            // climbs from 1.24 at the peak to 1.36 here, so they are visibly
+            // browner -- while giving up only about an eighth of the value.
+            // Measured rather than judged: tests/wheat_grass_test.cpp pins the
+            // tip at no less than 0.85 of the peak and requires it to be warmer.
+            {226, 200, 138},   // 8  the head: warmer, barely darker
+            {222, 193, 133},   // 9  ...and a light tan-brown at the very tip
+        };
+        for (int k = 0; k < int(count); ++k) {
+            // HOW DRY THIS SHADE IS. 0 at the soil, 1 from shade 5 up.
+            const float w = clampf((float(k) - 1.0f) / 4.0f, 0.0f, 1.0f);
+            const MaterialLook &g = look_[grassBase + mini(k, int(grassCount) - 1)];
+            const int s = mini(k, 9);
+            const Vec3 dry(srgbToLinearF(float(kStraw[s][0]) / 255.0f),
+                           srgbToLinearF(float(kStraw[s][1]) / 255.0f),
+                           srgbToLinearF(float(kStraw[s][2]) / 255.0f));
+            MaterialLook &m = look_[base + k];
+            m.albedo = g.albedo * (1.0f - w) + dry * w;
+            // Straw is drier and stiffer than a living blade, so it roughens and
+            // loses some of the back-lit glow -- but it is still a thin blade
+            // and must not become a black stick at dawn. Both eased on the same
+            // w, so a shade cannot be green-coloured and straw-surfaced.
+            m.roughness = g.roughness * (1.0f - w) + 0.95f * w;
+            m.specular = g.specular;
+            m.translucency = g.translucency * (1.0f - w) + 0.16f * w;
+        }
+    }
+
     void deriveGroundFromTrees() {
         std::vector<uint8_t> foliage, bfoliage, bark;
         const int end = pineEnd_ > mat::TREE_BASE ? pineEnd_ : next_;
@@ -507,6 +913,15 @@ class Palette {
         // has grass rather than the built-in default green.
         fillGrassRamp(mat::BGRASS_0, mat::BGRASS_COUNT,
                       bfoliage.empty() ? foliage : bfoliage);
+
+        // -- AND WHAT THE TALL BLADES DRY TO, one ramp per wood ---------------
+        //
+        // AFTER the greens, and that order is load-bearing rather than tidy:
+        // shade 0 of each of these is a COPY of that wood's GRASS_0, so running
+        // it first would root every tuft in whatever the slot held before the
+        // trees were read. See fillWheatRamp.
+        fillWheatRamp(mat::WHEAT_0, mat::WHEAT_COUNT, mat::GRASS_0, mat::GRASS_COUNT);
+        fillWheatRamp(mat::BWHEAT_0, mat::BWHEAT_COUNT, mat::BGRASS_0, mat::BGRASS_COUNT);
 
         // -- ONE BROWN, IN SEVERAL SHADES ------------------------------------
         //
@@ -606,6 +1021,24 @@ class Palette {
                 set(uint8_t(mat::SAND_0 + i), 0.60f * f, 0.47f * f, 0.28f * fb, 0.85f);
             }
         }
+        // THE WHEAT RAMPS ARE NOT AUTHORED HERE ANY MORE. They start at their
+        // wood's own GRASS_0, so they cannot be built until the trees have been
+        // read -- see fillWheatRamp, called from deriveGroundFromTrees. What
+        // stood here was a hand-typed sRGB table, which was the right shape
+        // while straw was one colour for the whole world and the wrong one the
+        // moment its foot had to match a green this file does not choose.
+        // v1'S TILLED EARTH, CONVERTED. Its sRGB (150, 116, 76) decoded to
+        // linear, the way mat::SAND above is -- "a DARKER brown than the first
+        // pass (user) -- turned soil, not dust". Rougher than the sand it sits
+        // beside, because broken ground scatters in every direction.
+        set(mat::TILLED, 0.30f, 0.17f, 0.07f, 0.98f);
+        // THE HELD MODEL'S THREE GREENS, CONVERTED. seeds.vox is sRGB
+        // (171,255,76), (110,255,84), (83,255,121) and this table is LINEAR --
+        // see the note over the sand, which is the same conversion and the same
+        // trap. A seed on the ground and a seed in your hand are now one fact.
+        set(mat::SEED_0 + 0, 0.407f, 1.000f, 0.072f, 0.92f);
+        set(mat::SEED_0 + 1, 0.156f, 1.000f, 0.089f, 0.92f);
+        set(mat::SEED_0 + 2, 0.087f, 1.000f, 0.191f, 0.92f);
         set(mat::SILT, 0.22f, 0.20f, 0.16f, 0.95f);
         // WATER, AS A PLACEHOLDER TONE AND NOTHING MORE. A lake is a dielectric
         // and wants the delta lobe and the Beer-Lambert depth term that v1 and
@@ -641,11 +1074,39 @@ class Palette {
     int birchStart_ = 0;
     int stoneFromRocks_ = 0;
     int overflow_ = 0;
+    // The refused keys, deduped -- see forModelColor's overflow branch for why
+    // the call count on its own is misleading.
+    std::unordered_set<uint32_t> overflowKeys_;
 };
 
 inline bool isGrass(uint8_t m) { return m >= mat::GRASS_0 && m < mat::GRASS_0 + mat::GRASS_COUNT; }
 inline bool isBGrass(uint8_t m) {
     return m >= mat::BGRASS_0 && m < mat::BGRASS_0 + mat::BGRASS_COUNT;
+}
+// A TALL BLADE, WHICH IS STILL GRASS -- see mat::WHEAT_0. Kept out of isGrass()
+// on purpose: that one means "the pines' green ramp" and is asked by code that
+// cares which RAMP it is holding, not what the plant is.
+// EITHER WOOD'S STRAW. Two ramps, one question -- nothing that asks this cares
+// which wood a tall blade dried out in.
+inline bool isWheat(uint8_t m) {
+    return (m >= mat::WHEAT_0 && m < mat::WHEAT_0 + mat::WHEAT_COUNT) ||
+           (m >= mat::BWHEAT_0 && m < mat::BWHEAT_0 + mat::BWHEAT_COUNT);
+}
+// ...and the question "is this a blade of anything", for the callers that mean
+// the plant. All four ramps, both woods, green and gone-over.
+inline bool isBlade(uint8_t m) { return isGrass(m) || isBGrass(m) || isWheat(m); }
+// A BEACH IS NOT A SEED BED. v1 is explicit that sand is in its dig table
+// because the SHOVEL moves it, "which is a different question from whether a
+// hoe can make a seed bed out of a beach" -- so the hoe asks this and the
+// shovel does not. Both the single id and the four grains the device spreads it
+// over, because either can be the surface of a shore.
+// A SEED LYING ON TURNED EARTH. Three shades, one question.
+inline bool isSeed(uint8_t m) {
+    return m >= mat::SEED_0 && m < mat::SEED_0 + mat::SEED_COUNT;
+}
+
+inline bool isSand(uint8_t m) {
+    return m == mat::SAND || (m >= mat::SAND_0 && m < mat::SAND_0 + mat::SAND_COUNT);
 }
 inline bool isSoil(uint8_t m) { return m >= mat::SOIL_0 && m < mat::SOIL_0 + mat::SOIL_COUNT; }
 inline bool isLitter(uint8_t m) {
@@ -1421,19 +1882,163 @@ class EditStore {
                             }
                         }
                 }
-        std::vector<std::pair<int, int>> out;
-        out.reserve(touched.size());
-        for (auto &kv : touched) {
-            byChunk_[ChunkEdits::ckey(kv.first.first, kv.first.second)] = kv.second;
-            out.push_back(kv.first);
+        return publish(touched);
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND THE SAME EDIT OVER A LIST SOMEBODY ELSE CHOSE.
+    //
+    // carve() above decides its own shape -- a sphere -- which is right for a
+    // tool head and wrong for anything that has to pick its voxels by what they
+    // are MADE OF. EditStore has no terrain to ask, so the choosing cannot
+    // happen in here; World::mow does it and hands the answer over.
+    //
+    // Everything else is carve()'s, including the part that matters: each cell
+    // is published to every chunk whose column ring reaches it, so a blade cut
+    // at a chunk seam is cut in both of them.
+    // -----------------------------------------------------------------------
+    std::vector<std::pair<int, int>> carveCells(const std::vector<std::array<int, 3>> &cells) {
+        std::map<std::pair<int, int>, std::shared_ptr<ChunkEdits>> touched;
+        std::lock_guard<std::mutex> lk(mx_);
+        for (const std::array<int, 3> &c : cells) {
+            const int i = c[0], j = c[1], y = c[2];
+            for (int rj = -1; rj <= 1; ++rj)
+                for (int ri = -1; ri <= 1; ++ri) {
+                    const int ni = i + ri, nj = j + rj;
+                    const int cx = floorDiv(ni, CHUNK_VOX), cz = floorDiv(nj, CHUNK_VOX);
+                    auto &slot = touched[{cx, cz}];
+                    if (!slot) {
+                        const auto it = byChunk_.find(ChunkEdits::ckey(cx, cz));
+                        slot = it == byChunk_.end() ? std::make_shared<ChunkEdits>()
+                                                    : std::make_shared<ChunkEdits>(*it->second);
+                    }
+                    slot->vox[ChunkEdits::vkey(i, j, y)] = mat::AIR;
+                    auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
+                    if (span.first == 0 && span.second == 0) span = {y, y + 1};
+                    else {
+                        span.first = mini(span.first, y);
+                        span.second = maxi(span.second, y + 1);
+                    }
+                }
         }
-        return out;
+        return publish(touched);
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND THE SAME EDIT WITH A MATERIAL IN IT RATHER THAN AIR.
+    //
+    // THE FORMAT ALWAYS ALLOWED THIS and nothing had ever used it: ChunkEdits
+    // maps a voxel to a `uint8_t`, and voxel/columns.h's applyEdits already
+    // reads it both ways -- "if (m == mat::AIR) clear the bit; else set it" --
+    // so an edit that PUTS something there meshes correctly with no change to
+    // the mesher at all. Every writer so far has been a carve, so every edit so
+    // far has been AIR.
+    //
+    // The hoe is the first thing that adds rather than removes. See World::till.
+    // -----------------------------------------------------------------------
+    std::vector<std::pair<int, int>> writeCells(
+        const std::vector<std::pair<std::array<int, 3>, uint8_t>> &cells) {
+        std::map<std::pair<int, int>, std::shared_ptr<ChunkEdits>> touched;
+        std::lock_guard<std::mutex> lk(mx_);
+        for (const auto &cm : cells) {
+            const int i = cm.first[0], j = cm.first[1], y = cm.first[2];
+            for (int rj = -1; rj <= 1; ++rj)
+                for (int ri = -1; ri <= 1; ++ri) {
+                    const int ni = i + ri, nj = j + rj;
+                    const int cx = floorDiv(ni, CHUNK_VOX), cz = floorDiv(nj, CHUNK_VOX);
+                    auto &slot = touched[{cx, cz}];
+                    if (!slot) {
+                        const auto it = byChunk_.find(ChunkEdits::ckey(cx, cz));
+                        slot = it == byChunk_.end() ? std::make_shared<ChunkEdits>()
+                                                    : std::make_shared<ChunkEdits>(*it->second);
+                    }
+                    slot->vox[ChunkEdits::vkey(i, j, y)] = cm.second;
+                    auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
+                    if (span.first == 0 && span.second == 0) span = {y, y + 1};
+                    else {
+                        span.first = mini(span.first, y);
+                        span.second = maxi(span.second, y + 1);
+                    }
+                }
+        }
+        return publish(touched);
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND TAKING AN EDIT BACK, which is what "it grows back over" needs.
+    //
+    // THE COLUMN SPAN HAS TO GO WITH THE VOXELS OR THE GRASS NEVER RETURNS.
+    // `col` is not bookkeeping -- StrandColumns reads it as "this column has
+    // been touched, grow nothing" and meshChunk reads it as "voxel-mesh this
+    // one". Erasing the voxels and leaving the span behind would put the dirt
+    // back and leave the tuft that was standing on it gone for ever, which is
+    // the revert half-working in the way that looks like it worked.
+    //
+    // REBUILT FROM WHAT IS LEFT rather than narrowed by arithmetic: a chunk's
+    // edit set is small, the spans overlap in ways that do not subtract, and a
+    // span that is merely nearly right is a seam that meshes one way on one
+    // side. See tillRevert.
+    // -----------------------------------------------------------------------
+    std::vector<std::pair<int, int>> eraseCells(const std::vector<std::array<int, 3>> &cells) {
+        std::map<std::pair<int, int>, std::shared_ptr<ChunkEdits>> touched;
+        std::lock_guard<std::mutex> lk(mx_);
+        for (const std::array<int, 3> &c : cells) {
+            const int i = c[0], j = c[1], y = c[2];
+            for (int rj = -1; rj <= 1; ++rj)
+                for (int ri = -1; ri <= 1; ++ri) {
+                    const int cx = floorDiv(i + ri, CHUNK_VOX), cz = floorDiv(j + rj, CHUNK_VOX);
+                    auto &slot = touched[{cx, cz}];
+                    if (!slot) {
+                        const auto it = byChunk_.find(ChunkEdits::ckey(cx, cz));
+                        if (it == byChunk_.end()) continue;
+                        slot = std::make_shared<ChunkEdits>(*it->second);
+                    }
+                    slot->vox.erase(ChunkEdits::vkey(i, j, y));
+                }
+        }
+        for (auto &kv : touched) {
+            if (!kv.second) continue;
+            ChunkEdits &ce = *kv.second;
+            ce.col.clear();
+            for (const auto &v : ce.vox) {
+                const uint64_t k = v.first;
+                const int i = int((k >> 42) & 0x1fffffu), j = int((k >> 21) & 0x1fffffu);
+                const int y = int(k & 0x1fffffu);
+                const int si = (i & 0x100000) ? i - 0x200000 : i;
+                const int sj = (j & 0x100000) ? j - 0x200000 : j;
+                const int sy = (y & 0x100000) ? y - 0x200000 : y;
+                for (int rj = -1; rj <= 1; ++rj)
+                    for (int ri = -1; ri <= 1; ++ri) {
+                        auto &span = ce.col[ChunkEdits::ckey(si + ri, sj + rj)];
+                        if (span.first == 0 && span.second == 0) span = {sy, sy + 1};
+                        else {
+                            span.first = mini(span.first, sy);
+                            span.second = maxi(span.second, sy + 1);
+                        }
+                    }
+            }
+        }
+        return publish(touched);
     }
 
     // Floor division: chunk -1 must hold voxel -1, not voxel 0.
     static int floorDiv(int a, int b) { return (a >= 0) ? (a / b) : -(((-a) + b - 1) / b); }
 
   private:
+    // The tail every writer above shares: republish the copies and say which
+    // chunks moved. Called with the lock already held.
+    std::vector<std::pair<int, int>> publish(
+        std::map<std::pair<int, int>, std::shared_ptr<ChunkEdits>> &touched) {
+        std::vector<std::pair<int, int>> out;
+        out.reserve(touched.size());
+        for (auto &kv : touched) {
+            if (!kv.second) continue;
+            byChunk_[ChunkEdits::ckey(kv.first.first, kv.first.second)] = kv.second;
+            out.push_back(kv.first);
+        }
+        return out;
+    }
+
     mutable std::mutex mx_;
     std::unordered_map<uint64_t, std::shared_ptr<const ChunkEdits>> byChunk_;
 };
@@ -1460,8 +2065,11 @@ inline bool isStoneMat(uint8_t m) { return m == mat::ROCK; }
 // ROCK AND BEDROCK ARE DELIBERATELY OUT. A shovel that took stone would be a
 // pick, and the two exist to be different. See isStoneMat above.
 inline bool isSoilMat(uint8_t m) {
-    return m == mat::DIRT || m == mat::SAND || m == mat::SILT || isGrass(m) || isSoil(m) ||
-           isLitter(m);
+    // TILLED EARTH IS STILL SOIL. A shovel that could not move ground a hoe had
+    // just turned over would be the one patch of dirt in the world you cannot
+    // dig, which is a trap rather than a rule.
+    return m == mat::DIRT || m == mat::SAND || m == mat::SILT || m == mat::TILLED ||
+           isSeed(m) || isGrass(m) || isSoil(m) || isLitter(m);
 }
 
 class VoxelTerrain {
@@ -1618,7 +2226,28 @@ class VoxelTerrain {
     // At 9.5 the wood also flooded once the carve started working: birch
     // ground sits a median 14.3 m against that line, so any real carve pulled
     // enormous areas under it -- 16.3% of the region wet.
-    float birchWater = 6.5f;   // +1 m with the pine -- see pineWater
+    // 7.5 m, ANOTHER METRE (user 2026-09-13, "raise the water level in the
+    // birch forest, there's too much empty sandy bank"). Swept in
+    // tests/water_survey.cpp, which now takes birchWater as argv[8] for this:
+    //
+    //     birchWater   birch wet   bodies   SAND PER WATER COLUMN
+    //        6.5        4.60%       560          0.81
+    //        7.5        6.56%       659          0.73   <-- the floor
+    //        8.0        7.69%       661          0.76
+    //        9.0       10.57%       789          0.82
+    //
+    // THE LEVER SATURATES AT 7.5 AND THEN REVERSES, which is the thing worth
+    // knowing and is not what anyone expects of "raise the water". The sand
+    // band is defined by VERTICAL extent, so on the birch's nearly flat
+    // lakeside ground it is enormous in PLAN -- the same trap bankRiseM's
+    // note records. Past 7.5 each further metre floods a wide flat apron and
+    // hands the new shoreline a wider sand ring than it drowned.
+    //
+    // So this is the whole of what raising the line can do about bare bank:
+    // 0.81 -> 0.73 against the pine wood's 0.45. What closes the rest of that
+    // gap is a shorter sand band for this wood -- 0.7 m puts it at 0.46 --
+    // and that is a separate constant, not this one.
+    float birchWater = 7.5f;   // +1 m again -- see the sweep above
 
     // THE BASIN THRESHOLD. It decides where heightM CARVES A HOLLOW, and that
     // is now the only thing it decides -- it used to gate the wet test too,
@@ -1975,9 +2604,46 @@ class VoxelTerrain {
     // much broader in PLAN, and 0.9 m of rise across it left barely a strip of
     // sand visible -- the beach disappeared when the white band was removed.
     float sandRiseM = 1.4f;
+    // -----------------------------------------------------------------------
+    // 0.7 m IN THE BIRCH, HALF THE PINE'S (user 2026-09-13, "there's too much
+    // empty sandy bank"). The wood already keeps its own waterline and its own
+    // basin depth for the same underlying reason, and this is the third face of
+    // it.
+    //
+    // A SAND BAND IS VERTICAL, SO ITS WIDTH IN PLAN IS THE GROUND'S SLOPE --
+    // which is the whole of why one constant cannot serve both woods. The birch
+    // relief is 22 m against the pine's 90, and at the lakes it is flatter
+    // still, so 1.4 m of rise there covers several times the plan distance it
+    // does in the pine. Measured over a 3,200 m square as sand columns per
+    // WATER column -- the ratio, not the count, because sand scales with a
+    // lake's perimeter and a bigger lake having more of it is correct:
+    //
+    //     sandRise    pine    birch
+    //       1.4       0.45     0.73
+    //       0.9       0.33     0.53
+    //       0.7       0.28     0.46     <-- birch now reads like the pine
+    //       0.5       0.24     0.39
+    //
+    // RAISING THE WATERLINE IS NOT THE LEVER FOR THIS, and the sweep recorded
+    // at birchWater is the evidence: it bottoms out at 0.73 and then REVERSES,
+    // because past that each further metre floods a flat apron and hands the
+    // new shoreline a wider ring than it drowned.
+    //
+    // BLENDED ON birchMix, NOT SWITCHED, matching birchBasinBed -- though for a
+    // weaker reason, since this picks a MATERIAL and a step in it is a ragged
+    // line rather than a step in the ground. It is blended because the two
+    // woods' shores meet along the band seam and a straight north-south edge is
+    // the one shape nothing else in this terrain has.
+    // -----------------------------------------------------------------------
+    float birchSandRiseM = 0.7f;
 
     int bankRiseVox() const { return maxi(1, int(bankRiseM / VOXEL_M)); }
-    int sandRiseVox() const { return maxi(1, int(sandRiseM / VOXEL_M)); }
+    // ASKED AT AN x, ALWAYS. There is deliberately no sandRiseVox() taking no
+    // argument any more: it would answer with the pine's band everywhere, and a
+    // caller in the birch wood would get a silently wrong shore rather than a
+    // compile error.
+    float sandRiseAt(float x) const { return lerpf(sandRiseM, birchSandRiseM, birchMix(x)); }
+    int sandRiseVoxAt(float x) const { return maxi(1, int(sandRiseAt(x) / VOXEL_M)); }
 
     // -----------------------------------------------------------------------
     // The bank, as a function of one column's height alone.
@@ -2278,7 +2944,50 @@ class VoxelTerrain {
         // fine octave is added below for both, so it is not in the expression
         // here any more; it used to be, because this path ended at the return.
         // -------------------------------------------------------------------
+        // -------------------------------------------------------------------
+        // THE LANDFORM IS BLENDED HERE, BEFORE THE CARVE. THAT ORDER IS THE
+        // WHOLE OF THIS BLOCK, AND GETTING IT WRONG BUILT A WALL THROUGH A LAKE
+        // (user 2026-09-13, "getting a wall in the lake in the birch").
+        //
+        // It used to carve the PINE field and then lerp the carved result
+        // toward a freshly evaluated, UNCARVED birch field -- except on columns
+        // where mix >= 0.999, which took an early return with the full carve on
+        // the birch field. So the carve's depth was multiplied by (1 - mix)
+        // through the whole seam and then snapped back to full strength at one
+        // value of mix. mix is a pure function of x, so that snap is a PLANE OF
+        // CONSTANT x, and wherever a basin lay across it the ground fell off
+        // the edge:
+        //
+        //     worst one-voxel step in x, 3.2 km square, 25.6 M columns
+        //       was   7.31 m, on four lines of x, every one at bandDist 86.6
+        //       now   the terrain's own gradient, nowhere in particular
+        //
+        // Disabling the carve (basinT = -1) took that 7.31 m to 0.21 m and the
+        // lines vanished, which is what identified it: nothing else in this
+        // field steps, and the step was never in the blend -- it was in WHAT
+        // THE BLEND WAS APPLIED TO.
+        //
+        // CARVING THE BLENDED HEIGHT IS ALSO THE RIGHT ANSWER ON ITS OWN TERMS.
+        // The carve asks "is this column low enough to hold water", and the
+        // only height that can answer is the one the column actually has. A
+        // seam column carved from the pine field alone was being asked about a
+        // wood it is only fractionally in.
+        //
+        // COSTS THE SAME. A pure column still evaluates one field, a seam
+        // column still evaluates both, and the birch's roll and swell keep
+        // their own memos because only the seam asks for them alongside the
+        // pine's. The warp is the same warp at the same frequency, so the
+        // second warpedFbm walks straight into the memo the first one filled.
+        //
+        // THE SEAM ITSELF is ninety metres of blend between a wood whose median
+        // floor is 48 m and one whose median is 13 -- a 35 m drop, so it is not
+        // a detail, it is a hillside, and it wants to be walked down rather
+        // than fallen off. sstep on both sides of birchWeight is what makes the
+        // join C1: the gradient goes to zero at each end of the blend instead
+        // of changing abruptly where the lerp starts and stops.
+        // -------------------------------------------------------------------
         const bool pureBirch = (mix >= 0.999f);
+        const bool purePine = (mix <= 0.001f);
         float h;
         if (pureBirch) {
             // ALL FIVE ROLL OCTAVES AND ALL THREE SWELL -- the birch field is
@@ -2296,6 +3005,15 @@ class VoxelTerrain {
                 warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 2);
             const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
             h = 14.0f + roll * 48.0f + swell * 21.5f;
+            // THE BIRCH SIDE OF THE SEAM, at its own octave counts and its own
+            // memos, folded in before anything downstream looks at h.
+            if (!purePine) {
+                const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
+                                              z * 0.0130f, 1.5f, 5);
+                const float bSwell =
+                    fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
+                h = lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f, mix);
+            }
         }
 
         // THE CARVE IS A FUNCTION OF THE WATERLINE AND EXISTS FOR NOTHING
@@ -2358,41 +3076,12 @@ class VoxelTerrain {
         // staircase. Its own gradient reaches 0.34, which holds the steps to
         // about 30 cm wherever the landform underneath has gone flat.
         h += fine;
-        // THE PINE SIDE RETURNS HERE, and it is where every lake in the world
-        // is -- waterAt hands back kNoWater unless birchMix is under this very
-        // threshold. Shaping the bank only at the blended return below meant it
-        // ran on the 11% of columns inside a birch seam and on NONE of the
-        // columns that have water, which measured as the bank doing nothing at
-        // all whatever bankFlat was set to.
-        // EITHER WOOD, PURE. Only a column inside the seam needs the blend
-        // below; a pure-birch one has its own carved height already and must
-        // NOT be lerped back toward an uncarved birch field, which would undo
-        // the hollow this function just cut.
-        if (mix <= 0.001f || pureBirch) return bankShaped(h, wlm, b, x, z, memo);
-
-        // THE SEAM. Ninety metres of blend between a wood whose median floor is
-        // 48 m and one whose median is 13, which is a 35 m drop -- so this is
-        // not a detail, it is a hillside, and it wants to be walked down rather
-        // than fallen off. sstep on both sides of birchWeight is what makes the
-        // join C1: the gradient goes to zero at each end of the blend instead
-        // of changing abruptly where the lerp starts and stops.
-        //
-        // THE BIRCH SIDE IS ASKED FOR SEPARATELY HERE, at its own octave
-        // counts, and that is the entire cost of the two woods no longer
-        // sharing one field. It falls on the 11% of columns inside a seam and
-        // on none of the others. The warp is the same warp at the same
-        // frequency, so the second warpedFbm walks straight into the memo the
-        // first one filled; only the two fbm memos have to be their own, which
-        // is what the pair freed by the ridge is doing on TerrainMemo.
-        const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
-                                      z * 0.0130f, 1.5f, 5);
-        const float bSwell = fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-        // THE BANK IS APPLIED TO THE FINAL HEIGHT, after the birch blend, so
-        // a column inside a seam is shaped from the height it actually has.
-        // Water only exists where birchMix is ~0, so in practice this is the
-        // pine side of the world and the lerp has already collapsed to h.
-        return bankShaped(lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f + fine, mix), wlm, b, x,
-                          z, memo);
+        // ONE RETURN, FOR EVERY COLUMN IN THE WORLD. The wood-specific branch
+        // is upstream, in the landform; from the carve down there is a single
+        // path, so there is no threshold left for the carve or the bank to step
+        // across. Both woods have water, both want a shore, and the shore is
+        // shaped from the height the column actually has.
+        return bankShaped(h, wlm, b, x, z, memo);
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
@@ -2561,10 +3250,29 @@ class VoxelTerrain {
     // see the fill below. Same shape as the flower colonies next door and for
     // the same reason.
     // -----------------------------------------------------------------------
+    // -- HALVED, AND THE COUNT WENT WITH IT -------------------------------
+    //
+    // "Reduce the tall grass patch in half while also keeping the density."
+    // Those are two instructions and the second one is what makes the first
+    // arithmetic rather than a guess: HALF AS WIDE is a QUARTER of the area, so
+    // a tuft that holds the same grass per square metre holds a quarter as many
+    // strands. 1.2-2.2 m -> 0.6-1.1 m and 60-120 strands -> 15-30.
+    //
+    // IT FALLS OUT EXACTLY, and that is worth seeing rather than trusting. The
+    // per-column draw in strandRows is
+    //
+    //     chance = want / (columns in the disc x planting probability)
+    //
+    // and `columns` is pi r^2 / VOXEL_M^2. Quartering both `want` and r^2
+    // leaves `chance` identical to the last bit, so the tufts are half the size
+    // and every blade inside one is exactly as likely to be tall as it was.
+    // Measured over a 400 m square: see the density figures in
+    // tests/tall_grass_test.cpp, which compares strands-per-square-metre before
+    // and after rather than strands per tuft.
     float tuftCellM = 13.0f;      // one candidate site per 13 m of lattice
     float tuftCoverage = 0.55f;   // ...and this fraction of them are real
-    float tuftRadMinM = 1.2f;     // a tuft is 2.4 to 4.4 m across
-    float tuftRadMaxM = 2.2f;
+    float tuftRadMinM = 0.6f;     // a tuft is 1.2 to 2.2 m across
+    float tuftRadMaxM = 1.1f;
     // HOW MANY STRANDS STAND IN ONE, drawn per tuft (user 2026-09-13: "only
     // have 5-10 strands of grass in groups like this").
     //
@@ -2593,7 +3301,9 @@ class VoxelTerrain {
     // 126 blades in it -- so 60 is a chance of 0.48 and the clamp still does
     // not fire. Doubling again WOULD hit it, and the symptom would be quiet:
     // the count would simply stop rising in the pine while the birch kept going.
-    float tuftStrandsMin = 60.0f, tuftStrandsMax = 120.0f;
+    // QUARTERED WITH THE RADIUS, which is what keeps the density -- see the
+    // note over tuftRadMinM. It was 60-120 over a disc four times this area.
+    float tuftStrandsMin = 15.0f, tuftStrandsMax = 30.0f;
     // -----------------------------------------------------------------------
     // A GROUP IS A HANDFUL OF STRANDS, NOT A FIELD OF THEM (user 2026-09-13:
     // "only have 5-10 strands of grass in groups like this").
@@ -2614,12 +3324,20 @@ class VoxelTerrain {
     // over STRAND_MAX_ROWS.
     // -----------------------------------------------------------------------
     int tallGrassMinRows = 15, tallGrassMaxRows = 20;
-    // THE BIRCH FLOOR IS A MEADOW, not a wood with glades in it. Its density
-    // is flat -- no patch field, so no clearings -- and its blades stand a
-    // voxel taller. Both asked for directly.
-    // TWICE AS SPARSE (user 2026-09-13: "make the grass in the birch forest
-    // twice as sparse"). 0.62 -> 0.31, which is the planting PROBABILITY per
-    // column and therefore exactly half the blades over the same ground.
+    // THE BIRCH FLOOR IS A MEADOW, not a wood with glades in it: its density is
+    // flat, with no patch field and so no clearings. That much is unchanged and
+    // was asked for directly.
+    //
+    // IT IS NO LONGER THE TALLER OF THE TWO, and the sentence that used to end
+    // this note said it was ("its blades stand a voxel taller"). It now stands
+    // SHORTER than the pine floor -- see birchGrassMinRows below, which is the
+    // 2026-09-14 ask -- so the woods differ in density and in height, just not
+    // in the direction they first did.
+    // TWICE AS SPARSE, TWICE (user 2026-09-13: "make the grass in the birch
+    // forest twice as sparse", and again 2026-09-14: "make the grass 2x more
+    // sparse"). 0.62 -> 0.31 -> 0.155, which is the planting PROBABILITY per
+    // column and therefore exactly half the blades over the same ground each
+    // time.
     //
     // THE TALL-GRASS TUFTS DO NOT THIN WITH IT, and that is on purpose: their
     // fill is expressed as a COUNT and divided by the local planting
@@ -2627,8 +3345,31 @@ class VoxelTerrain {
     // in this area" and halving the floor cancels out of it. A tuft in the
     // birch wood holds the same number of tall blades it did; what changed is
     // the carpet between the tufts, which is what was asked for.
-    float birchGrassDensity = 0.31f;
-    int birchGrassMaxRows = 7;
+    //
+    // THE ONE PLACE THAT CANCELLATION RUNS OUT is a tuft whose target count is
+    // more strands than the thinned floor has columns to put them on: `chance`
+    // clamps at 1 and the tuft is then as full as the ground allows. Only the
+    // smallest, fullest tufts can reach it: a 0.6 m disc is 113 columns, so a
+    // target of 30 strands wants a chance of 30 / (113 x 0.155) = 1.71 and gets
+    // the 17 the floor can carry. MEASURED over 300 m of birch, the strands per
+    // tuft moved 21.0 -> 21.4, so nothing in the shipped spread reaches it.
+    float birchGrassDensity = 0.155f;
+    // TWO VOXELS SHORTER ON AVERAGE (user 2026-09-14: "decrease the grass in
+    // the birch forest by 2 voxels on average"), and that is why there is a
+    // birch MIN as well as a birch max now.
+    //
+    // The height is drawn uniformly over loRows..hiRows, so the mean is the
+    // midpoint of the pair and moving the pair down by two moves the mean down
+    // by exactly two: 3..7 (mean 5) becomes 1..5 (mean 3). Shortening by the
+    // top alone would have had to reach 3..3 to get there, which is a lawn --
+    // the SPREAD is the character of the sward and it is preserved.
+    //
+    // THE PINE SIDE IS UNTOUCHED, which is the whole reason the floor of the
+    // range is now lerped rather than flat: grassMinRows is the pine's (and
+    // --grass-min's), and the crossfade carries the birch's own value in over
+    // birchMix exactly as the ceiling already did.
+    int birchGrassMinRows = 1;
+    int birchGrassMaxRows = 5;
     uint32_t strandSeed = 20260904u;
 
     // HOW FAR DOWN THE STONE GOES BEFORE THE BEDROCK STARTS, in voxels, from
@@ -2640,7 +3381,19 @@ class VoxelTerrain {
     // Voxels of loose soil between the surface and the rock -- see crustVox.
     // The old emit loop had this as a literal 3; two to six reads as a bank
     // that thins and thickens rather than as a stripe ruled along the hill.
-    int crustMin = 2, crustMax = 6;
+    // -- HOW DEEP THE DIRT GOES (user 2026-09-14: "make dirt 5 voxels
+    //    deeper") -------------------------------------------------------
+    //
+    // 2..6 became 7..11. BOTH ENDS, so the variation the lattice above spreads
+    // over a hillside is untouched -- raising only the ceiling would have made
+    // the thin patches thin against a deeper average, which reads as the dirt
+    // getting patchier rather than deeper.
+    //
+    // THE HOE CARES, and it is why this is worth a note. A till takes the
+    // surface voxel and turns the one under it; on a two-voxel crust that is
+    // most of the dirt there was, and a second bite anywhere near it would have
+    // been into stone. Seven gives a seed bed something to be a bed in.
+    int crustMin = 7, crustMax = 11;
     uint32_t crustSeed = 20260907u;
 
     float standDensity(float x, float z, FbmMemo &m) const {
@@ -2743,7 +3496,7 @@ class VoxelTerrain {
         if (wetColumn(i, j, h, wl, memo)) return mat::SAND;
         // THE SAME BAND THE BANK FLATTENS. Sand that is not flattened, or a
         // flattened shore that is not sand, would each be visibly half a beach.
-        if (h <= wl + sandRiseVox()) return mat::SAND;  // the shore band
+        if (h <= wl + sandRiseVoxAt(wx(i))) return mat::SAND;  // the shore band
 
         if (slope >= kRockSlope) return mat::ROCK;  // too steep to hold soil
 
@@ -2977,7 +3730,16 @@ class VoxelTerrain {
     // PURE, hash only, no noise and no memo: it is asked once per column that
     // already grew a blade, which is under a third of them.
     // -----------------------------------------------------------------------
-    bool tuftAt(float x, float z, float *radOut, float *wantOut) const {
+    // ...AND WHERE ITS MIDDLE IS, for the caller that needs the PATCH and not
+    // the column. `atX`/`atZ` may be null, which is what the grass pass passes.
+    //
+    // A TUFT IS THE ONLY THING IN THIS WORLD THAT IS A PATCH OF GRASS. The
+    // blades themselves are a per-column hash with no grouping of any kind, so
+    // "one patch of wheat" cannot be answered by looking at blades -- it is
+    // this site, and its radius is the patch's extent. See App::breakWheat,
+    // which mows the whole of one and pays out once for it.
+    bool tuftAt(float x, float z, float *radOut, float *wantOut, float *atX = nullptr,
+                float *atZ = nullptr) const {
         const int gi = int(floorf(x / tuftCellM));
         const int gj = int(floorf(z / tuftCellM));
         for (int dj = -1; dj <= 1; ++dj)
@@ -2995,10 +3757,29 @@ class VoxelTerrain {
                 *radOut = rad;
                 *wantOut = tuftStrandsMin +
                            (tuftStrandsMax - tuftStrandsMin) * hashUnit(strandSeed + 75u, c);
+                if (atX) *atX = sx;
+                if (atZ) *atZ = sz;
                 return true;
             }
         return false;
     }
+
+    // -----------------------------------------------------------------------
+    // IS THIS BLADE ONE OF THE TALL ONES?
+    //
+    // ONE PLACE ASKS IT AND ONE PLACE ANSWERS IT. strandRows below SWITCHES a
+    // chosen blade to tallGrassMinRows..tallGrassMaxRows, so the height is the
+    // record of the decision and nothing else has to re-derive it from the
+    // tuft lattice -- which would be a second copy of a rule that has already
+    // been got wrong twice.
+    //
+    // The flower scatter is the caller (user 2026-09-14: "dont put flowers on
+    // tall grass"). A flower stands ON a blade -- Placement::yOff lifts it
+    // rows - 1 voxels so the stem meets the sward -- and a tall blade is 15 to
+    // 20 voxels, so a flower planted in a tuft is a bloom hanging two metres in
+    // the air with a stem that does not reach it.
+    // -----------------------------------------------------------------------
+    bool tallStrand(int rows) const { return rows >= tallGrassMinRows; }
 
     // -----------------------------------------------------------------------
     // HOW TALL A GRASS BLADE STANDS ON THIS COLUMN, 0 for none.
@@ -3034,10 +3815,14 @@ class VoxelTerrain {
         // uniformly full, and the two crossfade so the seam is not a line.
         const float pineP = grassDensity * (grassSparse + grassFull * t);
         float p = lerpf(pineP, birchGrassDensity, bm);
-        // ...and taller on the birch side, 7 voxels at the top end against the
-        // pine's 6. Rounded rather than truncated so the crossfade reaches the
-        // full value instead of stopping a voxel short.
-        float loF = float(grassMinRows);
+        // ...and SHORTER on the birch side -- 1 to 5 voxels against the pine's
+        // 3 to 6, which is two voxels off the mean of what the meadow used to
+        // stand at. BOTH ENDS CROSSFADE: carrying only the ceiling over would
+        // leave the birch range pinned to the pine's floor, and 3..5 is a mean
+        // of 4, one voxel short of the ask. Rounded rather than truncated so
+        // the crossfade reaches the full value instead of stopping a voxel
+        // short.
+        float loF = lerpf(float(grassMinRows), float(birchGrassMinRows), bm);
         float hiF = lerpf(float(grassMaxRows), float(birchGrassMaxRows), bm);
 
         const uint32_t cell = hashU32(uint32_t(i), uint32_t(j));
@@ -3115,6 +3900,34 @@ class VoxelTerrain {
         return (birchMix(wx(i)) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
                    ? mat::BGRASS_0
                    : mat::GRASS_0;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND WHAT A BLADE OF THIS HEIGHT ACTUALLY WEARS.
+    //
+    // TWO ARGUMENTS ANSWER "WHICH WOOD", THREE ANSWER "WHICH PLANT", and the
+    // difference matters at the call sites. A tall blade has gone over to straw
+    // (see mat::WHEAT_0) and wears the same ramp in either wood -- so the
+    // two-argument form above is still exactly right for the one caller that
+    // wants the WOOD rather than the colour, which is the flower scatter
+    // picking a stem in chunks.h. Asking it the three-argument question there
+    // would read a tall column as a pine one and dither the wrong stem.
+    //
+    // THE HEIGHT IS PASSED IN RATHER THAN RE-DERIVED, which is tallStrand's own
+    // rule: strandRows SWITCHES a chosen blade to the tall band, so the height
+    // is the record of that decision and every caller already has it in hand.
+    // Deriving it a second time from the tuft lattice would be a second copy of
+    // a rule that has already been got wrong twice.
+    // -----------------------------------------------------------------------
+    // THE SAME DITHER DECIDES BOTH, which is what keeps a tuft's foot the
+    // colour of the sward it stands in: a straw ramp begins at its own wood's
+    // GRASS_0 (see fillWheatRamp), so a column that would have grown the
+    // birches' green grows the birches' straw, and the two agree at the soil by
+    // construction rather than by being tuned to.
+    uint8_t bladeMaterial(int i, int j, int rows) const {
+        const uint8_t green = bladeMaterial(i, j);
+        if (!tallStrand(rows)) return green;
+        return (green == mat::BGRASS_0) ? mat::BWHEAT_0 : mat::WHEAT_0;
     }
 
     // -----------------------------------------------------------------------
@@ -3241,7 +4054,7 @@ class VoxelTerrain {
         // slope is never consulted, so it is not worth four height evaluations
         // to compute one that will be discarded.
         const int wl = lakeLineAt(wx(i), wx(j), memo);
-        if (h <= wl + sandRiseVox()) return topMaterial(i, j, h, 0, memo);
+        if (h <= wl + sandRiseVoxAt(wx(i))) return topMaterial(i, j, h, 0, memo);
         const int slope = maxi(absi(heightVox(i + 1, j, memo) - heightVox(i - 1, j, memo)),
                                absi(heightVox(i, j + 1, memo) - heightVox(i, j - 1, memo)));
         return topMaterial(i, j, h, slope, memo);
@@ -3489,7 +4302,8 @@ class VoxelTerrain {
                     // material -- which was right only while the ground under
                     // a blade was painted mat::GRASS_0. The floor is soil and
                     // litter now, and left alone this drew brown grass.
-                    const uint8_t cap = bladeMaterial(I0 + i, J0 + j);
+                    // ...AND HOW TALL, which decides green against straw.
+                    const uint8_t cap = bladeMaterial(I0 + i, J0 + j, rows);
                     const int lo = hc + 1, hi = lo + rows;
                     // WHAT MAKES A BLADE A GRADIENT rather than a green stick.
                     // Every face of this strand carries the row it stands on,
@@ -3796,11 +4610,25 @@ struct TerrainProbe {
         const int line = terrain->lakeLineAt(terrain->wx(i), terrain->wx(j), *memo_);
         const int wTop = terrain->waterTopVox(i, j, h, line, terrain->waveCeilVox(),
                                               terrain->wetColumn(i, j, h, line, *memo_));
-        switch (VoxelTerrain::aboveAt(y, h, terrain->strandRows(i, j, top), wTop)) {
-            // GRASS, not the floor, and WHICH wood's grass -- the mesher says
-            // the same, and tests/voxel_probe_test.cpp checks the two face by
-            // face.
-            case VoxelTerrain::Above::Blade: return terrain->bladeMaterial(i, j);
+        // ASKED ONCE AND USED TWICE. The height decides whether there is a
+        // blade here AND, since tall grass is straw, which ramp it wears -- and
+        // calling strandRows twice would be two chances for them to disagree.
+        const int sr = terrain->strandRows(i, j, top);
+        switch (VoxelTerrain::aboveAt(y, h, sr, wTop)) {
+            // GRASS, not the floor, and WHICH grass -- the mesher says the
+            // same, and tests/voxel_probe_test.cpp checks the two face by face.
+            // ...AND A COLUMN SOMEBODY HAS EDITED GROWS NOTHING, which is
+            // StrandColumns' rule (see voxel/columns.h) and has to be this
+            // one's too. The mesher stops drawing a blade the moment an edit
+            // lands within one column of it; this used to go on reporting the
+            // blade for ever, so a mown tuft was gone from the screen and
+            // still there to every query -- which is a wheat plant that pays
+            // out a drop every time you swing at the air where it used to be.
+            //
+            // THE SAME 3x3, not an approximation of it. A rule that is nearly
+            // the mesher's is the shape of bug this whole comment is about.
+            case VoxelTerrain::Above::Blade:
+                return bladeCut(i, j) ? mat::AIR : terrain->bladeMaterial(i, j, sr);
             // The churned band is its own material on the quad, so the probe
             // has to answer with it too or the renderer and the query disagree
             // about what a voxel of shore is.
@@ -3817,6 +4645,28 @@ struct TerrainProbe {
     bool inWater(int i, int j, int y) {
         const uint8_t m = material(i, j, y);
         return m == mat::WATER || m == mat::FOAM;  // foam is water, churned
+    }
+
+    // Has anything been dug within one column of this one? See the Blade case.
+    bool bladeCut(int i, int j) {
+        if (!edits) return false;
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int di = -1; di <= 1; ++di) {
+                const int wi = i + di, wj = j + dj;
+                const int cx = EditStore::floorDiv(wi, CHUNK_VOX);
+                const int cz = EditStore::floorDiv(wj, CHUNK_VOX);
+                // The probe's own one-chunk cache, reused -- a blade band
+                // straddles at most two chunks and this is asked once a swing.
+                if (!have_ || cx != cx_ || cz != cz_) {
+                    ce_ = edits->get(cx, cz);
+                    cx_ = cx;
+                    cz_ = cz;
+                    have_ = true;
+                }
+                int lo = 0, hi = 0;
+                if (ce_ && ce_->column(wi, wj, &lo, &hi)) return true;
+            }
+        return false;
     }
 
   private:

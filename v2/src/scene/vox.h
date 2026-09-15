@@ -393,13 +393,57 @@ inline bool voxParseScene(const std::vector<uint8_t> &raw, VoxScene *out, std::s
 
 // One file, every piece composed into a single grid. What a tree or a rock
 // wants; see VoxScene for the case that wants the pieces kept apart.
+//
+// -- ONE PIECE PER SHAPE, BECAUSE THE REST ARE FRAMES ----------------------
+//
+// A shape node carrying SEVERAL models is not an object in several parts, it is
+// one object with an ANIMATION: MagicaVoxel writes a keyframed model that way,
+// every frame on the same node and centred on the same translation. Composing
+// those lays the whole cycle on top of itself.
+//
+// REPORTED AS "the koi fish didn't load right, it's loading all frames at once"
+// (user 2026-09-13), and that is exactly what it was. assets/life/koi.vox holds
+// TWELVE frames of a swim cycle under one shape; composed, its 26 voxels became
+// 130 in the same 5 x 10 x 4 box -- a koi five times too solid, which is not a
+// koi. The strips that work (salmon, bass, catfish) are numbered FILES in a
+// folder, so they never came through here.
+//
+// A TREE IS UNAFFECTED, and that is the whole reason the test is per SHAPE
+// rather than per file. The pieces a tall model is split across sit on
+// DIFFERENT shape nodes at different translations -- see the note over
+// VoxScene -- so each contributes its first (and only) model and the
+// composition is what it always was.
+//
+// THE SCENE ITSELF STILL CARRIES EVERY FRAME. Only this function, the
+// compose-into-one path, drops them; voxParseScene is the raw truth and the
+// bow's seven draw frames are cut out of it (see parseBowStrip). A reader that
+// wants the cycle asks for it -- voxLoadAll, or the scene -- and gets it.
 inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string *err) {
     VoxScene sc;
     if (!voxParseScene(raw, &sc, err)) return false;
 
+    // The first piece of each shape node, in the order the walk found them.
+    std::vector<VoxScene::Piece> use;
+    use.reserve(sc.pieces.size());
+    {
+        std::vector<int> seen;
+        for (const VoxScene::Piece &p : sc.pieces) {
+            bool had = false;
+            for (int sh : seen)
+                if (sh == p.shape) { had = true; break; }
+            if (had) continue;
+            seen.push_back(p.shape);
+            use.push_back(p);
+        }
+    }
+    if (use.empty()) {
+        if (err) *err = "no models in file";
+        return false;
+    }
+
     long long minX = 0, minY = 0, minZ = 0, maxX = 0, maxY = 0, maxZ = 0;
-    for (size_t i = 0; i < sc.pieces.size(); ++i) {
-        const VoxScene::Piece &p = sc.pieces[i];
+    for (size_t i = 0; i < use.size(); ++i) {
+        const VoxScene::Piece &p = use[i];
         if (i == 0) {
             minX = p.ox; minY = p.oy; minZ = p.oz;
             maxX = p.ox + p.sx; maxY = p.oy + p.sy; maxZ = p.oz + p.sz;
@@ -425,7 +469,7 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
     out->sz = int(d);
     out->pal = sc.pal;
     out->m.assign(size_t(w) * size_t(h) * size_t(d), 0);
-    for (const VoxScene::Piece &p : sc.pieces) {
+    for (const VoxScene::Piece &p : use) {
         const long long ox = p.ox - minX, oy = p.oy - minY, oz = p.oz - minZ;
         for (size_t q = 0; q + 4 <= p.voxelBytes; q += 4) {
             const int x = p.voxels[q], y = p.voxels[q + 1], z = p.voxels[q + 2];

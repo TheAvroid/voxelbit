@@ -681,13 +681,18 @@ class ChunkMesher {
     // right instead of seven.
     static constexpr uint32_t kBirchPassSalt = 0x5B17u;
 
-    // ONE BIRCH IN A HUNDRED CARRIES A BEEHIVE.
+    // ONE BIRCH IN TWENTY CARRIES A BEEHIVE.
     //
     // The browser engine's BKHIVE, and its note records how it got there:
     // 0.10 -> 0.05 -> 0.02, then "make birch 1%". A hive is a landmark you come
     // across, not furniture -- at a tenth you meet one every few strides and it
     // stops being either.
-    float birchHiveRate = 0.01f;
+    //
+    // FIVE PER CENT (user 2026-09-14: "add behives to 5%% of the birch trees"),
+    // which is v1's own middle value and a hive roughly every other stand
+    // rather than every other wood. It matters more than it did: the bees are
+    // here now, and a hive you never find is five bees you never meet.
+    float birchHiveRate = 0.05f;
     uint32_t seed = 20260904u;
     // V4 SCAFFOLDING, AND OFF IN v2. This was the blank canvas a NanoVDB
     // world was going to be built into, and it defaulted ON there. v2 has no
@@ -1843,6 +1848,19 @@ class ChunkMesher {
                 // ---------------------------------------------------------
                 const int rows = grassOnly ? terrain_.strandRows(ci, cj, top, memo) : 0;
                 if (grassOnly && rows <= 0) continue;
+                // ...BUT NOT ON A TALL ONE (user 2026-09-14: "dont put flowers
+                // on tall grass"). yLift below puts the bloom on TOP of the
+                // blade it grows in, and a tuft blade is 15-20 voxels, so this
+                // was a flower floating up to two metres over the floor with
+                // nothing under it -- the stem is a few voxels long and the
+                // grass it was supposed to be standing in is a separate model.
+                //
+                // The COLUMN is refused rather than the lift being capped: a
+                // flower lying at the foot of grass twice its height is not
+                // what a flower does either. Tufts are a few per cent of the
+                // floor, so this costs almost nothing in bloom count -- see
+                // tests/tall_grass_test.cpp, which counts both.
+                if (kind == 2 && terrain_.tallStrand(rows)) continue;
 
                 // The species is the COLONY's, not this cell's: that is the
                 // whole point of the patch.
