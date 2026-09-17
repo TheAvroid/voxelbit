@@ -192,6 +192,23 @@ inline constexpr float kDuckSway = 0.5f;
 // A duckling this far from its mother has lost the line and is put back behind
 // her -- v1 recycles at 40 voxels for the same reason.
 inline constexpr float kBabyLostM = 4.0f;
+
+// -- AN ORPHANED DUCKLING WEEPS -- v1's CRY_WAIT / CRY_MS / CRY_GAP ---------
+//
+// (user 2026-09-15: "the babies should cry".)
+//
+// v1's numbers exactly, in seconds rather than ms. The WAIT is the one that
+// looks arbitrary and is not: v1's note says the tears "start after the
+// mother's death poof has cleared", and the poof is sixteen smoke voxels living
+// 1.0-1.5 s. 900 ms is the moment the column has thinned enough for a tear to
+// be the thing you notice.
+//
+// ONE TEAR EVERY 260 ms, which v1 records as the user's own words -- "one after
+// the other" -- rather than a stream. Three ducklings at that rate never need
+// more than the four tear slots the band gives them.
+inline constexpr float kCryWaitSec = 0.90f;
+inline constexpr float kCrySec = 3.00f;
+inline constexpr float kCryGapSec = 0.26f;
 // How far the surface itself moves under it, before kDuckSway takes its share.
 inline constexpr float kDuckBobM = 0.06f;
 // -- AND SHE RIDES ONE VOXEL PROUDER OF IT (user 2026-09-14: "have the ducks
@@ -1137,6 +1154,7 @@ class LakeLife {
                     babyHX_ = 0.5f * float(sx) * VOXEL_M;
                     babyHY_ = 0.5f * float(sy) * VOXEL_M;
                     babyHZ_ = 0.5f * float(sz) * VOXEL_M;
+                    scanBabyEyes(mo);
                 } else {
                     duckHX_ = 0.5f * float(sx) * VOXEL_M;
                     duckHY_ = 0.5f * float(sy) * VOXEL_M;
@@ -1277,8 +1295,25 @@ class LakeLife {
         for (size_t i = 0; i < ducks_.size(); ++i)
             if (ducks_[i].live && ducks_[i].mom < 0 && inField(ducks_[i].x, ducks_[i].z))
                 stepDuck(&ducks_[i], uint32_t(i), dt, player);
-        for (size_t i = 0; i < ducks_.size(); ++i)
-            if (ducks_[i].live && ducks_[i].mom >= 0) stepDuckling(&ducks_[i], uint32_t(i), dt);
+        // AN ORPHAN GOES DOWN THE MOTHER'S PATH, which is v1's structure
+        // literally: its follow-the-line branch is `isBaby && !orphan` and the
+        // else is the adult wander, shared. Everything that branch needs is
+        // already right for a duckling -- stepDuck asks duckRadius, which
+        // answers babyR_ for anything with a mother index, and kDuckSpeed is
+        // 0.70 where kBabyKeep is 0.7, so an orphan paddles at exactly the
+        // steady pace v1 gives it ("never the 10 of a duckling scrambling to
+        // catch up"). Wandering it in its own function would have been a second
+        // edge-avoider to keep in step with the first.
+        for (size_t i = 0; i < ducks_.size(); ++i) {
+            Duck &d = ducks_[i];
+            if (!d.live || d.mom < 0) continue;
+            if (d.orphan) {
+                if (inField(d.x, d.z)) stepDuck(&d, uint32_t(i), dt, player);
+            } else {
+                stepDuckling(&d, uint32_t(i), dt);
+            }
+        }
+        cryTick();
         // AFTER THE WHOLE FAMILY HAS MOVED, not inside the step: a duckling is
         // placed relative to a leader that has already moved this tick, so
         // correcting one mid-line would be correcting a position the rest of the
@@ -1566,6 +1601,49 @@ class LakeLife {
     // dragonflies, ducks. A PAD IS NOT ALIVE and lifeAtSlot never offers one,
     // but this refuses it anyway -- the two tables are in different files and
     // only one of them can be the authority on what a slot holds.
+    // Where a tear should be born this tick, and the drain that empties it.
+    // See cryTick.
+    const std::vector<Vec3> &tearsThisTick() const { return tears_; }
+
+    // -----------------------------------------------------------------------
+    // ...AND WHAT THE DUCKS ARE DOING, FOR --duck-test.
+    //
+    // A family is the one population whose members depend on each OTHER, so
+    // "the brood outlived the mother" is not a question any general life probe
+    // can answer -- it needs the mother index, the brood index and the orphan
+    // flag together.
+    // -----------------------------------------------------------------------
+    // The ducks_ index of a live mother whose whole brood is live, or -1.
+    int firstFamily() const {
+        for (int i = 0; i < kDuckCount; ++i) {
+            if (!ducks_[size_t(i)].live || ducks_[size_t(i)].mom >= 0) continue;
+            int n = 0;
+            for (int b = 0; b < kBabyPerDuck; ++b)
+                if (ducks_[size_t(kDuckCount) + size_t(i) * kBabyPerDuck + size_t(b)].live) ++n;
+            if (n == kBabyPerDuck) return i;
+        }
+        return -1;
+    }
+    // The ducks_ index of one of a mother's ducklings.
+    static int babyIndex(int mom, int sib) {
+        return kDuckCount + mom * kBabyPerDuck + sib;
+    }
+    bool duckProbe(int i, bool *live, bool *orphan, bool *crying, Vec3 *at) const {
+        if (i < 0 || size_t(i) >= ducks_.size()) return false;
+        const Duck &d = ducks_[size_t(i)];
+        *live = d.live;
+        *orphan = d.orphan;
+        *crying = d.cryTo > 0.0f;
+        *at = Vec3(d.x, d.y, d.z);
+        return true;
+    }
+    // Where a duck sits in the LAKE's own slot run -- the publish order is
+    // fish, pads, dragonflies, then ducks. The caller adds the band's base.
+    static int duckLocalSlot(int i) {
+        return kSalmonCount + kBassCount + kKoiCount + kMinnowCount + kCatfishCount +
+               kBluegillCount + kLilyCount + kDflyCount + i;
+    }
+
     bool killSlot(int i) {
         if (i < 0) return false;
         if (size_t(i) < fish_.size()) {
@@ -1584,6 +1662,32 @@ class LakeLife {
         i -= int(flies_.size());
         if (size_t(i) < ducks_.size()) {
             if (!ducks_[size_t(i)].live) return false;
+            // -- HER BROOD OUTLIVES HER ------------------------------------
+            //
+            // (user 2026-09-15: "the babies should not dissapeare when the
+            // mother dies ... the babies should cry".)
+            //
+            // v1's startCrying, armed HERE for v1's own stated reason: "at the
+            // moment she is confirmed dead ... armed HERE, not at the hit, so a
+            // wounded-but-alive mother never sets them off".
+            //
+            // THE WAIT IS NOT DECORATION. CRY_WAIT is 900 ms and v1 says why --
+            // the tears start "after the mother's death poof has cleared". A
+            // duckling weeping through the smoke of the kill reads as part of
+            // the explosion; weeping once it has blown away reads as grief.
+            if (ducks_[size_t(i)].mom < 0) {
+                for (int b = 0; b < kBabyPerDuck; ++b) {
+                    const size_t bi = size_t(kDuckCount) + size_t(i) * kBabyPerDuck + size_t(b);
+                    if (bi >= ducks_.size()) break;
+                    Duck &k = ducks_[bi];
+                    if (!k.live || k.mom != i) continue;
+                    k.orphan = true;
+                    k.cryFrom = clock_ + kCryWaitSec;
+                    k.cryTo = k.cryFrom + kCrySec;
+                    k.cryNext = k.cryFrom;
+                    k.cryEye = b;   // the three of them do not weep in step
+                }
+            }
             ducks_[size_t(i)] = Duck{};
             return true;
         }
@@ -1673,6 +1777,27 @@ class LakeLife {
         float turnAcc = 0.0f;      // signed wind-up -- see kDuckWindUp
         float tRe = 0.0f;          // when the wander may pick a new heading
         float age = 0.0f, dying = -1.0f;
+        // -- ORPHANED (user 2026-09-15: "the babies should not dissapeare when
+        //    the mother dies, but stay on the field, and wander in random
+        //    directions without their mother") ---------------------------
+        //
+        // v1 calls this `mom5.slain` and asks it in four places; it is kept on
+        // the DUCKLING here rather than on the mother for one reason, and it is
+        // the reason v1's version is fragile: a mother slot is REFILLED. Ask
+        // "is my mother dead" of a slot and the answer flips back to no the
+        // moment a stranger is placed in it, and a brood that had been paddling
+        // the lake alone for a minute falls in behind her.
+        //
+        // Once true this is never read back off `mom` again -- see every
+        // `orphan ||` below, which is the same list of four.
+        bool orphan = false;
+        // ...and the weeping. cryTo is the moment it stops, cryNext the moment
+        // the next tear is due, cryEye a free-running counter that alternates
+        // cheeks. v1's CRY_WAIT/CRY_MS/CRY_GAP, and its note on why cryEye is
+        // NOT wrapped to the eye list: baby.vox has ONE black head voxel, so
+        // `% length` pinned the alternation to a single cheek for ever.
+        float cryFrom = -1.0f, cryTo = -1.0f, cryNext = -1.0f;
+        int cryEye = 0;
     };
 
     struct Dfly {
@@ -2191,6 +2316,11 @@ class LakeLife {
     // How wide a body is, for the one thing it can bump into. See kDuckPadPushM.
     float duckRadius(const Duck &d) const { return d.mom < 0 ? duckR_ : babyR_; }
 
+    // A duckling's eye voxels in MODEL space, metres from its centre, and the
+    // tear positions queued this tick. See scanBabyEyes and cryTick.
+    std::vector<Vec3> babyEyes_;
+    std::vector<Vec3> tears_;
+
     // IS A LILY PAD IN THIS CIRCLE? Asked of every live leaf, which is
     // twenty-four distance tests -- the pads are a flat array and there is
     // nothing here worth a grid for.
@@ -2274,6 +2404,57 @@ class LakeLife {
         // no flee state at all. What it has is the shore, which it is already
         // avoiding -- adding a flee would send it straight at one.
         (void)player;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE WEEPING -- v1's cry block, one tear at a time, alternating cheeks.
+    //
+    // (user 2026-09-15: "the babies should cry".)
+    //
+    // IT ONLY QUEUES POINTS. Particles belongs to the app and a lake has no
+    // business reaching into it; this is the same shape as
+    // Arrows::landedThisTick, and it also puts the spawn outside the tick --
+    // which matters, because a tear is a band slot and the band is published
+    // once a frame.
+    //
+    // THE COUNTER IS FREE-RUNNING, NOT WRAPPED TO THE EYE LIST, and that is the
+    // whole of v1's own bug report on this line: baby.vox is one voxel wide at
+    // the head, so it has exactly ONE black voxel, and `% length` pinned the
+    // alternation to a single cheek for ever. The cheek comes from the parity
+    // of the counter; the eye comes from the counter modulo however many eyes
+    // the art actually has.
+    void cryTick() {
+        // ITS OWN LIFETIME. Cleared at the top of the one function that fills
+        // it, so a frame on which the app forgets to drain cannot leave a tear
+        // to be born twice -- and a frame on which the lake does not tick
+        // cannot leave a stale one either.
+        tears_.clear();
+        for (Duck &d : ducks_) {
+            if (!d.live || !d.orphan || d.cryTo < 0.0f) continue;
+            if (clock_ > d.cryTo) {
+                d.cryTo = -1.0f;   // wept out
+                continue;
+            }
+            if (clock_ < d.cryNext || babyEyes_.empty()) continue;
+            d.cryNext = clock_ + kCryGapSec;
+            const Vec3 &e = babyEyes_[size_t(d.cryEye) % babyEyes_.size()];
+            // ...AND IT WELLS OUT OF THE SIDE OF THE EYE, alternating cheeks.
+            // Half a cell along the model's own X puts the droplet on the eye's
+            // OUTER face, so it is visible the instant it is born instead of
+            // spending its first frames buried inside the head -- v1's words.
+            const float ex = e.x + ((d.cryEye & 1) ? 0.5f * VOXEL_M : -0.5f * VOXEL_M);
+            ++d.cryEye;
+            float m[9];
+            yawMat(d.th, m);
+            // The duckling's own model centre, which is what putDuck draws it
+            // about: the translation there is (x - ox, y - oy + hy*0.45 + ride,
+            // z - oz) and the centre is that plus m*(hx,hy,hz), so the ox/oy/oz
+            // cancel and what is left is this.
+            const float cyw = d.y + babyHY_ * 0.45f + kDuckRideM;
+            tears_.push_back(Vec3(d.x + m[0] * ex + m[1] * e.y + m[2] * e.z,
+                                  cyw + m[3] * ex + m[4] * e.y + m[5] * e.z,
+                                  d.z + m[6] * ex + m[7] * e.y + m[8] * e.z));
+        }
     }
 
     // A duckling holds a spot behind its LEADER: the mother for the first, the
@@ -2850,7 +3031,14 @@ class LakeLife {
         for (size_t i = 0; i < ducks_.size(); ++i) {
             Duck &d = ducks_[i];
             if (!d.live) continue;
-            const Duck &m = (d.mom < 0) ? d : ducks_[size_t(d.mom)];
+            // ...AND AN ORPHAN IS ITS OWN MOTHER FOR THIS PURPOSE. THIS is
+            // where the brood used to vanish: a killed mother is Duck{}, which
+            // sits at the world ORIGIN, and far2(0,0) is true everywhere a
+            // player ever stands -- so the instant she died every one of her
+            // ducklings was judged to be thirty metres away and aged out. They
+            // did not wander off; they were retired by a test asked about a
+            // corpse's coordinates.
+            const Duck &m = (d.mom < 0 || d.orphan) ? d : ducks_[size_t(d.mom)];
             age(far2(m.x, m.z), &d.age, &d.dying, &d.live);
         }
     }
@@ -3153,6 +3341,13 @@ class LakeLife {
                 // "ducklings hatch right behind their mother, in line order".
                 for (int b = 0; b < kBabyPerDuck; ++b) {
                     Duck &k = ducks_[size_t(kDuckCount) + i * kBabyPerDuck + size_t(b)];
+                    // AN ORPHAN KEEPS ITS SLOT. The brood layout is fixed --
+                    // three slots per mother index -- so a fresh mother placed
+                    // in a slot whose last occupant was killed would stamp
+                    // straight over the ducklings still paddling the lake from
+                    // that death, and they would vanish a second time by a
+                    // completely different route. It hatches one fewer instead.
+                    if (k.live && k.orphan) continue;
                     k = Duck{};
                     k.live = true;
                     k.mom = int(i);
@@ -3413,6 +3608,48 @@ class LakeLife {
     // negating the column instead would flip the determinant and MIRROR the
     // model, which on a fish is a different bug wearing the same symptom.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHERE A DUCKLING'S EYES ARE -- v1's DUCKB_EYES scan.
+    //
+    // (user 2026-09-15: "the babies should cry".)
+    //
+    // THE TEARS HAVE TO COME FROM SOMEWHERE ON THE HEAD and a model knows where
+    // that is: the eye is the BLACK voxel. Found once, at load, in the model's
+    // own cells, so nothing downstream has to carry a hand-measured offset that
+    // a re-authored baby.vox would silently invalidate.
+    //
+    // ONLY THE UPPER HALF IS SEARCHED, which is v1's rule and v1's reason: "a
+    // duckling's feet are black too, and tears from the feet would be a
+    // different effect entirely".
+    //
+    // THE HALF-EXTENT IS SUBTRACTED HERE, which is the one thing v1 got wrong
+    // the first time and wrote a paragraph about: the offset wanted is from the
+    // model's CENTRE, and using the raw cell index put every tear "a half-model
+    // up-and-across from the duckling instead of at its eye -- bigger than the
+    // duckling". +0.5 puts it at the middle of the cell rather than its corner.
+    //
+    // The .vox layout is x,y,z with Z up -- see VoxModel::at and the flip in
+    // addFlyerModel -- so the model-space vector handed back is built in the
+    // world convention the publish uses: x across, y UP (the model's z), z
+    // along.
+    void scanBabyEyes(const VoxModel &mo) {
+        babyEyes_.clear();
+        const float cx = 0.5f * float(mo.sx), cy = 0.5f * float(mo.sy),
+                    cz = 0.5f * float(mo.sz);
+        for (int z = mo.sz / 2; z < mo.sz; ++z)          // the head half, never the feet
+            for (int y = 0; y < mo.sy; ++y)
+                for (int x = 0; x < mo.sx; ++x) {
+                    const uint8_t v = mo.at(x, y, z);
+                    if (!v) continue;
+                    const std::array<uint8_t, 4> &c = mo.pal[size_t(v) - 1];
+                    if (c[0] > 40 || c[1] > 40 || c[2] > 40) continue;   // black only
+                    babyEyes_.push_back(Vec3((float(x) + 0.5f - cx) * VOXEL_M,
+                                             (float(z) + 0.5f - cz) * VOXEL_M,
+                                             (float(y) + 0.5f - cy) * VOXEL_M));
+                }
+        std::printf("  duckling eyes  %d\n", int(babyEyes_.size()));
+    }
+
     static void yawMat(float th, float *m) {
         const float c = cosf(th + 3.14159265f), s = sinf(th + 3.14159265f);
         m[0] = c;  m[1] = 0; m[2] = s;

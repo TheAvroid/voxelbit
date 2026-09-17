@@ -353,7 +353,28 @@ struct V6Material
     // It takes pad0 rather than growing the record, so V6Material stays at its
     // asserted 32 bytes.
     float alpha;
-    float pad1;
+    // -- ...AND WHETHER IT IS A DIELECTRIC RATHER THAN A SURFACE -----------
+    //
+    // (user 2026-09-15: "make the smoke voxels grey, then make them
+    // transparent like the water. they look scratchy with alot of noise".)
+    //
+    // 0 IS "NOT ONE", which every material in the world is but two. Above 1 the
+    // tracer gives this entry water's own treatment: a delta lobe with real
+    // refraction, which is DETERMINISTIC.
+    //
+    // WHY THAT IS THE FIX AND alpha IS NOT. alpha passes the ray through with
+    // probability 1 - alpha and traces again -- a coin flip per pixel per
+    // frame. At the smoke's 0.2 that is four rays in five missing it, so each
+    // pixel independently sees smoke or does not, and what you get is a cloud
+    // of speckle that no denoiser can settle because there is nothing stable
+    // under it. The fly's wing was the first thing to wear alpha and the first
+    // complaint about it was the same word: it was taken off again.
+    //
+    // A dielectric asks no coin. Every ray that meets the face refracts through
+    // it, so the pixel is the same every frame and the image is clean.
+    //
+    // It takes pad1, so V6Material stays at its asserted 32 bytes.
+    float ior;
 };
 
 // ---------------------------------------------------------------------------

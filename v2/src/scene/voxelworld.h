@@ -287,7 +287,9 @@ struct MaterialLook {
     // material in the world leaves it alone -- Palette::setAlpha is the only
     // writer and the fly's wing is its only subject.
     float alpha = 1.0f;
-    float pad1 = 0.0f;
+    // See V6Material::ior. 0 is "an ordinary surface", which is everything but
+    // the smoke; Palette::setDielectric is the only writer.
+    float ior = 0.0f;
 };
 
 inline float srgbToLinearF(float c) {
@@ -530,6 +532,19 @@ class Palette {
         }
 
         const uint8_t id = next_++;
+        // -- WHAT THE ART ACTUALLY CARRIED ------------------------------
+        //
+        // Kept because the albedo stops being an answer to that question three
+        // lines below: a needle is lifted 1.7x with a floor under its blue, so
+        // srgbByte(albedo) on a foliage entry hands back a green that is in no
+        // .vox file anywhere and that nothing would ever match against.
+        //
+        // The plate written by --palette-vox exists to be authored AGAINST --
+        // a colour picked off it has to land in the same kQuantStep bucket as
+        // the colour that minted the entry, or the pick is only a resemblance
+        // -- and the authored value is the only one that can promise that.
+        src_[id] = {c[0], c[1], c[2]};
+        srcExact_[id] = exact ? 1u : 0u;
         MaterialLook &m = look_[id];
         m.albedo = Vec3(srgbToLinearF(float(c[0]) / 255.0f), srgbToLinearF(float(c[1]) / 255.0f),
                         srgbToLinearF(float(c[2]) / 255.0f));
@@ -694,6 +709,21 @@ class Palette {
     //
     // The albedo is SCALED, not replaced: the hue is what the art authored and
     // the lightness is what a dielectric is allowed to have of its own.
+    // -- THE OTHER WAY TO BE SEE-THROUGH, AND THE ONE THAT IS NOT NOISY ----
+    //
+    // setAlpha above is a STOCHASTIC pass-through; this is water's own path, a
+    // delta lobe with refraction, and it is deterministic. See V6Material::ior
+    // for the measurement and for why the smoke needed it.
+    //
+    // THE ENTRY HAS TO BE PRIVATE, exactly as setAlpha's does and for the same
+    // reason: being a dielectric belongs to the ENTRY, so anything else wearing
+    // it turns to glass too.
+    void setDielectric(uint8_t id, float ior, float rough = 0.0f) {
+        if (!id) return;   // AIR
+        look_[size_t(id)].ior = ior;
+        look_[size_t(id)].roughness = rough;
+    }
+
     void setGlass(uint8_t id, float a, float rough, float spec, float diffuse) {
         if (!id) return;   // AIR
         MaterialLook &m = look_[size_t(id)];
@@ -706,6 +736,21 @@ class Palette {
     // is not a model colour, which is the right answer for all of them: the
     // ground, the water and the stone are none of them foliage.
     bool isFoliage(uint8_t id) const { return foliage_[id] != 0u; }
+    // -- THE COLOUR THAT ASKED FOR THIS ENTRY, as against the one it renders.
+    //
+    // False for everything below mat::TREE_BASE and for anything unminted: the
+    // terrain band is built from linear numbers in buildGround and derived from
+    // the trees afterwards, so no .vox file authored it and there is nothing
+    // honest to report. Read srgbByte(albedo) for those -- they are not lifted,
+    // and they are not matchable either (nearestModelColor starts at TREE_BASE).
+    bool authoredColor(uint8_t id, std::array<uint8_t, 3> *out) const {
+        if (id < mat::TREE_BASE || id >= next_) return false;
+        if (out) *out = src_[id];
+        return true;
+    }
+    // Was it minted unquantised? That is the held kit and nothing else -- see
+    // the `exact` argument of forModelColor.
+    bool authoredExact(uint8_t id) const { return srcExact_[id] != 0u; }
     const std::vector<MaterialLook> &table() const { return look_; }
     int used() const { return next_; }
     int overflowed() const { return overflow_; }
@@ -1068,6 +1113,11 @@ class Palette {
     std::vector<MaterialLook> look_ = std::vector<MaterialLook>(mat::COUNT);
     // One bit per id: was this colour classified as a leaf when it was minted?
     std::vector<uint8_t> foliage_ = std::vector<uint8_t>(mat::COUNT, 0u);
+    // ...and the colour that minted it, before the foliage lift touched it.
+    // 768 bytes to make the table authorable -- see authoredColor.
+    std::vector<std::array<uint8_t, 3>> src_ =
+        std::vector<std::array<uint8_t, 3>>(mat::COUNT, std::array<uint8_t, 3>{{0, 0, 0}});
+    std::vector<uint8_t> srcExact_ = std::vector<uint8_t>(mat::COUNT, 0u);
     std::map<uint32_t, uint8_t> index_;
     uint8_t next_ = mat::TREE_BASE;
     int pineEnd_ = 0;

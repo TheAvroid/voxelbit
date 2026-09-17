@@ -49,4 +49,54 @@ if git diff --cached --name-only | grep -Eq '^src/assets/(palette|models|bow)\.j
     echo "            re-run it by hand once a browser is available: python tools/palette_vox.py" >&2
   fi
 fi
+# ── game/assets/palette_v2.vox IS THE SAME ARTIFACT, FOR THE OTHER ENGINE ────────────────────────────
+# v2 holds a DIFFERENT 255-entry table, built at boot by Palette::forModelColor as each asset loads, and
+# an id there is a MATERIAL too -- roughness, translucency, alpha and the foliage classification all hang
+# off the entry, so a colour that merely lands near an existing one is handed that entry's surface. Same
+# reason for the plate, same reason a stale one is worse than none. `v2.exe --palette-vox` writes it.
+#
+# THE SAME TWO PROPERTIES AS THE BLOCK ABOVE, and one more that the browser did not need:
+#   * conditional -- art under game/assets can mint an id, and so can any v2 source, because WHICH models
+#     load and IN WHAT ORDER is what the table is (it is served first-come; the last loader goes without).
+#   * non-blocking -- no build, test or runtime path reads the plate. A machine with no GPU must still
+#     be able to commit.
+#   * IT BOOTS THE ENGINE, so it yields to a person. If any v2.exe is already up -- the user playing, or
+#     another Claude tab mid-render -- this skips rather than adding a second engine to their GPU. See
+#     v2/CLAUDE.md, where killing somebody else's engine is the one unrecoverable rudeness.
+# Skip it for one commit with VB_SKIP_PALETTE_V2=1.
+V2EXE=v2/build/bin/Release/v2.exe
+if [ -z "$VB_SKIP_PALETTE_V2" ] &&
+   git diff --cached --name-only | grep -Eq '^v2/src/|^game/assets/.*\.vox$'; then
+  if [ ! -x "$V2EXE" ]; then
+    echo "pre-commit: no $V2EXE - game/assets/palette_v2.vox may be stale (not fatal)" >&2
+  elif tasklist //FI "IMAGENAME eq v2.exe" 2>/dev/null | grep -qi '^v2\.exe'; then
+    # NOTE THE // -- Git Bash rewrites a single-slash /FI into a path. See
+    # v2/CLAUDE.md, where the same line in build.bat misfires for the same reason.
+    echo "pre-commit: v2.exe is already running - left palette_v2.vox alone (not fatal)" >&2
+    echo "            re-run it yourself later: v2.exe --background --palette-vox" >&2
+  else
+    # A PLATE IS ONLY AS FRESH AS THE BINARY THAT PRINTED IT. If a staged source is newer than the exe,
+    # the run would boot the OLD table and write it out as though it were the new one -- which is the
+    # worst of the three outcomes, because it looks like it worked. Build first, or leave it stale and say so.
+    stale=
+    for f in $(git diff --cached --name-only | grep -E '^v2/src/'); do
+      [ -e "$f" ] && [ "$f" -nt "$V2EXE" ] && stale=$f
+    done
+    if [ -n "$stale" ]; then
+      echo "pre-commit: $stale is newer than v2.exe - palette_v2.vox NOT regenerated (not fatal)" >&2
+      echo "            build v2 and commit again, or accept the stale plate." >&2
+    elif (cd v2 && timeout 300 ./build/bin/Release/v2.exe --background --palette-vox) >/dev/null 2>&1; then
+      # NOT `git diff --quiet`, WHICH IS WHAT THE v1 BLOCK ABOVE USES. That asks
+      # "has this TRACKED file moved", and answers "no" for a file git has never
+      # seen -- so the very first commit of the plate would silently not carry it.
+      # status --porcelain covers untracked, modified and already-staged alike.
+      if [ -n "$(git status --porcelain -- game/assets/palette_v2.vox)" ]; then
+        git add game/assets/palette_v2.vox && echo "pre-commit: regenerated and staged game/assets/palette_v2.vox"
+      fi
+    else
+      echo "pre-commit: v2 --palette-vox failed - game/assets/palette_v2.vox may be stale (not fatal)" >&2
+    fi
+  fi
+fi
+
 exit 0

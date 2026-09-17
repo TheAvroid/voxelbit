@@ -663,23 +663,14 @@ class HeldItem {
     // goes in first so slot one is what the player holds when the world
     // appears.
     // -----------------------------------------------------------------------
-    // -- WHICH HELD MODELS MAY SHARE A PALETTE ENTRY ---------------------
-    //
-    // FOOD MAY, TOOLS MAY NOT. See World::addHeldVox for the argument and the
-    // measurement; the rule is by PATH because the reservation in
-    // prewarmColors has nothing but the path to go on, and the two have to ask
-    // the same question or the reservation reserves entries the load will not
-    // use.
-    static bool foodPath(const std::string &p) { return p.find("/food/") != std::string::npos; }
-
     bool add(World &world, const char *name, const std::string &voxPath, const HeldPose &pose,
-             Takes takes = Takes::Nothing, int matchTol = 0) {
+             Takes takes = Takes::Nothing, int selfMergeTol = 0) {
         Tool t;
         t.name = name;
         t.takes = takes;
         t.pose = pose;
         t.path = voxPath;
-        const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz, matchTol);
+        const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz, selfMergeTol);
         if (m < 0) return false;
         t.models.push_back(m);
         tools_.push_back(t);
@@ -750,6 +741,63 @@ class HeldItem {
     //
     // Returns how many entries it took, for the report at the call site.
     // -----------------------------------------------------------------------
+    // -- THE KIT MODELS THAT ARE RAMPS RATHER THAN DETAIL ----------------
+    //
+    // See World::addHeldVox for the mechanism. A TOOL is a dozen distinct
+    // colours and every one of them is a feature you look at from thirty
+    // centimetres; a RAMP is one hue in a handful of steps, and the steps are
+    // there to shade a curve, not to be told apart.
+    //
+    // ONE OF THEM, AND THE STEAK IS NOT IT ANY MORE:
+    //
+    //   wheat   5 colours -- one red and FOUR CREAMS inside 16 of each other
+    //           (255,243,149 down to 255,238,127) -- folds to 3
+    //
+    // Those four creams are one colour with rounding on it, and nobody has ever
+    // looked at a stalk of wheat and counted them.
+    //
+    // THE STEAK WAS FOLDED HERE AND IT SHOWED (user 2026-09-15: "the steaks
+    // pallette is still not correct", the third time on this model). Its nine
+    // are five reds twelve apart and four pinks -- a RAMP ACROSS A SURFACE, not
+    // rounding, and folding it to five turns a shaded slab into bands. The
+    // wheat's creams sit on a stalk a few voxels wide; the steak's ramp is the
+    // whole of what the object looks like.
+    //
+    // It costs four more entries and they were there: 250 of 255 before this,
+    // 254 after. The start-up line prints the total, so the day it stops
+    // fitting is a number rather than a surprise.
+    //
+    // BY PATH, because the reservation below has nothing but the path to go on
+    // and the two have to fold identically: reserve nine and use five and the
+    // four left over are gone for the session.
+    // 24 RATHER THAN 16, and the wheat is the only thing it applies to: its
+    // four creams span 22.6 end to end (255,243,149 to 255,238,127), so at 16
+    // they fold to two groups and at 24 to one. That last entry is what the
+    // steak's reds needed -- the table has no spare, and a cream a player
+    // cannot distinguish is the cheapest thing in it to give up.
+    static constexpr int kRampMergeTol = 24;
+    // -- ...AND THE STEAK FOLDS ONLY WHAT IS ACTUALLY A DUPLICATE ---------
+    //
+    // Its nine are not one ramp, they are TWO, and they are not the same kind
+    // of thing. Measured, consecutive distances:
+    //
+    //     the five reds     13.9, 13.9, 14.7, 13.9      the meat's shading
+    //     red -> pink       97.0                        a different material
+    //     the four pinks    10.0, 10.6, 10.0            marbling, near-identical
+    //
+    // At 16 both ramps fold and the meat goes to five flat bands, which is what
+    // was reported twice. At 12 the REDS survive -- every step is over 13 -- and
+    // only the pinks collapse, which is seven entries and costs nothing anybody
+    // can see. Nine exact does not fit: it takes the palette past 255 and the
+    // wheat starts losing voxels.
+    static constexpr int kSteakMergeTol = 12;
+    static int mergeTolFor(const std::string &p) {
+        if (p.find("/food/") != std::string::npos) return kSteakMergeTol;
+        return p.find("wheat") != std::string::npos ? kRampMergeTol : 0;
+    }
+
+    // `selfMergeTol` here must match what add() will pass for the same model,
+    // or the reservation claims entries the load never asks for.
     static int prewarmColors(World &world, const std::vector<std::string> &toolPaths,
                              const std::string &bowPath) {
         const int before = world.palette.used();
@@ -759,10 +807,30 @@ class HeldItem {
         auto mint = [&](const VoxModel &mo, int tol) {
             std::vector<bool> used(256, false);
             for (uint8_t v : mo.m) used[v] = true;
-            for (int e = 1; e <= 255; ++e)
-                if (used[size_t(e)])
-                    world.palette.forModelColor(mo.pal[size_t(e) - 1], true,
-                                                /*exact=*/tol == 0, tol);
+            // THE SAME FOLD addHeldVox WILL DO, so the reservation is exactly
+            // what the load will ask for -- see mergeTolFor.
+            std::vector<int> reps;
+            for (int e = 1; e <= 255; ++e) {
+                if (!used[size_t(e)]) continue;
+                const std::array<uint8_t, 4> &c = mo.pal[size_t(e) - 1];
+                bool merged = false;
+                if (tol > 0)
+                    for (int r : reps) {
+                        const std::array<uint8_t, 4> &q = mo.pal[size_t(r) - 1];
+                        const int dr = int(q[0]) - int(c[0]), dg = int(q[1]) - int(c[1]),
+                                  db = int(q[2]) - int(c[2]);
+                        if (dr * dr + dg * dg + db * db <= tol * tol) {
+                            merged = true;
+                            break;
+                        }
+                    }
+                if (merged) continue;
+                reps.push_back(e);
+                // conifer=false, exactly as addHeldVox does -- the two
+                // have to agree or the reservation stores a needle and
+                // the load asks for a seed.
+                world.palette.forModelColor(c, /*conifer=*/false, /*exact=*/true);
+            }
         };
         for (const std::string &p : toolPaths) {
             if (p.empty()) continue;
@@ -772,11 +840,12 @@ class HeldItem {
             // load. A path that will not open is reported with its reasons by
             // the real load a few hundred lines later, and saying it twice
             // would only make the start-up look like it failed twice.
-            // THE FOOD SHARES AND THE TOOLS DO NOT -- see the note over
-            // World::addHeldVox. The reservation has to ask the same question
-            // the load will ask, or it reserves entries the load then does not
-            // use and the table is full for nothing.
-            if (voxLoad(p, &mo, &err)) mint(mo, foodPath(p) ? Palette::kModelMatch : 0);
+            // EXACTLY, FOR EVERY MEMBER OF THE KIT. A held colour never
+            // merges -- see the note over World::addHeldVox, and the steak,
+            // which was the one exception to that for a day and was banded by
+            // it. `matchTol` survives on the signature because the capability
+            // is worth having; nothing in the kit uses it now.
+            if (voxLoad(p, &mo, &err)) mint(mo, mergeTolFor(p));
         }
         // THE BOW IS COMPOSED, NOT READ, so it has to be cut here to be asked
         // about -- parseBowStrip touches no device and the strip is thrown away

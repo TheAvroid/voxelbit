@@ -46,6 +46,7 @@
 #include "player.h"
 
 #include <cmath>
+#include <functional>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -83,6 +84,22 @@ inline constexpr float kArrowRestSec = 60.0f;
 inline constexpr float kArrowRoll = 9.0f;
 
 inline constexpr int kArrowSlots = 12;
+// -- HOW FAR THE SOLIDS HAVE TO REACH FOR A SHAFT ---------------------------
+//
+// (user 2026-09-15: "arrows are clipping through big rocks. dont let arrows go
+// through anything.")
+//
+// THE ARROW WAS BEING HANDED THE PLAYER'S OWN LITTLE BUBBLE. App::walkWorld
+// gathers colliders within SIX METRES of the player, because that is all a body
+// walking needs -- and insideWorld tests a shaft against exactly that list. So
+// past six metres there were no models in the world at all as far as an arrow
+// was concerned: it flew through boulders and trunks and buried itself in the
+// terrain behind them, every time, and inside six metres it behaved perfectly.
+//
+// 90 m is what a shaft can actually cover: 48 m/s with -17 m/s^2 on it is about
+// 75 m at the best angle, and the gather is only paid while one is in the air.
+// The birds already gather at 115, so the cost is precedented.
+inline constexpr float kArrowSolidsM = 90.0f;
 
 // ---------------------------------------------------------------------------
 class Arrows {
@@ -155,7 +172,25 @@ class Arrows {
     // -----------------------------------------------------------------------
     // One tick of every shaft, at the JS engine's 5 ms.
     // -----------------------------------------------------------------------
-    void update(float dt, const WalkWorld &w) {
+    // -- WHAT A SHAFT MEETS THAT IS ALIVE ---------------------------------
+    //
+    // (user 2026-09-15: "have the arrow able to kill life in one shot, just
+    // like in v1".) v1's ARROW_HITS_TO_KILL is 1 and its note is the whole
+    // design: "the bow is now the axe's peer: the one weapon that ends it in a
+    // single hit, and the only one that does so at range."
+    //
+    // HANDED IN RATHER THAN REACHED FOR, which is how every other predicate in
+    // this engine's creature files arrives -- an arrow has no business knowing
+    // what a population is. True means "that was alive and it is dead now", and
+    // the shaft is spent where it struck.
+    //
+    // ASKED ON THE SUBSTEP, NOT ON THE FRAME. A shaft travels about half a
+    // metre per frame and a rabbit is a third of one, so a per-frame test
+    // tunnels straight through the animal it was aimed at -- which is the same
+    // reason the world test below is in here rather than outside.
+    using LifeF = std::function<bool(const Vec3 &)>;
+
+    void update(float dt, const WalkWorld &w, const LifeF &hitLife = nullptr) {
         if (!ready()) return;
         // WHERE ANYTHING LANDED THIS TICK, for the impact sound. A list rather
         // than a flag because two shafts really can land on one frame -- that
@@ -163,6 +198,7 @@ class Arrows {
         // and cleared here rather than by the reader, so a caller that forgets
         // to drain it cannot replay last frame's thud for ever.
         landed_.clear();
+        impacts_.clear();
         for (Shaft &a : shafts_) {
             if (!a.live && !a.stuck) continue;
             a.age += dt;
@@ -179,6 +215,17 @@ class Arrows {
                 const Vec3 next = a.pos + step;
                 a.vel.y = nvy;
 
+                // THE ANIMAL FIRST. A creature standing against a trunk is
+                // nearer than the trunk, and a shaft that resolved the wood
+                // first would bury itself a voxel behind the thing it hit.
+                if (hitLife && hitLife(next)) {
+                    a.live = false;
+                    a.stuck = true;
+                    a.age = 0.0f;
+                    a.pos = next;
+                    landed_.push_back(a.pos);
+                    break;
+                }
                 const bool blocked = insideWorld(w, next);
                 if (!blocked) a.free_ = true;  // out in the open at last
                 if (blocked && a.free_) {
@@ -189,6 +236,21 @@ class Arrows {
                     a.stuck = true;
                     a.age = 0.0f;
                     landed_.push_back(a.pos);
+                    // -- ...AND WHERE IT WENT IN, WHICH IS NOT WHERE IT STOPPED
+                    //
+                    // (user 2026-09-15: "have arrow take out tiny peices of
+                    // material".)
+                    //
+                    // `a.pos` is the last point that was OUTSIDE -- that is the
+                    // whole point of it, so the shaft stands proud of the
+                    // surface rather than disappearing into it. A carve wants
+                    // the opposite end of that step: `next` is the first point
+                    // INSIDE the material, which is the voxel actually struck.
+                    //
+                    // At 48 m/s a 5 ms substep is 24 cm, so the two are more
+                    // than two voxels apart and chipping at the resting place
+                    // would carve the AIR in front of the hole.
+                    impacts_.push_back(Impact{next, a.dir});
                     if (log) {
                         std::printf("v2: arrow stuck at %.1f %.1f %.1f\n", double(a.pos.x),
                                     double(a.pos.y), double(a.pos.z));
@@ -275,6 +337,16 @@ class Arrows {
     // Drained by the caller each frame -- see update().
     const std::vector<Vec3> &landedThisTick() const { return landed_; }
 
+    // ...and where each of those went INTO something, with the heading it had.
+    // Only shafts that struck the WORLD are here -- one that struck an animal
+    // resolved as a kill and carved nothing, which is v1's rule too ("a creature
+    // in the way cancels the chop outright").
+    struct Impact {
+        Vec3 at;
+        Vec3 dir;
+    };
+    const std::vector<Impact> &impactsThisTick() const { return impacts_; }
+
     int inFlight() const {
         int n = 0;
         for (const Shaft &a : shafts_)
@@ -287,6 +359,7 @@ class Arrows {
     int sx_ = 0, sy_ = 0, sz_ = 0;
     std::vector<Shaft> shafts_ = std::vector<Shaft>(size_t(kArrowSlots));
     std::vector<Vec3> landed_;
+    std::vector<Impact> impacts_;
 };
 
 }  // namespace v2

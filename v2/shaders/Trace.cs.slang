@@ -1314,6 +1314,16 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     h.mat.specular = L.specular;
     h.mat.translucency = L.translucency;
     h.mat.alpha = L.alpha;
+    // -- ...AND A WATER-LIKE ENTRY GETS WATER'S TREATMENT ------------------
+    //
+    // See V6Material::ior. Everything in the world answers 0 here and pays one
+    // compare; the smoke answers with its own index of refraction and is drawn
+    // the way the lake is -- refracted, not stochastically skipped.
+    if (L.ior > 1.0f)
+    {
+        h.mat.type = MAT_DIELECTRIC;
+        h.mat.ior = L.ior;
+    }
 
     if (inst.kind == KIND_TREE)
     {

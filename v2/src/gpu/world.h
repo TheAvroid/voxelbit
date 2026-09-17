@@ -71,6 +71,7 @@
 #include <mutex>
 #include <thread>
 #include <set>
+#include <unordered_set>   // wanted_ -- see the note over it
 #include <string>
 #include <vector>
 
@@ -423,7 +424,17 @@ constexpr int kCritterSlots = 40;
 // V6Params::emitters -- so it costs one instance and no light.
 constexpr int kParticleSparks = 4;
 constexpr int kParticleSmoke = 16;
-constexpr int kParticleSlots = kParticleSparks + kParticleSmoke;
+// -- ...AND FOUR TEARS (user 2026-09-15: "the babies should cry") -----------
+//
+// v1's own band, TEAR_LO 16 to TEAR_HI 20, and v1's own reason for the size:
+// "three ducklings at CRY_GAP never need more". A tear lives 0.7 s and one is
+// emitted every 260 ms, so a single weeping duckling has at most three in the
+// air; three of them at once would overrun four slots, and the overflow rule is
+// the same one the smoke uses -- skip this tear rather than cut a live one
+// short. A missing droplet cannot be seen; one that blinks out half way down a
+// cheek can.
+constexpr int kParticleTears = 4;
+constexpr int kParticleSlots = kParticleSparks + kParticleSmoke + kParticleTears;
 constexpr int kFlyerInstances = kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots +
                                 kBunnySlots + kMarchSlots + kBeeSlots + kButtonSlots +
                                 kCritterSlots + kParticleSlots;
@@ -560,6 +571,10 @@ class Remesher {
 // always exists is a refit, and a slot that appears is a rebuild.
 // ---------------------------------------------------------------------------
 constexpr int kDebrisInstances = 64;
+// How red a corpse piece stays once v1's half-second blink has run -- see
+// corpseFade. Not zero, because zero is a grey lump of an animal lying in the
+// wood, which is the one thing a corpse must never look like.
+constexpr float kCorpseRedFloor = 0.55f;
 
 // ---------------------------------------------------------------------------
 // WHAT A LOOSE BODY IS MADE OF -- the one thing a tool has to know about it.
@@ -841,6 +856,27 @@ constexpr double kAbsorbFlyMs = 672.0;
 constexpr int kAbsorbSize = 600;
 // The chunk arrives at the chest, not at the eye -- 12 voxels under it.
 constexpr float kAbsorbY = -1.2f;
+// -- HOW CLOSE YOU HAVE TO BE FOR A CHIP TO COME TO YOU ---------------------
+//
+// (user 2026-09-15: "dont have the chipped chunk caused by the arrow get
+// absorbed by the player. only when the player is close enough".)
+//
+// v1's ARROW_ABSORB_R, which is 16 voxels, and v1's note is worth having in
+// full because it took that engine several passes: the radius started at 30 --
+// three metres, WIDER than an ordinary chunk's -- and that is backwards. "A
+// piece knocked off from across the clearing should be no easier to collect
+// than one you cut standing over it."
+//
+// A SWING NEEDS NO GATE AND DOES NOT GET ONE. Chipping with a tool puts you
+// within arm's reach of the chip by construction, so every chip in the game
+// until now flew to the player and that read correctly. A SHAFT breaks that
+// assumption and is the only thing that does: it knocks a piece off something
+// twenty-five metres away, and the piece then sailed the whole way back. So
+// the default stays "no gate" and the arrow states its own reach -- see
+// Debris::absorbR.
+constexpr float kArrowAbsorbM = 1.6f;
+// The sentinel for "from anywhere", which is every chip a tool makes.
+constexpr float kAbsorbAnywhere = 1e9f;
 // Nothing loose lives forever. A piece too big to absorb still stops being a
 // rigid body eventually, or a morning's chopping is a thousand live actors.
 // HOW SMALL A PIECE IS NOT WORTH BEING A PIECE.
@@ -1211,14 +1247,15 @@ class World {
     // an engine that refuses to start over a missing viewmodel would be a worse
     // bug than the missing viewmodel.
     // -----------------------------------------------------------------------
-    int addHeldModel(const std::string &path, int *sx, int *sy, int *sz, int matchTol = 0) {
+    int addHeldModel(const std::string &path, int *sx, int *sy, int *sz,
+                     int selfMergeTol = 0) {
         VoxModel mo;
         std::string err;
         if (!voxLoad(path, &mo, &err)) {
             std::fprintf(stderr, "v2: held item %s: %s -- skipped\n", path.c_str(), err.c_str());
             return -1;
         }
-        return addHeldVox(mo, path, sx, sy, sz, matchTol);
+        return addHeldVox(mo, path, sx, sy, sz, selfMergeTol);
     }
 
     // The same, for a model that was COMPOSED rather than read. The bow's draw
@@ -1240,8 +1277,28 @@ class World {
     // At kModelMatch the ramps collapse onto each other and onto reds the wood
     // already owns, and a twelve-unit shift on a lump of meat is not a thing
     // anybody can see. See [[v2-palette-is-full]].
+    // -- ...AND A MODEL MAY MERGE ITS OWN RAMPS, WHICH IS NOT THE SAME THING --
+    //
+    // `selfMergeTol` of 0 is the old behaviour and is what every TOOL wants: a
+    // held colour never merges, because the two dozen voxels in front of the
+    // eye are the ones a player looks at closest.
+    //
+    // ABOVE 0 IT MERGES WITHIN THIS MODEL AND ONLY WITHIN IT, then registers
+    // each survivor EXACTLY. That is the important distinction, and getting it
+    // wrong is what this parameter replaced: asking forModelColor for a
+    // tolerance merges against the WHOLE TABLE, so a steak's red can be handed
+    // a colour the wood already owns -- a shared entry, with whatever alpha or
+    // emission that entry carries, and no way to tell from the outside.
+    //
+    // THE STEAK IS WHY. Raw meat is nine colours in two smooth ramps -- five
+    // reds twelve apart and four pinks -- and nine exact entries is more than
+    // this palette can spare for a thing the size of a hand. Merged against the
+    // world it cost five and wore borrowed colours; merged against ITSELF it
+    // costs the same five and wears its own. The ramp loses a step it did not
+    // need: twelve units is under half of what the eye resolves on a surface
+    // that small.
     int addHeldVox(const VoxModel &mo, const std::string &path, int *sx, int *sy, int *sz,
-                   int matchTol = 0) {
+                   int selfMergeTol = 0) {
         // WHOLE, NOT TRIMMED. A held model's pose is measured from the middle
         // of its grid, and a strip's frames have to share one -- see
         // toWorldWhole for what trimming does to a bow.
@@ -1344,11 +1401,65 @@ class World {
         // quantise; it is only the two dozen voxels in front of the eye that do
         // not.
         // -------------------------------------------------------------------
+        // -- THE MODEL'S OWN RAMPS, FOLDED FIRST -- see selfMergeTol -------
+        //
+        // Each used entry either becomes a representative or points at an
+        // earlier one within tolerance. Only representatives reach the palette,
+        // and they reach it EXACTLY.
+        std::vector<int> repOf(256, 0);
+        if (selfMergeTol > 0) {
+            std::vector<int> reps;
+            for (int e = 1; e <= 255; ++e) {
+                if (!used[size_t(e)]) continue;
+                const std::array<uint8_t, 4> &c = mo.pal[size_t(e) - 1];
+                int hit = 0;
+                for (int r : reps) {
+                    const std::array<uint8_t, 4> &q = mo.pal[size_t(r) - 1];
+                    const int dr = int(q[0]) - int(c[0]), dg = int(q[1]) - int(c[1]),
+                              db = int(q[2]) - int(c[2]);
+                    if (dr * dr + dg * dg + db * db <= selfMergeTol * selfMergeTol) {
+                        hit = r;
+                        break;
+                    }
+                }
+                if (hit) {
+                    repOf[size_t(e)] = hit;
+                } else {
+                    reps.push_back(e);
+                    repOf[size_t(e)] = e;
+                }
+            }
+        }
         int minted = 0, lost = 0;
         for (int e = 1; e <= 255; ++e)
             if (used[size_t(e)]) {
+                // A MERGED ENTRY TAKES ITS REPRESENTATIVE'S ID, which has
+                // already been minted because reps are met first in this walk.
+                const int src = (selfMergeTol > 0 && repOf[size_t(e)] != e) ? repOf[size_t(e)] : e;
+                if (src != e) {
+                    idOfEntry[size_t(e)] = idOfEntry[size_t(src)];
+                    continue;
+                }
+                // NOT A CONIFER, AND THE SEEDS ARE HOW THAT WAS FOUND.
+                // forModelColor's second argument turns any GREEN-DOMINANT
+                // colour into pine foliage: albedo x 1.7, translucency 0.45,
+                // waxy roughness -- which is right for a needle and is nonsense
+                // for anything else. The kit passed `true` since it was written
+                // and it never mattered, because a stone axe and a wooden bow
+                // have no green in them.
+                //
+                // seeds.vox IS THREE GREENS. Measured: "worst colour shift
+                // 47/255" on a model registered EXACTLY, which is a
+                // contradiction until you see that the entry is not being
+                // stored as asked. The held seeds were being drawn as three
+                // translucent pine needles, and that is also why they did not
+                // match the seeds planted in the ground -- those come from the
+                // fixed palette range, which no foliage rule touches.
+                //
+                // addFlyerModel already passes false and says why: "what the
+                // green rule does to a lime butterfly's wing".
                 idOfEntry[size_t(e)] = palette.forModelColor(
-                    mo.pal[size_t(e) - 1], true, /*exact=*/matchTol == 0, matchTol);
+                    mo.pal[size_t(e) - 1], /*conifer=*/false, /*exact=*/true);
                 if (idOfEntry[size_t(e)] != mat::AIR)
                     ++minted;
                 else
@@ -1902,6 +2013,35 @@ class World {
         const int sx = fm.sx, sy = fm.sy, sz = fm.sz;
         const int n = maxi(maxi(sx, sy), sz);
         if (n < 2) return 0;
+        // -- AND NOT ONE OF THEM IS BORN INSIDE THE GROUND -----------------
+        //
+        // (user 2026-09-15: "there is a peice of the life that gets launched
+        // upwards".)
+        //
+        // THIS IS WHERE THE LAUNCH COMES FROM. The pieces are born about the
+        // animal's CENTRE, and an animal stands ON the ground -- so the lower
+        // octants start at or below the surface, which means they start inside
+        // the collision height field. A solver's first duty to a body that is
+        // already penetrating is to get it out, and it does that with an
+        // impulse proportional to how deep it is: one piece leaves like a
+        // rocket while its neighbours fall normally.
+        //
+        // It is also why they went THROUGH the floor -- a body that starts
+        // below a height field is not resting on it, it is under it, and
+        // nothing below a height field is ever pushed back up by contact.
+        //
+        // So the whole burst is lifted until the model's own box clears the
+        // ground. A corpse coming apart half a voxel higher than the animal
+        // stood is not a thing anybody can see; being fired into the sky is.
+        Vec3 born = at;
+        {
+            TerrainMemo memo;
+            const int gi = int(std::floor(born.x / VOXEL_M));
+            const int gj = int(std::floor(born.z / VOXEL_M));
+            const float ground = float(terrainTopAt(gi, gj, memo) + 1) * VOXEL_M;
+            const float halfY = 0.5f * float(sy) * VOXEL_M;
+            if (born.y - halfY < ground) born.y = ground + halfY;
+        }
         // The model, centred in an n-cube. Rounded DOWN so the offset matches
         // the half-box setFlyerInstance hands place(), which is what put the
         // instance where it is.
@@ -1938,10 +2078,34 @@ class World {
             // whoever struck it, which is the other half of v1's creatureRagdoll.
             const float dx = at.x - awayFrom.x, dz = at.z - awayFrom.z;
             const float d = maxf(0.001f, std::sqrt(dx * dx + dz * dz));
+            // -- AND THEY POP (user 2026-09-15: "have the red peices of the
+            //    killed life bounce upwards slightly? it could be a nice
+            //    effect", then "have the life pop up more upon death. its not
+            //    really noticable") --------------------------------------
+            //
+            // v1's 6 + rand*4 voxels a second is 0.6-1.0 m/s, which against
+            // this engine's gravity is a rise of FOUR CENTIMETRES -- the pieces
+            // essentially fall apart in place. A rise is v*v/2g and that is
+            // what has to be aimed at, not the speed: tripling the speed to
+            // 1.9-2.9 bought 0.18-0.43 m, which is a hop you have to be looking
+            // for, and being looked for is exactly what it failed at.
+            //
+            //     0.6-1.0 m/s   v1's own          0.02-0.05 m   invisible
+            //     1.9-2.9 m/s   the first cut     0.18-0.43 m   "not really
+            //                                                    noticable"
+            //     3.8-5.1 m/s   here              0.74-1.32 m   a clear pop
+            //
+            // A METRE IS THE CEILING AND IT IS DELIBERATE: a piece that clears
+            // the player's own height reads as debris thrown by an explosion,
+            // and the thing this must never become again is the rocket the
+            // birth-inside-the-ground bug produced -- that was metres, straight
+            // up, one piece out of eight. --kill-test still watches for it.
             const Vec3 vel{wx * 0.7f + (dx / d) * 0.9f + jitter(0.4f),
-                           0.6f + 0.4f * unitRand(), wz * 0.7f + (dz / d) * 0.9f + jitter(0.4f)};
+                           3.8f + 1.3f * unitRand(),
+                           wz * 0.7f + (dz / d) * 0.9f + jitter(0.4f)};
             const Vec3 spin{jitter(7.0f), jitter(7.0f), jitter(7.0f)};
-            const int got = spawnDebris(ph, cube, n, at, vel, spin, nowMs, yaw, nullptr, takesAs);
+            const int got =
+                spawnDebris(ph, cube, n, born, vel, spin, nowMs, yaw, nullptr, takesAs);
             if (got < 0) continue;
             // A CORPSE IS NOT LOOT -- v1's own words, and its own reason: "the
             // player seems to absorb the life when it breaks into chunks". This
@@ -2049,12 +2213,31 @@ class World {
     // THE TIME RATHER THAN THE BODY, because a member function's SIGNATURE has
     // to name types that are already declared and Debris is four thousand lines
     // below this. The body could have said d.hurtT0 quite happily.
+    // -- RED FOR AS LONG AS IT EXISTS, AND THAT IS THE WHOLE RULE --------
+    //
+    // (user 2026-09-15: "you also seems to have 2 different versions of the
+    // dead life, you have the red peices but also regular peices. there should
+    // be no regular peices when a life dies. just red ones.")
+    //
+    // THE TWO VERSIONS WERE THE SAME PIECES, BEFORE AND AFTER. This faded to
+    // ZERO at 500 ms -- v1's blink -- but v1 also DELETES its pieces at 500 ms,
+    // so the fade ending and the piece ending are one moment there. Here the
+    // pieces now lie on the ground for half a second after they settle, which
+    // is longer: so for the rest of that time they were ordinary grey debris
+    // sitting where an animal died. Two versions of the dead life, exactly as
+    // described, and both of them this one.
+    //
+    // So the blink runs as v1 steps it -- twelve phases over the first half
+    // second -- and then HOLDS rather than reaching zero. A corpse piece is
+    // never not red; it is only ever less red.
     static float corpseFade(double hurtT0, double nowMs) {
         if (hurtT0 < -1e8) return 0.0f;
         const double e = (nowMs - hurtT0) / 500.0;   // kHurtMs, and see lifehit.h
-        if (e < 0.0 || e >= 1.0) return 0.0f;
+        if (e < 0.0) return 0.0f;
+        if (e >= 1.0) return kCorpseRedFloor;
         const int phase = int(e * 12.0);   // twelve phases, as v1 steps it
-        return 1.0f - float(phase) / 12.0f;
+        const float f = 1.0f - float(phase) / 12.0f;
+        return f < kCorpseRedFloor ? kCorpseRedFloor : f;
     }
 
     void retireDebris(Physics &ph, int slot) {
@@ -2275,7 +2458,8 @@ class World {
             mats[i].specular = m.specular;
             mats[i].translucency = m.translucency;
             mats[i].alpha = m.alpha;
-            mats[i].pad1 = 0.0f;
+            // See V6Material::ior -- 0 for everything that is not the smoke.
+            mats[i].ior = m.ior;
         }
         materials_ = device_->createStructuredBuffer(sizeof(V6Material), uint32_t(mats.size()),
                                                      ResourceBindFlags::ShaderResource,
@@ -2353,6 +2537,21 @@ class World {
     bool debrisAbsorbing(int slot) const {
         if (slot < 0 || slot >= kDebrisInstances) return false;
         return debris_[slot].live && debris_[slot].absorbing;
+    }
+
+    // The solver's handle for a loose piece, so a test can ask the physics
+    // about it directly. See --kill-test's corpse trace.
+    // The piece's own half extents, for the corpse trace: a thin slab and a
+    // cube behave very differently against a height field.
+    void debrisHalf(int slot, float *hx, float *hy, float *hz) const {
+        if (slot < 0 || slot >= kDebrisInstances) return;
+        *hx = debris_[slot].halfM[0];
+        *hy = debris_[slot].halfM[1];
+        *hz = debris_[slot].halfM[2];
+    }
+
+    int debrisBody(int slot) const {
+        return (slot < 0 || slot >= kDebrisInstances) ? -1 : debris_[slot].phys;
     }
 
     bool debrisPose(int slot, Vec3 *p, float *quat) const {
@@ -2460,6 +2659,23 @@ class World {
     void debrisVel(Physics &ph, int slot, Vec3 *lin, Vec3 *ang) const {
         if (slot < 0 || slot >= kDebrisInstances || !debris_[slot].live) return;
         ph.velocityOf(debris_[slot].phys, lin, ang);
+    }
+
+    // -- WHAT THE LOOSE POOL IS HOLDING, BY KIND -------------------------
+    //
+    // For --kill-test. "There should only be the broken up red peices" is a
+    // claim about two populations in one pool, and counting them apart is the
+    // only way to tell a corpse from a chip: a corpse piece is scenery (so the
+    // player cannot absorb it) and carries hurtT0 (so it draws red), and an
+    // ordinary chip is neither.
+    void debrisKinds(int *red, int *plain) const {
+        *red = 0;
+        *plain = 0;
+        for (const Debris &d : debris_) {
+            if (!d.live) continue;
+            if (d.hurtT0 > -1e8 && d.scenery) ++(*red);
+            else ++(*plain);
+        }
     }
 
     int looseCount() const {
@@ -3080,7 +3296,8 @@ class World {
     // piece once it is lying there. See DebrisTakes.
     int spawnDebris(Physics &ph, const std::vector<uint8_t> &vol, int n, const Vec3 &centre,
                     const Vec3 &vel, const Vec3 &spin, double nowMs, float yawRad = 0.0f,
-                    const Solid *src = nullptr, uint8_t takesAs = kDebrisStone) {
+                    const Solid *src = nullptr, uint8_t takesAs = kDebrisStone,
+                    float absorbR = kAbsorbAnywhere) {
         // `src` is no longer read. buildWindow asks the world for everything
         // solid near the bite, which of course includes the rock it came out
         // of -- and also the one beside it, which naming a single source could
@@ -3110,7 +3327,8 @@ class World {
             if (v == mat::ROCK) v = stone;
             else if (v == mat::SAND) v = grain;
         }
-        return spawnPiece(ph, shaded, n, count, centre, vel, spin, nowMs, yawRad, takesAs);
+        return spawnPiece(ph, shaded, n, count, centre, vel, spin, nowMs, yawRad, takesAs,
+                          absorbR);
     }
 
     // -----------------------------------------------------------------------
@@ -3132,7 +3350,8 @@ class World {
     // One connected piece, as a body. See spawnDebris for the split above.
     int spawnPiece(Physics &ph, const std::vector<uint8_t> &vol, int n, int count,
                    const Vec3 &centre, const Vec3 &vel, const Vec3 &spin, double nowMs,
-                   float yawRad, uint8_t takesAs = kDebrisStone) {
+                   float yawRad, uint8_t takesAs = kDebrisStone,
+                   float absorbR = kAbsorbAnywhere) {
         if (count <= 0) return -1;
         int slot = -1;
         for (int i = 0; i < kDebrisInstances; ++i)
@@ -3222,6 +3441,29 @@ class World {
                        centre.z - comOff.x * syaw + comOff.z * cyaw};
         d.bornMs = nowMs;
         d.absorbing = false;
+        d.absorbR = absorbR;
+        // -- AND IT IS NOT A CORPSE UNTIL SOMETHING SAYS SO -----------------
+        //
+        // (user 2026-09-15: "when hitting objects with the stone tools, the
+        // chunks are just dissapearing instead of floating towards the
+        // player".)
+        //
+        // A FRESH BODY IN A USED SLOT. hurtT0 is what marks a piece of a killed
+        // animal -- it draws the red and, half a second later, retires it. The
+        // slots are a pool of sixty-four and a kill takes up to eight of them,
+        // so after one rabbit those eight slots carried a hurtT0 from the last
+        // thing that died: the next chip of stone cut in one of them inherited
+        // it and was retired at 500 ms.
+        //
+        // WHICH IS EXACTLY WHEN THE ABSORB STARTS (kAbsorbWaitMs), so what the
+        // player saw was a chunk that vanished at the precise moment it should
+        // have lifted off toward them -- and only after they had killed
+        // something, which is what made it look like a different feature.
+        //
+        // Beside `absorbing`, because it is the same kind of fact: state that
+        // belongs to the last occupant and must not outlive it.
+        d.hurtT0 = -1e9;
+        d.restT0 = -1e9;
         d.live = true;
         // ---- IT BECOMES A RIGID BODY -------------------------------------
         //
@@ -3266,9 +3508,33 @@ class World {
                         }
                     }
         }
-        (void)vel;
-        (void)spin;
         d.phys = ph.addChunkBody(cloud.data(), int(cloud.size()), com, yawRad, kStoneDensity);
+        // -- ...AND IT LEAVES WITH WHATEVER IT WAS THROWN AT -----------------
+        //
+        // (user 2026-09-15: "have the life pop up more upon death. its not
+        // really noticable".)
+        //
+        // THE VELOCITY WAS BEING DISCARDED. These two lines were `(void)vel;
+        // (void)spin;` -- correct for the caller this function was written for,
+        // and only for that one. A swing's chip is deliberately given no throw
+        // at all ("NO THROW, NO SPIN, NO NUDGE CLEAR" -- see the note at the
+        // swing's own spawnDebris), so dropping the arguments cost that path
+        // nothing and nobody noticed.
+        //
+        // shatterFlyer SHARES THIS FUNCTION AND DOES WANT A LAUNCH. So the
+        // corpse's pop has never once been applied: the burst velocity was
+        // computed, passed down, and thrown away here. Raising it from v1's
+        // 0.6-1.0 m/s to 1.9-2.9 and then to 3.8-5.1 changed nothing either
+        // time, which is exactly what "its not really noticable" was reporting
+        // -- the pieces were only ever coming apart and falling, and the small
+        // rise a test could see was the birth-lift, not a throw.
+        //
+        // GUARDED ON ZERO rather than made a parameter, so the chip keeps its
+        // no-throw by saying what it means -- it passes a zero vector -- and no
+        // caller has to opt in to being obeyed.
+        if (d.phys >= 0 && (vel.x != 0.0f || vel.y != 0.0f || vel.z != 0.0f ||
+                            spin.x != 0.0f || spin.y != 0.0f || spin.z != 0.0f))
+            ph.setVelocity(d.phys, vel, spin);
         {
             // A golden-angle turn per slot, so neighbours lean differently.
             const float wa = float(slot) * 2.39996323f;
@@ -3863,7 +4129,26 @@ class World {
             // beside this one; see kDebrisSoft for why a mushroom needs its own
             // rather than borrowing `felled`, which also means KIND_TREE
             // shading and a mesh whose shades are NOT resolved per voxel.
-            if (!d.absorbing && !d.felled && !d.scenery && d.voxels <= kAbsorbSize &&
+            // ...AND IT HAS TO BE WITHIN REACH, IF THIS ONE WAS GIVEN A REACH.
+            //
+            // (user 2026-09-15: "dont have the chipped chunk caused by the
+            // arrow get absorbed by the player. only when the player is close
+            // enough to absorbe the chunk".)
+            //
+            // THERE WAS NO DISTANCE TEST HERE AT ALL, and until the arrow
+            // there was no need of one: every chip in the game was made by a
+            // tool, and swinging a tool puts you beside what you hit. A shaft
+            // is the first thing that can knock a piece off something across
+            // the clearing, and the piece flew the whole way back.
+            //
+            // HORIZONTAL, so standing on a ledge above a chip does not put it
+            // out of reach -- the player's eye is 1.6 m over their feet and the
+            // reach is 1.6 m, which would make a chip at your toes a borderline
+            // case measured in 3D. See kArrowAbsorbM.
+            const float adx = d.pos.x - eye.x, adz = d.pos.z - eye.z;
+            const bool inReach = d.absorbR >= kAbsorbAnywhere ||
+                                 adx * adx + adz * adz <= d.absorbR * d.absorbR;
+            if (!d.absorbing && inReach && !d.felled && !d.scenery && d.voxels <= kAbsorbSize &&
                 nowMs - d.bornMs > kAbsorbWaitMs) {
                 d.absorbing = true;
                 d.absorbT0 = nowMs;
@@ -3899,6 +4184,94 @@ class World {
             // mushrooms in ones rather than dozens; it is recorded here because
             // the failure would look like NOTHING FLOATS breaking rather than
             // like a full slot table.
+            // ---- ...OR IT IS A CORPSE AND THE RED HAS RUN OUT ------------
+            //
+            // (user 2026-09-15: "when the life is killed, it should stay red
+            // while it breaks into peices, then it should dissapear completely
+            // as it drops the raw steak as it does currently".)
+            //
+            // THE PIECES GO WITH THE FLASH, which is v1's own sequence and its
+            // own words: "the sparks are the death, so nothing is left behind
+            // to collect ... they have been tumbling since the hit, red for as
+            // long as HURT ran". Without this the corpse lay in the wood for
+            // the full scenery lifetime -- half an hour of grey lumps where an
+            // animal used to be, long after the red that explained them.
+            //
+            // hurtT0 IS THE WHOLE TEST and only a shattered animal has one --
+            // see corpseFade, where the same field draws the red. An ordinary
+            // chip of stone keeps its sentinel and its thirty seconds.
+            // ...AND THEN IT LIES THERE FOR HALF A SECOND -----------------
+            //
+            // (user 2026-09-15: "have it turn red, split into peices, then rest
+            // on the ground for half a second where it then dissapears".)
+            //
+            // THREE BEATS, NOT TWO. The first cut retired the pieces when the
+            // RED ran out, which is 500 ms after the blow -- and 500 ms after
+            // the blow they are still in the air, so they blinked out mid-fall
+            // and read as an animal going through the floor. The red is the
+            // first beat; landing is the second; the half second asked for here
+            // is the third and it starts when the tumbling stops.
+            //
+            // REST IS MEASURED, not timed: a piece thrown off a bank falls
+            // further than one dropped on the flat, and waiting a fixed span
+            // would catch the first mid-air and leave the second lying. The
+            // solver already knows -- see Physics::velocityOf.
+            else if (d.hurtT0 > -1e8) {
+                // -- A CORPSE IS PLACED ON THE GROUND, NOT DROPPED ON IT -----
+                //
+                // (user 2026-09-15: "it clips straight through the ground ...
+                // then rest on the ground for half a second".)
+                //
+                // THE SOLVER CANNOT HOLD THESE UP AND THE TRACE SAYS SO. An
+                // octant of an animal is frequently a ONE-VOXEL SLAB, and a
+                // convex hull that thin cooks to nothing -- so the piece has no
+                // collider at all. It does not land: it falls through the
+                // world until the backstop in this same function catches it
+                // half a metre down, puts it back, and it falls again.
+                // Measured, one piece of a rabbit, every frame:
+                //
+                //     f0   y 37.34  under -0.04  speed 0.33
+                //     f10  y 36.98  under +0.32  speed 3.66
+                //     f40  y 37.39  under -0.09  speed 0.33
+                //     f50  y 37.03  under +0.27  speed 3.66
+                //
+                // A 0.4 m sawtooth that never decays, a third of a metre of it
+                // inside the hillside. That is the clipping, and no amount of
+                // waiting for it to "settle" would ever have ended.
+                //
+                // ...AND IT STAYS A RIGID BODY (user 2026-09-15: "turn the
+                // red pecies into rigid bodies. it should obey physics").
+                //
+                // A previous cut PARKED them: placed on the ground and made
+                // kinematic the moment they reached it. That did stop the
+                // clipping, and it stopped them being physics -- they landed
+                // dead flat wherever they happened to arrive, which is not what
+                // a corpse coming apart looks like. The clipping had one cause
+                // and it was the BIRTH, not the simulation: see the lift in
+                // shatterFlyer. With the pieces born above the ground the
+                // solver holds them up by itself and there is nothing here to
+                // correct.
+                //
+                // REST IS MEASURED rather than timed, because a piece thrown
+                // off a bank falls further than one dropped on the flat.
+                Vec3 lin{0, 0, 0}, ang{0, 0, 0};
+                // A BODY THE SOLVER WILL NOT ANSWER FOR IS NOT MOVING -- PhysX
+                // puts a settled body to sleep, and asleep is exactly the state
+                // this is waiting for.
+                const bool got = ph.velocityOf(d.phys, &lin, &ang);
+                const bool still =
+                    !got || lin.x * lin.x + lin.y * lin.y + lin.z * lin.z < 0.25f;
+                if (still && d.restT0 < -1e8) d.restT0 = nowMs;
+                if (!still) d.restT0 = -1e9;
+                // ...AND THE CAP IS WHAT COVERS A PIECE THROWN CLEAR. One that
+                // lands on a ledge the terrain query does not describe still
+                // goes, half a second late.
+                const bool rested = d.restT0 > -1e8 && nowMs - d.restT0 > 500.0;
+                if (rested || nowMs - d.hurtT0 > 2500.0) {
+                    retireDebris(ph, i);
+                    continue;
+                }
+            }
             else if (nowMs - d.bornMs >
                      ((d.felled || d.scenery) ? kFelledLifeMs : kDebrisLifeMs)) {
                 retireDebris(ph, i);
@@ -5633,8 +6006,8 @@ class World {
     // -----------------------------------------------------------------------
     size_t missingChunks() const {
         size_t n = 0;
-        for (const auto &kv : wanted_)
-            if (chunks_.find(kv.first) == chunks_.end()) ++n;
+        for (long long k : wanted_)
+            if (chunks_.find(k) == chunks_.end()) ++n;
         return n;
     }
 
@@ -6062,7 +6435,10 @@ class World {
         bool changed = false;
         // Compacting a structure REPLACES it, so the top level has to be told:
         // the instance still describes the same geometry, but at a new address.
-        if (drainCompactions(false)) changed = true;
+        // ONE GENERATION, so a backlog is spread over frames rather than
+        // spent on whichever one the streamer happens to go idle on. See
+        // drainCompactions.
+        if (drainCompactions(false, kDrainPerFrame)) changed = true;
         releaseBuildInputs();
 
         // Hand back pooled buffers nothing has wanted for a few hundred frames.
@@ -6194,8 +6570,11 @@ class World {
         // EditStore::get takes a lock. A cell is walked in row-major order, so
         // a cache of one turns the 4 x 4 into one or two fetches, and the
         // common case -- a world nobody has dug in -- is a null every time.
-        auto topAt = [&](int qi, int qj) {
-            const int gh = terrain.heightVox(qi, qj, memo);
+        // WHICH CHUNK'S EDITS COVER THIS COLUMN, through the one-entry cache.
+        // Split out of topAt so the question "has anything here been dug at
+        // all" can be asked WITHOUT evaluating the terrain -- see the skip in
+        // the loop below, which is the whole of this function's cost.
+        auto editsFor = [&](int qi, int qj) -> const std::shared_ptr<const ChunkEdits> & {
             const int qcx = floorDiv(qi, CHUNK_VOX), qcz = floorDiv(qj, CHUNK_VOX);
             const long long k = chunkKey(qcx, qcz);
             if (!have || k != haveKey) {
@@ -6203,11 +6582,19 @@ class World {
                 haveKey = k;
                 have = true;
             }
-            if (!ce) return gh;
+            return ce;
+        };
+        // ...AND THE TOP OF A COLUMN WHOSE GENERATED HEIGHT IS ALREADY KNOWN.
+        // It was computed inside here before, which meant every caller that
+        // also needed the generated height -- and both of them do -- paid for
+        // several octaves of noise twice over the same column.
+        auto topWith = [&](int qi, int qj, int gh) {
+            const std::shared_ptr<const ChunkEdits> &e = editsFor(qi, qj);
+            if (!e) return gh;
             int y = gh;
             for (int d = 0; d < kUndermineDepthVox; ++d, --y) {
                 uint8_t m = mat::AIR;
-                if (!ce->voxel(qi, qj, y, &m) || m != mat::AIR) break;
+                if (!e->voxel(qi, qj, y, &m) || m != mat::AIR) break;
             }
             return y;
         };
@@ -6244,17 +6631,81 @@ class World {
                 // into a pit it could have rested beside, and a floor that is
                 // too HIGH throws it out of a pit it is standing in. Only one
                 // of those looks like teleporting.
-                int y = topAt(wi, wj);
-                for (int dj = 0; dj < step; ++dj)
-                    for (int di = 0; di < step; ++di) {
-                        if (!di && !dj) continue;
-                        const int qy = topAt(wi + di, wj + dj);
-                        if (qy < y) y = qy;
-                    }
+                int y = topWith(wi, wj, h);
+                // -- THE CELL'S MINIMUM, BUT ONLY WHERE SOMETHING WAS DUG ----
+                //
+                // (user 2026-09-15: "when the life dies and turns red, it clips
+                // straight through the ground".)
+                //
+                // THE MINIMUM WAS TAKEN OVER EVERY CELL AND THAT IS WHY BODIES
+                // SANK. This scan exists for one thing: a pick bite is 3 voxels
+                // and the samples are 4 apart, so a pit can fall between them
+                // and the solver keeps a lid over a hole that is plainly there.
+                // Natural ground has no such problem -- the samples describe it
+                // exactly -- but taking the minimum anyway hands back the
+                // LOWEST corner of every cell, which on a slope is the bottom
+                // of a 0.4 m step. MEASURED: a corpse resting on a hillside sat
+                // 0.42 m inside it, which is most of the animal.
+                //
+                // So a neighbour only counts if it has actually been DUG --
+                // its edited top is below what the generator says. That keeps
+                // the pit, which is the whole point, and leaves every slope in
+                // the world alone.
+                // -- AND IT IS SKIPPED WHERE NOTHING HAS BEEN DUG ----------
+                //
+                // (user 2026-09-15: "can you investigate hitching in the game
+                // ... just as im walking around the environment its hitching".)
+                //
+                // THIS SCAN WAS THE HITCH, AND FOR UNDUG GROUND IT WAS PROVABLY
+                // DEAD WORK. A neighbour only counts if its top is BELOW what
+                // the generator says -- the test two lines down -- and where
+                // there are no edits, topWith returns exactly the generated
+                // height. So the branch could never be taken; it simply
+                // evaluated the terrain first and then threw the answer away.
+                //
+                // Fifteen neighbours on each of 25,600 samples is 384,000
+                // octave-noise evaluations per rebuild, all of it for the rare
+                // cell with a pit in it. MEASURED on the frame the player
+                // crosses the patch boundary, which is the whole of the fault:
+                //
+                //     sampling the patch   65.8 ms      the PhysX cook   0.25 ms
+                //
+                // -- that is four dropped frames at 60 fps, every time, and the
+                // old note above ("costs one null test more than it did") was
+                // describing the null test it does AFTER the noise rather than
+                // instead of it.
+                //
+                // THE FOUR CORNERS, because a cell may straddle a chunk seam
+                // and it is the CHUNK that owns an edit map. Clean chunks --
+                // which is nearly every chunk in the world, for ever -- answer
+                // this in four integer divisions and a cached pointer test.
+                const bool anyDug = editsFor(wi, wj) || editsFor(wi + step - 1, wj) ||
+                                    editsFor(wi, wj + step - 1) ||
+                                    editsFor(wi + step - 1, wj + step - 1);
+                if (anyDug)
+                    for (int dj = 0; dj < step; ++dj)
+                        for (int di = 0; di < step; ++di) {
+                            if (!di && !dj) continue;
+                            const int qi = wi + di, qj = wj + dj;
+                            // ONCE, and used for both questions below. It was
+                            // evaluated twice: once inside topAt and again for
+                            // the dug test.
+                            const int qh = terrain.heightVox(qi, qj, memo);
+                            const int qy = topWith(qi, qj, qh);
+                            if (qy >= y) continue;
+                            // Dug, or merely lower ground? The generator answers
+                            // for nothing anybody has touched.
+                            if (qy >= qh) continue;
+                            y = qy;
+                        }
                 // Higher ground inside the cell is not what this is looking
                 // for: the minimum is the floor, and a rise within one cell is
                 // the patch's own coarseness and was always there.
-                (void)h;
+                //
+                // `h` used to be dead here -- computed, then `(void)h` -- while
+                // topAt evaluated the very same column again a line later. It
+                // is the sample's generated height and it now feeds both the
+                // column's own top and nothing else needs asking twice.
                 out[size_t(i) + size_t(j) * size_t(n)] = int16_t(y);
             }
 
@@ -6614,11 +7065,21 @@ class World {
         uint64_t opened = 0;   // the epoch it started, so age can close it
         bool sealed = false;
         bool inputsFreed = false;  // vertices, indices and scratch handed back
+        // HOW MANY OF ITS ITEMS ARE ALREADY COMPACTED. A generation is drained
+        // a few items at a time now rather than whole -- see the budget in
+        // drainCompactions -- so it has to remember where it got to.
+        size_t next = 0;
     };
 
     // How many builds share a pool, and how many epochs an unfilled one may
     // stay open before it is sealed and becomes eligible to be read.
     static constexpr size_t kGroupSize = 16;
+    // ...and how many of them one ordinary frame will compact. See
+    // drainCompactions for why this is counted in builds.
+    // TWO, not four: four still left 12 to 14 ms on a frame, because each
+    // build costs a blocking size readback. Two halves that again and still
+    // drains fifteen builds a second against a mesher that delivers two.
+    static constexpr int kDrainPerFrame = 2;
     static constexpr uint64_t kGroupAge = 6;
 
     // HOW MUCH UNCOMPACTED STRUCTURE IS WORTH HOLDING RATHER THAN STALLING FOR.
@@ -6775,8 +7236,15 @@ class World {
         // WHEN THIS PIECE WAS CUT OFF A LIVING THING, or the sentinel for
         // every ordinary chip of stone. See corpseFade.
         double hurtT0 = -1e9;
+        // ...and when it stopped moving, which is when its half second on the
+        // ground starts. Sentinel means "still going".
+        double restT0 = -1e9;
         bool live = false;
         bool absorbing = false;
+        // How near the player has to be before this one will come to them. See
+        // kArrowAbsorbM; kAbsorbAnywhere is the default and is what a tool's
+        // chip has always had.
+        float absorbR = kAbsorbAnywhere;
         double absorbT0 = 0.0;
         Vec3 from{0, 0, 0};
         // WHERE THE MESH SITS RELATIVE TO THE BODY. The body's position is
@@ -7035,7 +7503,19 @@ class World {
     Debris debris_[kDebrisInstances];
     int debrisBase_ = -1;        // first instance of the band, -1 while unbuilt
     bool debrisDirty_ = false;
-    std::map<long long, int> wanted_;
+    // -- A SET, AND A FLAT ONE (user 2026-09-15: "its hitching") ------------
+    //
+    // This was a std::map -- a red-black tree -- holding nothing but keys, and
+    // rering() CLEARS AND REFILLS IT on every chunk boundary the player crosses.
+    // At the default ring radius that is a disc of about 450 chunks, so every
+    // crossing paid 450 node allocations and 450 rebalances to rebuild a set
+    // that is only ever asked "is this key in you".
+    //
+    // Measured on a walk, rering ran 3 to 9.4 ms and it is one of the few costs
+    // here that lands EXACTLY when the player is moving -- crossing boundaries
+    // is what walking IS. Nothing needs the ordering: the three readers are two
+    // count() tests and one iteration that does not care what order it gets.
+    std::unordered_set<long long> wanted_;
     std::set<long long> requested_;
 
     ref<Buffer> materials_, instanceInfo_, instanceDescBuf_, tlasBuffer_, tlasScratch_;
@@ -7400,7 +7880,36 @@ class World {
         return n;
     }
 
-    bool drainCompactions(bool force) {
+    // -- HOW MANY GENERATIONS ONE CALL MAY COMPACT ---------------------------
+    //
+    // (user 2026-09-15: "just as im walking around the environment its
+    // hitching".)
+    //
+    // THE DRAIN WAS UNBOUNDED and that is the hitch. Compaction is
+    // opportunistic -- it runs when the streamer goes idle, on the reasoning
+    // that idle time is free -- but a group only becomes eligible once the
+    // DEVICE has finished it, so while you walk they pile up unread, and the
+    // moment the streamer draws breath every one of them lands on the same
+    // frame. Each carries up to kGroupSize builds, and each build costs a
+    // blocking size readback plus a buffer creation.
+    //
+    // MEASURED on a walk, on frames that adopted NO chunks at all:
+    //
+    //     61.5 ms      51.9 ms      43.1 ms      31.3 ms      29.5 ms
+    //
+    // A FEW BUILDS A FRAME is the whole fix. The work is identical and the
+    // total is identical; it is simply not allowed to arrive all at once.
+    //
+    // COUNTED IN BUILDS RATHER THAN GENERATIONS, because a generation is up to
+    // kGroupSize of them and each one costs a blocking size readback plus a
+    // buffer creation: capping at one generation still left 23 ms frames.
+    // Sixteen builds is what a group holds and four a frame drains one in four
+    // frames -- fifteen a second, against a mesher that delivers two.
+    //
+    // -1 IS UNLIMITED and is what every non-frame caller keeps: the prime and
+    // buildBlas both need the queue genuinely empty when they return, and both
+    // are already synchronous by design.
+    bool drainCompactions(bool force, int maxItems = -1) {
         if (groups_.empty()) return false;
         const auto td = std::chrono::steady_clock::now();
         struct Timer {
@@ -7426,16 +7935,25 @@ class World {
         if (force) syncPoint();  // every outstanding build has now certainly run
 
         bool any = false;
+        int done = 0;
         while (!groups_.empty()) {
             CompactGroup &grp = groups_.front();
             if (!grp.sealed || grp.epoch > deviceDone_) break;
-            for (PendingCompact &p : grp.items) {
+            // AS MANY AS THE BUDGET ALLOWS, FROM WHERE THIS GROUP GOT TO. The
+            // generation is only retired -- and its query pool only recycled --
+            // once every one of its builds has been compacted, so a half-drained
+            // group is left at the front for the next call.
+            while (grp.next < grp.items.size()) {
+                if (maxItems >= 0 && done >= maxItems) return any;
+                PendingCompact &p = grp.items[grp.next];
                 finishCompact(p, grp.pool.get());
                 recyclePending(p.staged);
+                ++grp.next;
+                ++done;
+                any = true;
             }
             freePools_.push_back(grp.pool);
             groups_.pop_front();
-            any = true;
         }
         return any;
     }
@@ -8221,10 +8739,13 @@ class World {
         const int R = maxi(1, viewChunks);
         const int R2 = R * R;
         wanted_.clear();
+        // The disc's size is known and does not change, so the table is sized
+        // once and never rehashes mid-fill.
+        wanted_.reserve(size_t(R * 2 + 1) * size_t(R * 2 + 1));
         for (int j = -R; j <= R; ++j)
             for (int i = -R; i <= R; ++i) {
                 if (i * i + j * j > R2) continue;
-                wanted_[chunkKey(cx + i, cz + j)] = 1;
+                wanted_.insert(chunkKey(cx + i, cz + j));
             }
 
         bool changed = false;
@@ -8361,7 +8882,35 @@ class World {
             // A MEMORY bound, not a scheduling one. It is reached by the
             // opening prime, where blocking is free, and by sustained flight in
             // one direction, where it is the price of not stalling sooner.
-            if (uncompactedBytes() >= kUncompactedBudget) drainCompactions(true);
+            // -- ...AND IT TRIES NOT TO STALL BEFORE IT STALLS --------------
+            //
+            // (user 2026-09-15: "just as im walking around the environment its
+            // hitching".)
+            //
+            // THIS WENT STRAIGHT TO THE BLOCKING FORM, and `force` means
+            // syncPoint, which means ctx_->submit(true) -- the main thread
+            // waiting for the GPU to finish everything it has been given.
+            // MEASURED on a walk: one frame at 75.6 ms, of which 70.3 was this.
+            //
+            // The note over kUncompactedBudget says the trade is meant to be
+            // paid "in memory instead of in frames", and the valve was paying
+            // in both: the budget is what bounds the memory, and then closing
+            // it bought a full pipeline stall as well.
+            //
+            // A PLAIN DRAIN NEEDS NO STALL AT ALL. It compacts every group the
+            // device has ALREADY finished -- the epoch test in the loop -- and
+            // by the time a group matters the device is normally a frame or two
+            // past it, so the memory comes back for nothing. Only if that frees
+            // so little that we are still over budget has the valve genuinely
+            // closed, and only then is a stall the honest answer.
+            //
+            // THE SECOND TEST IS NOT REDUNDANT. Without it this is the same
+            // stall one line later; with it, the stall becomes the rare case it
+            // was always described as.
+            if (uncompactedBytes() >= kUncompactedBudget) {
+                drainCompactions(false);
+                if (uncompactedBytes() >= kUncompactedBudget) drainCompactions(true);
+            }
         }
     }
 

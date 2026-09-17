@@ -285,7 +285,35 @@ inline constexpr float kLbugTrySec = 2.2f;    // "keeps flying and asks again in
 inline constexpr float kLbugFlySec = 11.0f;
 inline constexpr float kLbugCellM = 22.0f;
 inline constexpr uint32_t kLbugSalt = 0x2C8Bu;
-inline constexpr float kLbugFps = 18.0f;
+// 24, WHICH IS THE HOUSE RATE (user 2026-09-15: "make sure that the ladybug is
+// going through its frames at 24 fps"). It was 18 -- the odd one out among the
+// housefly's 24, the frog's 24 and every strip v1 steps at 24 -- and at six
+// frames a cycle that is a third of a second against a quarter, which reads as
+// a beetle labouring rather than one whirring.
+inline constexpr float kLbugFps = 24.0f;
+
+// -- ...AND IT RUNS AT DOUBLE RATE WHEN YOU ARE STANDING OVER IT ------------
+//
+// (user 2026-09-15: "if the player is near, the ladybug moves at twice the
+// rate, double in both fps but also movement speed".)
+//
+// BOTH HALVES COME FROM ONE NUMBER, because "twice the rate" is one idea:
+// stepBugs scales its own dt, so the flight speed, the descent and the
+// wingbeat all double together and cannot drift apart the way three separate
+// multipliers would. What is deliberately NOT scaled is the phase clock -- how
+// long it sits, and the flying time it owes before it may look for the next
+// landing. Those are decisions about what to do next, not rates of motion, and
+// halving them would have the insect landing and taking off twice as often
+// rather than moving twice as fast.
+//
+// A BAND, NOT A LINE. Switching at a radius puts a step in the speed of
+// something you are looking at from two metres away -- it would read as the
+// ladybug flinching. Full rate inside kLbugNearM, ordinary beyond
+// kLbugFarM, smoothstepped between, so walking up to one speeds it up
+// continuously and walking away slows it the same way.
+inline constexpr float kLbugRateMul = 2.0f;
+inline constexpr float kLbugNearM = 5.0f;   // inside this it is at full double rate
+inline constexpr float kLbugFarM = 10.0f;   // ...and beyond this it is its ordinary self
 
 // -- AND THEY ALL HAVE TO FIT IN THE BAND ---------------------------------
 //
@@ -506,6 +534,26 @@ class Critters {
     // number where the ground is dry -- not a bool like `wet`, because a flyer
     // has to hold a line above it and a bool cannot say where that is. Defaulted
     // to nothing, so the asset deck and the offline report tick as they did.
+    // -----------------------------------------------------------------------
+    // WHAT ONE LADYBUG IS DOING, FOR --lbug-test.
+    //
+    // A rate change cannot be seen in a picture and cannot be read off a
+    // position: it is a SPEED, and the only honest way to check it is to watch
+    // one insect over many frames and divide. `cruising` is what makes the
+    // sample valid -- a ladybug sitting on a stone has a speed of zero at every
+    // distance, and averaging those in would hide the whole effect.
+    // -----------------------------------------------------------------------
+    bool lbugProbe(int i, bool *live, bool *cruising, Vec3 *at, float *frame) const {
+        if (i < 0 || size_t(i) >= bugs_.size()) return false;
+        const Lbug &b = bugs_[size_t(i)];
+        *live = b.live;
+        *cruising = b.ph == kCruise;
+        *at = Vec3(b.x, b.y, b.z);
+        *frame = b.frame;
+        return true;
+    }
+    static int lbugCount() { return kLbugCount; }
+
     void update(float dt, const Vec3 &player, const GroundF &ground, const WetF &wet,
                 const BirchF &birch, const std::vector<Vec3> &banks,
                 const std::vector<Solid> &solids, bool night = false,
@@ -525,7 +573,7 @@ class Critters {
         if (!ffly_.empty()) { recycleFlies2(player, dt); if (night) fillFireflies(player); stepFireflies(dt); }
         if (!ant_.empty()) { recycleAnts(player, dt); fillAnts(player); stepAnts(dt); }
         if (!fly_.empty()) { recycleFlies(player, dt); fillFlies(player); stepFlies(dt); }
-        if (!lbug_.empty()) { recycleBugs(player, dt); fillBugs(player); stepBugs(dt); }
+        if (!lbug_.empty()) { recycleBugs(player, dt); fillBugs(player); stepBugs(dt, player); }
         if (!frogHop_.empty()) { recycleFrogs(player, dt); fillFrogs(player, banks); stepFrogs(dt); }
     }
 
@@ -1163,10 +1211,26 @@ class Critters {
         }
     }
 
-    void stepBugs(float dt) {
+    void stepBugs(float dt, const Vec3 &player) {
         for (size_t i = 0; i < bugs_.size(); ++i) {
             Lbug &b = bugs_[i];
             if (!b.live) continue;
+            // -- HOW FAST THIS ONE IS LIVING -- see kLbugRateMul ------------
+            //
+            // HORIZONTAL, because the player's eye is over a metre above the
+            // cruise lane and a 3D distance would hold a ladybug at your feet
+            // outside its own near band.
+            const float ldx = b.x - player.x, ldz = b.z - player.z;
+            const float ld = sqrtf(ldx * ldx + ldz * ldz);
+            const float u = (ld <= kLbugNearM)  ? 0.0f
+                            : (ld >= kLbugFarM) ? 1.0f
+                                                : (ld - kLbugNearM) / (kLbugFarM - kLbugNearM);
+            const float ease = u * u * (3.0f - 2.0f * u);   // smoothstep, no step in the speed
+            const float rate = kLbugRateMul + (1.0f - kLbugRateMul) * ease;
+            // THE MOTION'S OWN dt. Everything below that MOVES the insect --
+            // the flight, the drop, the wingbeat -- reads this one; the phase
+            // clock below keeps the real dt, for the reason in the note.
+            const float mdt = dt * rate;
             b.age += dt;
             b.t -= dt;
             ++lbugTicks_[b.ph];
@@ -1181,8 +1245,8 @@ class Critters {
                 b.vz += (hashUnit(0xC2u, uint32_t(b.age * 43.0f) + uint32_t(i)) - 0.5f) * dt * 2.0f;
                 const float n = sqrtf(b.vx * b.vx + b.vz * b.vz);
                 if (n > 1e-4f) { b.vx /= n; b.vz /= n; }
-                const float bnx = b.x + b.vx * kLbugSpeed * dt;
-                const float bnz = b.z + b.vz * kLbugSpeed * dt;
+                const float bnx = b.x + b.vx * kLbugSpeed * mdt;
+                const float bnz = b.z + b.vz * kLbugSpeed * mdt;
                 // The altitude servo: it flies the butterfly's lane.
                 const float bny = b.y + ((flyFloor(bnx, bnz) + kLbugCruiseM) - b.y) *
                                             mineF(1.0f, dt * 2.0f);
@@ -1203,7 +1267,7 @@ class Critters {
                     }
                 }
             } else if (b.ph == kDown) {
-                b.y -= kLbugSpeed * 0.7f * dt;
+                b.y -= kLbugSpeed * 0.7f * mdt;
                 if (b.y <= b.gy + 0.05f) {
                     b.y = b.gy + 0.05f;
                     b.ph = kSit;
@@ -1233,7 +1297,7 @@ class Critters {
             // it replaces: it flaps in the AIR. Everything else -- committing
             // to a column, falling down it, sitting on it -- is frame 0.
             b.frame = (b.ph == kCruise)
-                          ? fmodf(b.frame + kLbugFps * dt, float(maxi(1, int(lbug_.size()))))
+                          ? fmodf(b.frame + kLbugFps * mdt, float(maxi(1, int(lbug_.size()))))
                           : 0.0f;
         }
     }

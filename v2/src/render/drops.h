@@ -150,6 +150,22 @@ class Drops {
         bool flying = true;
         float rest = 0.0f;     // seconds since it landed
         float groundY = 0.0f;  // the terrain under where it landed
+        // -- ...OR THE SURFACE IT WAS TOLD TO LAND ON INSTEAD ---------------
+        //
+        // (user 2026-09-15: "when killing a fish have the raw steak float above
+        // the water", then again: "have the steak appear above the water
+        // floating, not in it".)
+        //
+        // THE FIRST FIX MOVED THE WRONG END OF THE FLIGHT. dropMeatAt lifted
+        // the START of the arc to the waterline, and the arc then flew on and
+        // terminated where it always had -- at `terrain->heightM`, which under
+        // a lake is the SEABED. So the steak was released at the surface and
+        // fell straight through it to the bottom, which is the same place it
+        // ended up before and for the same reason: the hover is measured from
+        // the ground, and nothing in this file had ever heard of water.
+        //
+        // -1e9 means "ask the terrain", which is every other drop in the game.
+        float floorY = -1e9f;
         // -- being absorbed --------------------------------------------------
         // `from` is captured ONCE, at the instant the flight is armed, and the
         // curve is evaluated against it rather than integrated. That is the
@@ -213,7 +229,12 @@ class Drops {
     // launch is toss()'s: the same arc, the same landing, the same hover, the
     // same walk-over pickup.
     // -----------------------------------------------------------------------
-    void spill(int tool, int model, int sx, int sy, int sz, const Vec3 &at, float bearing) {
+    // `floorY` is what the item comes to rest ON, for the one caller that knows
+    // better than the terrain does -- a steak dropped over a lake. Left alone
+    // it is the ground, which is every other spill in the game. See
+    // Item::floorY for what went wrong when only the launch height was moved.
+    void spill(int tool, int model, int sx, int sy, int sz, const Vec3 &at, float bearing,
+               float floorY = -1e9f) {
         const Vec3 out(sinf(bearing), 0.0f, cosf(bearing));
         const int slot = toss(tool, model, sx, sy, sz, at, out);
         if (slot < 0) return;
@@ -224,6 +245,25 @@ class Drops {
         Item &d = items_[size_t(slot)];
         d.vel = out * kSpillSpeed;
         d.vel.y = kSpillUp;
+        d.floorY = floorY;   // toss() reset it; set it after, not before
+    }
+
+    // ...and where the newest live drop is, for --kill-test. The one thing a
+    // test cannot see from outside: whether the steak came to rest ON the lake
+    // or at the bottom of it. See Item::floorY.
+    bool newestDrop(Vec3 *at, bool *flying) const {
+        int best = -1;
+        float young = 1e9f;
+        for (int i = 0; i < kDropSlots; ++i) {
+            const Item &d = items_[size_t(i)];
+            if (!d.live || d.age > young) continue;
+            young = d.age;
+            best = i;
+        }
+        if (best < 0) return false;
+        *at = items_[size_t(best)].pos;
+        *flying = items_[size_t(best)].flying;
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -318,8 +358,15 @@ class Drops {
                     // that rises in front of you that is already below the
                     // hover line -- so without it a throw uphill lands on the
                     // frame it was thrown.
-                    const float g =
+                    // THE FLOOR THIS ITEM WAS GIVEN, if it was given one --
+                    // see Item::floorY. A steak dropped over a lake lands on
+                    // the LAKE; everything else asks the terrain, as it always
+                    // has. MAX of the two rather than a replacement, so a floor
+                    // handed to a drop that then drifts over the bank still
+                    // comes to rest on the bank rather than inside it.
+                    const float gt =
                         w.terrain ? w.terrain->heightM(next.x, next.z, tm) : next.y;
+                    const float g = d.floorY > -1e8f ? maxf(gt, d.floorY) : gt;
                     // The hover LINE is still what stops the arc -- see the
                     // note above -- but where it comes to rest is subject to
                     // the same floor as everything below, so a big item does

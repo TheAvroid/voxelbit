@@ -90,6 +90,11 @@ void usage() {
         "  --wheat-test              with no window: find a stand of wheat, swing at it,\n"
         "                            and check it breaks, pays one wheat and one seed, and\n"
         "                            that both can be walked over and absorbed\n"
+        "  --palette-vox [FILE]      with no window: write the LIVE material table out as a\n"
+        "                            MagicaVoxel plate and exit, so new art can be authored\n"
+        "                            against the colours the table already holds. Defaults\n"
+        "                            to game/assets/palette_v2.vox; add --stage or --level\n"
+        "                            to include what those places register\n"
         "                            and report any creature that is inside a tree or a\n"
         "                            rock. Run it in BOTH woods -- see --pine\n"
         "  --tool N                  which tool the hand opens with (0 axe, 1 pick,\n"
@@ -281,6 +286,15 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     if (a == "--spark-frame") { argInt(argc, argv, i, &o->sparkFrame); return true; }
     if (a == "--hurt-frame") { argInt(argc, argv, i, &o->hurtFrame); return true; }
     if (a == "--hurt-dim") { o->hurtDim = true; return true; }
+    if (a == "--spark-only") { o->sparkOnly = true; return true; }
+    if (a == "--tear-only") { o->tearOnly = true; return true; }
+    if (a == "--smoke-ior") { argFloat(argc, argv, i, &o->smokeIor); return true; }
+    if (a == "--spark-emit") {
+        argFloat(argc, argv, i, &o->sparkR);
+        argFloat(argc, argv, i, &o->sparkG);
+        argFloat(argc, argv, i, &o->sparkB);
+        return true;
+    }
     if (a == "--stage") { o->stageAtStart = true; return true; }
     // --level: arrive in the building rather than the wood. See --stage, and
     // Options::levelAtStart for why a key alone is not enough.
@@ -350,10 +364,23 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         if (a == "--locate-test") { o->locateTest = true; continue; }
         // ...AND THE SAME, for the check that no animal is inside anything.
         if (a == "--clip-test") { o->clipTest = true; continue; }
+        // BEFORE THE CHAIN, like every flag added since the C1061 -- see the
+        // note above. Writes the live material table out as a MagicaVoxel
+        // plate and exits; the optional path overrides where it goes.
+        if (a == "--palette-vox") {
+            o->paletteVox = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o->paletteVoxOut = argv[++i];
+            continue;
+        }
         if (a == "--wheat-test") { o->wheatTest = true; continue; }
         if (a == "--hoe-test") { o->hoeTest = true; continue; }
         if (a == "--shaft-test") { o->shaftTest = true; continue; }
         if (a == "--kill-test") { o->killTest = true; continue; }
+        if (a == "--duck-test") { o->duckTest = true; continue; }
+        // HERE, NOT IN THE else-if CHAIN BELOW -- that chain is at MSVC's
+        // block nesting limit and one more arm is a C1061, not a warning.
+        if (a == "--hitch") { o->hitch = true; continue; }
+        if (a == "--lbug-test") { o->lbugTest = true; continue; }
         if (a == "--soil-test") { o->soilTest = true; continue; }
         // The same NINE bits the panel sets, for a scripted A/B: 511 is all on,
         // and clearing one proves that term and only that term moved. 507 is
@@ -634,7 +661,7 @@ int main(int argc, char **argv) {
     // -----------------------------------------------------------------------
     c.headless = o.outGiven || o.fellTest || o.floatTest || o.digTest || o.locateTest ||
                  o.clipTest || o.wheatTest || o.hoeTest ||
-                 o.shaftTest || o.killTest || o.soilTest;
+                 o.shaftTest || o.killTest || o.soilTest || o.duckTest || o.lbugTest;
 
     // Every device failure in this engine arrives as an exception carrying the
     // call that failed and the driver's own description of why. Catching it

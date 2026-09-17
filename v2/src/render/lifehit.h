@@ -244,6 +244,31 @@ class LifeHits {
     }
 
     // -----------------------------------------------------------------------
+    // ...AND WHAT IS AT A POINT, which is the question an ARROW asks.
+    //
+    // aim() above is a ray from an eye; a shaft is already where it is. Same
+    // band, same radius, no reach -- a bow's range is however far the arrow
+    // flies, which is the arrow's business and not this file's.
+    // -----------------------------------------------------------------------
+    int at(const World &w, const Vec3 &p) const {
+        int best = -1;
+        float bestD = 1e30f;
+        for (int i = 0; i < kFlyerInstances; ++i) {
+            if (!lifeAtSlot(i).alive()) continue;
+            Vec3 a{0.0f, 0.0f, 0.0f};
+            float r = 0.0f;
+            if (!w.flyerAt(i, &a, &r)) continue;
+            const float dx = a.x - p.x, dy = a.y - p.y, dz = a.z - p.z;
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            const float rr = r + kAimForgiveM;
+            if (d2 > rr * rr || d2 >= bestD) continue;
+            bestD = d2;
+            best = i;
+        }
+        return best;
+    }
+
+    // -----------------------------------------------------------------------
     // A BLOW LANDS.
     //
     // Returns what happened, so the caller can throw the sparks, the smoke and
