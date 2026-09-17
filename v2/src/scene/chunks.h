@@ -218,6 +218,16 @@ class ChunkMesher {
     // birch, size means every one is a pine, and both are what --birch / --pine
     // produce.
     int birchBase = 0;
+    // ...and where the OAKS begin. Birches are [birchBase, oakBase) and oaks
+    // [oakBase, size) -- see loadPines. Equal to the array size means no oak
+    // models were loaded, which is what --pine and --birch produce.
+    int oakBase = 0;
+    // How much of the lattice the oak fills. Well under the birch's 0.84: an
+    // oak_7 is seventeen metres across and the spacing rejection below keeps
+    // 0.30 of a footprint clear, so a high roll here would be spent almost
+    // entirely on candidates that are then thrown away for standing in each
+    // other. Sparse and large is what an oak wood is.
+    float oakDensity = 0.42f;
     // The subset of those wide enough to hang a beehive from -- empty in the
     // pine wood, which is one of the two things that turns the hive pass off.
     std::vector<std::vector<Perch>> pineHivePerch;
@@ -977,24 +987,71 @@ class ChunkMesher {
                         // jittered position rather than at the cell base, so a tree
                         // that jitters across the seam is the species of where it
                         // actually stands.
-                        const float bmix = terrain_.birchMix(x);
-                        const bool isBirch =
-                            birchBase < int(pineFoot.size()) &&
-                            (birchBase == 0 || bmix > hashUnit(seed + 0x2C1Du, cell));
+                        // -- ONE ROLL, THREE OUTCOMES --------------------
+                        //
+                        // A CATEGORICAL DRAW off the band weights, which is what
+                        // the two-wood test already was: `bmix > r` reads as
+                        // "birch if r falls in the birch's share of [0,1)". Three
+                        // shares generalise that by laying them end to end.
+                        //
+                        // THE BIRCH KEEPS THE BOTTOM OF THE RANGE, and that is
+                        // not arbitrary -- it is what makes this change invisible
+                        // to every world that already existed. Order the
+                        // cumulative pine-first and each cell draws a DIFFERENT
+                        // species than it used to for the same seed, which would
+                        // silently re-roll every tree in both existing woods and
+                        // move every reference render in the repository. With
+                        // the oak weighing nothing this is the old line, value
+                        // for value.
+                        //
+                        // ONE hash, not three: three independent rolls would not
+                        // be a partition and the species would stop matching the
+                        // band's own proportions.
+                        //
+                        // RENORMALISED OVER WHAT IS LOADED, because --pine and
+                        // --birch and --oak each load one set and the other two
+                        // weights then have nowhere to go. Without this a forced
+                        // run plants nothing through most of the world.
+                        float wPine = 0.0f, wBirch = 0.0f, wOak = 0.0f;
+                        terrain_.woodMix(x, &wPine, &wBirch, &wOak);
+                        const bool haveP = birchBase > 0;
+                        const bool haveB = oakBase > birchBase;
+                        const bool haveO = int(pineFoot.size()) > oakBase;
+                        if (!haveP) wPine = 0.0f;
+                        if (!haveB) wBirch = 0.0f;
+                        if (!haveO) wOak = 0.0f;
+                        const float wSum = wPine + wBirch + wOak;
+                        int species;   // 0 pine, 1 birch, 2 oak
+                        if (wSum <= 1e-6f) {
+                            // This band wants a wood nothing loaded. Plant
+                            // whatever there IS rather than leaving a bald strip.
+                            species = haveP ? 0 : haveB ? 1 : 2;
+                        } else {
+                            const float roll = hashUnit(seed + 0x2C1Du, cell) * wSum;
+                            species = (roll < wBirch)          ? 1
+                                      : (roll < wBirch + wOak) ? 2
+                                                               : 0;
+                        }
+                        const bool isBirch = species == 1;
+                        const bool isOak = species == 2;
                         // And the exact half. Inside the ninety-metre seam
                         // the species roll can still come up pine, and a pine
                         // planted by the birch's own sweep is a pine the wood
                         // did not ask for.
                         if (pass != 0 && !isBirch) continue;
-                        const float tDensity = isBirch ? birchDensity : treeDensity;
+                        const float tDensity = isBirch  ? birchDensity
+                                               : isOak  ? oakDensity
+                                                        : treeDensity;
 
                         const float dens = terrain_.standDensity(x, z, memo.stand);
                         if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity)
                             continue;
 
                         // The model comes from that species' own range.
-                        const int lo = isBirch ? birchBase : 0;
-                        const int hi = isBirch ? int(pineFoot.size()) : birchBase;
+                        const int lo = isBirch ? birchBase : isOak ? oakBase : 0;
+                        const int hi = isBirch  ? oakBase
+                                       : isOak  ? int(pineFoot.size())
+                                                : birchBase;
                         const int span = maxi(1, hi - lo);
                         const int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
                         const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
@@ -1399,17 +1456,44 @@ class ChunkMesher {
                                                    absi(terrain_.heightVox(ci, cj + 1, memo) -
                                                         terrain_.heightVox(ci, cj - 1, memo)));
                             if (slope >= VoxelTerrain::kTreeSlope) continue;
-                            const float bmix = terrain_.birchMix(x);
-                            const bool isBirch =
-                                anyBirch && (birchBase == 0 ||
-                                             bmix > hashUnit(seed + 0x2C1Du, cell));
+                            // THE SAME CATEGORICAL DRAW scatter() MAKES, line
+                            // for line. The note at the top of this function is
+                            // the reason it is copied rather than approximated:
+                            // if these two disagree the rocks avoid trees that
+                            // are not there and stand in ones that are, and the
+                            // oak is the widest thing in the world to stand a
+                            // boulder inside of.
+                            float wPine = 0.0f, wBirch = 0.0f, wOak = 0.0f;
+                            terrain_.woodMix(x, &wPine, &wBirch, &wOak);
+                            const bool haveP = birchBase > 0;
+                            const bool haveB = oakBase > birchBase;
+                            const bool haveO = int(pineFoot.size()) > oakBase;
+                            if (!haveP) wPine = 0.0f;
+                            if (!haveB) wBirch = 0.0f;
+                            if (!haveO) wOak = 0.0f;
+                            const float wSum = wPine + wBirch + wOak;
+                            int species;   // 0 pine, 1 birch, 2 oak
+                            if (wSum <= 1e-6f) {
+                                species = haveP ? 0 : haveB ? 1 : 2;
+                            } else {
+                                const float roll = hashUnit(seed + 0x2C1Du, cell) * wSum;
+                                species = (roll < wBirch)          ? 1
+                                          : (roll < wBirch + wOak) ? 2
+                                                                   : 0;
+                            }
+                            const bool isBirch = species == 1;
+                            const bool isOak = species == 2;
                             if (pass != 0 && !isBirch) continue;
-                            const float tDensity = isBirch ? birchDensity : treeDensity;
+                            const float tDensity = isBirch  ? birchDensity
+                                                   : isOak  ? oakDensity
+                                                            : treeDensity;
                             const float dens = terrain_.standDensity(x, z, memo.stand);
                             if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity)
                                 continue;
-                            const int lo = isBirch ? birchBase : 0;
-                            const int hi = isBirch ? int(pineFoot.size()) : birchBase;
+                            const int lo = isBirch ? birchBase : isOak ? oakBase : 0;
+                            const int hi = isBirch  ? oakBase
+                                           : isOak  ? int(pineFoot.size())
+                                                    : birchBase;
                             const int span = maxi(1, hi - lo);
                             const int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
                             const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
@@ -2003,6 +2087,44 @@ class ChunkMesher {
                         for (const Disc &d : *avoid)
                             if (d.reaches(px, pz, br)) { refuse = true; break; }
                     }
+
+                    // -- AND NO BOULDERS UNDER THE OAKS ---------------------
+                    //
+                    // (user 2026-09-16: "remove the huge rocks in the oak
+                    // forest".)
+                    //
+                    // BIG AND MID BOTH, and the measurements are why. The
+                    // first cut took only the big five on the reasoning that
+                    // "huge" meant the twenty-metre stones -- and left a mossy
+                    // eight-metre boulder standing over the grass in the middle
+                    // of the very first render. Measured across the set:
+                    //
+                    //     big    0..4    12.4 .. 22.2 m across
+                    //     mid    5..10    6.7 ..  8.4 m across
+                    //     runic 11..17    0.8 m
+                    //     small 18..25    1.7 m
+                    //
+                    // There is no ambiguity about where "huge" stops: the step
+                    // from mid to runic is a factor of EIGHT. Anything the
+                    // re-roll below can reach is under two metres, so the oak
+                    // keeps stones you walk around and loses the ones you walk
+                    // under.
+                    //
+                    // REFUSED RATHER THAN SKIPPED, which is why this sits here
+                    // and not at the top of the loop. Refusing re-rolls the
+                    // model into the small range a few lines down -- the same
+                    // path a spot too steep for a boulder already takes -- so
+                    // the oak keeps its rock COUNT and loses only the size. A
+                    // `continue` would have taken a stone off the ground every
+                    // time, and thinned the wood instead of changing it.
+                    //
+                    // DITHERED ON THE COLUMN, not switched at oakMix = 0.5.
+                    // Boulders thin out across the seam rather than stopping on
+                    // a line of constant x, which is the same trick the floor
+                    // and the blades use a few hundred lines away.
+                    if (!refuse && k < kRockBigMidEnd &&
+                        terrain_.oakMix(px) > hashUnit(seed + 0x0A4Bu, cell))
+                        refuse = true;
 
                     if (refuse) {
                         const int nSmall = int(foot.size()) - kRockBigMidEnd;

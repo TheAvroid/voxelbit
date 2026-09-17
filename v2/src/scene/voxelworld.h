@@ -1772,6 +1772,9 @@ struct TerrainMemo {
     // replace the ridge memo rather than adding to the struct, the ridged
     // octave having gone with it.
     FbmMemo birchRoll, birchSwell;
+    // ...and the oak's, on the same terms: only a column inside a seam ever
+    // asks for a second wood's field alongside its own.
+    FbmMemo oakA, oakB;
     FbmMemo stand, litter, grassMask;                       // topMaterial
     // The tall-grass field had an FbmMemo here. It is a jittered site lattice
     // now (see tuftAt), which is hashes alone -- no noise, nothing to cache.
@@ -1833,6 +1836,21 @@ struct ChunkScratch {
 enum class Biome : uint8_t {
     Pine,   // the original: high relief, ridges, basins, a needle floor
     Birch,  // low rounded hills, one light green everywhere, beehives
+    // -- ...AND THE OAK, IMPORTED FROM v1 (user 2026-09-16) -----------------
+    //
+    // A THIRD KIND OF PLACE, not a third set of trees in one of the first two.
+    // v1 gives its oak forest its own mask (oakM), its own height field (oakH)
+    // and its own floor, and the shape of the wood is what makes it read as
+    // somewhere else: a pine is a spire and a birch is a column, and an oak is
+    // WIDER THAN IT IS TALL. Measured off the seven models --
+    //
+    //     oak_1   2.1 m tall,  3.4 m across   (a bush)
+    //     oak_4  10.7 m tall,  8.9 m across
+    //     oak_7  17.1 m tall, 17.0 m across
+    //
+    // -- against birches that are 18 to 30 m of near-vertical trunk. A stand of
+    // oaks closes overhead rather than striping the view.
+    Oak,
 };
 
 // ---------------------------------------------------------------------------
@@ -2135,12 +2153,28 @@ class VoxelTerrain {
     // (see BIOP and BIRCHC in src/world/window.js), with two bands instead of
     // seven.
     //
-    //     ... | pine | birch | pine | birch | ...
-    //          -400   +400    +1200  +2000        metres, band centres
+    //     ... | pine | birch | oak | pine | birch | oak | ...
+    //          -400   +400  +1200  +2000  +2800  +3600     metres, band centres
     //
     // 800 m a band, which is a real walk -- a minute and a half at the new run
     // speed -- and wider than the 307 m view radius, so a band fills the view
     // rather than being a stripe you see both edges of.
+    //
+    // THE OAK TOOK A NEW SLOT RATHER THAN MOVING THE OTHER TWO. The period went
+    // from 2W to 3W and the oak was put at [W, 2W), which leaves the birch band
+    // exactly where it was at [0, W) and puts pine at [2W, 3W) -- whose centre
+    // 2.5W is the same -W/2 it always was once the period wraps. bandCentre
+    // therefore answers identically for both existing woods, so /locate, the
+    // default spawn and every --birch / --pine render still land where they did.
+    //
+    // WHAT IT DOES NOT PRESERVE, AND CANNOT: the wood at an ARBITRARY x beyond
+    // the first period. Inserting a band changes the tiling, so x = 1200 was
+    // pine and is oak, x = 2000 was birch and is pine, and so on outward. There
+    // is no way to add a third wood to a repeating tiling without that being
+    // true -- a saved coordinate far from the origin may now name a different
+    // forest, and a screenshot taken at one is not reproducible from the
+    // coordinate alone. Pinning the wood with --pine / --birch / --oak is, and
+    // that is what those flags are for.
     //
     // `biome` survives as the FORCED override for --birch and --pine: set it
     // and the bands are ignored. That is what makes a screenshot or a profile
@@ -2151,24 +2185,79 @@ class VoxelTerrain {
 
     // Where the centre of each band sits, so /locate has somewhere to send you.
     static float bandCentre(Biome b) {
-        return (b == Biome::Birch) ? kBandW * 0.5f : -kBandW * 0.5f;
+        return (b == Biome::Birch)  ? kBandW * 0.5f
+               : (b == Biome::Oak)  ? kBandW * 1.5f
+                                    : -kBandW * 0.5f;
     }
 
-    // 0 in the pine band, 1 in the birch band, eased across the seam. A pure
-    // function of x -- no noise, no memo -- so anything may ask it at any time.
-    static float birchWeight(float x) {
-        const float period = 2.0f * kBandW;
+    // HOW MANY BANDS THE WORLD REPEATS OVER. One number, so nothing downstream
+    // can hold a stale copy of the period: App::nearestBandX had `2.0f * kBandW`
+    // written out and became silently wrong the moment the oak was inserted --
+    // /locate would have walked you to a multiple of the OLD period, which lands
+    // in whichever wood happens to be there.
+    static constexpr float bandCount() { return 3.0f; }
+
+    // Which band index a biome occupies in [0, 3W). See the note above for why
+    // these three numbers and not some other three.
+    static int bandIndex(Biome b) {
+        return (b == Biome::Birch) ? 0 : (b == Biome::Oak) ? 1 : 2;
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW MUCH OF EACH WOOD THIS COLUMN IS, AND IT IS ONE FUNCTION.
+    //
+    // The two-wood version returned a single scalar and every caller read it as
+    // "1 means birch, 0 means pine" -- which stops being true the moment there
+    // is a third wood, because 0 now means "pine OR oak". So the primitive is
+    // the three weights, and birchMix/oakMix are views onto it.
+    //
+    // THEY SUM TO EXACTLY 1 AT EVERY x, which is what lets a caller lerp with
+    // them without normalising. Only ADJACENT bands ever mix: a seam is 90 m
+    // and a band is 800, so no column is ever within reach of two seams, and
+    // the blend is always between the band you are in and one neighbour.
+    //
+    // A PURE FUNCTION OF x -- no noise, no memo -- so anything may ask it at
+    // any time, which several callers rely on.
+    // -----------------------------------------------------------------------
+    static void woodWeights(float x, float *pine, float *birch, float *oak) {
+        const float period = bandCount() * kBandW;
         float u = fmodf(x, period);
         if (u < 0.0f) u += period;
-        // Boundaries at u = 0 and u = W. [0, W) is birch -- so the birch centre
-        // is +W/2 -- and [W, 2W) is pine, whose centre 3W/2 is -W/2 wrapped.
-        //
-        // t is the SIGNED distance to the nearest boundary: positive inside the
-        // birch, negative inside the pine, and its magnitude is how far in.
-        // Writing it that way is what makes the blend one expression instead of
-        // two mirrored ones that have to be kept in step.
-        const float t = (u < kBandW) ? minf(u, kBandW - u) : -minf(u - kBandW, period - u);
-        return sstep(saturate(t / kBandBlend * 0.5f + 0.5f));
+        const int band = mini(2, int(u / kBandW));   // 0 birch, 1 oak, 2 pine
+        const float within = u - float(band) * kBandW;
+        float w[3] = {0.0f, 0.0f, 0.0f};
+        const float half = kBandBlend * 0.5f;
+        if (within < half) {
+            // Near the LOW edge: mixing with the band before this one.
+            const float t = sstep(saturate(within / kBandBlend + 0.5f));
+            w[band] = t;
+            w[(band + 2) % 3] = 1.0f - t;
+        } else if (within > kBandW - half) {
+            // ...and near the HIGH edge, with the band after it.
+            const float t = sstep(saturate((kBandW - within) / kBandBlend + 0.5f));
+            w[band] = t;
+            w[(band + 1) % 3] = 1.0f - t;
+        } else {
+            w[band] = 1.0f;
+        }
+        *birch = w[0];
+        *oak = w[1];
+        *pine = w[2];
+    }
+
+    // 0 in the pine band, 1 in the birch band, eased across the seam -- and 0
+    // through the whole oak band, which is what every existing caller wants
+    // until it is taught about the oak: "not birch" falls back to the pine
+    // answer, and the pine answer is the one this engine shipped with.
+    static float birchWeight(float x) {
+        float p = 0.0f, b = 0.0f, o = 0.0f;
+        woodWeights(x, &p, &b, &o);
+        return b;
+    }
+    static float oakWeight(float x) {
+        float p = 0.0f, b = 0.0f, o = 0.0f;
+        woodWeights(x, &p, &b, &o);
+        return o;
     }
 
     // THE SAME SIGNED DISTANCE, IN METRES, because the waterline needs it and
@@ -2177,11 +2266,16 @@ class VoxelTerrain {
     // the waterline's old cutoff sat at mix <= 0.001, and sstep is quadratic
     // near zero, so the whole useful range of mix there spans about two metres
     // of world -- nothing to fade over. Distance has 800 m of band to use.
+    // STILL SIGNED TOWARD THE BIRCH, and the oak counts as "not birch" here
+    // for the same reason birchWeight does -- its one caller, waterSeamFade,
+    // exists only for the dry-birch case and early-returns before reaching this
+    // whenever birchWater is set, which it now always is.
     static float bandDist(float x) {
-        const float period = 2.0f * kBandW;
+        const float period = bandCount() * kBandW;
         float u = fmodf(x, period);
         if (u < 0.0f) u += period;
-        return (u < kBandW) ? minf(u, kBandW - u) : -minf(u - kBandW, period - u);
+        if (u < kBandW) return minf(u, kBandW - u);           // inside the birch
+        return -minf(u - kBandW, period - u);                 // oak or pine
     }
 
     // Forced, when --birch or --pine pinned it; otherwise whatever the bands
@@ -2192,10 +2286,33 @@ class VoxelTerrain {
     float birchMix(float x) const {
         return forced ? (biome == Biome::Birch ? 1.0f : 0.0f) : birchWeight(x);
     }
+    bool oakAt(float x) const { return forced ? (biome == Biome::Oak) : oakWeight(x) >= 0.5f; }
+    // WHICH WOOD THIS IS, BY NAME. Five call sites asked `birchAt ? "birch" :
+    // "pine"` and every one of them called the oak band a pine wood -- /locate
+    // sent you to "the pine wood at 1200", which is the oak's own centre. One
+    // function so a fourth wood cannot reintroduce that five times over.
+    const char *woodName(float x) const {
+        return oakAt(x) ? "oak" : birchAt(x) ? "birch" : "pine";
+    }
+    float oakMix(float x) const {
+        return forced ? (biome == Biome::Oak ? 1.0f : 0.0f) : oakWeight(x);
+    }
+    // ...and all three at once, for the callers that genuinely need to weigh
+    // them against each other rather than ask twice.
+    void woodMix(float x, float *pine, float *birch, float *oak) const {
+        if (forced) {
+            *pine = biome == Biome::Pine ? 1.0f : 0.0f;
+            *birch = biome == Biome::Birch ? 1.0f : 0.0f;
+            *oak = biome == Biome::Oak ? 1.0f : 0.0f;
+            return;
+        }
+        woodWeights(x, pine, birch, oak);
+    }
     // The old whole-world question, kept for the things that genuinely are
     // global: which model sets to LOAD, and whether the hive pass can run at
     // all. Both woods' trees are loaded whenever the bands are live.
     bool birch() const { return !forced || biome == Biome::Birch; }
+    bool oak() const { return !forced || biome == Biome::Oak; }
 
     // -----------------------------------------------------------------------
     // THE WATERLINE, AND IT IS PER BAND. This is the single number that killed
@@ -2298,6 +2415,44 @@ class VoxelTerrain {
     // gap is a shorter sand band for this wood -- 0.7 m puts it at 0.46 --
     // and that is a separate constant, not this one.
     float birchWater = 7.5f;   // +1 m again -- see the sweep above
+    // -- AND THE OAK'S, WHICH IS NOT OPTIONAL ---------------------------------
+    //
+    // (user 2026-09-16: "import the oak forest from v1 into v2".)
+    //
+    // THE OAK BAND WOULD HAVE DROWNED WITHOUT THIS. waterAt blended pine to
+    // birch on birchMix, and birchMix is 0 through the whole oak band -- so the
+    // oak would have been handed the PINE line at 34.0 m over a floor that runs
+    // 9.4 to 16.2. Every column of it, twenty metres down. Nothing about that
+    // would have looked like a waterline; it would have looked like the oak
+    // forest failing to generate.
+    //
+    // 8.2 m, AND IT WAS MEASURED RATHER THAN REASONED. The first value here was
+    // 11.1, put a quarter of the way up the oak's 9.4..16.2 formula range on
+    // the argument that the birch's 7.5 sits a quarter of the way up ITS field.
+    // That flooded 27.3% of the oak band.
+    //
+    // THE DOUBLE SMOOTHSTEP IS WHY. It pushes the distribution into the middle
+    // of the range, so the band's real spread is far tighter than the formula's
+    // endpoints suggest -- swept over a 900 m square, the oak runs
+    //
+    //     min 6.2   p5 7.8   med 12.5   p95 15.3   max 16.5
+    //
+    // -- and 11.1 is not a quarter of the way up that, it is essentially the
+    // median. A quarter of a RANGE and a quarter of a DISTRIBUTION are not the
+    // same number and this field is the worst case for assuming they are.
+    //
+    // 5.0 puts 7.7% of the band under water, against the birch's 7.6%: a wood
+    // with lakes in it rather than a marsh. tests/oak_survey.cpp prints the
+    // sweep that chose it, and re-running it is how to move this number.
+    //
+    // IT MOVED WITH THE HILLS AND THAT IS THE POINT OF KEEPING THE SWEEP. When
+    // the oak was given real relief -- 6.8 m of v1's literal port became 26 --
+    // the floor dropped out from under this line and the same 8.2 that had been
+    // right went to 17.2% wet. A waterline is not a property of the wood, it is
+    // a property of the wood's height DISTRIBUTION, so it has to be re-measured
+    // every time the field moves. Nothing warns you: a drowned band still
+    // renders.
+    float oakWater = 5.0f;
 
     // THE BASIN THRESHOLD. It decides where heightM CARVES A HOLLOW, and that
     // is now the only thing it decides -- it used to gate the wet test too,
@@ -2433,7 +2588,18 @@ class VoxelTerrain {
     // contour and the next, so each terrace gets WIDER -- the beach reads as
     // fewer, larger steps rather than as a smooth ramp. bankGrainM is what
     // keeps their edges from running as clean contour lines; see it below.
-    float bankFlat = 0.125f;
+    // 0.125 -> 0.070 (user 2026-09-16: "make the sandy banks flatter"). The
+    // shore now falls at a fourteenth of the rate the ground around it does,
+    // where it fell at an eighth.
+    //
+    // AND THE GRAIN GOES UP WITH IT, which is not optional -- see the note
+    // below, which is about exactly this knob. A gentler slope crossed by a
+    // 10 cm quantisation gives WIDER treads, so flattening the bank and
+    // terracing it are the same action: at 0.070 each contour stretches almost
+    // twice as far in plan as it did at 0.125. bankGrainM is the only thing
+    // stopping that reading as a flight of boards, so it is raised in the same
+    // breath rather than left to be discovered later.
+    float bankFlat = 0.070f;
 
     // -----------------------------------------------------------------------
     // THE GRAIN THAT KEEPS THE FLAT BEACH FROM BEING A STAIRCASE.
@@ -2466,7 +2632,7 @@ class VoxelTerrain {
     // the wavelength much below this and it starts failing the survey's
     // "nothing steps 4 voxels or more".
     // -----------------------------------------------------------------------
-    float bankGrainM = 0.06f;  // metres, plus and minus
+    float bankGrainM = 0.09f;  // metres, plus and minus -- see bankFlat
     float bankGrainF = 1.10f;  // ~0.9 m wavelength
 
     // -----------------------------------------------------------------------
@@ -2840,7 +3006,20 @@ class VoxelTerrain {
     // sinking only replaces the kNoWater case, which is the one that cut.
     // -----------------------------------------------------------------------
     float waterAt(float x) const {
-        if (forced) return (biome == Biome::Birch) ? birchWater : pineWater;
+        if (forced)
+            return (biome == Biome::Birch) ? birchWater
+                   : (biome == Biome::Oak) ? oakWater
+                                           : pineWater;
+        // ALL THREE WET: the line is the same weighted sum the terrain is, on
+        // the same weights, so it cannot part company with the ground it has to
+        // sit in. The two-wood version lerped on birchMix alone, which is 0
+        // through the oak band -- see the note over oakWater for what that
+        // would have done.
+        if (birchWater != kNoWater) {
+            float wp = 0.0f, wb = 0.0f, wo = 0.0f;
+            woodMix(x, &wp, &wb, &wo);
+            return wp * pineWater + wb * birchWater + wo * oakWater;
+        }
         // BOTH WOODS WET: the line simply BLENDS between their two values on
         // the same weight the terrain blends on. No sink is needed and none
         // must be used -- there is no band where water stops existing, so
@@ -2868,7 +3047,9 @@ class VoxelTerrain {
         const float w = waterAt(x);
         return (w == kNoWater) ? kNoWaterVox : int(w / VOXEL_M);
     }
-    bool anyWater() const { return pineWater != kNoWater || birchWater != kNoWater; }
+    bool anyWater() const {
+        return pineWater != kNoWater || birchWater != kNoWater || oakWater != kNoWater;
+    }
 
     // WORLD COLUMN INDICES, not patch-relative ones.
     //
@@ -2879,6 +3060,80 @@ class VoxelTerrain {
     // the height field chunkable at all -- it was already a pure function of
     // position, it just had a patch bolted around it.
     float wx(int i) const { return float(i) * VOXEL_M; }
+
+    // -----------------------------------------------------------------------
+    // THE OAK FOREST'S OWN GROUND -- v1's oakH, converted.
+    //
+    // (user 2026-09-16: "import the oak forest from v1 into v2".)
+    //
+    // v1's own words for it: "long wavelength, double-smoothstepped,
+    // positive-only like duneH". The double smoothstep is the whole character
+    // and it is why this is not just the birch field at another amplitude: one
+    // sstep rounds the crests, and the second flattens the VALLEYS as well, so
+    // what comes out is broad level floors separated by rounded rises rather
+    // than continuous undulation. That is what an oak wood stands in.
+    //
+    // CONVERTED FROM VOXELS, which is the only real work in the port. v1 works
+    // in 10 cm units throughout, so its constants are ten times these:
+    //
+    //     OAKF1 0.0018*0.85 /vox  ->  0.01530 /m       the two octaves
+    //     OAKF2 0.0037*0.85 /vox  ->  0.03145 /m
+    //     OAKY  20 + LIFT = 104 vox -> 10.4 m          the valley floor
+    //     OAKHILL 58 vox            ->  5.8 m          crest above floor
+    //     OAK_BOWL 10 vox           ->  1.0 m          how far under the floor
+    //
+    // -- and LIFT is 84 voxels, the height v1 floats its whole world above
+    // bedrock, which is why the floor is 10.4 and not 2.
+    //
+    // SO THE OAK IS THE GENTLEST OF THE THREE, at 6.8 m of relief against the
+    // birch's 22 and the pine's 70. That is v1's number and it is kept: three
+    // woods want three characters, and "mountains, hills, lowland" is a better
+    // spread than three variations on hills. It also puts the oak beside the
+    // birch in the band order, where the two medians are within a couple of
+    // metres and the seam between them is a walk rather than a hillside.
+    // -----------------------------------------------------------------------
+    // -- HOW BIG THE HILLS ARE, AND WHY THEY ARE NOT v1's NUMBERS ---------
+    //
+    // (user 2026-09-16: "make the oak forest terrain hilly and round similar
+    // to v1".)
+    //
+    // v1's OWN VALUES WERE PORTED FIRST AND THEY ARE GENUINELY FLAT. The
+    // conversion was checked twice and is right -- v1 says so itself, "a 2 m
+    // person is 20 voxels and one METRE is 10" -- so OAKHILL 58 and OAK_BOWL 10
+    // really are 5.8 m and 1.0 m, and v1's oak forest has 6.8 metres of relief
+    // in total. Rendered at v2's scale that is not a wood with hills in it: it
+    // is a plain, and flat enough that the 10 cm quantisation reads as contour
+    // lines across the whole floor.
+    //
+    // SO THE SHAPE IS v1's AND THE SIZE IS NOT. What makes an oak wood look
+    // like v1's is the DOUBLE SMOOTHSTEP -- one sstep rounds the crests, the
+    // second flattens the valley floors, so the land is broad level bottoms
+    // separated by rounded rises rather than continuous undulation. That is
+    // kept exactly. What changes is the amplitude, which is the thing the eye
+    // was actually judging:
+    //
+    //     pine    14 .. 84 m    70 m    ridged, a mountain range
+    //     birch    2 .. 24 m    22 m    continuous rounded roll
+    //     oak      3 .. 27 m    24 m    flat bottoms, round rises  <- here
+    //     v1's oak 9.4 .. 16.2  6.8 m   the literal port
+    //
+    // AND THE WAVELENGTH IS STRETCHED to match. v1's octaves are 65 m and 32 m;
+    // at four times the amplitude those give slopes you climb rather than walk,
+    // so both are stretched by about 1.45 and the hills come out 95 m and 46 m
+    // across. Broad is what "round" means at this height -- the same relief
+    // over half the distance would be dunes.
+    static constexpr float kOakF1 = 0.01055f;   // ~95 m hills
+    static constexpr float kOakF2 = 0.02170f;   // ~46 m, v1's ratio kept
+    static constexpr float kOakFloorM = 3.0f;
+    static constexpr float kOakHillM = 24.0f;
+    static constexpr float kOakBowlM = 2.5f;
+
+    static float oakHeight(float x, float z, TerrainMemo &memo) {
+        const float a = fbm(memo.oakA, x * kOakF1 + 91.7f, z * kOakF1 + 33.1f, 3);
+        const float b = fbm(memo.oakB, x * kOakF2 + 47.3f, z * kOakF2 + 8.9f, 3);
+        const float u = sstep(sstep(a * 0.82f + b * 0.18f));
+        return kOakFloorM + kOakHillM * u - kOakBowlM * (1.0f - u) * (1.0f - u);
+    }
 
     // -----------------------------------------------------------------------
     // The continuous landform, before quantisation.
@@ -2949,7 +3204,6 @@ class VoxelTerrain {
         // asking it twice inside the blend would be a second evaluation of the
         // most expensive thing here for no difference in the answer.
         const float fine = (fbm(memo.fine, x * 0.090f + 3.7f, z * 0.090f + 9.1f, 3) - 0.5f) * 1.2f;
-        const float mix = birchMix(x);
 
         // ------------------------------------------------------------- birch
         // MUCH LOWER, AND ROUNDED. The pine wood is a mountain range -- 90 m of
@@ -3036,17 +3290,42 @@ class VoxelTerrain {
         // join C1: the gradient goes to zero at each end of the blend instead
         // of changing abruptly where the lerp starts and stops.
         // -------------------------------------------------------------------
-        const bool pureBirch = (mix >= 0.999f);
-        const bool purePine = (mix <= 0.001f);
-        float h;
-        if (pureBirch) {
-            // ALL FIVE ROLL OCTAVES AND ALL THREE SWELL -- the birch field is
-            // the one it always had, value for value. See the note above.
-            const float roll =
-                warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 5);
-            const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-            h = 2.0f + roll * 15.0f + swell * 7.0f;
-        } else {
+        // -- A WEIGHTED SUM OF THREE FIELDS, WHICH IS WHAT THE LERP ALWAYS WAS
+        //
+        // (user 2026-09-16: "import the oak forest from v1 into v2".)
+        //
+        // The two-wood version was written as "the pine field, with the birch
+        // lerped in", plus a fast path for pure birch. That is exactly
+        // wPine*P + wBirch*B once you substitute wPine = 1 - wBirch -- so
+        // writing it as the sum is not a rewrite of the maths, it is the same
+        // number by a form that takes a third term.
+        //
+        // A PURE COLUMN IS BIT-FOR-BIT WHAT IT WAS. Pure pine evaluates
+        // 1.0 * P and the old code evaluated P; pure birch likewise. Those are
+        // the same float, not merely the same value, so every column away from
+        // a seam is untouched.
+        //
+        // A SEAM COLUMN CAN DIFFER IN THE LAST BITS, and it is worth being
+        // exact about that rather than claiming more: a + (b - a) * t and
+        // (1 - t) * a + t * b are the same number in real arithmetic and round
+        // differently in floating point. The disagreement is around a
+        // micrometre on a field measured in tens of metres, which is four
+        // orders of magnitude below the 10 cm quantisation every consumer sees
+        // it through -- so it can only matter if a column sat exactly on a
+        // voxel boundary, and then only by one voxel.
+        //
+        // EACH FIELD IS STILL ONLY EVALUATED WHERE IT WEIGHS ANYTHING. A pure
+        // column does one field, a seam column does two, and no column ever
+        // does three -- a seam is 90 m and a band is 800, so nothing is ever
+        // within reach of two seams at once.
+        //
+        // AND IT IS STILL BLENDED BEFORE THE CARVE, which is the whole of the
+        // note above this one: carving one wood's field and then lerping toward
+        // another's uncarved one put a wall through a lake.
+        float wPine = 0.0f, wBirch = 0.0f, wOak = 0.0f;
+        woodMix(x, &wPine, &wBirch, &wOak);
+        float h = 0.0f;
+        if (wPine > 0.001f) {
             // ---------------------------------------------------------- pine
             // TWO OCTAVES EACH, AND NOTHING ABOVE THEM. See the note on this
             // function for what the missing ones were carrying and what taking
@@ -3054,17 +3333,17 @@ class VoxelTerrain {
             const float roll =
                 warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 2);
             const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
-            h = 14.0f + roll * 48.0f + swell * 21.5f;
-            // THE BIRCH SIDE OF THE SEAM, at its own octave counts and its own
-            // memos, folded in before anything downstream looks at h.
-            if (!purePine) {
-                const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
-                                              z * 0.0130f, 1.5f, 5);
-                const float bSwell =
-                    fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-                h = lerpf(h, 2.0f + bRoll * 15.0f + bSwell * 7.0f, mix);
-            }
+            h += wPine * (14.0f + roll * 48.0f + swell * 21.5f);
         }
+        if (wBirch > 0.001f) {
+            // ALL FIVE ROLL OCTAVES AND ALL THREE SWELL -- the birch field is
+            // the one it always had, value for value. See the note above.
+            const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
+                                          z * 0.0130f, 1.5f, 5);
+            const float bSwell = fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
+            h += wBirch * (2.0f + bRoll * 15.0f + bSwell * 7.0f);
+        }
+        if (wOak > 0.001f) h += wOak * oakHeight(x, z, memo);
 
         // THE CARVE IS A FUNCTION OF THE WATERLINE AND EXISTS FOR NOTHING
         // ELSE. It pulls low ground down toward the line so that a lake has a
@@ -3585,6 +3864,45 @@ class VoxelTerrain {
         //
         // The canopy still says WHICH brown -- needle litter under a thick
         // stand, soil in the open -- which is all that rule was ever for.
+        // -- ...EXCEPT UNDER THE OAKS, WHERE IT IS GREEN -----------------
+        //
+        // (user 2026-09-16: "In the oak forest, make the dirt, grass.")
+        //
+        // THIS IS A DELIBERATE EXCEPTION TO THE RULE ABOVE, which says the
+        // floor is never green and means it. The argument there is sound and
+        // still holds for the other two woods: a green PAINT standing in for
+        // grass does the blades' job for them, hides the floor completely, and
+        // turns any change in blade density into a visible colour edge.
+        //
+        // AN OAK WOOD IS THE CASE THAT ARGUMENT DOES NOT COVER, and v1 says so
+        // itself -- it has a whole material for this, OAKMOSS, and lays it
+        // under the oaks and nowhere else. A closed broadleaf canopy shades out
+        // the litter and what grows under it is moss and sward, not needles
+        // over bare soil. The blades still stand on top and still carry the
+        // detail; what changes is what shows BETWEEN them.
+        //
+        // BGRASS_0 RATHER THAN A RAMP OF ITS OWN, for two reasons and the
+        // second is the binding one:
+        //
+        //   * it is already the broadleaf ramp in fact. deriveGroundFromTrees
+        //     splits foliage at birchStart_ and runs to pineEnd_, which is
+        //     marked AFTER loadPines returns -- and the oaks load inside it,
+        //     after the birches. So any green an oak model mints lands in
+        //     BGRASS by construction. It mints FEW, because the oak set folds
+        //     at tolerance 30 and mostly shares greens the birches already own,
+        //     so this ramp is birch-dominated with the oak's own shades in it
+        //     -- which is the right colour for both woods and is why they can
+        //     share one.
+        //   * the palette has THREE entries free and a ramp is SIX. There is no
+        //     third ramp to be had; see the note over mat::GRASS_0.
+        //
+        // DITHERED ON THE COLUMN HASH, not switched at oakMix = 0.5. A hard
+        // test would draw a straight north-south line where the green meets the
+        // soil -- the one shape nothing else in this terrain has -- and it is
+        // the same trick, for the same reason, that bladeMaterial uses.
+        if (oakMix(x) > hashUnit(0x6A1Cu, hashU32(uint32_t(i), uint32_t(j))))
+            return mat::BGRASS_0;
+
         if (standDensity(x, z, memo.stand) > 0.44f &&
             fbm(memo.litter, x * 3.1f + 63.0f, z * 3.1f + 88.0f, 2) > 0.36f)
             return mat::LITTER_0;
@@ -3946,8 +4264,15 @@ class VoxelTerrain {
     // The hash is the COLUMN's, so it is stable: the same column answers the
     // same way every time it is meshed, from any chunk, on any thread.
     // -----------------------------------------------------------------------
+    // BROADLEAF, NOT BIRCH. This asked birchMix alone, so a blade in the oak
+    // wood came up 0 and wore the PINE ramp -- a dark blue-green needle colour
+    // standing in a bright broadleaf wood, and standing on the BGRASS floor the
+    // note in topMaterial just put under it. A tuft and the ground it roots in
+    // have to be one colour; see the note over mat::BWHEAT_0, which says the
+    // same thing about the foot of a tall blade.
     uint8_t bladeMaterial(int i, int j) const {
-        return (birchMix(wx(i)) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
+        const float x = wx(i);
+        return (birchMix(x) + oakMix(x) > hashUnit(0x81E5u, hashU32(uint32_t(i), uint32_t(j))))
                    ? mat::BGRASS_0
                    : mat::GRASS_0;
     }

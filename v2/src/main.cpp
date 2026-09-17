@@ -381,6 +381,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         // block nesting limit and one more arm is a C1061, not a warning.
         if (a == "--hitch") { o->hitch = true; continue; }
         if (a == "--lbug-test") { o->lbugTest = true; continue; }
+        if (a == "--oak") { o->oakOnly = true; continue; }
         if (a == "--soil-test") { o->soilTest = true; continue; }
         // The same NINE bits the panel sets, for a scripted A/B: 511 is all on,
         // and clearing one proves that term and only that term moved. 507 is

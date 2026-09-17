@@ -357,6 +357,11 @@ struct Options {
     // a profile run wants. See Biome and birchWeight in scene/voxelworld.h.
     bool birch = false;
     bool pineOnly = false;
+    // --oak: pin the world to the oak wood, as --pine and --birch do for
+    // theirs. Worth more here than for the other two: the band tiling
+    // moved when the oak was inserted, so a coordinate is no longer a
+    // reliable way to name a wood and this is.
+    bool oakOnly = false;
     // Simulated seconds per frame during a capture, INSTEAD of the wall clock.
     //
     // Without this a capture is not reproducible and two of them are not
@@ -846,8 +851,10 @@ class ForestApp : public SampleApp {
         // which species to load, and the chunk mesher is handed a COPY of the
         // terrain when it starts its workers. Set it late and half the engine
         // has already been told it is a pine wood.
-        world_.terrain.forced = opt_.birch || opt_.pineOnly;
-        world_.terrain.biome = opt_.birch ? Biome::Birch : Biome::Pine;
+        world_.terrain.forced = opt_.birch || opt_.pineOnly || opt_.oakOnly;
+        world_.terrain.biome = opt_.birch    ? Biome::Birch
+                               : opt_.oakOnly ? Biome::Oak
+                                              : Biome::Pine;
         world_.terrain.grassDensity = clampf(opt_.grass, 0.0f, 1.0f);
         world_.flowerDensity = clampf(opt_.flowers, 0.0f, 1.0f);
         world_.rockDensity = clampf(opt_.rocks, 0.0f, 1.0f);
@@ -938,7 +945,7 @@ class ForestApp : public SampleApp {
         // pos_ is still the origin here, which printed "0, 0" from wherever you
         // actually were. opt_ is what the world was built around.
         std::printf("           the %s wood at %.0f, %.0f%s\n",
-                    world_.terrain.birchAt(opt_.camX) ? "birch" : "pine", opt_.camX,
+                    world_.terrain.woodName(opt_.camX), opt_.camX,
                     opt_.camZ, world_.terrain.forced ? " (pinned)" : " -- T, /locate");
         std::printf("           %.0f ms of that was structure building, %.0f MB of tri pool\n",
                     world_.buildMs(), double(world_.poolBytes()) / (1024.0 * 1024.0));
@@ -5251,6 +5258,7 @@ class ForestApp : public SampleApp {
     // the only way to see a number a shaft picks for itself.
     int lastChipN_ = 0;
     int lastChipSlot_ = -1;
+    Vec3 lastChipAt_{0.0f, 0.0f, 0.0f};
     int stackPopN_ = -1;
     int stackPopTool_ = -1;
     double stackPopT0_ = -1e9;
@@ -5867,6 +5875,10 @@ class ForestApp : public SampleApp {
         static const std::vector<BiomeName> t = {
             {"pine", "pine_forest", Biome::Pine},
             {"birch", "birch_forest", Biome::Birch},
+            // v1's wood, imported 2026-09-16. Its band sits between the other
+            // two -- see VoxelTerrain's band note -- so /locate oak from the
+            // birch is the shorter walk of the two.
+            {"oak", "oak_forest", Biome::Oak},
         };
         return t;
     }
@@ -5922,6 +5934,13 @@ class ForestApp : public SampleApp {
         float stand;
         int wood;            // -1 either, 0 pine, 1 birch
         bool water;
+        // ONLY AFTER DARK. The survey below judged a row by its wood and its
+        // water and knew nothing about the clock, so the firefly -- which the
+        // engine will not spawn until the sun is 3.4 degrees under -- came back
+        // "NONE, AND IT SHOULD BE HERE" on every daytime run and failed the
+        // whole test. A test that is always red is a test nobody reads, and it
+        // would have hidden a real row breaking behind it.
+        bool night = false;
     };
 
     static const std::vector<LifeName> &lifeNames() {
@@ -5934,7 +5953,7 @@ class ForestApp : public SampleApp {
             {"mouse",     "",          Life::Mouse,     10.0f,  1, false},
             {"worm",      "",          Life::Worm,       4.0f, -1, false},
             {"snake",     "grass_snake",Life::Snake,     5.0f,  1, false},
-            {"firefly",   "fireflies", Life::Firefly,    4.0f, -1, false},
+            {"firefly",   "fireflies", Life::Firefly,    4.0f, -1, false, true},
             {"ant",       "ants",      Life::Ant,        4.0f, -1, false},
             {"fly",       "flies",     Life::Fly,        4.0f,  0, false},
             {"ladybug",   "ladybird",  Life::Ladybug,    4.0f, -1, false},
@@ -6122,8 +6141,16 @@ class ForestApp : public SampleApp {
         return true;
     }
 
+    // THE PERIOD IS THE WORLD'S, NOT A COPY OF IT. This read
+    // `2.0f * kBandW` -- correct while there were two woods, and silently wrong
+    // the moment a third was inserted: /locate pine would have walked you to a
+    // multiple of 1600 m when the pine band now repeats every 2400, which lands
+    // in whichever wood happens to be there. Nothing would have reported it;
+    // you would simply have arrived among the wrong trees.
+    //
+    // Derived from bandCount() so a fourth wood cannot reintroduce it.
     float nearestBandX(Biome b) const {
-        const float period = 2.0f * VoxelTerrain::kBandW;
+        const float period = VoxelTerrain::bandCount() * VoxelTerrain::kBandW;
         const float c = VoxelTerrain::bandCentre(b);
         const float k = floorf((pos_.x - c) / period + 0.5f);
         return c + k * period;
@@ -6385,8 +6412,14 @@ class ForestApp : public SampleApp {
             if (arg == "water" || arg == "lake") {
                 float wx = 0.0f, wz = 0.0f;
                 if (!nearestWater(&wx, &wz))
+                    // NOT "the birch wood has none at all" any more: that was
+                    // true when birchWater was kNoWater and has not been since
+                    // the lakes landed. All three woods are wet now -- 5.9% of
+                    // the pine, 7.6% of the birch, 7.5% of the oak -- so a miss
+                    // here means you are between basins, not in a dry wood.
                     return std::string("no water within 6 km -- lakes sit in basins, "
-                                       "and the birch wood has none at all");
+                                       "and you are between them; walk on or try "
+                                       "/locate <wood>");
                 teleportTo(wx, wz);
                 char buf[160];
                 std::snprintf(buf, sizeof(buf), "the shore -- %.0f, %.0f", wx, wz);
@@ -6398,8 +6431,9 @@ class ForestApp : public SampleApp {
                 // other band to travel to. Say so rather than teleporting to a
                 // place that is the same as this one.
                 if (world_.terrain.forced) {
-                    return std::string("the world is pinned to one wood (--birch / --pine) -- "
-                                       "restart without it to walk between them");
+                    return std::string("the world is pinned to one wood "
+                                       "(--birch / --pine / --oak) -- restart without it to "
+                                       "walk between them");
                 }
                 const float tx = nearestBandX(bn.biome);
                 teleportTo(tx, pos_.z);
@@ -6416,7 +6450,7 @@ class ForestApp : public SampleApp {
             char buf[160];
             std::snprintf(buf, sizeof(buf), "%.0f, %.0f, %.0f -- the %s wood", pos_.x, pos_.y,
                           pos_.z,
-                          world_.terrain.birchAt(pos_.x) ? "birch" : "pine");
+                          world_.terrain.woodName(pos_.x));
             return std::string(buf);
         }
         if (verb == "help")
@@ -9054,6 +9088,12 @@ class ForestApp : public SampleApp {
         std::fflush(stdout);
     }
 
+    // A SPAWN WITH A LAKE IN IT, OR THERE IS NOTHING TO TEST. Ducks follow
+    // water, so this test is only as good as where --spawn drops you -- and
+    // when the oak band was inserted the tiling moved, which put the long-used
+    // --spawn 4242 somewhere with no lake in reach and made this print "no duck
+    // in this wood". That is the spawn, not the ducks: 1, 7, 99 and 2026 all
+    // pass. If this says there is no duck, try another seed before believing it.
     void runDuckTest() {
         std::printf("\n=== DUCK TEST ===\n");
         player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
@@ -9168,7 +9208,7 @@ class ForestApp : public SampleApp {
         warmLife(player_.pos, 3);
         publishLife();
         std::printf("  the %s wood, steak slot %d\n",
-                    world_.terrain.birchAt(pos_.x) ? "birch" : "pine", steakTool_);
+                    world_.terrain.woodName(pos_.x), steakTool_);
 
         std::printf("\n  %-10s  %-5s  %-6s  %-6s  %-5s  %s\n", "species", "hits", "pieces",
                     "sparks", "smoke", "meat");
@@ -9334,24 +9374,82 @@ class ForestApp : public SampleApp {
                 rockTried = true;
                 lastChipN_ = 0;   // so the report is THIS shot's, not an older one's
                 // Stand off along +x and aim at the rock's middle.
-                const float ry = rock.baseY + 0.5f * float(rock.vsy) * VOXEL_M;
-                teleportTo(rock.cx + 25.0f, rock.cz);
-                pos_ = player_.eyePosition();
-                const Vec3 aim = normalize(Vec3(rock.cx - pos_.x, ry - pos_.y, rock.cz - pos_.z));
-                arrows_.launch(pos_, Vec3(aim.x * kArrowSpeed, aim.y * kArrowSpeed,
-                                          aim.z * kArrowSpeed));
+                // THE UPPER HALF, NOT THE MIDDLE. A flat shot at the centre
+                // of a boulder 25 m away is a shot that spends 25 m falling
+                // under kArrowG, and on ground that rises even slightly it
+                // buries itself at the archer's own feet -- measured: the chip
+                // came out 0.5 m from the player, which then absorbed exactly as
+                // the rule says it should and read as the rule being broken.
+                // LEVEL WITH THE ARCHER'S EYE, clamped into the rock. Aiming
+                // at a fixed fraction of the boulder's height aims DOWNWARD
+                // whenever the player is standing above it -- which on this
+                // terrain is most of the time -- and a downward shot from six
+                // metres buries itself in the ground in front of them. Measured
+                // at 80% of the rock's height: still cut 2.3 m from the archer.
+                //
+                // A LEVEL SHOT HAS NO GROUND TO HIT. The eye is 1.6 m over the
+                // feet, the boulder is metres tall, and the clamp only matters
+                // for a rock shorter than the archer -- which bestR > 0.8 has
+                // already excluded.
+                const float rockTop = rock.baseY + float(rock.vsy) * VOXEL_M;
+                const float ry = maxf(rock.baseY + 0.25f * float(rock.vsy) * VOXEL_M,
+                                      minf(pos_.y, rockTop - 0.3f));
+                // -- SIX METRES CLEAR OF THE FACE, NOT 25 FROM THE CENTRE --
+                //
+                // A fixed 25 m was a fixed distance from a boulder whose RADIUS
+                // varies from one to eight metres, so how far the shaft actually
+                // had to fly changed with whichever rock the world happened to
+                // offer -- and on any ground that rises between, it buried
+                // itself at the archer's feet instead. Measured twice, at a
+                // cut 0.4 m away.
+                //
+                // What the two rules under test need is only that the target is
+                // struck and that the chip lands FAR BEYOND the 1.6 m absorb
+                // reach. Six metres of clear air proves both and gives gravity
+                // almost nothing to work with: kArrowSpeed covers it in an
+                // eighth of a second.
+                const float standOff = bestR + 6.0f;
+                // -- EIGHT BEARINGS, AND THE FIRST WITH CLEAR AIR WINS --------
+                //
+                // ONE BEARING IS A COIN TOSS IN A WOOD. The shot was fired from
+                // +x every time, so whatever stood between the archer and the
+                // stone on that one line decided the test: measured, the shaft
+                // stopped 2.4 m out and the chip it cut was then inside the
+                // player's own absorb reach -- which is the rule WORKING, and it
+                // read as the rule failing. The oaks made it likelier, one being
+                // seventeen metres across, but a birch or a second boulder was
+                // always just as capable of standing in the way.
+                //
+                // So the archer walks round the rock. A chip that lands well
+                // clear of them is a shot that actually reached the stone, and
+                // that is the only thing the two rules below need.
                 const WalkWorld aw = wideWalkWorld(kArrowSolidsM);
-                for (int f = 0; f < 120 && arrows_.inFlight() > 0; ++f) {
-                    arrows_.update(1.0f / 60.0f, aw, nullptr);
-                    // ...AND THE CHIP IS DRAINED HERE TOO. This loop drives the
-                    // flight itself rather than going through the frame, so it
-                    // has to do the frame's job: impactsThisTick is cleared on
-                    // the NEXT update, so a drain outside this loop would find
-                    // nothing however well the carve worked. Which is exactly
-                    // what it reported -- 0 voxels off a boulder it had
-                    // demonstrably just stopped dead in.
-                    for (const Arrows::Impact &im : arrows_.impactsThisTick())
-                        arrowChip(im.at, im.dir);
+                for (int bear = 0; bear < 8; ++bear) {
+                    const float ang = float(bear) * 0.7853982f;
+                    teleportTo(rock.cx + sinf(ang) * standOff, rock.cz + cosf(ang) * standOff);
+                    pos_ = player_.eyePosition();
+                    lastChipN_ = 0;
+                    // So a bearing that cuts nothing at all reads as SHORT
+                    // rather than inheriting the last one's cut.
+                    lastChipAt_ = pos_;
+                    const Vec3 aim =
+                        normalize(Vec3(rock.cx - pos_.x, ry - pos_.y, rock.cz - pos_.z));
+                    arrows_.launch(pos_, Vec3(aim.x * kArrowSpeed, aim.y * kArrowSpeed,
+                                              aim.z * kArrowSpeed));
+                    for (int f = 0; f < 120 && arrows_.inFlight() > 0; ++f) {
+                        arrows_.update(1.0f / 60.0f, aw, nullptr);
+                        // THE CHIP IS DRAINED HERE. This loop drives the flight
+                        // itself rather than going through the frame, so it has
+                        // to do the frame's job: impactsThisTick is cleared on
+                        // the NEXT update, so a drain outside this loop would
+                        // find nothing however well the carve worked. Which is
+                        // exactly what it reported -- 0 voxels off a boulder it
+                        // had demonstrably just stopped dead in.
+                        for (const Arrows::Impact &im : arrows_.impactsThisTick())
+                            arrowChip(im.at, im.dir);
+                    }
+                    const float cdx = lastChipAt_.x - pos_.x, cdz = lastChipAt_.z - pos_.z;
+                    if (lastChipN_ > 0 && cdx * cdx + cdz * cdz > 25.0f) break;
                 }
                 // WHERE IT CAME TO REST, against the rock's own centre. A shaft
                 // that stopped is within a metre or two of the stone; one that
@@ -9360,8 +9458,8 @@ class ForestApp : public SampleApp {
                 for (const Vec3 &q : arrows_.landedThisTick())
                     stoppedAt = minf(stoppedAt, q.x - rock.cx);
                 rockStopped = arrows_.inFlight() == 0;
-                std::printf("\n  -- a shaft at a %.1f m boulder, from 25 m --\n",
-                            double(bestR * 2.0f));
+                std::printf("\n  -- a shaft at a %.1f m boulder, from %.1f m --\n",
+                            double(bestR * 2.0f), double(standOff));
                 std::printf("  still flying after 2 s: %s\n",
                             arrows_.inFlight() ? "YES -- IT WENT THROUGH" : "no, it stopped");
                 // ...AND WHAT IT TOOK OUT OF IT (user 2026-09-15: "have arrow
@@ -9406,22 +9504,62 @@ class ForestApp : public SampleApp {
                                             });
                     }
                 }
+                // -- FOUND BY WHERE IT IS, NOT BY WHICH SLOT IT TOOK -----
+                //
+                // The slot is not an identity. kDebrisInstances is 64 and this
+                // test kills eighteen animals before it fires the arrow, so the
+                // pool has wrapped several times over by now and spawnDebris
+                // hands out the OLDEST slot once it is full. Asked by index, the
+                // chip read as "gone" while it was lying exactly where it fell
+                // -- a failure of the question, not of the engine.
+                //
+                // So the pool is scanned for a body still near where the chip
+                // was cut out. A chip that has not moved is within a metre of
+                // that point; one that came to the player is twenty-five metres
+                // away and is not.
                 Vec3 cp{0, 0, 0};
                 float cq[4] = {0, 0, 0, 1};
-                const bool stillThere = chipSlot >= 0 && world_.debrisPose(chipSlot, &cp, cq);
-                const bool coming = chipSlot >= 0 && world_.debrisAbsorbing(chipSlot);
+                bool stillThere = false, coming = false;
+                for (int b = 0; b < kDebrisInstances; ++b) {
+                    Vec3 bp{0, 0, 0};
+                    float bq[4] = {0, 0, 0, 1};
+                    if (!world_.debrisPose(b, &bp, bq)) continue;
+                    const float dx = bp.x - lastChipAt_.x, dz = bp.z - lastChipAt_.z;
+                    if (dx * dx + dz * dz > 4.0f) continue;   // two metres of the cut
+                    stillThere = true;
+                    cp = bp;
+                    coming = world_.debrisAbsorbing(b);
+                    break;
+                }
+                (void)chipSlot;
+                // -- A SHOT THAT FELL SHORT PROVES NOTHING ---------------
+                //
+                // The rule under test is "a chip cut across the clearing does
+                // not come to you". If the shaft buried itself at the archer's
+                // feet then the chip was never across the clearing, and it
+                // absorbing is the rule WORKING rather than failing. Measured
+                // once as a flat WRONG before this guard existed, on a shot cut
+                // 0.5 m from the player.
+                const float cutAway =
+                    std::sqrt((lastChipAt_.x - pos_.x) * (lastChipAt_.x - pos_.x) +
+                              (lastChipAt_.z - pos_.z) * (lastChipAt_.z - pos_.z));
                 const float away =
                     stillThere ? std::sqrt((cp.x - pos_.x) * (cp.x - pos_.x) +
                                            (cp.z - pos_.z) * (cp.z - pos_.z))
                                : 0.0f;
-                std::printf("  after 3 s at 25 m: %s  %s\n",
-                            !stillThere ? "the chip is gone"
-                            : coming    ? "the chip is on its way to you"
-                                        : "the chip is still lying there",
-                            (stillThere && !coming && away > 5.0f)
-                                ? "correct, it waits to be walked up to"
-                                : "IT CAME TO THE PLAYER -- WRONG");
-                if (stillThere)
+                if (cutAway < 5.0f) {
+                    std::printf("  the shaft fell short -- it cut %.1f m from the archer, so "
+                                "there is no reach rule to test here\n", double(cutAway));
+                } else {
+                    std::printf("  after 3 s, standing off: %s  %s\n",
+                                !stillThere ? "the chip is gone"
+                                : coming    ? "the chip is on its way to you"
+                                            : "the chip is still lying there",
+                                (stillThere && !coming && away > 5.0f)
+                                    ? "correct, it waits to be walked up to"
+                                    : "IT CAME TO THE PLAYER -- WRONG");
+                }
+                if (stillThere && cutAway >= 5.0f)
                     std::printf("  ...and it is %.1f m off, where it was knocked loose\n",
                                 double(away));
             }
@@ -10478,6 +10616,7 @@ class ForestApp : public SampleApp {
         // than one you cut standing over it.
         lastChipSlot_ = world_.spawnDebris(physics_, vol, n, spoilAt, kNoVel, kNoVel, simMs_,
                                            yaw, srcRock, takesAs, kArrowAbsorbM);
+        lastChipAt_ = spoilAt;
         lastChipN_ = n;   // --kill-test reads these two; nothing else does
     }
 
@@ -10849,7 +10988,7 @@ class ForestApp : public SampleApp {
         for (int i = 0; i < held_.count(); ++i)
             if (held_.tool(i).takes == Takes::Earth) hoe = i;
         std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood, hoe in slot %d\n", pos_.x,
-                    pos_.y, pos_.z, world_.terrain.birchAt(pos_.x) ? "birch" : "pine", hoe);
+                    pos_.y, pos_.z, world_.terrain.woodName(pos_.x), hoe);
         if (hoe < 0) {
             std::printf("  FAIL -- the hoe did not load.\n");
             return;
@@ -11510,7 +11649,7 @@ class ForestApp : public SampleApp {
         player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
         pos_ = player_.eyePosition();
         std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood\n", pos_.x, pos_.y, pos_.z,
-                    world_.terrain.birchAt(pos_.x) ? "birch" : "pine");
+                    world_.terrain.woodName(pos_.x));
         std::printf("  kit: wheat slot %d, seeds slot %d\n", wheatTool_, seedsTool_);
         if (wheatTool_ < 0 || seedsTool_ < 0) {
             std::printf("  FAIL -- the drop models did not load.\n");
@@ -12053,13 +12192,17 @@ class ForestApp : public SampleApp {
                 }
                 continue;
             }
-            // Nothing found. Expected when the row is gated elsewhere.
+            // Nothing found. Expected when the row is gated elsewhere -- by
+            // wood, by water, or by the CLOCK.
+            const bool asleep = ln.night && !isNight();
             const bool elsewhere =
                 ln.water ? true : (ln.wood >= 0 && (ln.wood == 1) != birch);
             std::printf("  %-11s %-6s %8s   %s\n", ln.name, lives, "-",
-                        elsewhere ? "(not this wood -- /locate will travel)" : "NONE, AND IT "
-                                                                              "SHOULD BE HERE");
-            if (elsewhere) ++expectedMisses; else ++wrong;
+                        asleep      ? "(after dark only -- try --time 23)"
+                        : elsewhere ? "(not this wood -- /locate will travel)"
+                                    : "NONE, AND IT SHOULD BE HERE");
+            if (asleep || elsewhere) ++expectedMisses;
+            else ++wrong;
         }
         std::printf("  %d found, %d away in another wood, %d WRONG\n", found, expectedMisses,
                     wrong);
@@ -12087,6 +12230,46 @@ class ForestApp : public SampleApp {
             }
             std::printf("  %d lily pads, %d dragonflies, %d ducks\n", pads, flies,
                         lake_.ducksLiving(true));
+        }
+
+        // ---- the THREE WOODS, which are places rather than animals --------
+        //
+        // (user 2026-09-16: "give me a /locate oak".)
+        //
+        // THIS HALF EXISTED AND WAS NEVER CHECKED, and it had just broken.
+        // nearestBandX had the period written out as `2.0f * kBandW` -- right
+        // for two woods, silently wrong for three -- so /locate pine would have
+        // walked to a multiple of 1600 m while the pine band repeats every
+        // 2400. You would have arrived among the wrong trees with a confident
+        // reply saying otherwise, which is the same failure the animal half of
+        // this test exists to catch.
+        //
+        // ASKED OF THE WORLD IT LANDS IN, not of the number it returns: teleport,
+        // then ask the terrain which wood is actually underfoot.
+        std::printf("\n  -- the woods --\n");
+        {
+            const Vec3 was = pos_;
+            for (const BiomeName &bn : biomeNames()) {
+                const std::string reply = runCommand(std::string("/locate ") + bn.name);
+                const char *landed = world_.terrain.woodName(pos_.x);
+                const bool right = std::string(landed) == bn.name;
+                std::printf("  /locate %-6s -> %8.0f  lands in the %-5s wood  %s\n", bn.name,
+                            double(pos_.x), landed,
+                            right ? "correct" : "THE WRONG WOOD -- WRONG");
+                if (!right) ++wrong;
+            }
+            // ...and its ALIAS reaches the same row, which is the other way a
+            // table like this rots: a name that answers and an alias that does
+            // not look identical until someone types the alias.
+            for (const BiomeName &bn : biomeNames()) {
+                const std::string reply = runCommand(std::string("/locate ") + bn.alias);
+                const bool known = reply.find("nothing called") == std::string::npos;
+                if (!known) {
+                    std::printf("  alias '%s' is not recognised -- WRONG\n", bn.alias);
+                    ++wrong;
+                }
+            }
+            teleportTo(was.x, was.z);
         }
 
         // ---- and where it puts you -----------------------------------------

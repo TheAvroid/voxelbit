@@ -1177,6 +1177,8 @@ class World {
     std::string decorDir = "C:/voxelbit/game/assets/decoration";
     // The birch wood's sixteen trees. Same 10 cm grid as the pines.
     std::string birchDir = "C:/voxelbit/game/assets/foilage/birch_trees";
+    // ...and the oak wood's seven, from v1's own asset folder.
+    std::string oakDir = "C:/voxelbit/game/assets/foilage/oak_trees";
     int viewChunks = 12;  // ring radius, in chunks
     float treeDensity = 0.3210f;
     float rockDensity = 0.010f;
@@ -8198,7 +8200,22 @@ class World {
                       // argument after it, and the rock loaders pass colourSink
                       // and stemId positionally -- which the compiler caught,
                       // but only because the types happened to disagree.
-                      bool solidify = false) {
+                      bool solidify = false,
+                      // ...AND SO IS THIS ONE, for the same reason. See above.
+                      //
+                      // HOW HARD THIS SET FOLDS ITS COLOURS ONTO THE TABLE.
+                      // Zero is what every set shipped with: each colour gets
+                      // its own entry, subject only to the quantised bucket
+                      // forModelColor already dedupes on. Non-zero lets a colour
+                      // SHARE an entry already in the table within that
+                      // distance.
+                      //
+                      // ONLY THE OAK PASSES ONE, and only because the table has
+                      // no room -- see the note at its call. Folding is not free
+                      // and it is not a default: a shared entry carries the
+                      // MATERIAL of whatever minted it, so a set that folds is
+                      // a set that has agreed to wear another's surface.
+                      int matchTol = 0) {
         for (const std::string &path : paths) {
             std::vector<VoxModel> models;
             std::string err;
@@ -8250,7 +8267,9 @@ class World {
                         if (stemId != mat::AIR && pc[1] > pc[0] && pc[1] > pc[2])
                             idOfEntry[e] = stemId;
                         else
-                            idOfEntry[e] = palette.forModelColor(pc);
+                            idOfEntry[e] =
+                                palette.forModelColor(pc, /*conifer=*/true, /*exact=*/false,
+                                                      matchTol);
                     }
 
                 // The moss goes into the ASSET, before anything reads it, so
@@ -8345,9 +8364,63 @@ class World {
             // which writes them.
             for (int i = 1; i <= 16; ++i)
                 paths.push_back(birchDir + "/" + std::to_string(i) + ".vox");
+        // -- AND THE OAKS (user 2026-09-16: "import the oak forest from v1") --
+        //
+        // SEVEN, AND THEY ARE A DIFFERENT SHAPE OF TREE. Measured off the
+        // files: 2.1 m to 17.1 m tall, and 3.4 m to 17.0 m ACROSS -- the
+        // biggest is as wide as it is high, where a birch is 30 m of near
+        // vertical trunk and a pine is a spire. oak_1 is a bush at 2.1 m and is
+        // kept in the set deliberately: v1 has it, and a wood whose smallest
+        // member is waist-high is what makes the rest read as old.
+        //
+        // AFTER THE BIRCHES, so the three ranges are contiguous and positional:
+        // pine [0, birchBase), birch [birchBase, oakBase), oak [oakBase, size).
+        // templateFor, the footprints, the colliders and the perch lists are
+        // all positional into this one array and none of them needs to know a
+        // third species exists.
         // /*solidify=*/true -- the trees are the set this was asked for.
         loadModelSet(paths, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
                      /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true);
+
+        // -- AND THE OAKS, AS THEIR OWN SET AND FOLDED ---------------------
+        //
+        // A SECOND CALL RATHER THAN MORE PATHS IN THE FIRST, because this set
+        // and only this set is asked to share entries. loadModelSet appends, so
+        // the ranges stay contiguous exactly as the rocks' two calls do.
+        //
+        // THE FOLD IS NOT A PREFERENCE, IT IS THE TABLE BEING FULL. The oak
+        // brings seven colours -- three barks and four greens, measured across
+        // all seven files -- and the palette stood at 252 of 255 before it
+        // arrived. Registered plainly they took the last three and then the
+        // HELD WHEAT starved, losing two of its own and drawing as a single
+        // voxel. That is the fourth time this table has taken something away
+        // silently; see the note over Palette::forModelColor.
+        //
+        // 30 IS CHOSEN OFF THE OAK'S OWN SEVEN COLOURS, measured rather than
+        // picked. They are three barks and four greens:
+        //
+        //     bark   (87,77,54) (99,89,66) (109,100,82)   each ~21 apart
+        //     green  (82,115,47) (105,143,51) (107,141,77) (134,167,89)
+        //
+        // At 22 the three barks collapse to one and not a single green moves --
+        // the nearest pair of those is 36 apart -- which recovered two entries
+        // and left the wheat one short. At 30 the two middle greens join as
+        // well, and the oak keeps a DARK, a MID and a LIGHT canopy shade, which
+        // is all the variation a crown reads at.
+        //
+        // AND A LEAF SHARING A LEAF'S ENTRY IS SHARING THE FOLIAGE MATERIAL --
+        // the translucency and the waxy roughness -- which is the right surface
+        // for it and is what conifer=true hands any green-dominant colour here
+        // anyway. This is the one case where sharing is not a compromise.
+        mesher_.oakBase = int(pines_.size());
+        if (!terrain.forced || terrain.biome == Biome::Oak) {
+            std::vector<std::string> oaks;
+            for (int i = 1; i <= 7; ++i)
+                oaks.push_back(oakDir + "/oak_" + std::to_string(i) + ".vox");
+            loadModelSet(oaks, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
+                         /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true,
+                         /*matchTol=*/30);
+        }
         if (pines_.empty()) {
             std::fprintf(stderr, "v2: no pine models loaded from %s -- pass --pines\n",
                          pineDir.c_str());
