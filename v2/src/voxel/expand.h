@@ -29,9 +29,9 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
-#include "../scene/voxelworld.h"
-#include "quad.h"
-#include "store.h"
+#include "world/voxelworld.h"
+#include "voxel/quad.h"
+#include "voxel/store.h"
 
 namespace v2 {
 namespace vox {

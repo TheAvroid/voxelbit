@@ -19,7 +19,7 @@
 #pragma once
 
 #include "../../shaders/Shared.slang"
-#include "../core/vecmath.h"
+#include "core/vecmath.h"
 
 namespace v2 {
 

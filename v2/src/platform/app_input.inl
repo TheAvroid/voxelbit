@@ -1,0 +1,574 @@
+// app_input.inl
+//
+// Lifted out of app.h. This file is #included INSIDE the body of ForestApp, at
+// exactly the point the code used to sit, so the preprocessor sees the same
+// text in the same order -- member declaration order, layout and init order are
+// unchanged. It is not a standalone header and has no include guard.
+//
+// Contents: keyboard and mouse events
+// -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    bool onKeyEvent(const KeyboardEvent &e) override {
+        if (e.type != KeyboardEvent::Type::KeyPressed) return false;
+        // THE PICTURE IS ALREADY COLLAPSING. Swallow everything: the program is
+        // a second from gone, and a key that opened a panel or teleported the
+        // player now would only be drawn into the last few frames of a shot
+        // nobody asked for.
+        if (quitting_) return true;
+
+        if (e.key == Input::Key::X) return true;  // held modifier for the wheel
+        if (e.key == Input::Key::F) {
+            player_.fly = !player_.fly;
+            if (!player_.fly) player_.vy = 0.0f;  // do not inherit a climb as a fall
+            std::printf("v2: %s\n", player_.fly ? "flying" : "walking");
+            std::fflush(stdout);
+            return true;
+        }
+        // -----------------------------------------------------------------
+        // U -- THE ASSET EDITOR, AND U AGAIN TO COME BACK.
+        //
+        // A different PLACE, not a different mode of this one: on the stage the
+        // wood is not in the acceleration structure at all, so what a ray finds
+        // is the deck or the sky and nothing else. See World::setStage.
+        //
+        // THE WOOD IS LEFT EXACTLY AS IT WAS. Where you were standing, which
+        // way you were looking, and every chunk that was resident -- all kept,
+        // so U back is a rebuild and not a reload. That is what makes this
+        // something you press to check a model rather than something you commit
+        // to.
+        //
+        // FLYING, and it has to be: the player walks on the TERRAIN, and the
+        // terrain function knows nothing about a deck floating at y 512 -- it
+        // would answer with whatever hillside is at those coordinates and drop
+        // you through the floor. Flight takes the ground out of the question.
+        // -----------------------------------------------------------------
+        // [I] IS THE ASSET EDITOR (user 2026-09-13: "Put the asset editor on
+        // the i key"). U still works -- it is what every note in this file and
+        // the help text already call it, and taking it away would invalidate
+        // all of them to gain nothing. Two keys, one door.
+        if ((e.key == Input::Key::U || e.key == Input::Key::I) && !consoleOpen_) {
+            // -- THE TWO PLACES ARE EXCLUSIVE, AND THE WOOD IS BETWEEN THEM ---
+            //
+            // "Make sure that the esc menu and the asset editor are seperate
+            // level. that they are not in the same world as the other levels."
+            // They already were -- each REPLACES the world in the structure, and
+            // they stand four kilometres apart -- but nothing stopped both being
+            // OPEN at once, and the state that produced is worse than either: a
+            // room drawn over a stage, with one saved wood position between them
+            // that the second door to open would overwrite with the first
+            // door's coordinates. Leaving for the wood first makes the save
+            // correct by construction.
+            if (pauseOpen_) setRoomOpen(false);
+            // ...AND THE BUILDING IS A THIRD PLACE, held to the same rule. Two
+            // levels open at once is the state this exclusivity was written to
+            // prevent; the saved wood position is a single slot and whichever
+            // door opened second would overwrite it with the first door's
+            // coordinates. Leaving for the wood first makes the save correct by
+            // construction, which is what the note above means.
+            if (world_.levelOn()) leaveLevel();
+            const bool on = !world_.staged();
+            if (on) {
+                woodPos_ = player_.pos;
+                woodYaw_ = yaw_;
+                woodPitch_ = pitch_;
+                woodFly_ = player_.fly;
+            }
+            world_.setStage(on);
+            if (on) {
+                // Off the corner and looking at it, so the subject is in
+                // front of you the moment you arrive rather than underfoot --
+                // and so every handle on it can be dragged. See standOnDeck.
+                standOnDeck();
+                // ...and the subject, standing on the deck in front of you.
+                stageSubject();
+            } else {
+                leaveStage();
+            }
+            player_.vy = 0.0f;  // no fall carried across the doorway
+            pos_ = player_.eyePosition();
+            tracer_.resetAccumulation();
+            std::printf("v2: %s\n", on ? "asset editor" : "back to the wood");
+            std::fflush(stdout);
+            return true;
+        }
+        // -----------------------------------------------------------------
+        // THE ASSET EDITOR'S OWN KEYS, and it gets first refusal on them.
+        //
+        // AFTER the door above, so [I] and [U] still let you out, and BEFORE
+        // everything below, because that is what "the editor owns the keyboard
+        // while it is up" means. It claims ten keys and passes every other
+        // press straight through, so Y, O, ESC and the rest work on the deck
+        // exactly as they do in the wood.
+        //
+        // THE ONE IT TAKES THAT SOMETHING ELSE WANTED IS [R]: it turns a frame
+        // here rather than starting a recording. That is v1's binding and v1's
+        // reason -- a key cannot mean two things at once in one mode -- and the
+        // recorder gets it back the moment you step off the deck.
+        // -----------------------------------------------------------------
+        if (world_.staged() && !consoleOpen_ && !menuOpen_ && !waterPanelOpen_ &&
+            edit_.key(e)) {
+            std::fflush(stdout);
+            return true;
+        }
+        if (e.key == Input::Key::Y) {
+            setMenuOpen(!menuOpen_);
+            return true;
+        }
+        // -- THE WATER PANEL HAS NO KEY ANY MORE (user 2026-09-14: "you remove
+        // -- the water panel from l") ---------------------------------------
+        //
+        // It had three in two days. It was built on [I] on 2026-09-13; I was
+        // rebound to ESC that same day so it took O; O was asked for by name
+        // the next day for the building level, so it took L; and L is now gone
+        // too. A key that keeps moving is worse than no key -- every note that
+        // names one goes stale the moment it moves, and this one had already
+        // outlived two.
+        //
+        // IT IS NOT DELETED. `--water-ui` opens it at start-up and everything
+        // below setWaterPanelOpen is untouched, so the eight live terms are
+        // still there for the session you actually want to tune water in. What
+        // has gone is the press that could open it by accident mid-walk.
+        //
+        // If it ever wants a key back, this is the spot -- and J, M and Z are
+        // what is free. See World::levelOn for what took O.
+        // -----------------------------------------------------------------
+        // [O] -- THE BUILDING LEVEL, AND O AGAIN TO COME BACK.
+        //
+        // The asset deck's door, with the deck's own reasoning ("A different
+        // PLACE, not a different mode of this one") and the same exclusivity:
+        // the pause panel and the editor both close first, so only one place is
+        // ever open and the saved wood position can only have been written by
+        // whichever door is actually open. See the note over [U].
+        //
+        // NOT FLYING, and that is the difference from the deck. The editor has
+        // to fly because the walk reads the TERRAIN and there is no terrain at
+        // 640 m -- but this level brought its own ground with it, and a
+        // building you float through is not a building. Solid::interior is
+        // what makes the walk read the level's voxels instead; see collide.h.
+        // -----------------------------------------------------------------
+        if (e.key == Input::Key::O && !consoleOpen_) {
+            if (pauseOpen_) setRoomOpen(false);
+            if (world_.staged()) leaveStage();
+            const bool on = !world_.levelOn();
+            if (on) {
+                woodPos_ = player_.pos;
+                woodYaw_ = yaw_;
+                woodPitch_ = pitch_;
+                woodFly_ = player_.fly;
+                if (!world_.setLevel(true)) {
+                    std::fprintf(stderr, "v2: no level to travel to -- run "
+                                         "tools/voxelize_nuketown.py\n");
+                    return true;
+                }
+                standInLevel();
+            } else {
+                leaveLevel();
+            }
+            player_.vy = 0.0f;   // no fall carried across the doorway
+            pos_ = player_.eyePosition();
+            tracer_.resetAccumulation();
+            volfog_.invalidate();
+            std::printf("v2: %s\n", on ? "nuketown" : "back to the wood");
+            std::fflush(stdout);
+            return true;
+        }
+        // T OPENS THE CONSOLE, and only when it is shut -- while it is open the
+        // key belongs to whatever is being typed, and ImGui has the keyboard.
+        if (e.key == Input::Key::T && !consoleOpen_ && !menuOpen_) {
+            setConsoleOpen(true);
+            return true;
+        }
+        if (e.key == Input::Key::Escape) {
+            // A PANEL FIRST, ALWAYS. ESC dismisses whatever is over the screen
+            // before it starts down the ladder below -- otherwise closing a
+            // console would also spend a rung of it, and the press that was
+            // meant to put a panel away would be the press that gave the mouse
+            // back as well.
+            if (consoleOpen_) {
+                setConsoleOpen(false);
+                return true;
+            }
+            if (menuOpen_) {
+                setMenuOpen(false);
+                return true;
+            }
+            // ...THE WATER PANEL TOO, which it did not used to. That panel
+            // hands the cursor back when it opens, so ESC over it fell past the
+            // mouse rung and straight into the pause room -- leaving a panel up
+            // over a room it has nothing to do with. It is a panel; ESC closes
+            // panels.
+            if (waterPanelOpen_) {
+                setWaterPanelOpen(false);
+                return true;
+            }
+            // -------------------------------------------------------------
+            // ESC IS A LADDER OF THREE.
+            //
+            //     press 1   free the mouse          setCapture(false)
+            //     press 2   the three buttons up    setRoomOpen(true)
+            //     press 3   quit, CRT collapse      beginQuit()
+            //
+            // "Have 1 esc free the mouse, another esc to bring up the main menu
+            // with the three balls, and one more esc to exit the game" (user
+            // 2026-09-14). This is the shape the pause ROOM had, restored onto
+            // the panel that replaced it -- the room is still gone; what came
+            // back is the ladder.
+            //
+            // IT WAS A TOGGLE FOR A FEW HOURS, and the argument for that was
+            // that a panel is not a place: three models standing in the wood
+            // you never left have nowhere to travel to, so there was nothing
+            // for the extra rungs to step through. That reasoning was about
+            // the GEOMETRY and the ladder is about the KEYBOARD -- ESC is the
+            // key that backs out of things, and each rung backs out of one more
+            // than the last. Both readings are defensible; this one is the
+            // user's, twice.
+            //
+            // THE PANEL IS TESTED ABOVE THE MOUSE RUNG, and it has to be:
+            // setRoomOpen TAKES the cursor (the buttons are picked by the
+            // crosshair), so a panel that fell through to the release below
+            // would spend the third press handing the mouse back and never
+            // reach the door.
+            //
+            // A PRESS THAT FREES NOTHING IS NOT SPENT. With the pointer already
+            // loose -- a fresh launch nobody has clicked into, or a panel that
+            // gave it away -- the first press goes straight to the buttons. The
+            // rung only exists while there is something on it.
+            //
+            // THE RED BUTTON IS STILL THE OTHER WAY OUT, and it runs the same
+            // beginQuit this third press does, so the two exits cannot differ.
+            // ESC does not close the panel: that is what the green button is
+            // for, and it is what makes this press an exit rather than a
+            // second opinion.
+            // -------------------------------------------------------------
+            if (pauseOpen_) {
+                beginQuit();
+                return true;
+            }
+            if (looking_) {
+                setCapture(false);
+                return true;
+            }
+            setRoomOpen(true);
+            return true;
+        }
+
+        if (e.key == Input::Key::Minus) opt_.r.exposure = maxf(0.05f, opt_.r.exposure * 0.8f);
+        if (e.key == Input::Key::Equal) opt_.r.exposure = minf(40.0f, opt_.r.exposure * 1.25f);
+        if (e.key == Input::Key::LeftBracket) {
+            opt_.r.maxDepth = maxi(1, opt_.r.maxDepth - 1);
+            std::printf("v2: bounces = %d\n", opt_.r.maxDepth);
+            tracer_.resetAccumulation();
+        }
+        if (e.key == Input::Key::RightBracket) {
+            opt_.r.maxDepth = mini(32, opt_.r.maxDepth + 1);
+            std::printf("v2: bounces = %d\n", opt_.r.maxDepth);
+            tracer_.resetAccumulation();
+        }
+        // -- Q PUTS IT DOWN -------------------------------------------------
+        //
+        // ON THE KEY EVENT AND NOT ON THE POLLED STATE, unlike the swing: a
+        // drop is one action per press, and polling would empty the whole kit
+        // in three frames of holding the key.
+        //
+        // IT LEAVES FROM THE HAND. lastHeld_ is where the item actually was
+        // last frame -- after the swing, the bob and the sway -- so the thing
+        // that flies is the thing you were looking at, which is the JS engine's
+        // own rule for this ("launch from the held item's true world spot ...
+        // it FLIES out of the hand").
+        if (e.key == Input::Key::Q && held_.ready() && held_.shown && held_.carrying() &&
+            looking_ && !menuOpen_) {
+            const Vec3 dir = forward();
+            const Vec3 from = pos_ + camRight() * lastHeld_.cam.x + camUp() * lastHeld_.cam.y +
+                              dir * lastHeld_.cam.z;
+            const int sel = held_.selected();
+            const Tool &t = held_.tool(sel);
+            const int model = held_.model();
+            if (held_.dropSelected() >= 0) {
+                drops_.toss(sel, model, t.sx, t.sy, t.sz, from, dir);
+                std::printf("v2: dropped %s\n", t.name);
+                std::fflush(stdout);
+                tracer_.resetAccumulation();
+            }
+            return true;
+        }
+        // -- G, THE WOOD AS IT WAS GENERATED -------------------------------
+        //
+        // (user 2026-09-17: "let me press q to refresh the game". Q already
+        //  throws the held item out of your hand, so this is G and the throw
+        //  is untouched.)
+        //
+        // Every pit filled in, every tilled bed turned back, every animal
+        // re-scattered -- without the four minutes a relaunch costs. What it
+        // does NOT do is re-read anything from disk: the terrain is compiled
+        // in, so a changed constant still wants a build. This gives back the
+        // world without the digging, which is what a refresh is for.
+        //
+        // THE LIFE IS DESPAWNED AND REPUBLISHED, not just despawned.
+        // despawnAll clears the POPULATION; only a publish clears the BAND --
+        // stageSubject learned that the hard way and its note says so. Miss
+        // the publish and the slots keep drawing whatever was in them.
+        //
+        // BLOCKING, deliberately. A reload is a thing you ASKED for and then
+        // watch; streaming it in over the next few seconds would look like the
+        // wood dissolving rather than like a refresh.
+        if (e.key == Input::Key::G && !consoleOpen_ && !menuOpen_) {
+            refreshWorld();
+            return true;
+        }
+        if (e.key == Input::Key::H && held_.ready()) {
+            // An empty hand, and back again. The JS engine reaches the same
+            // state by scrolling to an empty hotbar slot; there is no hotbar
+            // here yet, so it is a key -- and it is worth having whatever
+            // happens next, because comparing a shot with the tool and without
+            // it is the first thing anyone does after adding one.
+            held_.shown = !held_.shown;
+            std::printf("v2: hand %s\n", held_.shown ? held_.name() : "empty");
+            std::fflush(stdout);
+        }
+        if (e.key == Input::Key::R) toggleRecording();
+        // [K] -- THE STACK BADGE'S FOUR NUMBERS. Free at the time of writing
+        // and next to nothing else; see the panel for what it holds. The water
+        // panel deliberately has NO key any more ("a key that keeps moving is
+        // worse than no key"), and the difference is that this one was asked to
+        // be reachable: "let me adjust the display number".
+        if (e.key == Input::Key::K && !consoleOpen_) {
+            stackPanelOpen_ = !stackPanelOpen_;
+            // THE SIGHTS COME BACK DOWN WITH THE PANEL. The tick box that holds
+            // them up is drawn on that card and nowhere else, so leaving it set
+            // would weld the gun to the eye with no visible control to clear
+            // it. See HeldItem::adsHold.
+            if (!stackPanelOpen_) held_.adsHold = false;
+            std::printf("v2: stack badge panel %s\n",
+                        stackPanelOpen_ ? "open" : "closed");
+        }
+        // -- CTRL+C BAKES THE LAMPS ----------------------------------------
+        //
+        // (user 2026-09-17: "let me type ctrl + c to copy the new bulb
+        // positions and ctrl + v to paste them into the code editor".)
+        //
+        // AS THE SOURCE LINES THEY LIVE ON, ready to paste between the braces
+        // of World::kLevelBulbSeed. Not a config file and not a save: this
+        // engine bakes by pasting -- the asset editor's [C] does it with a strip
+        // table and the pose card does it with a HeldPose -- because a tuned
+        // number that only exists in a running process dies with it.
+        //
+        // TO THE CONSOLE AS WELL, ALWAYS. assetedit.h's note is the reason:
+        // OpenClipboard fails outright while another program holds it, and a
+        // copy that silently did nothing is worse than no copy.
+        if (e.key == Input::Key::C && e.hasModifier(Input::Modifier::Ctrl) && !consoleOpen_ &&
+            world_.levelOn()) {
+            std::string out;
+            for (const Vec3 &b : world_.levelBulbs())
+                out += fmt("            { %.2ff, %.2ff, %.2ff },\n", b.x, b.y, b.z);
+            if (out.empty()) out = "            // (none placed)\n";
+            std::printf("v2: %zu bulb(s) -- paste into World::levelBulbSeed()\n%s",
+                        world_.levelBulbs().size(), out.c_str());
+            std::fflush(stdout);
+            ImGui::SetClipboardText(out.c_str());
+            return true;
+        }
+        if (e.key == Input::Key::P) shotRequested_ = true;
+        if (e.key == Input::Key::F1) printHelp();
+        std::fflush(stdout);
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    bool onMouseEvent(const MouseEvent &e) override {
+        if (quitting_) return true;   // see onKeyEvent
+        // AN `if` WITH NO BODY BINDS TO THE NEXT STATEMENT, and the next
+        // statement here is the whole wheel. There used to be a
+        //
+        //     if (e.type == MouseEvent::Type::ButtonDown) quitArmed_ = false;
+        //
+        // on this line. quitArmed_ went when ESC became a ladder of three, and
+        // eight of the nine places that cleared it were statements of their own
+        // and came out cleanly; this one was the tail of an `if`, and taking it
+        // left the test behind. The wheel block below then ran only for an
+        // event that was a ButtonDown AND a Wheel, which no event is -- so the
+        // wheel did nothing at all, and there was no error and no warning,
+        // because `if (a) if (b) {...}` is perfectly good C++.
+        //
+        // Reported as "I cant scroll to any other tool".
+        if (e.type == MouseEvent::Type::Wheel) {
+            // X IS A HELD MODIFIER, and it is POLLED rather than tracked from
+            // key events: a stuck flag after an alt-tab that swallowed the key
+            // release would silently turn every later scroll into a time change.
+            // The input state reports the key's state now, and a window without
+            // focus reports it released.
+            if (getInputState().isKeyDown(Input::Key::X)) {
+                clock_.nudgeSpeed(e.wheelDelta.y > 0.0f);
+                char lbl[24];
+                clock_.speedLabel(lbl, sizeof(lbl));
+                std::printf("v2: day/night %s\n", lbl);
+                std::fflush(stdout);
+                return true;
+            }
+            // THE BARE WHEEL CHANGES TOOLS, which is what it does in the
+            // engine this hand was ported from. It used to ZOOM, and every
+            // stray scroll threw the accumulated film away and left the view at
+            // some field of view nobody chose -- the note that said "the bare
+            // wheel does nothing" was the fix for that, and the field of view
+            // still belongs to the slider in the settings menu. This is not a
+            // return to the zoom: it is the hotbar, and with nothing in the
+            // hand it still does nothing.
+            if (held_.ready() && !menuOpen_) {
+                held_.cycle(e.wheelDelta.y > 0.0f ? 1 : -1);
+                std::printf("v2: hand %s\n", held_.name());
+                std::fflush(stdout);
+            }
+            return true;
+        }
+
+        // The mouse belongs to whichever panel is up.
+        if (menuOpen_ || waterPanelOpen_) return false;
+
+        // -- IN THE ROOM, A CLICK IS A BUTTON PRESS AND NOTHING ELSE --------
+        //
+        // Before the capture rule below, because in the room the FIRST click
+        // has to work: there is nothing to look around at, and a pause menu
+        // that ignores the first thing you do is a pause menu that feels
+        // broken.
+        if (pauseOpen_ && e.type == MouseEvent::Type::ButtonDown &&
+            e.button == Input::MouseButton::Left) {
+            // -- ...UNLESS THE POINTER IS NOT OURS YET, AND THAT EXCEPTION IS
+            //    THE WHOLE OF THE DISCORD BUG (user 2026-09-14) -----------
+            //
+            // "if the player comes back from discord after clicking on it, it
+            // cant click off the discord button."
+            //
+            // A LOOP, AND A TIGHT ONE. The blue button opens Discord;
+            // releaseMouseOffFocus sees the window go to the back and hands the
+            // pointer over, so `looking_` is false. Clicking the game window to
+            // come back is a ButtonDown, this branch runs BEFORE the
+            // click-to-capture rule below, and the crosshair has not moved --
+            // it is still resting on the blue ball. So the click that was meant
+            // to return to the game pressed Discord again, which took the focus
+            // away again, for ever.
+            //
+            // The note above is still right about the ordinary case: ESC opens
+            // the panel without touching the capture, so `looking_` is true and
+            // the first click still works. What it did not cover is a first
+            // click whose job is to get the mouse back, which is every click
+            // that follows an alt-tab.
+            if (!looking_) {
+                setCapture(true);
+                swingArmed_ = false;
+                return true;
+            }
+            // -- THE CLICK STARTS THE PRESS; THE PRESS DOES THE THING -------
+            //
+            // "it presses the button down and then executes the action. make
+            // the button press at the right timing when the player hits."
+            //
+            // So the action is not run here. What happens here is that the
+            // button starts travelling, and tickButtons fires the action on the
+            // frame it BOTTOMS OUT -- which is the moment a real button closes
+            // its contact. Doing it on the click instead means the room shuts,
+            // or the program exits, before the button has visibly moved: the
+            // animation would exist but nobody would ever see it.
+            //
+            // ONE AT A TIME. A second click while a press is in flight is
+            // ignored rather than queued -- two buttons going down together is
+            // a thing a hand cannot do, and the second of them would be acting
+            // on a room the first one had already left.
+            const int b = buttonUnderCrosshair();
+            if (b >= 0 && btnPend_ < 0) {
+                btnHeld_ = b;
+                btnPend_ = b;
+                btnAt_ = btnClock_ + kBtnDownSec;
+            }
+            return true;
+        }
+
+        // -- ON THE DECK, A CLICK PICKS THE SUBJECT OR GRABS A HANDLE -------
+        //
+        // Before the capture rule below, exactly as the room's button press is
+        // and for the same reason: the first click has to work. It is gated on
+        // `looking_` all the same -- the ray is cast from the CROSSHAIR, and
+        // with a loose cursor the crosshair is not where the pointer is, so a
+        // click that had not taken the mouse yet would pick whatever happened
+        // to be in the middle of the screen.
+        if (world_.staged() && looking_ && e.button == Input::MouseButton::Left) {
+            if (e.type == MouseEvent::Type::ButtonDown) {
+                if (edit_.click(pos_, Camera::direction(yaw_, pitch_))) {
+                    std::fflush(stdout);
+                    return true;
+                }
+            } else if (e.type == MouseEvent::Type::ButtonUp && edit_.dragging()) {
+                edit_.release();
+                return true;
+            }
+        }
+        if (e.type == MouseEvent::Type::ButtonDown && e.button == Input::MouseButton::Left) {
+            // Click to capture, the way a game does it. ESC gives it back.
+            //
+            // THE CLICK THAT CAPTURES IS NOT A SWING. processInput polls the
+            // button rather than latching it here (see the note there), so all
+            // this has to do is disarm: the axe waits for the button to come up
+            // once before it will swing. Swinging at the wood the instant a
+            // window is clicked into focus is not what that click means.
+            if (!looking_) {
+                setCapture(true);
+                swingArmed_ = false;
+            }
+            return true;
+        }
+        if (e.button == Input::MouseButton::Right) {
+            // Hold-to-look, kept from the earlier engines so the habit carries
+            // -- but ONLY as a way of taking the pointer in the first place.
+            // Once it is ours the right button belongs to the hand: it is what
+            // draws the bow, and a bow that let go of the mouse every time you
+            // loosed an arrow would be unusable. The habit is untouched for
+            // anyone who uses it, since it was always about grabbing the view
+            // from a loose cursor.
+            if (e.type == MouseEvent::Type::ButtonDown) {
+                if (!looking_) {
+                    holdLook_ = true;
+                    setCapture(true);
+                }
+                // -- ...AND WITH SEEDS IN HAND IT PLANTS (user 2026-09-14) ---
+                //
+                // "have it where the player can right click tilled land with
+                // seeds to place down seeds."
+                //
+                // AFTER THE CAPTURE, so the click that grabs a loose pointer is
+                // not also a planting -- the same rule the left button's
+                // click-to-capture follows, and for the same reason.
+                //
+                // BEFORE THE BOW, which is what the right button otherwise
+                // means: plantSeed answers false unless seeds are in the hand
+                // AND the crosshair is on turned earth, so the draw is
+                // untouched by anything that is not both.
+                // -- ...AND IT PICKS THE FRUIT ---------------------------
+                //
+                // (user 2026-09-17: "when the player right clicks on a apple or
+                //  orange, the model appears in the right hand".)
+                //
+                // ON THIS BUTTON RATHER THAN ON THE SWING, which is where it
+                // was and most of why it kept being reported as not working. A
+                // pick is not a blow, and asking it as one made it answer at
+                // the IMPACT FRAME of the left-click animation -- a quarter of
+                // a second after the button went down, with the view already
+                // carried by the swing, so the aim it judged was never the aim
+                // the player took. It also hung a 0.9 m gate in front of every
+                // axe stroke: an apple anywhere near the line was picked
+                // instead of the trunk being chopped.
+                //
+                // BEFORE plantSeed AND BEFORE THE BOW, at no cost to either.
+                // All three answer false unless their own thing is under the
+                // crosshair, and a fruit, a patch of turned earth and a drawn
+                // bow are three different things.
+                else if (!pickFruit())
+                    plantSeed();
+            } else if (e.type == MouseEvent::Type::ButtonUp && holdLook_) {
+                holdLook_ = false;
+                setCapture(false);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    #include "platform/app_window.inl"
+    #include "world/app_ground.inl"

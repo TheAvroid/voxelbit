@@ -1,0 +1,469 @@
+// ---------------------------------------------------------------------------
+// arrows.h -- what leaves the bow.
+//
+// A small fixed pool of shafts, each an instance in the same acceleration
+// structure as everything else, so an arrow in the air is lit, shadowed and
+// bounced exactly as the tool that loosed it is. Ported from the JS engine's
+// sim/projectiles.js: the same launch profile, the same gravity, the same
+// forgiveness about where a shaft comes to rest.
+//
+// ---------------------------------------------------------------------------
+// A FIXED POOL, AND THAT IS THE WHOLE REASON IT IS AFFORDABLE
+//
+// The top-level structure is REFIT once a frame rather than rebuilt -- 0.05 ms
+// against 1.15 -- and an update may not change how many instances there are.
+// So the slots exist from the moment the world is built, every one of them,
+// carrying an instance mask of zero until a shaft is actually in it. A pool
+// that grew and shrank with the shooting would force a full rebuild on every
+// loose and every landing, which is the most expensive possible moment to pay
+// for one.
+//
+// TWELVE. A full draw carries about six seconds of flight and the bow will not
+// loose faster than its own release animation, so twelve is several shots in
+// the air at once with room to spare; past that the oldest is reused, which is
+// what the JS engine does with its own pool.
+//
+// ---------------------------------------------------------------------------
+// THE FLIGHT IS INTEGRATED AS IT GOES, NOT AT RELEASE
+//
+// The engine this comes from marches the WHOLE arc up front, at release, and
+// keeps the impact point -- it can, because its world is a voxel array that is
+// all resident. This world streams: a shaft loosed across a valley is aimed at
+// chunks that are not built yet, so an arc integrated at release would be
+// deciding where an arrow lands against terrain nobody has generated. Stepping
+// it per frame asks the same question of the same height field, five
+// milliseconds at a time, and gets an answer that is true when it matters.
+//
+// The step size IS that engine's: 5 ms, small enough that a shaft at full
+// draw moves half a voxel a step and cannot tunnel through a trunk.
+// ---------------------------------------------------------------------------
+#pragma once
+
+#include "core/vecmath.h"
+#include "world/world.h"
+#include "player/collide.h"
+#include "world/voxelworld.h"
+#include "player/player.h"
+
+#include <cmath>
+#include <functional>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+namespace v2 {
+
+// -- the launch profile, from sim/projectiles.js ---------------------------
+//
+// ARROW_V is TWICE that engine's thrown profile -- "a bow beats an arm, and the
+// flatter arc is the point of it" -- and ARROW_UP is the kick that goes with
+// it. Its units are voxels a second; these are metres, which is the same
+// numbers over ten.
+inline constexpr float kArrowSpeed = 48.0f;  // ARROW_V 480 vox/s, at a full draw
+inline constexpr float kArrowUp = 1.8f;      // ARROW_UP 18 vox/s
+inline constexpr float kArrowG = -17.0f;     // TOSS_G -170 vox/s^2
+
+// WHERE IT STARTS, and it is not the eye: the viewmodel sits a hand's breadth
+// from the lens, far too close to spawn a full-size shaft, so the launch point
+// is carried out along the view to where an arrow can be drawn.
+inline constexpr float kArrowLaunchM = 0.6f;  // LAUNCH_D 6 voxels
+// ...and it must still go WHERE YOU AIMED. Leaving the bow means leaving from a
+// point to the side of the eye, so firing straight down the view sends the
+// shaft along a parallel line that never crosses the crosshair. Aim at a
+// distant point ON the sight line instead and the flight converges onto it
+// within a few metres, the way a real bow sight does.
+inline constexpr float kArrowAimM = 30.0f;  // AIM_FAR 300 voxels
+
+// How long a landed shaft stays before its slot is free again. The JS engine
+// leaves them in the world for good; here the pool is what limits it, and a
+// minute is long enough that you can walk up to one you shot.
+inline constexpr float kArrowRestSec = 60.0f;
+
+// The roll, from the JS engine's projectiles.js. Radians a second about the
+// shaft's own axis -- about 1.4 turns a second.
+inline constexpr float kArrowRoll = 9.0f;
+
+inline constexpr int kArrowSlots = 12;
+// -- HOW FAR THE SOLIDS HAVE TO REACH FOR A SHAFT ---------------------------
+//
+// (user 2026-09-15: "arrows are clipping through big rocks. dont let arrows go
+// through anything.")
+//
+// THE ARROW WAS BEING HANDED THE PLAYER'S OWN LITTLE BUBBLE. App::walkWorld
+// gathers colliders within SIX METRES of the player, because that is all a body
+// walking needs -- and insideWorld tests a shaft against exactly that list. So
+// past six metres there were no models in the world at all as far as an arrow
+// was concerned: it flew through boulders and trunks and buried itself in the
+// terrain behind them, every time, and inside six metres it behaved perfectly.
+//
+// 90 m is what a shaft can actually cover: 48 m/s with -17 m/s^2 on it is about
+// 75 m at the best angle, and the gather is only paid while one is in the air.
+// The birds already gather at 115, so the cost is precedented.
+inline constexpr float kArrowSolidsM = 90.0f;
+
+// ---------------------------------------------------------------------------
+class Arrows {
+  public:
+    struct Shaft {
+        Vec3 pos{0, 0, 0};
+        Vec3 vel{0, 0, 0};
+        // The direction it is POINTING, which stops being the direction it is
+        // travelling the moment it lands: a shaft in the ground keeps the angle
+        // it went in at.
+        Vec3 dir{0, 0, 1};
+        float age = 0.0f;
+        // HOW FAR IT HAS ROLLED ABOUT ITS OWN SHAFT. The JS engine's
+        // ARROW_ROLL: "rad/s the arrow rolls about its own shaft in flight --
+        // ~1.4 turns a second: fast enough to read as a spin, slow enough not
+        // to smear into a blur". It stops when the shaft does, for the same
+        // reason `dir` does: an arrow standing in the ground is not turning.
+        float roll = 0.0f;
+        bool live = false;   // in the air
+        bool stuck = false;  // landed, and still standing in whatever it hit
+        // -- ON ITS WAY TO THE PLAYER'S HAND ------------------------------
+        //
+        // (user 2026-09-17: "when absorbing the arrow in the terrain, have to
+        //  get absorbed by the player just like chunks from tools".)
+        //
+        // Milliseconds into the collect, or a negative sentinel for a shaft
+        // that is simply standing there. `from` is where it set off, because
+        // the curve is read off a start POINT and a fraction rather than
+        // integrated -- the same shape World's debris absorb uses, and for the
+        // reason its note gives: a curve is the same at any frame rate.
+        double grabMs = -1.0;
+        Vec3 from{0, 0, 0};
+        // Has the arc reached open air? False while a shaft is still inside
+        // whatever it was loosed from -- see the note in launch().
+        bool free_ = false;
+    };
+
+    bool init(World &world, const std::string &voxPath) {
+        model_ = world.addHeldModel(voxPath, &sx_, &sy_, &sz_);
+        return model_ >= 0;
+    }
+    // Print where each shaft lands. Off by default -- a line per arrow -- but
+    // it is the only way to see the flight without waiting for one to catch
+    // the light in the grass.
+    bool log = false;
+
+    bool ready() const { return model_ >= 0; }
+    int model() const { return model_; }
+
+    // -----------------------------------------------------------------------
+    // Loose one. The oldest slot is taken when every one is busy, which is the
+    // pool behaving as a pool rather than refusing the shot.
+    // -----------------------------------------------------------------------
+    void launch(const Vec3 &from, const Vec3 &vel) {
+        if (!ready()) return;
+        int slot = -1;
+        float oldest = -1.0f;
+        for (int i = 0; i < kArrowSlots; ++i) {
+            if (!shafts_[i].live && !shafts_[i].stuck) { slot = i; break; }
+            if (shafts_[i].age > oldest) { oldest = shafts_[i].age; slot = i; }
+        }
+        if (slot < 0) return;
+        Shaft &a = shafts_[size_t(slot)];
+        a = Shaft{};
+        a.pos = from;
+        a.vel = vel;
+        const float l = sqrtf(maxf(1e-8f, lengthSq(vel)));
+        a.dir = vel * (1.0f / l);
+        a.live = true;
+        // WAS IT LOOSED FROM INSIDE SOMETHING? Point-blank into a trunk, or
+        // aimed steeply down so the launch point sits under the ground the
+        // player is standing on. The JS engine's note is that an ungated
+        // impact test then sticks the shaft instantly at arm's length, while
+        // an ungated FLIGHT falls out of the bottom of the world. It asks the
+        // question directly instead, and so does this: a shaft that starts
+        // buried is not tested until it has reached open air. FALSE, so the
+        // first step that finds open air is what arms the impact test -- a
+        // shot into thin air arms it immediately and loses nothing.
+        a.free_ = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // One tick of every shaft, at the JS engine's 5 ms.
+    // -----------------------------------------------------------------------
+    // -- WHAT A SHAFT MEETS THAT IS ALIVE ---------------------------------
+    //
+    // (user 2026-09-15: "have the arrow able to kill life in one shot, just
+    // like in v1".) v1's ARROW_HITS_TO_KILL is 1 and its note is the whole
+    // design: "the bow is now the axe's peer: the one weapon that ends it in a
+    // single hit, and the only one that does so at range."
+    //
+    // HANDED IN RATHER THAN REACHED FOR, which is how every other predicate in
+    // this engine's creature files arrives -- an arrow has no business knowing
+    // what a population is. True means "that was alive and it is dead now", and
+    // the shaft is spent where it struck.
+    //
+    // ASKED ON THE SUBSTEP, NOT ON THE FRAME. A shaft travels about half a
+    // metre per frame and a rabbit is a third of one, so a per-frame test
+    // tunnels straight through the animal it was aimed at -- which is the same
+    // reason the world test below is in here rather than outside.
+    using LifeF = std::function<bool(const Vec3 &)>;
+
+    void update(float dt, const WalkWorld &w, const LifeF &hitLife = nullptr) {
+        if (!ready()) return;
+        // WHERE ANYTHING LANDED THIS TICK, for the impact sound. A list rather
+        // than a flag because two shafts really can land on one frame -- that
+        // is the same reason the JS engine pools its impact voice four deep --
+        // and cleared here rather than by the reader, so a caller that forgets
+        // to drain it cannot replay last frame's thud for ever.
+        landed_.clear();
+        impacts_.clear();
+        for (Shaft &a : shafts_) {
+            if (!a.live && !a.stuck) continue;
+            a.age += dt;
+            if (a.stuck) {
+                if (a.age > kArrowRestSec) a = Shaft{};
+                continue;
+            }
+            float left = minf(dt, 0.25f);  // a stalled frame must not teleport it
+            while (left > 0.0f && a.live) {
+                const float h = minf(left, 0.005f);
+                left -= h;
+                const float nvy = a.vel.y + kArrowG * h;
+                const Vec3 step(a.vel.x * h, (a.vel.y + nvy) * 0.5f * h, a.vel.z * h);
+                const Vec3 next = a.pos + step;
+                a.vel.y = nvy;
+
+                // THE ANIMAL FIRST. A creature standing against a trunk is
+                // nearer than the trunk, and a shaft that resolved the wood
+                // first would bury itself a voxel behind the thing it hit.
+                if (hitLife && hitLife(next)) {
+                    a.live = false;
+                    a.stuck = true;
+                    a.age = 0.0f;
+                    a.pos = next;
+                    landed_.push_back(a.pos);
+                    break;
+                }
+                const bool blocked = insideWorld(w, next);
+                if (!blocked) a.free_ = true;  // out in the open at last
+                if (blocked && a.free_) {
+                    // It comes to rest at the last point that was NOT inside
+                    // anything, so the shaft stands in the surface rather than
+                    // vanishing into it.
+                    a.live = false;
+                    a.stuck = true;
+                    a.age = 0.0f;
+                    landed_.push_back(a.pos);
+                    // -- ...AND WHERE IT WENT IN, WHICH IS NOT WHERE IT STOPPED
+                    //
+                    // (user 2026-09-15: "have arrow take out tiny peices of
+                    // material".)
+                    //
+                    // `a.pos` is the last point that was OUTSIDE -- that is the
+                    // whole point of it, so the shaft stands proud of the
+                    // surface rather than disappearing into it. A carve wants
+                    // the opposite end of that step: `next` is the first point
+                    // INSIDE the material, which is the voxel actually struck.
+                    //
+                    // At 48 m/s a 5 ms substep is 24 cm, so the two are more
+                    // than two voxels apart and chipping at the resting place
+                    // would carve the AIR in front of the hole.
+                    impacts_.push_back(Impact{next, a.dir});
+                    if (log) {
+                        std::printf("v2: arrow stuck at %.1f %.1f %.1f\n", double(a.pos.x),
+                                    double(a.pos.y), double(a.pos.z));
+                        std::fflush(stdout);
+                    }
+                    break;
+                }
+                a.pos = next;
+                a.roll += kArrowRoll * h;
+                const float l = sqrtf(maxf(1e-8f, lengthSq(a.vel)));
+                a.dir = a.vel * (1.0f / l);
+                // Out of the world entirely -- under it, or so far up that
+                // nothing can be struck on the way back down for a while.
+                if (a.pos.y < -50.0f || a.age > 20.0f) {
+                    a = Shaft{};
+                    break;
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Put every slot on the pipeline. Slots with nothing in them are written
+    // with a mask of zero rather than skipped -- see the note at the top about
+    // the instance count.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TAKE A SHAFT THAT IS STANDING IN SOMETHING.
+    //
+    // (user 2026-09-17: "no dont have the arrow levitate above the ground
+    //  after it lands. just the arrow thats actually impacted into the terrain
+    //  gets absorbed by the player. do not create another arrow.")
+    //
+    // THE FIRST CUT SPAWNED A DROP at the impact, which is the wheat's
+    // arrangement and wrong here for a reason the wheat does not have: a stalk
+    // of wheat is CONSUMED when it pays out, so the drop IS the plant. An
+    // arrow is still there. Paying out a drop as well made two arrows out of
+    // one -- the real shaft standing in the wall and a second one hovering
+    // beside it, which is the report exactly.
+    //
+    // So there is no drop. The shaft you can see is the thing that is taken,
+    // and taking it is what removes it.
+    //
+    // Returns true if one was taken. The caller gives the kit slot and plays
+    // the sound; this only owns the shafts.
+    // -- ...AND IT FLIES IN, IT DOES NOT BLINK OUT --------------------------
+    //
+    // (user 2026-09-17: "when absorbing the arrow in the terrain, have to get
+    //  absorbed by the player just like chunks from tools".)
+    //
+    // TWO CALLS, BECAUSE A COLLECT IS NOT AN INSTANT. This one only STARTS it:
+    // the nearest shaft in reach is taken off the wall and put on the curve.
+    // stepGrabs() below walks that curve and is the one that pays out, so the
+    // kit item and the sound land when the arrow arrives rather than when you
+    // walked past it.
+    //
+    // THE SAME CURVE AS A CHIP, deliberately and by the same constants -- see
+    // World's debris absorb: kAbsorbFlyMs, the smoothstep that leaves gently
+    // and arrives fast, the 0.3 m lift over the middle of the flight, and
+    // kAbsorbY for where on the body it disappears. "Just like chunks from
+    // tools" is a statement about what it LOOKS like, so the answer is to
+    // share the numbers rather than to pick similar ones.
+    bool takeStuckNear(const Vec3 &p, float reachM) {
+        int best = -1;
+        float bd = reachM * reachM;
+        for (int i = 0; i < kArrowSlots; ++i) {
+            const Shaft &a = shafts_[size_t(i)];
+            if (!a.stuck) continue;       // one in flight is not one you can pick up
+            if (a.grabMs >= 0.0) continue;   // ...and one already coming to you
+            const float dx = a.pos.x - p.x, dy = a.pos.y - p.y, dz = a.pos.z - p.z;
+            const float q = dx * dx + dy * dy + dz * dz;
+            if (q < bd) {
+                bd = q;
+                best = i;
+            }
+        }
+        if (best < 0) return false;
+        Shaft &a = shafts_[size_t(best)];
+        a.grabMs = 0.0;
+        a.from = a.pos;
+        // THE REST TIMER STOPS APPLYING. update() retires a stuck shaft at
+        // kArrowRestSec, and a shaft on its way to the hand that hit that limit
+        // mid-flight would vanish halfway there.
+        a.age = 0.0f;
+        return true;
+    }
+
+    // ONE STEP OF EVERY COLLECT IN PROGRESS. Returns how many ARRIVED this
+    // frame -- the caller gives that many kit items and plays the sound.
+    //
+    // `eye` rather than the feet, because that is what the chip flies to: the
+    // curve ends at eye.y + kAbsorbY, which is chest height on a 1.6 m eye.
+    int stepGrabs(const Vec3 &eye, float dt) {
+        int got = 0;
+        for (int i = 0; i < kArrowSlots; ++i) {
+            Shaft &a = shafts_[size_t(i)];
+            if (a.grabMs < 0.0 || (!a.stuck && !a.live)) continue;
+            a.grabMs += double(dt) * 1000.0;
+            const double kk = a.grabMs / kAbsorbFlyMs;
+            const float k = kk >= 1.0 ? 1.0f : (kk <= 0.0 ? 0.0f : float(kk));
+            const float e = k * k * (3.0f - 2.0f * k);   // leaves gently, arrives fast
+            const Vec3 to{eye.x, eye.y + kAbsorbY, eye.z};
+            a.pos.x = a.from.x + (to.x - a.from.x) * e;
+            a.pos.y = a.from.y + (to.y - a.from.y) * e + sinf(e * 3.14159265f) * 0.3f;
+            a.pos.z = a.from.z + (to.z - a.from.z) * e;
+            // IT SPINS ON THE WAY IN, which is the one thing a chip cannot do
+            // and the shaft can: publish already turns the fletching about the
+            // shaft off `roll`, so this costs a line and reads as being pulled
+            // rather than dragged.
+            a.roll += kArrowRoll * dt;
+            if (k >= 1.0f) {
+                a = Shaft{};   // both flags cleared -- see publish
+                ++got;
+            }
+        }
+        return got;
+    }
+
+    void publish(World &world) const {
+        if (!ready()) return;
+        for (int i = 0; i < kArrowSlots; ++i) {
+            const Shaft &a = shafts_[size_t(i)];
+            if (!a.live && !a.stuck) {
+                world.setArrowInstance(i, model_, nullptr, 0.0f, 0.0f, 0.0f, false);
+                continue;
+            }
+            // THE SHAFT RUNS DOWN THE MODEL'S LOCAL Z, POINT AT THE LOW END.
+            // arrow.vox is one voxel wide and nine long down the file's y --
+            // which is this z after scene/vox.h's y-up conversion -- with the
+            // head at y=0 and the two fletching voxels at y=8. So the arrow's
+            // NOSE is its -z, and putting the flight direction in the third
+            // column flew it tail first. It did, visibly, from the day it was
+            // written; nobody saw it while a held voxel was eleven millimetres
+            // and the shaft was a speck.
+            //
+            // A HALF TURN, NOT A NEGATED COLUMN. Flipping one column alone
+            // gives a determinant of -1 -- a mirror, which reverses the winding
+            // of every triangle and turns the outward normals in. Negating TWO
+            // is a rotation: (-r, u, -f) is the same frame spun half a circle
+            // about u, so the model's -z lands on the flight direction and the
+            // matrix stays a rotation. This is the same trap render/
+            // butterflies.h documents for the same reason.
+            const Vec3 f = a.dir;
+            Vec3 up(0.0f, 1.0f, 0.0f);
+            if (fabsf(f.y) > 0.99f) up = Vec3(1.0f, 0.0f, 0.0f);
+            Vec3 r = cross(up, f);
+            const float rl = sqrtf(maxf(1e-8f, lengthSq(r)));
+            r = r * (1.0f / rl);
+            const Vec3 u = cross(f, r);
+
+            // ...and the roll, which turns the other two axes about the shaft
+            // and leaves the shaft itself alone. A round arrow would show
+            // nothing; this one has fletching, which is what there is to see.
+            const float cr = cosf(a.roll), sr = sinf(a.roll);
+            const Vec3 rr = r * cr + u * sr;
+            const Vec3 uu = u * cr - r * sr;
+
+            const float s = VOXEL_M;
+            const float m[9] = {-rr.x * s, uu.x * s, -f.x * s, -rr.y * s, uu.y * s,
+                                -f.y * s, -rr.z * s, uu.z * s, -f.z * s};
+            // The mesh runs from its own corner and `pos` is the middle of the
+            // shaft, so the translation is the centre less the model's own
+            // half-box carried down the SAME three axes the matrix uses --
+            // which are now the turned ones.
+            const Vec3 corner = a.pos - (rr * (-0.5f * float(sx_) * s) +
+                                         uu * (0.5f * float(sy_) * s) +
+                                         f * (-0.5f * float(sz_) * s));
+            // NOTHING SAYS HOW FAR IT FLEW. World::place works that out from
+            // the transform this hands it and the one it handed last frame,
+            // which is why a shaft can no longer be launched across the screen
+            // with a motion vector of zero -- see the note over place().
+            world.setArrowInstance(i, model_, m, corner.x, corner.y, corner.z, true);
+        }
+    }
+
+    // Drained by the caller each frame -- see update().
+    const std::vector<Vec3> &landedThisTick() const { return landed_; }
+
+    // ...and where each of those went INTO something, with the heading it had.
+    // Only shafts that struck the WORLD are here -- one that struck an animal
+    // resolved as a kill and carved nothing, which is v1's rule too ("a creature
+    // in the way cancels the chop outright").
+    struct Impact {
+        Vec3 at;
+        Vec3 dir;
+    };
+    const std::vector<Impact> &impactsThisTick() const { return impacts_; }
+
+    int inFlight() const {
+        int n = 0;
+        for (const Shaft &a : shafts_)
+            if (a.live) ++n;
+        return n;
+    }
+
+  private:
+    int model_ = -1;
+    int sx_ = 0, sy_ = 0, sz_ = 0;
+    std::vector<Shaft> shafts_ = std::vector<Shaft>(size_t(kArrowSlots));
+    std::vector<Vec3> landed_;
+    std::vector<Impact> impacts_;
+};
+
+}  // namespace v2

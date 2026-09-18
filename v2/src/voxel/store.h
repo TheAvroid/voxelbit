@@ -60,9 +60,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include "columns.h"
-#include "mesher.h"
-#include "quad.h"
+#include "voxel/columns.h"
+#include "voxel/mesher.h"
+#include "voxel/quad.h"
 
 namespace v2 {
 namespace vox {

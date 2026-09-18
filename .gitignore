@@ -83,3 +83,13 @@ q.png
 # Video captures written by the in-engine recorder. Output, not input.
 v2_take_*.mp4
 *.mp4
+
+# Terrain data built by v2/tools/dem2raw.cpp and v2/tools/naip2cov.py.
+# DERIVED, and large: a 60 km window is 130 MB, which is past GitHub's
+# 100 MB hard limit and would have the push refused outright. Both files
+# are rebuilt from the USGS tiles in minutes -- see v2/assets/dem/README.md.
+v2/assets/dem/*.vbdem
+v2/assets/dem/*.vbcov
+
+# Built by hand from tools/*.cpp; not a deliverable.
+v2/tools/*.exe

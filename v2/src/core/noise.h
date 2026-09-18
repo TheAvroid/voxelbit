@@ -14,7 +14,7 @@
 #include <cmath>
 #include <cstdint>
 
-#include "vecmath.h"
+#include "core/vecmath.h"
 
 namespace v2 {
 

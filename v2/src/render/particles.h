@@ -55,8 +55,8 @@
 #include <cstdio>
 #include <vector>
 
-#include "../gpu/world.h"
-#include "../scene/vox.h"
+#include "world/world.h"
+#include "voxel/vox.h"
 
 namespace v2 {
 

@@ -16,43 +16,63 @@
 add_falcor_executable(v2)
 
 target_sources(v2 PRIVATE
-    src/main.cpp
-    src/app.h
+    src/platform/main.cpp
+    src/platform/app.h
+
+    # app.h's body, split by topic. These are #included INSIDE ForestApp,
+    # not compiled on their own -- listed so they show up in IDEs.
+    src/platform/app_capture.inl
+    src/platform/app_frame.inl
+    src/platform/app_input.inl
+    src/platform/app_load.inl
+    src/platform/app_offline.inl
+    src/platform/app_tests_interaction.inl
+    src/platform/app_tests_terrain.inl
+    src/platform/app_window.inl
+    src/player/app_actions.inl
+    src/ui/app_console.inl
+    src/ui/app_gui.inl
+    src/ui/app_hud.inl
+    src/ui/app_locate.inl
+    src/ui/app_room.inl
+    src/world/app_ground.inl
+    src/world/app_spawn.inl
+    src/world/app_sun.inl
 
     src/core/defaults.h
     src/core/noise.h
     src/core/vecmath.h
 
-    src/scene/chunks.h
-    src/scene/collide.h
-    src/scene/daynight.h
-    src/scene/sky.h
-    src/scene/vox.h
-    src/scene/voxelworld.h
+    src/world/chunks.h
+    src/player/collide.h
+    src/world/daynight.h
+    src/world/sky.h
+    src/voxel/vox.h
+    src/world/voxelworld.h
 
     src/render/camera.h
-    src/render/arrows.h
-    src/render/bow.h
-    src/render/helditem.h
-    src/render/holotext.h
-    src/render/player.h
-    src/render/recorder.h
-    src/render/mfvideo.h
+    src/player/arrows.h
+    src/player/bow.h
+    src/player/helditem.h
+    src/ui/holotext.h
+    src/player/player.h
+    src/platform/recorder.h
+    src/platform/mfvideo.h
 
-    src/gpu/tracer.h
-    src/gpu/world.h
-    src/gpu/ddgi.h
-    src/gpu/sharc.h
-    src/gpu/streamline.h
-    src/gpu/neural.h
-    src/gpu/nrc.h
-    src/gpu/restir.h
-    src/gpu/atmosphere.h
-    src/gpu/volfog.h
-    src/gpu/cuda.h
-    src/gpu/clusters.h
-    src/physics/physics.h
-    src/gpu/cuda/kernels.cu
+    src/render/tracer.h
+    src/world/world.h
+    src/render/ddgi.h
+    src/render/sharc.h
+    src/render/streamline.h
+    src/render/neural.h
+    src/render/nrc.h
+    src/render/restir.h
+    src/render/atmosphere.h
+    src/render/volfog.h
+    src/render/cuda.h
+    src/render/clusters.h
+    src/player/physics.h
+    src/render/cuda/kernels.cu
 
     shaders/Shared.slang
     shaders/Vecmath.slang
@@ -96,7 +116,7 @@ target_sources(v2 PRIVATE
 # The screen recorder (R) and the editing panel behind it.
 #
 # Media Foundation, not NVENC -- the reasoning is at the top of
-# src/render/mfvideo.h. The practical consequence is these four import
+# src/platform/mfvideo.h. The practical consequence is these four import
 # libraries and no vendored SDK at all: mfplat and mfuuid are the platform and
 # its GUIDs, mfreadwrite is the sink writer and the source reader, and mf is
 # where MFTranscodeContainerType_MPEG4 lives. shell32 is the "show the take"
@@ -109,7 +129,7 @@ target_sources(v2 PRIVATE
 target_link_libraries(v2 PRIVATE mfplat.lib mfreadwrite.lib mfuuid.lib mf.lib shell32.lib)
 
 # ---------------------------------------------------------------------------
-# The forest ambience (src/render/audio.h).
+# The forest ambience (src/platform/audio.h).
 #
 # One more in-box import library and still no vendored SDK: xaudio2.lib in the
 # Windows SDK is the stub for XAudio2.9, which has shipped in Windows since 10
@@ -142,7 +162,7 @@ target_include_directories(v2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # NVAPI use is for shader intrinsics and ray tracing validation, neither of
 # which v2 wants, and turning it on would change how Falcor compiles every
 # shader. v2 links NVAPI for ITSELF instead and calls it with the ID3D12Device
-# Falcor already made. See src/gpu/clusters.h for why this is the cheap door.
+# Falcor already made. See src/render/clusters.h for why this is the cheap door.
 #
 # Absent, v2 builds and runs exactly as before and says clusters are off.
 # ---------------------------------------------------------------------------

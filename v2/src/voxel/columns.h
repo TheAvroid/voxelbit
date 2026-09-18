@@ -33,8 +33,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "../scene/voxelworld.h"
-#include "quad.h"
+#include "world/voxelworld.h"
+#include "voxel/quad.h"
 
 namespace v2 {
 namespace vox {

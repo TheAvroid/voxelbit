@@ -60,7 +60,7 @@
 #include <cstring>
 #include <vector>
 
-#include "quad.h"
+#include "voxel/quad.h"
 
 namespace v2 {
 namespace vox {
