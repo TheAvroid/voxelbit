@@ -99,6 +99,12 @@ static_assert(v2::mat::GRASS_COUNT == v2::kGrassCount, "grass ramp disagrees wit
 static_assert(v2::mat::BGRASS_0 == v2::kBGrass0, "birch grass ramp disagrees with the shader");
 static_assert(v2::mat::BGRASS_COUNT == v2::kBGrassCount,
               "birch grass ramp disagrees with the shader");
+static_assert(v2::mat::BGRASS_FLOOR_COUNT == v2::kBGrassFloorCount,
+              "the oak floor's share of the broadleaf ramp disagrees with the shader");
+static_assert(v2::kBladeW0 == int(v2::kBGrassFloorW0) &&
+                  v2::kBladeW1 == int(v2::kBGrassFloorW1) &&
+                  v2::kBladeW2 == int(v2::kBGrassFloorW2),
+              "the floor's shade odds disagree with the blade heights they are counted from");
 // THE TWO STRAW RAMPS. Worth checking with the rest for a sharper reason than
 // the others: they are the last families before mat::TREE_BASE, so if either
 // COUNT moves without TREE_BASE moving with it, the model palette starts at a
@@ -435,15 +441,28 @@ constexpr int kParticleSmoke = 16;
 // cheek can.
 constexpr int kParticleTears = 4;
 constexpr int kParticleSlots = kParticleSparks + kParticleSmoke + kParticleTears;
+// -- ...AND THE ROUNDS THE RIFLE THROWS (see render/bullets.h) -------------
+//
+// The band lives here with the others rather than in bullets.h because THIS is
+// the file that decides how long the instance array is, and a population whose
+// count is declared somewhere else is how the critter band ended up two slots
+// short -- a write past the end of the flyer array is dropped without a word,
+// and the frog was never drawn in any wood for as long as that lasted.
+//
+// The rifle fires every kBulletIntervalMs and a round lives kBulletLifeS, so at
+// most about a dozen are ever up at once; twenty-four is that with room, and
+// the pool takes the oldest slot rather than refusing a shot.
+constexpr int kBulletSlots = 24;
 constexpr int kFlyerInstances = kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots +
                                 kBunnySlots + kMarchSlots + kBeeSlots + kButtonSlots +
-                                kCritterSlots + kParticleSlots;
+                                kCritterSlots + kParticleSlots + kBulletSlots;
 constexpr int kBunnySlot0 = kButterflySlots + kBirdSlots + kLakeSlots + kFlockSlots;
 constexpr int kMarchSlot0 = kBunnySlot0 + kBunnySlots;
 constexpr int kBeeSlot0 = kMarchSlot0 + kMarchSlots;
 constexpr int kButtonSlot0 = kBeeSlot0 + kBeeSlots;
 constexpr int kCritterSlot0 = kButtonSlot0 + kButtonSlots;
 constexpr int kParticleSlot0 = kCritterSlot0 + kCritterSlots;
+constexpr int kBulletSlot0 = kParticleSlot0 + kParticleSlots;
 
 // ---------------------------------------------------------------------------
 // RE-MESHING A DAMAGED MODEL, OFF THE FRAME THAT DAMAGED IT.
@@ -648,6 +667,136 @@ constexpr double kAbsorbWaitMs = 500.0;
 // the second it exists. It follows the piece: once the piece is this far from
 // where its window was centred, the next few metres of stone are built.
 constexpr int kWindowCells = 32;
+// HOW FAR A LOOSE BODY MAY DRIFT FROM ITS COLLISION WINDOW BEFORE IT GETS A
+// NEW ONE, and how many of those may be built in a frame.
+//
+// The window is kWindowCells voxels on a side -- 3.2 m -- so its half span is
+// 1.6 m and a body at 1.0 m from the centre still has at least 0.6 m of solid
+// world described around it in every direction. That margin is the point: the
+// rebuild happens while the piece is still supported, not after it has already
+// fallen out of the only geometry it knew about.
+// ===========================================================================
+// THE RULE: ANYTHING SEVERED FROM THE STATIC WORLD BECOMES A RIGID BODY.
+//
+// (user 2026-09-17: "whenever something breaks apart from the static terrain,
+//  it becomes a rigid body. This needs to become a RULE in the codebase. no
+//  matter what.")
+//
+// It applies to every kind of static geometry this engine has, and the list is
+// closed: the TERRAIN (dig), a MODEL -- boulder, trunk, decor -- (carveModel),
+// a body that is itself already loose (carveDebris), and the LEVEL
+// (carveLevel). There is no fifth thing to cut.
+//
+// WHY IT KEEPS NEEDING TO BE RE-STATED. The rule is not enforced by the type
+// system: each carve hands back a spoil cube and it is the CALLER that turns
+// it into a body, so the rule is one deletable line away from being broken
+// every time one of these sites is edited. It has been broken exactly that way
+// three times now --
+//
+//   * terrain hangers were carved and never spawned (severed stone vanished);
+//   * model hangers had the same bug in the model's own frame, which is the
+//     one a player actually sees, on a boulder;
+//   * the LEVEL's spawn line was deleted outright by a concurrent edit on
+//     2026-09-17 and had to be put back -- see arrowChip.
+//
+// Each time the symptom was identical and is worth knowing by heart: THE HOLE
+// APPEARS AND NOTHING COMES OUT OF IT.
+//
+// SO THE THREE THINGS THAT HOLD IT UP ARE:
+//
+//   1. kMinBodyVoxels == 1, below. There is no size at which a severed piece
+//      is allowed to be discarded instead of embodied.
+//   2. carveLevelToBody(), which fuses the carve and the spawn into one call
+//      so the level path -- the one that has actually regressed -- has no
+//      separate spawn line for an edit to drop.
+//   3. --fire-frame, which shoots a real round at the map and fails loudly
+//      with "CUT BUT NO BODY -- THE VOXELS JUST VANISHED" if voxels came out
+//      and no slot was filled. That test is the regression alarm; run it after
+//      touching any of this.
+//
+// See also the NOTHING FLOATS rule it is the other half of: that one says a
+// severed piece may not hang in the air, this one says it may not disappear.
+// ===========================================================================
+constexpr int kMinBodyVoxels = 1;
+
+// -- AND WHAT THE LEVEL'S HANGER SWEEP IS ALLOWED TO SPEND ----------------
+//
+// See dropLevelHangers. The flood asks whether a piece can reach the map's
+// foundation, which for anything still attached to a building means walking
+// most of that building -- so it is bounded, and a piece that exhausts the
+// bound is treated as ATTACHED rather than cut loose.
+//
+// 24,000 voxels is 24 cubic metres of solid, which is far more than any pole,
+// railing, sign or fence in the map and far less than a house. The SPAN is the
+// second bound and the one that actually fires on walls: 96 voxels is 9.6 m,
+// so a piece wider than that in any axis is a piece of building.
+// TIGHTENED (user 2026-09-17: "things are glitching when they become rigid
+// bodies"). A 9.6 m rigid body cut out of the middle of a building is going to
+// intersect the building on the frame it is born, and a solver's answer to a
+// body that starts penetrating is an impulse proportional to the depth -- so
+// the bigger the piece, the worse it behaves. 4.8 m and 8,000 voxels still
+// covers every pole, railing, sign and fence in the map, which is what a shot
+// actually knocks down; anything larger is structure and is left standing.
+constexpr int kLevelHangCap = 8000;
+// -- 48 -> 12, AND THIS IS A DELIBERATE TRADE ------------------------------
+//
+// (user 2026-09-17, twice: "its breaking things vertically, it should only
+//  leave the initial shot mark.")
+//
+// MEASURED: at 48 a round was still freeing a 2 x 2 x 25 piece -- a 2.5 m rod,
+// 75 voxels -- which fell out of a wall and left the long vertical scar in the
+// report. Every other guard passed it honestly: it WAS grounded before the
+// shot, it IS disconnected now, and it is free-standing rather than let into
+// the wall, so the embedded test cleared it too. It is a real severed object.
+//
+// IT IS ALSO NOT A SHOT MARK, and that is the instruction. 12 voxels is 1.2 m
+// -- four times the bite's own diameter and no more -- so what a round can
+// shake loose is now debris rather than architecture.
+//
+// WHAT THIS GIVES UP: "break a light pole and it falls" (user, earlier the
+// same day) no longer happens for a pole taller than 1.2 m. The two requests
+// genuinely pull opposite ways -- the same sever that drops a pole drops a
+// window mullion -- and the later, repeated one wins. THIS CONSTANT IS THE
+// DIAL between them; nothing else needs to move to trade back.
+constexpr int kLevelHangSpan = 12;
+// HOW SOLID A SEVERED PIECE HAS TO BE TO SURVIVE AS ONE BODY -- see the split
+// in dropLevelHangers. Voxels over the bounding box that holds them.
+//
+// 0.45 is the line between a fragment whose convex hull IS the fragment and one
+// whose hull is mostly the air around it. A solid brick is 1.0; an L-bracket is
+// about 0.5; a thin rail running corner to corner of its own box is under 0.1,
+// and a hull of that is a wedge of solid map.
+constexpr float kHullFillOk = 0.45f;
+// HOW MUCH OF A SEVERED PIECE MAY STILL BE TOUCHING THE MAP BEFORE IT COUNTS
+// AS PART OF IT -- see the test in dropLevelHangers.
+//
+// A pole standing in the open has air on every side and one contact under its
+// foot: a few per cent. A strip let into a wall touches that wall down its
+// whole length: a third of its voxels or more. 0.15 sits well clear of both,
+// and the failure it chooses is the safe one -- a thing left standing rather
+// than a wall taken apart.
+constexpr float kEmbeddedFrac = 0.15f;
+// HOW FAR OFF THE AIM LINE A FRUIT MAY BE AND STILL BE THE ONE YOU MEANT --
+// see takeFruitAlong.
+//
+// 0.9 m is a little over two fruit widths. That sounds slack and is not: this
+// is asked at the IMPACT FRAME OF A SWING, a quarter of a second after the
+// button went down and with the view carried by the animation, so the aim it
+// judges is not the aim the player took. The nearest fruit still wins, so a
+// wide gate costs nothing where there is only one.
+constexpr float kFruitAimM = 0.9f;
+// ...and how many separate pieces one shot may free. A round cuts a hole with
+// two sides; more than a few components coming loose from one bite means the
+// flood is finding things the shot did not cause.
+constexpr int kLevelHangMax = 4;
+// ...and how big a gap under the map is a gap the voxeliser LEFT rather than
+// one that is there on purpose. See seatLevelOnItsFoundation, which found
+// every house in nuketown hovering 20 cm over its own lawn.
+constexpr int kLevelSeatVox = 4;
+
+constexpr float kWinRecentreM = 1.0f;
+constexpr int kWinRebuildsPerFrame = 2;
+
 constexpr float kWindowFollowM = 0.8f;
 
 // Granite, near enough. It matters: mass and inertia are what make a chip
@@ -828,6 +977,22 @@ constexpr float kStaticFillFrac = 0.15f;
 // impossible -- a clearing packed with big rock -- and a partial collider is
 // still a collider.
 constexpr size_t kStaticMaxBoxes = 6000;
+// -- THE GROUND A FELLED BODY CARRIES WITH IT -- see buildSolidWindow -------
+//
+// Sampled every kFellGroundStep voxels rather than per column: a 15 m window
+// is 150 columns square and one box each would be 22,500 before merging. Four
+// voxels is 40 cm, which is finer than anything a 26 m trunk can notice, and
+// the run-merge along x takes the usual hillside down to a few dozen boxes.
+//
+// A METRE THICK, and that is a ceiling as much as a floor: deep enough that
+// nothing at rest can be pushed through it, shallow enough that a body which
+// is ALREADY buried is not sealed under a slab it can never climb out of.
+constexpr int kFellGroundStep = 4;
+constexpr float kFellGroundThickM = 1.0f;
+// How hard a shot bulb's pieces leave, in metres per second. Enough to read as
+// breaking rather than as one object falling, small enough that no fragment is
+// thrown across the room -- see takeLevelBulbNear.
+constexpr float kBulbBurstMs = 1.0f;
 // How far past a body's own bounds the window reaches, and how far inside those
 // bounds the body may travel before it is rebuilt. The gap between the two is
 // what stops a rebuild every frame.
@@ -841,6 +1006,142 @@ constexpr float kStaticPadM = 3.0f;
 // MEASURED before it existed: 55% of dig sites left terrain standing on air,
 // 448 voxels over 300 sites, the worst site 26.
 constexpr int kHangBoxVox = 13;
+
+// -- WHEN A LOOSE PIECE IS AN OBJECT RATHER THAN LITTER ---------------------
+//
+// (user 2026-09-17: "audit the game for floating objects".)
+//
+// 27 voxels is a 3x3x3 block, 30 cm on a side. Under that a piece is a needle
+// cluster, a leaf, a chip of bark -- things the .vox author drew as separate
+// islands and that no player has ever pointed at. At or over it, it is
+// something with a shape you can see hanging in the air.
+//
+// NOT A LICENCE TO LEAVE THE SMALL ONES. kMinBodyVoxels is still 1 and every
+// severed voxel still becomes a body. This is the AUDIT's line, so a report can
+// say "four hundred needles" and "one branch" in different columns instead of
+// adding them up into a number that means nothing.
+constexpr int kFloatPieceVox = 27;
+
+// ===========================================================================
+// THE FLOAT WATCH -- the layer that asks again.
+//
+// (user 2026-09-17: "I need you to audit the game for floating objects ... we
+//  have attempted this multiple times and it is not working ... create a
+//  mechanic layer for this ... then when a floating voxel is detected, turns
+//  into a rigid body.")
+//
+// IT IS NOT AN AI AND IT DOES NOT NEED TO BE. The question "is this piece of
+// geometry still joined to the ground" has an exact answer -- a flood fill --
+// and the only reason this engine kept getting it wrong is that it was asking
+// in the wrong PLACE and at the wrong TIME. Both of those are cheap to fix and
+// neither wants a model.
+//
+// WHAT WAS ACTUALLY BROKEN, measured by --float-sweep on the shipped build:
+// hollow a room under a hillside, cut a ring through the crust around it, and
+// 26,431 voxels of ground -- a disc seven metres across -- hang in the air for
+// ever. Every existing sweep missed it, for two reasons that compound:
+//
+//   1. THEY ARE BOXES, AND THE BOX IS SMALLER THAN THE PIECE.
+//      dropTerrainHangers floods 2.7 m (kHangBoxVox 13). dropModelHangers
+//      floods a box round the bite. Both call anything touching the wall
+//      "held from outside", which is the right call for a box that small and
+//      is wrong for every piece bigger than one.
+//   2. THEY RUN ONCE, IN THE FRAME OF THE BLOW, AND NEVER AGAIN. A piece
+//      correctly called "held from outside" is never reconsidered when the
+//      thing holding it is cut ten seconds later, because the later blow
+//      floods a box that no longer contains the earlier piece. A player takes
+//      a hillside apart over a hundred blows and no single one of them ever
+//      sees what the hundred did.
+//
+// SO THIS ASKS AGAIN, BIGGER, AFTERWARDS, AND ON A BUDGET. A region marked
+// dirty by an edit is re-flooded at kFloatRegionVox -- 9.6 m, wide enough to
+// hold the piece that defeated the box -- some thousands of cells per frame,
+// across as many frames as it takes. The piece falls a fraction of a second
+// after it was cut free rather than in the same frame, which is not a
+// compromise: it is what a hillside giving way looks like.
+//
+// IT DOES NOT REPLACE THE PER-BLOW SWEEPS. They are still the fast path and
+// they still catch the ordinary case in the frame it happens. This is the
+// backstop that catches what they cannot see, and the two do not conflict:
+// anything they already dropped is air by the time this looks.
+// ===========================================================================
+
+// HOW WIDE THE WATCH LOOKS.
+//
+// 128 voxels is 12.8 m, and the margin is the point rather than the width. The
+// measured failure is a 7.4 m disc -- 80 voxels -- and at 96 that left four
+// voxels of slack a side, so a region centred anywhere but dead on the piece
+// clipped it, the piece touched a wall, and the wall rule (correctly) declined
+// to judge it. MEASURED: at 96 the second look converged at two spawns in four
+// and never at the other two, because the centroid of a CLIPPED piece is not
+// the centroid of the piece.
+//
+// At 128 an 80-voxel piece has 24 voxels of slack a side, which is more than
+// the 12 a dedupe cell can be off by -- so one re-centre always lands it. The
+// cost is the CUBE of this and it is not free: 2.1 M cells against 884 k. What
+// makes that affordable is that the sampler works by COLUMN (16,384 of them,
+// not 2.1 M voxels) -- see stepFloatSample.
+constexpr int kFloatRegionVox = 128;
+
+// HOW FAR APART TWO EDITS HAVE TO BE TO EARN THEIR OWN LOOK. A pick swing is
+// ten blows in one spot and they all want the same region; snapping the dirty
+// point to a 2.4 m grid collapses them into one job.
+constexpr int kFloatDedupeVox = 24;
+
+// HOW MANY REGIONS MAY BE WAITING. Past this the oldest is dropped -- a player
+// digging continuously is always generating work, and a queue that grows
+// without limit is a queue that never gets to the thing they just did.
+constexpr int kFloatQueueMax = 24;
+
+// THE FRAME BUDGET, in columns sampled and cells flooded per step. Both were
+// set so one step stays near a tenth of a millisecond on the measured region;
+// see --float-sweep, which prints what a whole job costs.
+constexpr int kFloatSampleCols = 700;
+constexpr int kFloatFloodCells = 70000;
+
+// HOW BIG A PIECE OF THE FALLING SLAB ONE BODY IS.
+//
+// EVERY BODY IN THIS ENGINE IS A CONVEX HULL -- see the note in
+// dropLevelHangers -- so a seven-metre disc handed over whole would be a
+// seven-metre lens, and the volume its hull invents is ground that is still
+// there. Diced into 3.2 m cubes each body is nearly its own bounding box, the
+// hull tells no lies, and a slab that comes apart as it falls is what a
+// collapsing hillside actually does.
+constexpr int kFloatDiceVox = 32;
+
+// AND HOW MANY OF THOSE ONE PIECE MAY SPEND. kDebrisInstances is 64 for the
+// whole world; one collapse must not take all of them, or nothing else in the
+// game can break until it is cleaned up.
+//
+// ALL OF A PIECE OR NONE OF IT, AND THAT IS NOT A PREFERENCE. The first cut of
+// this capped the SPAWN at six dice and then carved the whole component, so a
+// 26,431-voxel lid left the world as 13,806 voxels of rigid body and 12,625
+// voxels of nothing at all. That is the vanishing bug this entire rule exists
+// to answer, rebuilt from scratch inside the thing built to enforce it -- see
+// the RULE block over kMinBodyVoxels, which has now been broken three times by
+// three different routes.
+//
+// So the slots are counted BEFORE anything is spawned or carved. Not enough
+// free, or more dice than one piece may have: nothing happens, the region goes
+// back on the queue, and the ground stays where it is until the pool drains.
+// Still standing is recoverable. Deleted is not.
+constexpr int kFloatDicePerPiece = 24;
+
+// ...and how many PIECES one frame may deal with, so a collapse that frees a
+// dozen of them is spread out rather than spent in one step.
+constexpr int kFloatPiecesPerStep = 2;
+
+// HOW A VOXEL IS MARKED ONCE THE TWO FLOODS HAVE RUN. 0 is the answer that
+// matters: nothing reached it, so it is standing on nothing.
+constexpr uint8_t kFloatGrounded = 1;   // the floor of the region reaches it
+constexpr uint8_t kFloatOutside = 2;    // only a side wall does -- see stepFloatFlood
+
+// ...AND HOW MANY SECOND LOOKS ONE REGION MAY ASK FOR. A cut hillside can
+// present several ambiguous masses at once and each one is a whole job; two is
+// enough for every case measured and stops a pathological region from filling
+// the queue with itself.
+constexpr int kFloatRecentreMax = 2;
+
 // ...and WIDER for a model, because a model's flood is pure array work while
 // the terrain's evaluates several octaves of noise per column. MEASURED over
 // 1,224 blows on the real models, voxels left hanging per blow: 6.2 with no
@@ -877,6 +1178,28 @@ constexpr float kAbsorbY = -1.2f;
 constexpr float kArrowAbsorbM = 1.6f;
 // The sentinel for "from anywhere", which is every chip a tool makes.
 constexpr float kAbsorbAnywhere = 1e9f;
+
+// ...AND THE OTHER END OF THE SAME DIAL: NEVER, HOWEVER CLOSE YOU STAND.
+//
+// (user 2026-09-17: "in the fps map, dont have the player absorb the chunks
+//  caused by the bullet. just leave them there.")
+//
+// A RADIUS OF ZERO IS NOT THIS, which is why it is a named sentinel rather
+// than 0.0f. The reach test is `dist2 <= absorbR * absorbR`, and at zero that
+// is still true for a chip lying exactly under the player -- so a piece shot
+// out of a wall you then walk onto would vanish, once in a while, for no
+// reason anybody could see. Negative cannot be reached by a squared distance.
+constexpr float kAbsorbNever = -1.0f;
+
+// HOW LONG A PIECE SHOT OUT OF THE LEVEL LIES THERE.
+//
+// (user 2026-09-17: "have them be removed after 100 seconds.")
+//
+// Between the two that already exist and deliberately so: kDebrisLifeMs is 30 s
+// -- the lifetime of something you were going to walk over and pick up, which
+// these are not any more -- and kFelledLifeMs is half an hour, which for the
+// rubble of a firefight is a map that fills with litter and never empties.
+constexpr double kLevelChipLifeMs = 100000.0;
 // Nothing loose lives forever. A piece too big to absorb still stops being a
 // rigid body eventually, or a morning's chopping is a thousand live actors.
 // HOW SMALL A PIECE IS NOT WORTH BEING A PIECE.
@@ -887,6 +1210,35 @@ constexpr float kAbsorbAnywhere = 1e9f;
 // sixty-four debris slots on a speck the size of a thumbnail. Eight voxels is
 // eight cubic decimetres.
 constexpr int kMinPieceVox = 8;
+
+// -- WHEN A TRUNK IS CUT THROUGH ENOUGH TO GO OVER --------------------------
+//
+// (user 2026-09-17: "when cutting down a tree, the top half just floats.
+//  theres something in the middle blocking it?")
+//
+// IT WAS ONE VOXEL. Measured with --float-sweep on an oak: 703,068 voxels in
+// the model, and after twenty-six landed axe blows exactly ONE of them left
+// across the cut row. The sever test is pure connectivity, so that one voxel
+// is a six-connected bridge and the whole crown counts as attached -- by the
+// letter of the test, correctly. The renderer draws the hole the axe made, the
+// tree stands on a thread, and "something in the middle" is that thread.
+//
+// CONNECTIVITY IS THE WRONG QUESTION FOR A TRUNK. A real tree is felled by
+// cutting until the HINGE is too thin to hold, not until the last fibre parts,
+// and that is what these two say.
+//
+// RELATIVE TO HOW THE TREE WAS DRAWN, which is the part that has to be right.
+// A pine trunk is about 0.3 m through, so its rows are only a few dozen voxels
+// to begin with -- an absolute threshold would fell a birch the moment it
+// loaded. bornHinge is the narrowest row the model has UNDAMAGED, and the rule
+// is a fraction of that.
+constexpr float kHingeFrac = 0.25f;   // a quarter of the trunk left = it goes over
+// ...and a floor, so a tree drawn with a naturally thin row does not qualify on
+// the frame it appears. Four voxels is 4 cubic decimetres of wood.
+constexpr int kHingeFloorVox = 4;
+// HOW MUCH HAS TO BE STANDING ON THE HINGE before this is worth firing. A twig
+// snapping off the bottom of a sapling is not a felling.
+constexpr long kHingeAboveVox = 400;
 
 constexpr double kDebrisLifeMs = 30000.0;
 
@@ -978,6 +1330,9 @@ struct ModelTemplate {
     // ---------------------------------------------------------------------
     mutable int bornLoose = -1;    // < 0 until asked for
     mutable long bornVoxLoose = -1;   // ...and the same count per voxel, for the probe
+    // The narrowest row this model has UNDAMAGED -- see kHingeFrac. Measured
+    // once, on the template, because the rule is a fraction of it.
+    mutable int bornHinge = -1;
 
     // THIS MODEL AS A COLLIDER, in its own frame, metres from its (0,0,0)
     // voxel corner. Built once, on the first body that has to fall past one of
@@ -1154,7 +1509,8 @@ struct Chunk {
     std::vector<Solid> solids;
     // Placements by kind -- pine, rock, flower. Held per chunk so eviction
     // keeps the totals honest without anything having to be searched.
-    int decorKind[6] = {0, 0, 0, 0, 0, 0};  // pine, rock, flower, mushroom, cone, hive
+    // pine, rock, flower, mushroom, cone, hive, fruit
+    int decorKind[7] = {0, 0, 0, 0, 0, 0, 0};
     // Whether this chunk drew water. The wave scheduler walks only these, and
     // on this world under one chunk in a hundred is wet.
     bool hasWater = false;
@@ -1206,7 +1562,8 @@ class World {
         struct Row { const char *name; const std::vector<ModelTemplate> *v; };
         const Row rows[] = {{"pines/birches", &pines_}, {"rocks", &rocks_},
                             {"flowers", &flowers_},     {"mushrooms", &mushrooms_},
-                            {"pinecones", &pinecones_}, {"hives", &hives_}};
+                            {"pinecones", &pinecones_}, {"hives", &hives_},
+                            {"fruit", &fruit_}};
         size_t total = 0, solidTotal = 0;
         for (const Row &r : rows) {
             size_t bytes = 0, solid = 0;
@@ -1509,6 +1866,18 @@ class World {
         // the table before this was called, because the world has to exist
         // before anything can be held in front of it.
         uploadMaterials();
+
+        // -- AND THESE IDS MUST MEAN THE SAME THING IN EVERY PLACE ----------
+        //
+        // The kit is the one thing that travels: you carry it through [O] into
+        // a level that has a palette table of its own, so every entry a held
+        // model wears has to be reserved out of that table's allocator or the
+        // axe in your hand comes out wearing a wall. Recorded here, where the
+        // ids are in hand, rather than inferred later from the models --
+        // World::buildLevelPalette only has to read the mask.
+        for (int e = 1; e <= 255; ++e)
+            if (used[size_t(e)] && idOfEntry[size_t(e)] != mat::AIR)
+                heldMtl_[size_t(idOfEntry[size_t(e)])] = 1;
 
         const VoxMesh mesh = meshAsset(a, idOfEntry, 1.0f);
         if (mesh.triCount() == 0) {
@@ -2451,10 +2820,21 @@ class World {
         uploadMaterials();
     }
 
+    // -- WHICH TABLE THE DEVICE IS HOLDING ----------------------------------
+    //
+    // The wood's, or the level's -- see Palette::beginLevelTable. Swapped at
+    // the door by setLevel and nowhere else, because the two places are never
+    // in the acceleration structure together and one upload is 255 entries.
+    //
+    // EVERY OTHER CALLER OF THIS STILL WORKS. A model loaded while the level is
+    // open would re-upload the level's table, which is correct: it is the table
+    // in force. Nothing loads models in there today.
     void uploadMaterials() {
-        std::vector<V6Material> mats(palette.table().size());
+        const std::vector<MaterialLook> &src =
+            (levelTableActive_ && palette.hasLevelTable()) ? palette.levelTable() : palette.table();
+        std::vector<V6Material> mats(src.size());
         for (size_t i = 0; i < mats.size(); ++i) {
-            const MaterialLook &m = palette.table()[i];
+            const MaterialLook &m = src[i];
             mats[i].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
             mats[i].roughness = m.roughness;
             mats[i].specular = m.specular;
@@ -2463,7 +2843,30 @@ class World {
             // See V6Material::ior -- 0 for everything that is not the smoke.
             mats[i].ior = m.ior;
         }
-        materials_ = device_->createStructuredBuffer(sizeof(V6Material), uint32_t(mats.size()),
+        // -- IN PLACE IF IT CAN BE, AND IT ALWAYS CAN ------------------------
+        //
+        // THIS USED TO REPLACE THE BUFFER EVERY TIME AND THAT IS A BUG THE
+        // MOMENT ANYTHING CALLS IT AFTER START-UP. V2Tracer binds
+        // `gMaterials = world_->materialBuffer()` when it sets its program
+        // vars, so a NEW buffer object here leaves every one of those bindings
+        // pointing at the old one -- the host's table is right, the device's is
+        // whatever it was.
+        //
+        // It went unnoticed for as long as it did because every previous caller
+        // ran while the world was loading, before the tracer had bound
+        // anything. Swapping the level's table at the door is the first caller
+        // that does not, and the symptom was the map rendering in the WOOD's
+        // colours: concrete came out at the wood's entry 243, which is a red.
+        // The host print said the level's table had been uploaded, and it had.
+        //
+        // The table is mat::COUNT entries whichever place is open, so the
+        // capacity never changes and the update is a straight overwrite.
+        const uint32_t n = uint32_t(mats.size());
+        if (materials_ && materials_->getElementCount() == n) {
+            ctx_->updateBuffer(materials_.get(), mats.data(), 0, n * sizeof(V6Material));
+            return;
+        }
+        materials_ = device_->createStructuredBuffer(sizeof(V6Material), n,
                                                      ResourceBindFlags::ShaderResource,
                                                      Falcor::MemoryType::DeviceLocal, mats.data());
         materials_->setName("v2::materials");
@@ -2472,14 +2875,43 @@ class World {
     // Ask for a re-mesh of everything an edit moved. A chunk that is not
     // resident is not a problem -- the edit is stored, so it meshes WITH the
     // change when it streams in.
+    // -----------------------------------------------------------------------
+    // AN EDIT'S CHUNKS ARE URGENT, AND THAT IS NOT WHAT STREAMING IS.
+    //
+    // (user 2026-09-17: "the tilling with the hoe is still glitching out the
+    //  terrain".)
+    //
+    // update() adopts `buildBudget` chunks a frame -- TWO -- which is right for
+    // streaming, where the chunks coming in are at the edge of sight and
+    // nobody can tell what order they land in. An EDIT is the opposite case:
+    // it is under the crosshair, the player caused it, and its chunks are a
+    // single shape that has to appear at once. A hoe bite is 2.8 m across and
+    // straddles chunk seams, and writeCells also republishes the NEIGHBOUR of
+    // every cell within a voxel of one -- so one swing asks for several chunks
+    // and at two a frame the tilled circle arrives in PIECES over several
+    // frames. That is the terrain "glitching out": not a hole, not a stall, a
+    // disc that materialises a slab at a time.
+    //
+    // So chunks requested by an edit are remembered, and update() lifts its
+    // budget by however many are still outstanding. It cannot run away: the set
+    // only grows when the player edits something and every entry leaves it on
+    // adoption or eviction.
     void remesh(const std::vector<std::pair<int, int>> &touched) {
+        lastRemesh = 0;
         for (const auto &c : touched) {
             const long long k = chunkKey(c.first, c.second);
             if (!chunks_.count(k)) continue;
             requested_.insert(k);
-            mesher_.request(c.first, c.second);
+            urgent_.insert(k);
+            ++lastRemesh;
+            // TO THE FRONT OF THE MESH QUEUE, not just the front of the adopt
+            // budget -- see ChunkMesher::request. Raising the budget alone was
+            // measured and changed nothing: the chunk had not been MESHED yet.
+            mesher_.request(c.first, c.second, /*urgent=*/true);
         }
     }
+    // How many chunks the last edit asked to be re-meshed -- for --swing-log.
+    int lastRemesh = 0;
 
     // ONE TURNED COLUMN, and everything needed to put it back exactly -- v1's
     // `tilled` array by another name. `y` is the voxel that came away; y-1 is
@@ -3310,7 +3742,23 @@ class World {
         int count = 0;
         for (uint8_t v : vol)
             if (v != mat::AIR) ++count;
-        if (count < 2) return -1;
+        // -- THE RULE, AT THE ONE DOOR IT CAN BE ENFORCED AT ---------------
+        //
+        // (user 2026-09-17: "whenever something breaks apart from the static
+        //  terrain, it becomes a rigid body. This needs to become a RULE in
+        //  the codebase. no matter what.")
+        //
+        // THIS LINE USED TO READ `count < 2` and it was the last place in the
+        // engine where severed voxels could still simply cease to exist. The
+        // comment defending it was v1's "a lone voxel is still not a chunk",
+        // and as an argument about LITTER that is sound -- but it is an
+        // argument about tidiness, and the rule above is not. A voxel that
+        // left the static world and did not become a body is a voxel that
+        // vanished, which is the exact complaint this rule exists to answer.
+        //
+        // kMinBodyVoxels is 1: whatever comes out, comes out as something.
+        // See the RULE block over it for what is and is not covered.
+        if (count < kMinBodyVoxels) return -1;
         // -- THE TWO FAMILY IDS, RESOLVED -- see the note above.
         //
         // ROCK AND SAND ARE THE ONLY TWO. Every other ground family is stored
@@ -3344,9 +3792,38 @@ class World {
     //
     // See Debris::scenery for what it means and why it is not `felled`.
     // -----------------------------------------------------------------------
+    // HOW MANY BODIES THE WORLD CAN STILL TAKE. The float watch asks before it
+    // commits: see kFloatDicePerPiece, and the 12,625 voxels that were deleted
+    // when it did not.
+    int debrisFree() const {
+        int n = 0;
+        for (int i = 0; i < kDebrisInstances; ++i)
+            if (!debris_[i].live) ++n;
+        return n;
+    }
+
     void markScenery(int slot) {
         if (slot < 0 || slot >= kDebrisInstances) return;
         debris_[slot].scenery = true;
+    }
+
+    // -----------------------------------------------------------------------
+    // THIS ONE IS NOT PICKED UP, AND IT GOES ON ITS OWN CLOCK.
+    //
+    // (user 2026-09-17: "in the fps map, dont have the player absorb the chunks
+    //  caused by the bullet. just leave them there. have them be removed after
+    //  100 seconds.")
+    //
+    // A SETTER RATHER THAN TWO MORE ARGUMENTS, for the reason markScenery gives
+    // above it: spawnDebris already carries nine, the last three of which are
+    // positional bools and enums the compiler cannot tell apart. This takes the
+    // slot spawnDebris just returned, so it cannot be passed in the wrong
+    // position and cannot be passed silently.
+    // -----------------------------------------------------------------------
+    void markLeftLying(int slot, double lifeMs) {
+        if (slot < 0 || slot >= kDebrisInstances) return;
+        debris_[slot].absorbR = kAbsorbNever;
+        debris_[slot].lifeMs = lifeMs;
     }
 
     // One connected piece, as a body. See spawnDebris for the split above.
@@ -3689,6 +4166,65 @@ class World {
             }
             if (winBoxes_.size() >= kStaticMaxBoxes) break;
         }
+        // -- ...AND THE GROUND, WHICH WAS NEVER IN HERE AT ALL --------------
+        //
+        // (user 2026-09-17: "I cut down a tree and it fell right through the
+        //  terrain.")
+        //
+        // collidersNear GATHERS MODELS. Trunks, boulders, decor -- every solid
+        // in the world EXCEPT the world. So the collider a felled tree was
+        // handed described the other trees around it and nothing to land on,
+        // and a felled tree is deliberately excluded from the terrain clamp in
+        // updateDebris (its half height is thirteen metres, and clamping a
+        // body's ORIGIN by that holds it in the sky). Between the two it had
+        // no floor of any kind -- only the last-resort rescue below, which
+        // fires when the whole trunk is already under the world.
+        //
+        // IT WORKED BY ACCIDENT, WHICH IS WHY IT IS INTERMITTENT. The player
+        // carries a 64 m ground patch (kGroundPatchCols), a separate static
+        // actor that a falling body does collide with -- so a tree felled at
+        // your feet rests on it and --fell-test reports 0% of its voxels under
+        // the ground. Walk away and the patch re-centres on YOU: the tree is
+        // outside it, has nothing beneath it, and sinks.
+        //
+        // SAMPLED, MERGED ALONG X, AND ONLY AS DEEP AS IT NEEDS TO BE. One
+        // box per run of equal-height columns, a metre thick -- enough to stop
+        // anything resting on it and not so deep that a body already buried is
+        // trapped under a slab.
+        {
+            TerrainMemo memo;
+            const int i0 = int(std::floor(lo.x / VOXEL_M));
+            const int i1 = int(std::floor(hi.x / VOXEL_M));
+            const int j0 = int(std::floor(lo.z / VOXEL_M));
+            const int j1 = int(std::floor(hi.z / VOXEL_M));
+            const int step = kFellGroundStep;
+            for (int j = j0; j <= j1 && winBoxes_.size() < kStaticMaxBoxes; j += step) {
+                int runStart = i0;
+                int runTop = INT_MIN;
+                for (int i = i0; i <= i1 + step; i += step) {
+                    const int top = (i <= i1) ? terrainTopAt(i, j, memo) : INT_MIN;
+                    if (top == runTop) continue;
+                    if (runTop != INT_MIN) {
+                        // One box over [runStart, i), a metre deep.
+                        const float x0 = float(runStart) * VOXEL_M;
+                        const float x1 = float(i) * VOXEL_M;
+                        const float surf = float(runTop + 1) * VOXEL_M;
+                        VoxBox b;
+                        b.cx = 0.5f * (x0 + x1);
+                        b.hx = 0.5f * (x1 - x0);
+                        b.cz = (float(j) + 0.5f * float(step)) * VOXEL_M;
+                        b.hz = 0.5f * float(step) * VOXEL_M;
+                        b.cy = surf - 0.5f * kFellGroundThickM;
+                        b.hy = 0.5f * kFellGroundThickM;
+                        if (b.cy + b.hy >= lo.y && b.cy - b.hy <= hi.y)
+                            winBoxes_.push_back(b);
+                        if (winBoxes_.size() >= kStaticMaxBoxes) break;
+                    }
+                    runStart = i;
+                    runTop = top;
+                }
+            }
+        }
         if (winBoxes_.empty()) return -1;
         return ph.addStaticBoxes(winBoxes_.data(), int(winBoxes_.size()));
     }
@@ -3702,6 +4238,97 @@ class World {
     // of every model nearby. A number greater than zero is a trunk inside a
     // boulder. Diagnostic only -- --fell-test prints it.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // HOW MUCH OF A LOOSE BODY IS INSIDE THE MAP.
+    //
+    // (user 2026-09-17: "the physics is completely bugged on nuketown. audit
+    //  the physics system on nuketown. things are glitching when they become
+    //  rigid bodies.")
+    //
+    // debrisClip beside this asks the same question of MODELS -- it walks
+    // collidersNear, which is trunks and boulders, and in the level there are
+    // none. So it answers 0 for every body in nuketown however buried it is,
+    // which is a true number about the wrong world.
+    //
+    // A BODY THAT IS BORN PENETRATING IS THE WHOLE OF THE GLITCH. A solver's
+    // first duty to one is to get it out, and it does that with an impulse
+    // proportional to how deep it is -- so a piece that starts a voxel inside a
+    // wall twitches and a piece that starts a metre inside one is fired across
+    // the room. Counting the overlap is the only way to tell those apart from
+    // the outside, and to tell either from a body that is simply falling.
+    //
+    // THE BODY'S OWN VOXELS, TURNED THE WAY IT IS TURNED, asked of levelVol_.
+    // Not the bounding box: a bounding box round a tilted piece overlaps walls
+    // it is nowhere near, which would report a glitch on every body that ever
+    // rested against anything.
+    // -----------------------------------------------------------------------
+    int debrisInLevel(int slot) const {
+        if (slot < 0 || slot >= kDebrisInstances || levelVol_.empty()) return 0;
+        const Debris &d = debris_[slot];
+        if (!d.live || d.vox.empty()) return 0;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        float m[9];
+        quatMat3(d.quat, m);
+        int inside = 0;
+        for (int y = 0; y < d.vsy; ++y)
+            for (int z = 0; z < d.vsz; ++z)
+                for (int x = 0; x < d.vsx; ++x) {
+                    if (d.vox[size_t(x) + size_t(z) * size_t(d.vsx) +
+                              size_t(y) * size_t(d.vsx) * size_t(d.vsz)] == mat::AIR)
+                        continue;
+                    // The voxel's centre in the body's own frame, from the
+                    // trimmed volume's corner -- the same originOff the mesh
+                    // and the hull are measured from.
+                    const float bx = d.originOff.x + (float(x) + 0.5f) * VOXEL_M;
+                    const float by = d.originOff.y + (float(y) + 0.5f) * VOXEL_M;
+                    const float bz = d.originOff.z + (float(z) + 0.5f) * VOXEL_M;
+                    const float wx = m[0] * bx + m[1] * by + m[2] * bz + d.pos.x;
+                    const float wy = m[3] * bx + m[4] * by + m[5] * bz + d.pos.y;
+                    const float wz = m[6] * bx + m[7] * by + m[8] * bz + d.pos.z;
+                    const int lx = int((wx - kLevelAtX) / VOXEL_M);
+                    const int ly = int((wy - kLevelAtY) / VOXEL_M);
+                    const int lz = int((wz - kLevelAtZ) / VOXEL_M);
+                    if (lx < 0 || ly < 0 || lz < 0 || lx >= SX || ly >= SY || lz >= SZ) continue;
+                    if (levelVol_[size_t(lx) + size_t(lz) * size_t(SX) +
+                                  size_t(ly) * size_t(SX) * size_t(SZ)] != mat::AIR)
+                        ++inside;
+                }
+        return inside;
+    }
+
+    // Every live body, and how deep into the map they are between them. For
+    // --fire-frame: one number that says whether the bodies a shot made are
+    // resting on the world or fighting it.
+    void levelPenetration(int *bodies, int *voxelsInside, int *worst, int *worstSlot = nullptr,
+                          Vec3 *worstAt = nullptr, int *worstVox = nullptr,
+                          bool *worstFelled = nullptr, int *worstDims = nullptr) const {
+        int b = 0, v = 0, w = 0, ws = -1;
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            if (!debris_[i].live) continue;
+            ++b;
+            const int n = debrisInLevel(i);
+            v += n;
+            if (n > w) {
+                w = n;
+                ws = i;
+            }
+        }
+        if (bodies) *bodies = b;
+        if (voxelsInside) *voxelsInside = v;
+        if (worst) *worst = w;
+        if (worstSlot) *worstSlot = ws;
+        if (ws >= 0) {
+            if (worstAt) *worstAt = debris_[ws].pos;
+            if (worstVox) *worstVox = debris_[ws].voxels;
+            if (worstDims) {
+                worstDims[0] = debris_[ws].vsx;
+                worstDims[1] = debris_[ws].vsy;
+                worstDims[2] = debris_[ws].vsz;
+            }
+            if (worstFelled) *worstFelled = debris_[ws].scenery || debris_[ws].felled;
+        }
+    }
+
     int debrisClip(int slot) {
         if (slot < 0 || slot >= kDebrisInstances) return 0;
         Debris &d = debris_[slot];
@@ -3802,6 +4429,704 @@ class World {
     // untouched one is "loose" to a per-voxel rule. What a blow DID is the
     // difference between now and then.
     // -----------------------------------------------------------------------
+
+    // =======================================================================
+    // THE FLOAT WATCH. See the block over kFloatRegionVox for why it exists.
+    // =======================================================================
+
+    // AN EDIT HAPPENED HERE, SO ASK AGAIN ABOUT IT. Cheap by design -- it
+    // snaps to a grid and pushes a key -- because it is called from inside
+    // every dig and must not add to the cost of a swing.
+    static long long floatKeyOf(const Vec3 &at) {
+        const int gi = int(std::floor(at.x / (VOXEL_M * float(kFloatDedupeVox))));
+        const int gj = int(std::floor(at.z / (VOXEL_M * float(kFloatDedupeVox))));
+        const int gy = int(std::floor(at.y / (VOXEL_M * float(kFloatDedupeVox))));
+        return (long long(gi) & 0x1FFFFF) | ((long long(gj) & 0x1FFFFF) << 21) |
+               ((long long(gy) & 0x1FFFFF) << 42);
+    }
+
+    void markFloatDirty(const Vec3 &at) {
+        const long long key = floatKeyOf(at);
+        for (long long k : fQueue_)
+            if (k == key) return;
+        if (fJobKey_ == key && fJob_.live) return;   // already being looked at
+        if (fQueue_.size() >= size_t(kFloatQueueMax)) fQueue_.erase(fQueue_.begin());
+        fQueue_.push_back(key);
+    }
+
+    struct FloatWatchStat {
+        long jobsDone = 0;
+        long piecesDropped = 0;
+        long voxelsDropped = 0;
+        long bodies = 0;
+        long queued = 0;
+        long biggest = 0;
+        // Pieces that ran out of region and were sent round for a second look
+        // centred on themselves -- see the re-centre in stepFloatHarvest.
+        long deferred = 0;
+        // ...and pieces that could not be spawned this time and were left
+        // STANDING rather than deleted. A non-zero here is the pool being
+        // busy, not geometry being lost.
+        long refused = 0;
+        // Pieces that would want more than kFloatDicePerPiece bodies. These
+        // are the honest limit of the layer and the one thing it does not fix.
+        long tooBig = 0;
+        // Where the time actually goes. The first build of this cost 170 ms a
+        // step and the flood was not the reason -- see the note in
+        // dropFloatPiece.
+        double spawnMs = 0.0;
+        double fillMs = 0.0;
+    };
+    FloatWatchStat floatStat() const {
+        FloatWatchStat s = fStat_;
+        s.queued = long(fQueue_.size()) + (fJob_.live ? 1 : 0);
+        return s;
+    }
+
+    // ONE STEP. Called every frame; does a bounded slice of whatever job is
+    // open, or opens the next one. Returns how many bodies it spawned.
+    int stepFloatWatch(Physics &ph, double nowMs) {
+        if (!fJob_.live && !fQueue_.empty()) {
+            const long long key = fQueue_.front();
+            fQueue_.erase(fQueue_.begin());
+            beginFloatJob(key);
+        }
+        if (!fJob_.live) return 0;
+        switch (fJob_.phase) {
+            case 0: return stepFloatSample();
+            case 1: return stepFloatFlood();
+            case 3: return stepFloatDrop(ph, nowMs);
+            default: return stepFloatHarvest(ph, nowMs);
+        }
+    }
+
+  private:
+    struct FloatJob {
+        bool live = false;
+        int i0 = 0, j0 = 0, y0 = 0, n = 0;
+        std::vector<uint8_t> sol, seen;
+        std::vector<int> st;
+        std::vector<uint8_t> piece;   // the cube handed to spawnDebris
+        TerrainMemo memo;
+        int phase = 0;   // 0 sample, 1 flood, 2 harvest, 3 drop
+        bool wallPass = false;   // which of the two floods is running
+        int cur = 0;     // how far the sample/harvest cursor has walked
+        long solid = 0;
+        // ---- phase 3: ONE PIECE, DROPPED A DICE AT A TIME ----------------
+        //
+        // Staged rather than done in the harvest step, and MEASURED is why: a
+        // 26,431-voxel lid spawned in one go cost 153 ms, which is nine frames
+        // of hitch at the exact moment the player is watching a hillside give
+        // way. One body per step is 8 ms.
+        //
+        // The component is bucketed into dice ONCE. Written as a scan of the
+        // whole component per dice it was O(dice * voxels) -- 317,000 passes
+        // for this piece, and the shape of it is invisible until the piece is
+        // big, which is the only time this code runs at all.
+        std::vector<int> comp;
+        std::vector<std::vector<int>> dice;
+        std::vector<int> diceAt;   // packed cx | cy<<10 | cz<<20
+        size_t diceCur = 0;
+        int diceMade = 0;
+        long diceVox = 0;
+    };
+    FloatJob fJob_;
+    long long fJobKey_ = -1;
+    int fPieces_ = 0;   // pieces dealt with in this step -- see kFloatPiecesPerStep
+    std::vector<long long> fQueue_;
+    FloatWatchStat fStat_;
+
+    size_t fIx(int a, int b, int c) const {
+        return size_t(a) + size_t(c) * size_t(fJob_.n) +
+               size_t(b) * size_t(fJob_.n) * size_t(fJob_.n);
+    }
+
+    // IS THERE ANY EDIT IN THIS REGION AT ALL?
+    //
+    // (user 2026-09-17: "theres missing terrain in the sand banks now".)
+    //
+    // GENERATED TERRAIN CANNOT FLOAT, and that is not an approximation -- it is
+    // a height field, so a column of height h is solid for every row at or
+    // below h, and every solid column therefore reaches the bottom of any
+    // region that contains its top. The ONLY thing that can disconnect ground
+    // from the ground is a carve.
+    //
+    // So a region nobody has dug in has nothing for this to find, and any
+    // answer it produces there is a bug by construction. Checking first is both
+    // the safety rail and the fast path: it is four ints per chunk against a
+    // rectangle -- see ChunkEdits::touchesRect, which the ground patch already
+    // uses for the same reason -- and it skips the 16,384-column sample
+    // entirely for every region that has never been touched.
+    bool floatRegionHasEdits(int i0, int j0, int n) const {
+        const int cx0 = floorDiv(i0, CHUNK_VOX), cx1 = floorDiv(i0 + n - 1, CHUNK_VOX);
+        const int cz0 = floorDiv(j0, CHUNK_VOX), cz1 = floorDiv(j0 + n - 1, CHUNK_VOX);
+        for (int cz = cz0; cz <= cz1; ++cz)
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                const std::shared_ptr<const ChunkEdits> ce = mesher_.edits.get(cx, cz);
+                if (ce && ce->touchesRect(i0, j0, i0 + n - 1, j0 + n - 1)) return true;
+            }
+        return false;
+    }
+
+    void beginFloatJob(long long key) {
+        auto un21 = [](long long v) {
+            v &= 0x1FFFFF;
+            return int(v >= 0x100000 ? v - 0x200000 : v);
+        };
+        const int gi = un21(key), gj = un21(key >> 21), gy = un21(key >> 42);
+        const int n = kFloatRegionVox;
+        // CENTRED ON THE EDIT, not on a fixed lattice: a piece that straddled a
+        // lattice boundary would be cut in half by the region and both halves
+        // would touch a wall, which is the one answer that is always "attached".
+        fJob_ = FloatJob{};
+        fJob_.n = n;
+        fJob_.i0 = gi * kFloatDedupeVox + kFloatDedupeVox / 2 - n / 2;
+        fJob_.j0 = gj * kFloatDedupeVox + kFloatDedupeVox / 2 - n / 2;
+        fJob_.y0 = gy * kFloatDedupeVox + kFloatDedupeVox / 2 - n / 2;
+        // NOTHING HAS BEEN DUG HERE, so there is nothing this could have cut
+        // loose -- see floatRegionHasEdits. Dropped before the sample, which is
+        // the expensive part.
+        if (!floatRegionHasEdits(fJob_.i0, fJob_.j0, n)) {
+            fJob_ = FloatJob{};
+            fJobKey_ = -1;
+            return;
+        }
+        fJob_.sol.assign(size_t(n) * size_t(n) * size_t(n), 0);
+        fJob_.seen.assign(fJob_.sol.size(), 0);
+        fJob_.live = true;
+        fJob_.phase = 0;
+        fJob_.cur = 0;
+        fJobKey_ = key;
+    }
+
+    // ---- phase 0: what is solid in here, a slice of columns at a time -----
+    //
+    // BY COLUMN, NOT BY VOXEL, AND THAT IS THE DIFFERENCE BETWEEN THIS BEING
+    // AFFORDABLE AND NOT. Written as a TerrainProbe::solid per voxel it was
+    // 884,736 lookups a region and 8 ms a step -- half a frame, every frame,
+    // for ever.
+    //
+    // AN UNEDITED COLUMN IS SOLID FROM BEDROCK TO ITS HEIGHT, by construction:
+    // nothing has been taken out of it, so there is nothing to look up. One
+    // heightVox answers the whole column. Only the rows somebody has actually
+    // dug need asking, and ChunkEdits::col already records exactly that span
+    // per column -- it is what meshChunk uses to keep unedited columns on the
+    // fast heightmap path, and it does the same job here.
+    //
+    // THE EDIT POINTER IS CACHED PER CHUNK, not fetched per voxel:
+    // EditStore::get takes a lock, and a 9.6 m region touches four chunks at
+    // worst. dropTerrainHangers found the same thing and says so.
+    int stepFloatSample() {
+        const int n = fJob_.n;
+        const int end = mini(n * n, fJob_.cur + kFloatSampleCols);
+        std::shared_ptr<const ChunkEdits> ceCache[4];
+        long long ceKey[4] = {0, 0, 0, 0};
+        int ceN = 0;
+        auto editsAt = [&](int wi, int wj) -> const ChunkEdits * {
+            const int cx = floorDiv(wi, CHUNK_VOX), cz = floorDiv(wj, CHUNK_VOX);
+            const long long k = chunkKey(cx, cz);
+            for (int e = 0; e < ceN; ++e)
+                if (ceKey[e] == k) return ceCache[e].get();
+            if (ceN < 4) {
+                ceKey[ceN] = k;
+                ceCache[ceN] = mesher_.edits.get(cx, cz);
+                return ceCache[ceN++].get();
+            }
+            return mesher_.edits.get(cx, cz).get();
+        };
+        for (; fJob_.cur < end; ++fJob_.cur) {
+            const int a = fJob_.cur % n, c = fJob_.cur / n;
+            const int wi = fJob_.i0 + a, wj = fJob_.j0 + c;
+            const int h = terrain.heightVox(wi, wj, fJob_.memo);
+            // The rows of this column that anybody has edited, or an empty
+            // span. Outside it the generator's answer is the whole answer.
+            int e0 = 1, e1 = 0;
+            const ChunkEdits *ce = editsAt(wi, wj);
+            if (ce) {
+                const auto it = ce->col.find(ChunkEdits::ckey(wi, wj));
+                if (it != ce->col.end()) {
+                    e0 = it->second.first;
+                    e1 = it->second.second - 1;
+                }
+            }
+            for (int b = 0; b < n; ++b) {
+                const int wy = fJob_.y0 + b;
+                if (wy > h) {
+                    // ...unless somebody PUT something up here. The hoe is the
+                    // first writer that adds rather than removes and there will
+                    // be others, so an edited row above the surface is asked
+                    // rather than assumed empty.
+                    if (wy < e0 || wy > e1 || !ce) continue;
+                    uint8_t m = mat::AIR;
+                    if (!ce->voxel(wi, wj, wy, &m) || m == mat::AIR) continue;
+                } else if (wy >= e0 && wy <= e1 && ce) {
+                    uint8_t m = mat::AIR;
+                    if (ce->voxel(wi, wj, wy, &m) && m == mat::AIR) continue;
+                }
+                fJob_.sol[fIx(a, b, c)] = 1;
+                ++fJob_.solid;
+            }
+        }
+        if (fJob_.cur < n * n) return 0;
+        // ---- seed: THE FLOOR, AND ONLY THE FLOOR --------------------------
+        //
+        // TWO FLOODS, NOT ONE, AND THE FIRST VERSION MERGED THEM AND WENT
+        // BLIND. It seeded the floor AND all four walls together, reasoning
+        // that anything leaving the region might be held from outside it and
+        // so must not be judged. That reasoning is right and the implementation
+        // of it was not: a seeded voxel is a REACHED voxel, so a piece touching
+        // a wall never appeared as a component at all -- it could not be
+        // dropped, and it could not be noticed either. MEASURED: at two spawns
+        // in four the 26,000-voxel lid was invisible, 24 regions found nothing,
+        // and the watch reported a clean sweep over a hillside hanging in the
+        // air.
+        //
+        // So the floor is flooded on its own first. What it reaches is GROUND,
+        // full stop. See stepFloatFlood for the second pass, which is where
+        // the walls come in.
+        //
+        // THE CEILING IS NEVER A SEED, in either pass. A voxel at the top of
+        // the region hanging over a hole is exactly what this is looking for,
+        // and seeding it would declare it supported by the sky.
+        fJob_.st.clear();
+        for (int c = 0; c < n; ++c)
+            for (int a = 0; a < n; ++a) {
+                const size_t q = fIx(a, 0, c);
+                if (!fJob_.sol[q] || fJob_.seen[q]) continue;
+                fJob_.seen[q] = kFloatGrounded;
+                fJob_.st.push_back(int(q));
+            }
+        // -- NO GROUND ON THE FLOOR MEANS THIS LOOK CANNOT JUDGE ANYTHING ---
+        //
+        // (user 2026-09-17: "theres missing terrain in the sand banks now".)
+        //
+        // THIS IS HOW A BACKSTOP AGAINST FLOATING GROUND DELETES GROUND. With
+        // no seed on the region floor nothing is ever marked grounded, so pass
+        // one finds nothing, and any mass that also happens not to touch a side
+        // wall -- a mound smaller than the region, sitting on ground that falls
+        // away below the floor row -- comes out of pass two unmarked. Unmarked
+        // is the verdict "floating", and the harvest carves it. A sand bank is
+        // exactly that shape.
+        //
+        // The honest answer is that a region with no floor has no reference to
+        // measure against, and "I cannot tell" must never carve. Abandoned, not
+        // deferred: re-centring would build a region with the same floor.
+        if (fJob_.st.empty()) {
+            ++fStat_.refused;
+            fJob_ = FloatJob{};
+            fJobKey_ = -1;
+            return 0;
+        }
+        fJob_.phase = 1;
+        fJob_.wallPass = false;
+        return 0;
+    }
+
+    // ---- phase 1: two floods -- what the GROUND reaches, then what the
+    //      WALLS reach of whatever is left ---------------------------------
+    //
+    // PASS ONE IS THE VERDICT. Anything the floor reaches is standing on the
+    // world and is nobody's problem.
+    //
+    // PASS TWO IS THE ADMISSION OF IGNORANCE. Of what is left, whatever
+    // touches a side wall may be held by something just outside the region --
+    // this look cannot say, and dropping it would be the one unrecoverable
+    // mistake here: a hillside cut in half because the ruler was too short.
+    // Those are marked kFloatOutside, left alone, and sent round for a second
+    // look centred on themselves.
+    //
+    // WHAT IS LEFT AFTER BOTH is unreachable from the ground and touches
+    // nothing outside the region. That is floating, with no qualification.
+    int stepFloatFlood() {
+        const int n = fJob_.n;
+        static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                      {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        const uint8_t mark = fJob_.wallPass ? kFloatOutside : kFloatGrounded;
+        int budget = kFloatFloodCells;
+        while (!fJob_.st.empty() && budget-- > 0) {
+            const int p = fJob_.st.back();
+            fJob_.st.pop_back();
+            const int a = p % n, c = (p / n) % n, b = p / (n * n);
+            for (const int *o : off) {
+                const int x = a + o[0], y = b + o[1], z = c + o[2];
+                if (x < 0 || y < 0 || z < 0 || x >= n || y >= n || z >= n) continue;
+                const size_t q = fIx(x, y, z);
+                if (!fJob_.sol[q] || fJob_.seen[q]) continue;
+                fJob_.seen[q] = mark;
+                fJob_.st.push_back(int(q));
+            }
+        }
+        if (!fJob_.st.empty()) return 0;
+        if (!fJob_.wallPass) {
+            // ---- and now the walls, over what the ground could not reach ---
+            fJob_.wallPass = true;
+            for (int b = 0; b < n; ++b)
+                for (int a = 0; a < n; ++a) {
+                    for (int c : {0, n - 1}) {
+                        const size_t q = fIx(a, b, c);
+                        if (!fJob_.sol[q] || fJob_.seen[q]) continue;
+                        fJob_.seen[q] = kFloatOutside;
+                        fJob_.st.push_back(int(q));
+                    }
+                }
+            for (int b = 0; b < n; ++b)
+                for (int c = 0; c < n; ++c) {
+                    for (int a : {0, n - 1}) {
+                        const size_t q = fIx(a, b, c);
+                        if (!fJob_.sol[q] || fJob_.seen[q]) continue;
+                        fJob_.seen[q] = kFloatOutside;
+                        fJob_.st.push_back(int(q));
+                    }
+                }
+            if (!fJob_.st.empty()) return 0;
+        }
+        fJob_.phase = 2;
+        fJob_.cur = 0;
+        return 0;
+    }
+
+    // ---- phase 2: and out they come ---------------------------------------
+    int stepFloatHarvest(Physics &ph, double nowMs) {
+        const int n = fJob_.n;
+        const size_t total = fJob_.sol.size();
+        static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                      {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        int spawned = 0;
+        while (size_t(fJob_.cur) < total) {
+            const size_t q0 = size_t(fJob_.cur);
+            if (!fJob_.sol[q0] || fJob_.seen[q0]) {
+                ++fJob_.cur;
+                continue;
+            }
+            // ONE COMPONENT, WHOLE. Gathered in one go rather than across
+            // frames: it has to be carved and spawned as a unit, and a piece
+            // half of which has fallen is worse than either answer.
+            std::vector<int> comp;
+            fJob_.seen[q0] = 1;
+            fJob_.st.clear();
+            fJob_.st.push_back(int(q0));
+            int lo[3] = {n, n, n}, hi[3] = {-1, -1, -1};
+            while (!fJob_.st.empty()) {
+                const int p = fJob_.st.back();
+                fJob_.st.pop_back();
+                comp.push_back(p);
+                const int a = p % n, c = (p / n) % n, b = p / (n * n);
+                if (a < lo[0]) lo[0] = a;
+                if (b < lo[1]) lo[1] = b;
+                if (c < lo[2]) lo[2] = c;
+                if (a > hi[0]) hi[0] = a;
+                if (b > hi[1]) hi[1] = b;
+                if (c > hi[2]) hi[2] = c;
+                for (const int *o : off) {
+                    const int x = a + o[0], y = b + o[1], z = c + o[2];
+                    if (x < 0 || y < 0 || z < 0 || x >= n || y >= n || z >= n) continue;
+                    const size_t q = fIx(x, y, z);
+                    if (!fJob_.sol[q] || fJob_.seen[q]) continue;
+                    fJob_.seen[q] = 1;
+                    fJob_.st.push_back(int(q));
+                }
+            }
+            ++fJob_.cur;
+            const int made = stageFloatPiece(comp, lo, hi);
+            if (made > 0) {
+                fJob_.phase = 3;   // and the dice go one per step from here
+                return spawned;
+            }
+            if (!made) {
+                // IT DID NOT FIT. Put the region back and stop: the piece is
+                // still standing and still disconnected, and the next pass
+                // over a drained debris pool will take it. Re-queued by its
+                // own centre so the second look is at least as good as this
+                // one -- and only if that is a different cell, or this is a
+                // loop. (fJobKey_ is cleared when the job ends, so the mark
+                // has to happen before that.)
+                double sx = 0, sy = 0, sz = 0;
+                for (int q : comp) {
+                    sx += double(q % n);
+                    sz += double((q / n) % n);
+                    sy += double(q / (n * n));
+                }
+                const double inv = 1.0 / double(comp.size());
+                const Vec3 mid{(float(fJob_.i0) + float(sx * inv)) * VOXEL_M,
+                               (float(fJob_.y0) + float(sy * inv)) * VOXEL_M,
+                               (float(fJob_.j0) + float(sz * inv)) * VOXEL_M};
+                const long long here = fJobKey_;
+                fJobKey_ = -1;              // so the dedupe does not refuse it
+                markFloatDirty(mid);
+                fJobKey_ = here;
+                ++fStat_.refused;
+                return spawned;
+            }
+            if (++fPieces_ >= kFloatPiecesPerStep) {
+                fPieces_ = 0;
+                return spawned;   // the rest of this region next frame
+            }
+        }
+        // ---- ...AND THE ONES THIS REGION COULD NOT ANSWER FOR -------------
+        //
+        // Marked kFloatOutside by the wall pass: not grounded in here, but
+        // touching the edge, so something just outside may be holding them.
+        // Each gets ONE second look centred on itself.
+        //
+        // THE MEASURED CASE IS EXACTLY THIS. The lid is freed by a ring cut
+        // and every blow of that ring is four metres from the lid's centre, so
+        // the region a ring blow queues is four metres off and the lid runs
+        // out of it on the far side. Centred on the piece it fits with room to
+        // spare and the second look answers properly -- at two spawns in four
+        // this is the only thing that finds it at all.
+        //
+        // IT TERMINATES. A re-centre must land in a DIFFERENT dedupe cell from
+        // the one being looked at: the same cell would build the same region
+        // and reach the same answer, so re-queueing it is a loop. A piece too
+        // big to ever fit therefore stops after one hop and is left standing,
+        // which is the safe direction, and fStat_.deferred says it happened
+        // rather than hiding it.
+        {
+            std::vector<uint8_t> done(fJob_.seen.size(), 0);
+            int hops = 0;
+            for (size_t i = 0; i < fJob_.sol.size() && hops < kFloatRecentreMax; ++i) {
+                if (fJob_.seen[i] != kFloatOutside || done[i]) continue;
+                std::vector<int> comp;
+                done[i] = 1;
+                fJob_.st.clear();
+                fJob_.st.push_back(int(i));
+                // nb, not off: stepFloatHarvest already has an `off` in scope
+                // and /WX turns the shadow into an error.
+                static const int nb[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                             {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+                double sx = 0, sy = 0, sz = 0;
+                while (!fJob_.st.empty()) {
+                    const int p = fJob_.st.back();
+                    fJob_.st.pop_back();
+                    comp.push_back(p);
+                    const int a = p % n, c = (p / n) % n, b = p / (n * n);
+                    sx += double(a);
+                    sz += double(c);
+                    sy += double(b);
+                    for (const int *o : nb) {
+                        const int x = a + o[0], y = b + o[1], z = c + o[2];
+                        if (x < 0 || y < 0 || z < 0 || x >= n || y >= n || z >= n) continue;
+                        const size_t q = fIx(x, y, z);
+                        if (fJob_.seen[q] != kFloatOutside || done[q]) continue;
+                        done[q] = 1;
+                        fJob_.st.push_back(int(q));
+                    }
+                }
+                const double inv = 1.0 / double(comp.size());
+                const Vec3 mid{(float(fJob_.i0) + float(sx * inv)) * VOXEL_M,
+                               (float(fJob_.y0) + float(sy * inv)) * VOXEL_M,
+                               (float(fJob_.j0) + float(sz * inv)) * VOXEL_M};
+                if (floatKeyOf(mid) == fJobKey_) continue;   // the same question
+                ++fStat_.deferred;
+                ++hops;
+                markFloatDirty(mid);
+            }
+        }
+        ++fStat_.jobsDone;
+        fJob_ = FloatJob{};
+        fJobKey_ = -1;
+        return spawned;
+    }
+
+    // ONE FLOATING COMPONENT, BUCKETED INTO DICE AND QUEUED.
+    //
+    // Returns the number of dice it will take, or 0 if the piece cannot be
+    // dropped now -- too big, or the debris pool is busy. NOTHING IS SPAWNED
+    // AND NOTHING IS CARVED HERE: see the note on FloatJob::comp.
+    int stageFloatPiece(const std::vector<int> &comp, const int lo[3], const int hi[3]) {
+        const int n = fJob_.n;
+        if (comp.empty()) return 0;
+        const int dn = kFloatDiceVox;
+        const int cx0 = lo[0] / dn, cx1 = hi[0] / dn;
+        const int cy0 = lo[1] / dn, cy1 = hi[1] / dn;
+        const int cz0 = lo[2] / dn, cz1 = hi[2] / dn;
+        const int wx = cx1 - cx0 + 1, wy = cy1 - cy0 + 1, wz = cz1 - cz0 + 1;
+        if (wx * wy * wz > kFloatDicePerPiece) {
+            ++fStat_.tooBig;
+            return 0;
+        }
+        std::vector<std::vector<int>> buck(size_t(wx) * size_t(wy) * size_t(wz));
+        for (int q : comp) {
+            const int a = q % n, c = (q / n) % n, b = q / (n * n);
+            buck[size_t(a / dn - cx0) + size_t(b / dn - cy0) * size_t(wx) +
+                 size_t(c / dn - cz0) * size_t(wx) * size_t(wy)]
+                .push_back(q);
+        }
+        int need = 0;
+        for (const auto &v : buck)
+            if (!v.empty()) ++need;
+        // ---- ALL OF A PIECE OR NONE OF IT -------------------------------
+        //
+        // See kFloatDicePerPiece. The slots are counted before anything is
+        // spawned or carved, because half a piece leaving the world is the
+        // vanishing bug this whole rule exists to answer -- and it was rebuilt
+        // from scratch inside this very function once already.
+        if (need > kFloatDicePerPiece || need > debrisFree()) {
+            if (need > kFloatDicePerPiece) ++fStat_.tooBig;
+            return 0;
+        }
+        fJob_.comp = comp;
+        fJob_.dice.clear();
+        fJob_.diceAt.clear();
+        for (int cz = 0; cz < wz; ++cz)
+            for (int cy = 0; cy < wy; ++cy)
+                for (int cx = 0; cx < wx; ++cx) {
+                    auto &v = buck[size_t(cx) + size_t(cy) * size_t(wx) +
+                                   size_t(cz) * size_t(wx) * size_t(wy)];
+                    if (v.empty()) continue;
+                    fJob_.dice.push_back(std::move(v));
+                    fJob_.diceAt.push_back((cx0 + cx) | ((cy0 + cy) << 10) | ((cz0 + cz) << 20));
+                }
+        fJob_.diceCur = 0;
+        fJob_.diceMade = 0;
+        fJob_.diceVox = 0;
+        return need;
+    }
+
+    // ---- phase 3: one body per step, then the hole ------------------------
+    int stepFloatDrop(Physics &ph, double nowMs) {
+        const int n = fJob_.n, dn = kFloatDiceVox;
+        if (fJob_.diceCur < fJob_.dice.size()) {
+            const std::vector<int> &cell = fJob_.dice[fJob_.diceCur];
+            const int packed = fJob_.diceAt[fJob_.diceCur];
+            const int cx = packed & 0x3FF, cy = (packed >> 10) & 0x3FF, cz = (packed >> 20) & 0x3FF;
+            ++fJob_.diceCur;
+            if (fJob_.piece.size() != size_t(dn) * size_t(dn) * size_t(dn))
+                fJob_.piece.assign(size_t(dn) * size_t(dn) * size_t(dn), mat::AIR);
+            std::fill(fJob_.piece.begin(), fJob_.piece.end(), mat::AIR);
+            int nvox = 0;
+            for (int q : cell) {
+                const int a = q % n, c = (q / n) % n, b = q / (n * n);
+                const int wi = fJob_.i0 + a, wj = fJob_.j0 + c, wy = fJob_.y0 + b;
+                // THE MATERIAL COMES FROM THE GENERATOR, SAMPLED BEFORE THE
+                // CARVE -- exactly as dropTerrainHangers and the spoil do it.
+                // After the carve every one of these is air and the body would
+                // be invisible.
+                const int h = terrain.heightVox(wi, wj, fJob_.memo);
+                const uint8_t top = terrain.topMaterial(wi, wj, h);
+                const uint8_t m = terrain.materialAt(wi, wj, wy, h, top);
+                if (m == mat::AIR) continue;
+                // meshVolume's layout is x + z*n + y*n*n.
+                fJob_.piece[size_t(a - cx * dn) + size_t(c - cz * dn) * size_t(dn) +
+                            size_t(b - cy * dn) * size_t(dn) * size_t(dn)] = m;
+                ++nvox;
+            }
+            if (!nvox) return 0;
+            const Vec3 centre{(float(fJob_.i0 + cx * dn) + float(dn) * 0.5f) * VOXEL_M,
+                              (float(fJob_.y0 + cy * dn) + float(dn) * 0.5f) * VOXEL_M,
+                              (float(fJob_.j0 + cz * dn) + float(dn) * 0.5f) * VOXEL_M};
+            const Vec3 still{0.0f, 0.0f, 0.0f};
+            const auto ts = std::chrono::steady_clock::now();
+            const int sl = spawnDebris(ph, fJob_.piece, dn, centre, still, still, nowMs, 0.0f,
+                                       nullptr, uint8_t(kDebrisStone), kAbsorbAnywhere);
+            fStat_.spawnMs +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts)
+                    .count();
+            if (sl >= 0) {
+                ++fJob_.diceMade;
+                fJob_.diceVox += nvox;
+            }
+            return sl >= 0 ? 1 : 0;
+        }
+        // ---- every dice is a body now, so the ground goes ------------------
+        //
+        // ONE CARVE FOR THE WHOLE PIECE. EditStore::carve is copy-on-write --
+        // it rebuilds the chunk's whole edit map per call -- which is right for
+        // a tool bite of one or two voxels and quadratic for twenty-six
+        // thousand. MEASURED at 95 SECONDS before this used carveCells, which
+        // takes the lock once, copies once per chunk, and hands back the chunks
+        // to re-mesh so the request is made once each rather than once a voxel.
+        if (fJob_.diceMade > 0) {
+            std::vector<std::array<int, 3>> cells;
+            cells.reserve(fJob_.comp.size());
+            for (int q : fJob_.comp) {
+                const int a = q % n, c = (q / n) % n, b = q / (n * n);
+                cells.push_back({fJob_.i0 + a, fJob_.j0 + c, fJob_.y0 + b});
+            }
+            for (const auto &t : mesher_.edits.carveCells(cells)) {
+                const long long k = chunkKey(t.first, t.second);
+                if (!chunks_.count(k)) continue;
+                requested_.insert(k);
+                mesher_.request(t.first, t.second);
+            }
+            ++fStat_.piecesDropped;
+            fStat_.bodies += fJob_.diceMade;
+            fStat_.voxelsDropped += fJob_.diceVox;
+            if (long(fJob_.comp.size()) > fStat_.biggest) fStat_.biggest = long(fJob_.comp.size());
+        }
+        fJob_.comp.clear();
+        fJob_.dice.clear();
+        fJob_.diceAt.clear();
+        fJob_.phase = 2;   // back to looking for the next piece in this region
+        return 0;
+    }
+
+  public:
+    // WHAT THE SEVER TEST ITSELF SEES, as opposed to what the mesher draws.
+    //
+    // (user 2026-09-17: "when cutting down a tree, the top half just floats.
+    //  theres something in the middle blocking it? maybe by the axe hitting the
+    //  wood, makes it dissapear on the renderer but is still there in memory?")
+    //
+    // THE TWO ANSWERS ARE ALLOWED TO DIFFER AND THAT IS THE SUSPECT.
+    // looseFraction floods COARSE cells of kSeverCell voxels, and a cell counts
+    // as solid if ANY voxel in it is -- so a one-voxel bridge the mesher has
+    // already stopped drawing still carries the coarse flood across, fellTree
+    // says the trunk is attached, and the top hangs there looking severed
+    // because it IS severed everywhere except in the test.
+    //
+    // --float-test has warned about this gap for weeks and calls it never
+    // attempted. This is the accessor that lets a harness put the two numbers
+    // on one line and find out whether it is actually what is happening here.
+    bool coarseLoose(const Solid &s, int *cells, int *born, float *frac) {
+        if (s.modelKind < 0 || !s.vol) return false;
+        const ModelTemplate &t = templateFor(s.modelKind, s.modelIndex);
+        if (t.volume.empty()) return false;
+        const auto dit = damaged_.find({s.ownerChunk, int(s.decorSlot)});
+        const std::vector<uint8_t> &vol = (dit == damaged_.end()) ? t.volume : dit->second.vol;
+        if (t.bornLoose < 0) {
+            looseFraction(t.volume, t.sx, t.sy, t.sz);
+            t.bornLoose = sevLooseCells_;
+        }
+        looseFraction(vol, t.sx, t.sy, t.sz);
+        if (cells) *cells = sevLooseCells_;
+        if (born) *born = t.bornLoose;
+        if (frac) *frac = sevLooseFrac_;
+        return true;
+    }
+
+    // HOW MUCH OF THIS INSTANCE IS LEFT, AND HOW MUCH OF IT IS IN THE WAY.
+    //
+    // (user 2026-09-17: "when cutting down a tree, the top half just floats.
+    //  theres something in the middle blocking it?")
+    //
+    // `cutY` is a world height; the row it lands on is the one the axe has been
+    // working at. A trunk that still has a hundred voxels across that row has
+    // not been cut through, however deep the notch looks from outside -- and
+    // that is a different fault from a sever test that cannot see a cut, so the
+    // two have to be told apart before either is fixed.
+    bool modelSolidProfile(const Solid &s, float cutY, int *total, int *atCut, int *row) {
+        if (s.modelKind < 0 || !s.vol) return false;
+        const ModelTemplate &t = templateFor(s.modelKind, s.modelIndex);
+        if (t.volume.empty()) return false;
+        const auto dit = damaged_.find({s.ownerChunk, int(s.decorSlot)});
+        const std::vector<uint8_t> &vol = (dit == damaged_.end()) ? t.volume : dit->second.vol;
+        const int ry = mini(t.sy - 1, maxi(0, int((cutY - s.baseY) / VOXEL_M)));
+        int tot = 0, cut = 0;
+        for (int y = 0; y < t.sy; ++y)
+            for (int z = 0; z < t.sz; ++z)
+                for (int x = 0; x < t.sx; ++x)
+                    if (vol[size_t(x) + size_t(z) * size_t(t.sx) +
+                            size_t(y) * size_t(t.sx) * size_t(t.sz)] != mat::AIR) {
+                        ++tot;
+                        if (y == ry) ++cut;
+                    }
+        if (total) *total = tot;
+        if (atCut) *atCut = cut;
+        if (row) *row = ry;
+        return true;
+    }
+
     long looseVoxelsNow(const Solid &s) {
         if (s.modelKind < 0 || !s.vol) return 0;
         const ModelTemplate &t = templateFor(s.modelKind, s.modelIndex);
@@ -3811,6 +5136,97 @@ class World {
         if (t.bornVoxLoose < 0) t.bornVoxLoose = long(fineLoose(t.volume, t.sx, t.sy, t.sz));
         const long now = long(fineLoose(vol, t.sx, t.sy, t.sz));
         return now - t.bornVoxLoose;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND WHAT THOSE LOOSE VOXELS ACTUALLY ARE.
+    //
+    // (user 2026-09-17: "I need you to audit the game for floating objects".)
+    //
+    // A COUNT CANNOT TELL A SEVERED BRANCH FROM LEAF LITTER, and until now that
+    // is all there was. 31,450 loose voxels is a canopy that came off its trunk
+    // if it is one piece and a scatter of needles if it is four hundred, and
+    // the two want opposite responses -- one is the bug the nothing-floats rule
+    // exists for, the other is how the .vox was drawn.
+    //
+    // So this labels the components instead: how many, how big the worst is,
+    // and how many are big enough to be worth calling an object. Everything
+    // else in this file that decides whether a piece should FALL can then be
+    // argued about with the right number in hand.
+    // -----------------------------------------------------------------------
+    struct LooseReport {
+        long voxels = 0;     // loose voxels in total
+        int pieces = 0;      // ...in this many six-connected components
+        long largest = 0;    // the biggest one
+        long chunky = 0;     // pieces of kFloatPieceVox or more -- real objects
+        long chunkyVox = 0;  // and how many voxels are in those
+    };
+
+    static LooseReport fineLooseReport(const std::vector<uint8_t> &vol, int sx, int sy, int sz) {
+        LooseReport r;
+        if (vol.empty()) return r;
+        auto at = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz);
+        };
+        std::vector<uint8_t> seen(vol.size(), 0);
+        std::vector<int> st;
+        // ---- 1. everything the ground can reach, from the model's own floor
+        for (int z = 0; z < sz; ++z)
+            for (int x = 0; x < sx; ++x) {
+                const size_t i = at(x, 0, z);
+                if (vol[i] == mat::AIR || seen[i]) continue;
+                seen[i] = 1;
+                st.push_back(int(i));
+            }
+        static const int off[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                      {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        auto flood = [&](long *count) {
+            while (!st.empty()) {
+                const int p = st.back();
+                st.pop_back();
+                if (count) ++*count;
+                const int x = p % sx, z = (p / sx) % sz, y = p / (sx * sz);
+                for (const int *o : off) {
+                    const int a = x + o[0], b = y + o[1], c = z + o[2];
+                    if (a < 0 || b < 0 || c < 0 || a >= sx || b >= sy || c >= sz) continue;
+                    const size_t q = at(a, b, c);
+                    if (vol[q] == mat::AIR || seen[q]) continue;
+                    seen[q] = 1;
+                    st.push_back(int(q));
+                }
+            }
+        };
+        flood(nullptr);
+        // ---- 2. ...and every island the ground could not, one at a time
+        for (size_t i = 0; i < vol.size(); ++i) {
+            if (vol[i] == mat::AIR || seen[i]) continue;
+            seen[i] = 1;
+            st.push_back(int(i));
+            long n = 0;
+            flood(&n);
+            r.voxels += n;
+            ++r.pieces;
+            if (n > r.largest) r.largest = n;
+            if (n >= kFloatPieceVox) {
+                ++r.chunky;
+                r.chunkyVox += n;
+            }
+        }
+        return r;
+    }
+
+    // WHAT THIS INSTANCE LOOKS LIKE NOW AND WHAT IT LOOKED LIKE WHEN IT WAS
+    // DRAWN. Both, because only the difference is anybody's fault -- see the
+    // note over looseVoxelsNow, and the boulder that is 95% loose untouched.
+    bool looseReportNow(const Solid &s, LooseReport *born, LooseReport *now) {
+        if (s.modelKind < 0 || !s.vol) return false;
+        const ModelTemplate &t = templateFor(s.modelKind, s.modelIndex);
+        if (t.volume.empty()) return false;
+        const auto dit = damaged_.find({s.ownerChunk, int(s.decorSlot)});
+        const std::vector<uint8_t> &vol = (dit == damaged_.end()) ? t.volume : dit->second.vol;
+        if (born) *born = fineLooseReport(t.volume, t.sx, t.sy, t.sz);
+        if (now) *now = fineLooseReport(vol, t.sx, t.sy, t.sz);
+        return true;
     }
 
     static size_t fineLoose(const std::vector<uint8_t> &vol, int sx, int sy, int sz) {
@@ -3878,6 +5294,14 @@ class World {
         // survivor 32,768 times. Without this filter a clearing with forty bits
         // of scenery in it costs a million voxel lookups per blow.
         collidersNear(centre, 40.0f, &winSolids_);
+        // THE LEVEL IS NOT IN A CHUNK, so collidersNear cannot find it -- the
+        // same gap App::walkWorld fills by hand for the walk. Without this a
+        // chip shot out of a wall in the level has nothing under it and falls
+        // the whole 640 m to a wood it is not even in. See levelSolid.
+        if (level_) {
+            Solid lv;
+            if (levelSolid(&lv)) winSolids_.push_back(lv);
+        }
         const float wx1 = o.x + span * 2.0f, wy1 = o.y + span * 2.0f, wz1 = o.z + span * 2.0f;
         winNear_.clear();
         for (const Solid &sl : winSolids_) {
@@ -3940,6 +5364,9 @@ class World {
         sweepLoose();    // free what the device has finished with
         pumpRemesh();    // ...and take whatever the re-mesher finished
 
+        // How many collision windows may be rebuilt this frame -- see the
+        // re-centre block below for why there is a ceiling on it at all.
+        int winBudget = kWinRebuildsPerFrame;
         for (int i = 0; i < kDebrisInstances; ++i) {
             Debris &d = debris_[i];
             if (!d.live) continue;
@@ -3984,14 +5411,29 @@ class World {
                 // AND AT LEAST TWO VOXELS OUT, because half of a chip is one
                 // and a half and the shaft it was cut from is three: probing
                 // its own width alone can miss the hole it is in.
-                if (terrainAt && !d.felled) {
+                // -- ...AND INDOORS IT IS A DIFFERENT QUESTION ------------
+                //
+                // ASKED OF THE WORLD ITSELF, NOT THROUGH THE CALLBACK. The
+                // level is World's own asset, so routing this back out to a
+                // lambda in App that then calls a World method was a loop
+                // through the one object that already had the answer -- and
+                // the lambda could only be handed (x, z), which is precisely
+                // the information that is NOT sufficient inside a building.
+                // See levelFloorBelowM for what that cost.
+                if (!d.felled && (level_ || terrainAt)) {
                     const float px = maxf(d.halfM[0], VOXEL_M * 2.0f);
                     const float pz = maxf(d.halfM[2], VOXEL_M * 2.0f);
-                    float g = terrainAt(d.pos.x, d.pos.z);
-                    g = minf(g, terrainAt(d.pos.x - px, d.pos.z - pz));
-                    g = minf(g, terrainAt(d.pos.x + px, d.pos.z - pz));
-                    g = minf(g, terrainAt(d.pos.x - px, d.pos.z + pz));
-                    g = minf(g, terrainAt(d.pos.x + px, d.pos.z + pz));
+                    // THE LOWEST FLOOR IT OVERLAPS, at its own corners -- the
+                    // shaft-test argument, unchanged: one column is the wrong
+                    // question on behalf of a body that has width.
+                    const auto at = [&](float x, float z) {
+                        return level_ ? levelFloorBelowM(x, d.pos.y, z) : terrainAt(x, z);
+                    };
+                    float g = at(d.pos.x, d.pos.z);
+                    g = minf(g, at(d.pos.x - px, d.pos.z - pz));
+                    g = minf(g, at(d.pos.x + px, d.pos.z - pz));
+                    g = minf(g, at(d.pos.x - px, d.pos.z + pz));
+                    g = minf(g, at(d.pos.x + px, d.pos.z + pz));
                     const float floorY = g + d.halfM[1];
                     if (d.pos.y < floorY - 0.5f) {
                         ph.clampAbove(d.phys, floorY);
@@ -4037,6 +5479,58 @@ class World {
                     }
                 }
 
+                // -- ...AND SO DOES EVERY OTHER FALLING PIECE ------------
+                //
+                // (user 2026-09-17, on the level: "the chunks ... proceed to
+                //  endlessly fall forever".)
+                //
+                // A CHIP'S WINDOW WAS BUILT ONCE, AT THE HOLE, AND NEVER
+                // AGAIN. It is 3.2 m of solid world around where the piece was
+                // cut, which is everything a chip that drops onto the floor
+                // below needs -- and nothing at all for one that falls further
+                // than that. Past the edge of its own window a body has no
+                // collider anywhere near it, so it accelerates through every
+                // floor, wall and roof in its path until the backstop above
+                // catches it. In the wood that is invisible: the terrain clamp
+                // is only a metre or two down. In a building it is the whole
+                // bug -- there is real geometry it should have landed on.
+                //
+                // The felled branch above has had this since trees were felled
+                // and the argument is identical: a window the body has left is
+                // not a window. The difference is only how the test is put --
+                // a tree is long and is tracked by its bounds, a chip is small
+                // and its centre is enough.
+                //
+                // BUDGETED, because buildWindow samples 32,768 cells and sixty
+                // pieces coming off a wall at once would spend all of it in one
+                // frame. Two a frame is plenty: a body only leaves its window
+                // after falling a metre, which at terminal speed is several
+                // frames apart, and a piece that waits one frame for its
+                // collider falls 5 mm further than it should have.
+                else if (winBudget > 0) {
+                    const float dx = d.pos.x - d.winCentre.x;
+                    const float dy = d.pos.y - d.winCentre.y;
+                    const float dz = d.pos.z - d.winCentre.z;
+                    if (dx * dx + dy * dy + dz * dz > kWinRecentreM * kWinRecentreM) {
+                        const int nw = buildWindow(ph, d.pos);
+                        // ONLY IF THE NEW ONE IS REAL. buildWindow returns -1
+                        // where there is nothing solid nearby, and swapping a
+                        // good window for that would take the floor out from
+                        // under a piece that was resting on it.
+                        if (nw >= 0) {
+                            if (d.window >= 0) ph.removeStatic(d.window);
+                            d.window = nw;
+                            d.winCentre = d.pos;
+                            --winBudget;
+                        } else {
+                            // Nothing near it: re-centre the bookkeeping anyway
+                            // so this is not re-asked every frame for a piece
+                            // falling through open air.
+                            d.winCentre = d.pos;
+                        }
+                    }
+                }
+
                 // ...AND A FELLED TREE GETS A FLOOR TEST TOO, MEASURED RIGHT.
                 //
                 // Not the one that was here before -- that one is described
@@ -4057,11 +5551,34 @@ class World {
                         // The ground under the body's own footprint, at its
                         // corners and middle -- a 26 m trunk lies across a lot
                         // of hillside and the lowest of it is what matters.
+                        // -- AND IT IS THE LOWEST, WHICH IS WHAT THE LINE
+                        //    ABOVE ALREADY SAID -------------------------------
+                        //
+                        // (user 2026-09-17: "I cut down a tree and it fell right
+                        //  through the terrain ... and then it teleported to the
+                        //  top of another tree.")
+                        //
+                        // THE COMMENT SAID LOWEST AND THE CODE TOOK THE HIGHEST.
+                        // Both halves of that are wrong and they compound:
+                        //
+                        //   * the TRIGGER fires when the body is under the
+                        //     highest ground its bounding box touches, which on
+                        //     any slope is true long before the body is
+                        //     actually under the world;
+                        //   * the LIFT then puts it at that highest ground -- so
+                        //     a trunk lying at the foot of a rise is thrown up
+                        //     to the top of the rise, in one frame, which is
+                        //     the teleport in the report.
+                        //
+                        // A 14 m bounding box on a hillside spans several metres
+                        // of relief, so the two readings are not close. Lowest
+                        // makes the trigger mean what it says (the WHOLE body is
+                        // under the world) and the lift conservative.
                         float g = terrainAt(lo.x, lo.z);
-                        g = maxf(g, terrainAt(hi.x, lo.z));
-                        g = maxf(g, terrainAt(lo.x, hi.z));
-                        g = maxf(g, terrainAt(hi.x, hi.z));
-                        g = maxf(g, terrainAt((lo.x + hi.x) * 0.5f, (lo.z + hi.z) * 0.5f));
+                        g = minf(g, terrainAt(hi.x, lo.z));
+                        g = minf(g, terrainAt(lo.x, hi.z));
+                        g = minf(g, terrainAt(hi.x, hi.z));
+                        g = minf(g, terrainAt((lo.x + hi.x) * 0.5f, (lo.z + hi.z) * 0.5f));
                         // The TOP of it has to be under the ground, not just
                         // the bottom: a trunk resting in a hollow has its
                         // underside below the ground at the corners of its own
@@ -4149,7 +5666,8 @@ class World {
             // case measured in 3D. See kArrowAbsorbM.
             const float adx = d.pos.x - eye.x, adz = d.pos.z - eye.z;
             const bool inReach = d.absorbR >= kAbsorbAnywhere ||
-                                 adx * adx + adz * adz <= d.absorbR * d.absorbR;
+                                 (d.absorbR >= 0.0f &&
+                                  adx * adx + adz * adz <= d.absorbR * d.absorbR);
             if (!d.absorbing && inReach && !d.felled && !d.scenery && d.voxels <= kAbsorbSize &&
                 nowMs - d.bornMs > kAbsorbWaitMs) {
                 d.absorbing = true;
@@ -4275,9 +5793,45 @@ class World {
                 }
             }
             else if (nowMs - d.bornMs >
-                     ((d.felled || d.scenery) ? kFelledLifeMs : kDebrisLifeMs)) {
+                     (d.lifeMs > 0.0 ? d.lifeMs
+                                     : ((d.felled || d.scenery) ? kFelledLifeMs
+                                                                : kDebrisLifeMs))) {
                 retireDebris(ph, i);
                 continue;
+            }
+            // ---- ...OR IT IS OUTSIDE THE RING -----------------------------
+            //
+            // (user 2026-09-17: "a tree that was felled over never despawns in
+            //  the renderer. fix this. have it render within render distance
+            //  like everything else.")
+            //
+            // A FELLED TREE LASTS HALF AN HOUR (kFelledLifeMs) and that was the
+            // whole of its lifetime rule -- so a trunk you cut and walked away
+            // from stayed in the TLAS, and stayed a PhysX body with a static
+            // collision window around it, for the rest of the session. Every
+            // other piece of the world is bounded by the chunk ring: walk far
+            // enough and the chunk unloads. A debris body was the one thing
+            // with no such bound, which is exactly what "never despawns" is.
+            //
+            // THE SAME DISC THE CHUNKS USE, so "render distance" means one
+            // thing here -- see the ring in update(), which is viewChunks of
+            // CHUNK_VOX voxels and is a disc rather than a square.
+            //
+            // HORIZONTAL, because the ring is: a body in a valley below you is
+            // not further away in the sense that matters.
+            //
+            // RETIRED RATHER THAN HIDDEN. The slot table is sixty-four for the
+            // whole world and a hidden body still holds one, still holds its
+            // triangles and still costs the solver a step. Coming back to where
+            // a tree fell and finding it gone is what unloading a chunk already
+            // does to everything else standing there.
+            {
+                const float rdx = d.pos.x - eye.x, rdz = d.pos.z - eye.z;
+                const float ring = float(maxi(1, viewChunks)) * float(CHUNK_VOX) * VOXEL_M;
+                if (rdx * rdx + rdz * rdz > ring * ring) {
+                    retireDebris(ph, i);
+                    continue;
+                }
             }
 
             // ...AND IT IS NEVER QUITE STILL.
@@ -4399,6 +5953,9 @@ class World {
             t.bornLoose = sevLooseCells_;
         }
         looseFraction(vol, t.sx, t.sy, t.sz);
+        // PER CALL, or the `whole` path below inherits the last tree's hinge
+        // and splits this one at a row that means nothing here.
+        hingeCut_ = -1;
         if (whole) {
             // NOTHING IS CONNECTED TO THE GROUND, because the ground is gone --
             // see dropUndermined. The fill's answer is about the model's own
@@ -4407,7 +5964,32 @@ class World {
             sevSeen_.assign(sevSeen_.size(), 0);
         } else {
             const int cut = sevLooseCells_ - t.bornLoose;
-            if (cut < kMinLooseCells && sevLooseFrac_ < kFellFraction) return false;
+            // -- ...OR THE HINGE IS TOO THIN TO HOLD IT UP ------------------
+            //
+            // See kHingeFrac. The connectivity test above is the honest answer
+            // to "has anything come away", and a trunk hanging by one voxel has
+            // not -- which is why it needed a second question rather than a
+            // looser version of the first.
+            if (t.bornHinge < 0) {
+                int r0 = 0, c0 = 0;
+                long a0 = 0;
+                hingeRow(t.volume, t.sx, t.sy, t.sz, &r0, &c0, &a0);
+                t.bornHinge = maxi(1, c0);
+            }
+            int hr = -1, hc = 0;
+            long habove = 0;
+            hingeRow(vol, t.sx, t.sy, t.sz, &hr, &hc, &habove);
+            const bool hinged = hr >= 0 && habove >= kHingeAboveVox &&
+                                hc <= maxi(kHingeFloorVox,
+                                           int(float(t.bornHinge) * kHingeFrac));
+            if (!hinged && cut < kMinLooseCells && sevLooseFrac_ < kFellFraction) return false;
+            // THE SPLIT IS BY ROW WHEN IT IS THE HINGE THAT GAVE, not by
+            // connectivity -- the point is that the thread is still joined, so
+            // asking the flood where to cut would put the whole tree in the
+            // stump. Everything above the hinge goes over; the hinge row and
+            // below stay as the stump, which is what is left standing after a
+            // real tree comes down.
+            hingeCut_ = hinged ? hr : -1;
         }
 
         int slot = -1;
@@ -4435,7 +6017,11 @@ class World {
                     const size_t i = size_t(x) + size_t(z) * size_t(t.sx) +
                                      size_t(y) * size_t(t.sx) * size_t(t.sz);
                     if (vol[i] == mat::AIR) continue;
-                    if (sevSeen_[cellIx(x, y, z)])
+                    // THE HINGE'S OWN CUT LINE, when that is what fired -- see
+                    // hingeCut_. Otherwise the flood's.
+                    const bool stays = (hingeCut_ >= 0) ? (y <= hingeCut_)
+                                                        : (sevSeen_[cellIx(x, y, z)] != 0);
+                    if (stays)
                         stumpVol_[i] = vol[i];   // still connected to the ground
                     else
                         fallVol_[i] = vol[i];    // no longer standing on anything
@@ -4780,6 +6366,51 @@ class World {
     // direction: a cell counts as solid if any voxel in it is, so the fill can
     // only ever find MORE connection than there really is. The failure mode is
     // a tree that needs one more blow, not one that falls when it should not.
+    // -----------------------------------------------------------------------
+    // THE NARROWEST ROW THROUGH THE LOWER HALF, AND WHAT IS STANDING ON IT.
+    //
+    // See kHingeFrac. Rows only, not cells: a hinge is a horizontal section and
+    // the question is how much wood crosses it, which is exactly a row count.
+    //
+    // THE LOWER HALF ONLY. A crown is full of gaps and some row up in the
+    // foliage is always nearly empty; felling on one of those would drop a
+    // tree because its branches are sparse. A cut is made at chest height, so
+    // that is where this looks.
+    // -----------------------------------------------------------------------
+    static void hingeRow(const std::vector<uint8_t> &vol, int sx, int sy, int sz, int *row,
+                         int *count, long *above) {
+        int bestRow = -1, bestN = INT_MAX;
+        const int top = maxi(2, sy / 2);
+        std::vector<int> perRow(size_t(sy), 0);
+        for (int y = 0; y < sy; ++y) {
+            int n = 0;
+            for (int z = 0; z < sz; ++z)
+                for (int x = 0; x < sx; ++x)
+                    if (vol[size_t(x) + size_t(z) * size_t(sx) +
+                            size_t(y) * size_t(sx) * size_t(sz)] != mat::AIR)
+                        ++n;
+            perRow[size_t(y)] = n;
+            // ROW ZERO IS THE FOOT and is never the hinge -- a tree standing on
+            // the ground has its narrowest section there by construction on
+            // anything that tapers.
+            if (y >= 1 && y < top && n < bestN) {
+                bestN = n;
+                bestRow = y;
+            }
+        }
+        if (bestRow < 0) {
+            if (row) *row = -1;
+            if (count) *count = 0;
+            if (above) *above = 0;
+            return;
+        }
+        long up = 0;
+        for (int y = bestRow + 1; y < sy; ++y) up += perRow[size_t(y)];
+        if (row) *row = bestRow;
+        if (count) *count = bestN;
+        if (above) *above = up;
+    }
+
     float looseFraction(const std::vector<uint8_t> &vol, int sx, int sy, int sz) const {
         const int f = kSeverCell;
         const int nx = (sx + f - 1) / f, ny = (sy + f - 1) / f, nz = (sz + f - 1) / f;
@@ -5010,6 +6641,147 @@ class World {
     // is in the same position; a cap left hanging over a seed bed is the same
     // picture as a flower. Trees and rocks are NOT -- kinds 0 and 1 are things
     // with a footprint that a hoe has no business moving.
+    // -----------------------------------------------------------------------
+    // TAKE THE FRUIT YOU ARE LOOKING AT.
+    //
+    // (user 2026-09-17: "import the apple/oranges pick up mechanic. so they
+    //  need to be a handheld now.")
+    //
+    // A RAY, WALKED, NOT A COLLIDER. A fruit is `walkThrough` on purpose -- it
+    // hangs several metres up in a crown and a 40 cm collider there is a thing
+    // to snag on -- so it is on no Solid list and `swingRay` cannot see it.
+    // Giving 1,848 of them colliders to make one reachable would be paying for
+    // the feature everywhere to use it in one place.
+    //
+    // So this samples along the aim and asks the decor directly. Cheap for the
+    // same reason hideScatterOn is: decorAt is a flat array per chunk with the
+    // kind in it, and only the handful of chunks the reach crosses are looked
+    // at.
+    //
+    // NEAREST ALONG THE RAY WINS, not nearest to the eye -- two apples on one
+    // branch should be taken front to back, which is what stepping outward and
+    // stopping at the first hit gives for free.
+    //
+    // REMEMBERED OFF THE CHUNK. `adoptMany` rebuilds every decor instance from
+    // the scatter with its mask back on, so a fruit that is only masked here
+    // grows back on the next re-mesh -- which is the bug hideScatterOn's own
+    // note says was reported three times. hiddenScatter_ is replayed by
+    // reapplyDamage and is what makes a picked apple stay picked.
+    //
+    // Returns which fruit it was (the index into the fruit templates: 0 apple,
+    // 1 orange) or -1 for nothing in reach.
+    // -----------------------------------------------------------------------
+    // THE LOWEST-HANGING FRUIT WITHIN A HORIZONTAL RADIUS, which is exactly
+    // the phrase's literal meaning: the one a player could actually walk up to
+    // and take. For --food-test, which otherwise picks an arbitrary fruit and
+    // fails on the ones eight metres up a giant oak -- a true report about the
+    // wrong fruit.
+    bool lowestFruitNear(const Vec3 &p, float maxR, Vec3 *atOut) const {
+        const float r2 = maxR * maxR;
+        bool any = false;
+        Vec3 best{0.0f, 0.0f, 0.0f};
+        const float span = maxR + 8.0f;
+        const int x0 = floorDiv(int(std::floor((p.x - span) / VOXEL_M)), CHUNK_VOX);
+        const int x1 = floorDiv(int(std::floor((p.x + span) / VOXEL_M)), CHUNK_VOX);
+        const int z0 = floorDiv(int(std::floor((p.z - span) / VOXEL_M)), CHUNK_VOX);
+        const int z1 = floorDiv(int(std::floor((p.z + span) / VOXEL_M)), CHUNK_VOX);
+        for (int cz = z0; cz <= z1; ++cz)
+            for (int cx = x0; cx <= x1; ++cx) {
+                auto it = chunks_.find(chunkKey(cx, cz));
+                if (it == chunks_.end()) continue;
+                const Chunk &c = it->second;
+                for (size_t i = 0; i < c.decorAt.size() && i < c.decorDesc.size(); ++i) {
+                    const DecorAt &q = c.decorAt[i];
+                    if (q.kind != 6 || !c.decorDesc[i].instanceMask) continue;
+                    const float dx = q.midX() - p.x, dz = q.midZ() - p.z;
+                    if (dx * dx + dz * dz > r2) continue;
+                    if (any && q.y >= best.y) continue;
+                    best = Vec3{q.midX(), q.y, q.midZ()};
+                    any = true;
+                }
+            }
+        if (any && atOut) *atOut = best;
+        return any;
+    }
+
+    int takeFruitAlong(const Vec3 &eye, const Vec3 &dir, float reachM, Vec3 *atOut = nullptr,
+                       float *missedByM = nullptr) {
+        if (missedByM) *missedByM = -1.0f;
+        if (fruit_.empty()) return -1;
+        // -- NEAREST TO THE AIM LINE, NOT FIRST INSIDE A TUBE --------------
+        //
+        // (user 2026-09-17, twice: "picking fruit still is not working.")
+        //
+        // THE FIRST VERSION MARCHED THE RAY in 10 cm steps and took the first
+        // fruit within 35 cm of a sample point. That is a 35 cm tube out to
+        // eight metres, which is about two and a half degrees of aim -- and it
+        // is asked at the impact frame of a swing, by which time the view has
+        // moved with the animation. It also cost eighty passes over the decor
+        // of four chunks to answer.
+        //
+        // ONE PASS, AND THE RIGHT QUESTION. Every fruit in range is projected
+        // onto the aim line: how far ALONG it (must be in front of the eye and
+        // inside the reach) and how far OFF it (the perpendicular miss). The
+        // smallest miss wins. That is what "the one I am looking at" means,
+        // and it cannot be defeated by a fruit that happens to sit between two
+        // sample points.
+        //
+        // kFruitAimM IS GENEROUS ON PURPOSE. A fruit is 40 cm and hangs among
+        // leaves that hide its edges; asking for the centre to within a fruit's
+        // own width is asking for marksmanship, not for picking. It reports the
+        // miss it rejected, so a caller can say whether the aim was close.
+        const float reach = maxf(0.5f, reachM);
+        float bestMiss = 1e9f;
+        long long bestKey = -1;
+        int bestIdx = -1, bestKind = -1;
+        Vec3 bestAt{0.0f, 0.0f, 0.0f};
+        float nearestMiss = 1e9f;
+        const float span = reach + 4.0f;
+        const int x0 = floorDiv(int(std::floor((eye.x - span) / VOXEL_M)), CHUNK_VOX);
+        const int x1 = floorDiv(int(std::floor((eye.x + span) / VOXEL_M)), CHUNK_VOX);
+        const int z0 = floorDiv(int(std::floor((eye.z - span) / VOXEL_M)), CHUNK_VOX);
+        const int z1 = floorDiv(int(std::floor((eye.z + span) / VOXEL_M)), CHUNK_VOX);
+        for (int cz = z0; cz <= z1; ++cz)
+            for (int cx = x0; cx <= x1; ++cx) {
+                auto it = chunks_.find(chunkKey(cx, cz));
+                if (it == chunks_.end()) continue;
+                Chunk &c = it->second;
+                for (size_t i = 0; i < c.decorAt.size() && i < c.decorDesc.size(); ++i) {
+                    const DecorAt &q = c.decorAt[i];
+                    if (q.kind != 6) continue;
+                    if (!c.decorDesc[i].instanceMask) continue;   // already taken
+                    const ModelTemplate &mt = templateFor(6, int(q.index));
+                    const Vec3 m{q.midX(), q.y + 0.5f * float(mt.sy) * VOXEL_M, q.midZ()};
+                    const Vec3 d{m.x - eye.x, m.y - eye.y, m.z - eye.z};
+                    const float along = d.x * dir.x + d.y * dir.y + d.z * dir.z;
+                    if (along < 0.0f || along > reach) continue;   // behind, or out of reach
+                    const float off2 = maxf(0.0f, (d.x * d.x + d.y * d.y + d.z * d.z) -
+                                                      along * along);
+                    const float off = sqrtf(off2);
+                    if (off < nearestMiss) nearestMiss = off;
+                    if (off > kFruitAimM || off >= bestMiss) continue;
+                    bestMiss = off;
+                    bestKey = chunkKey(cx, cz);
+                    bestIdx = int(i);
+                    bestKind = int(q.index);
+                    bestAt = m;
+                }
+            }
+        if (missedByM && nearestMiss < 1e8f) *missedByM = nearestMiss;
+        if (bestIdx < 0) return -1;
+
+        auto it = chunks_.find(bestKey);
+        if (it == chunks_.end()) return -1;
+        it->second.decorDesc[size_t(bestIdx)].instanceMask = 0;
+        // REMEMBERED OFF THE CHUNK, or adoptMany puts it straight back on the
+        // next re-mesh -- see hideScatterOn, where that was reported three
+        // times against the flowers.
+        hiddenScatter_.insert({bestKey, bestIdx});
+        rebuildTlas();   // the TLAS carries the mask
+        if (atOut) *atOut = bestAt;
+        return bestKind;
+    }
+
     void hideScatterOn(const Vec3 &p, float radiusM, std::vector<std::pair<long long, int>> *out) {
         const float r2 = radiusM * radiusM;
         const float span = radiusM + 8.0f;
@@ -5066,7 +6838,14 @@ class World {
                     if (q.kind != 2 && q.kind != 3 && q.kind != 4) continue;
                     if (!c.decorDesc[i].instanceMask) continue;
                     const float dx = q.midX() - p.x, dz = q.midZ() - p.z;
-                    if (dx * dx + dz * dz <= r2) ++n;
+                    if (dx * dx + dz * dz <= r2) {
+                        ++n;
+                        if (undermineLog)
+                            std::printf("  [shown] kind %d in chunk (%d,%d) at mid (%.2f, %.2f) "
+                                        "y %.2f, %.2f m from the hole\n",
+                                        int(q.kind), cx, cz, double(q.midX()), double(q.midZ()),
+                                        double(q.y), double(std::sqrt(dx * dx + dz * dz)));
+                    }
                 }
             }
         return n;
@@ -5131,7 +6910,9 @@ class World {
             }
         if (cells.empty()) return 0;
         remesh(mesher_.edits.writeCells(cells));
-        groundDirty_ = true;
+        // The bite, not the wood -- see markGroundDirty. One voxel of margin
+        // because the patch's own cells straddle the edge of it.
+        markGroundDirty(ci - r - 1, cj - r - 1, ci + r + 1, cj + r + 1);
         // ...AND THE SCATTER THAT WAS STANDING ON IT. Recorded against the
         // FIRST column of this bite, which is the one the revert will reach
         // first -- see tillRevert, which shows them again when it does.
@@ -5224,7 +7005,18 @@ class World {
         }
         if (!cells.empty()) {
             remesh(mesher_.edits.writeCells(cells));
-            groundDirty_ = true;
+            // A seed is one voxel and there are three of them, but they sit in
+            // a bed this call already walked -- so the bed's own box is what
+            // moved, and cells carries exactly it.
+            int pi0 = cells.front().first[0], pj0 = cells.front().first[1];
+            int pi1 = pi0, pj1 = pj0;
+            for (const auto &cm : cells) {
+                pi0 = mini(pi0, cm.first[0]);
+                pj0 = mini(pj0, cm.first[1]);
+                pi1 = maxi(pi1, cm.first[0]);
+                pj1 = maxi(pj1, cm.first[1]);
+            }
+            markGroundDirty(pi0 - 1, pj0 - 1, pi1 + 1, pj1 + 1);
         }
         return n;
     }
@@ -5275,7 +7067,14 @@ class World {
         if (n) tilled_.erase(tilled_.begin(), tilled_.begin() + long(n));
         if (back.empty()) return;
         remesh(mesher_.edits.eraseCells(back));
-        groundDirty_ = true;
+        int ri0 = back.front()[0], rj0 = back.front()[1], ri1 = ri0, rj1 = rj0;
+        for (const std::array<int, 3> &c : back) {
+            ri0 = mini(ri0, c[0]);
+            rj0 = mini(rj0, c[1]);
+            ri1 = maxi(ri1, c[0]);
+            rj1 = maxi(rj1, c[1]);
+        }
+        markGroundDirty(ri0 - 1, rj0 - 1, ri1 + 1, rj1 + 1);
     }
 
     size_t tilledCount() const { return tilled_.size(); }
@@ -5363,6 +7162,15 @@ class World {
 
     size_t dig(const Vec3 &p, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
                int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
+        // ASK AGAIN ABOUT THIS PLACE, LATER AND WIDER. dropTerrainHangers below
+        // answers for the 2.7 m around the bite in this frame; the watch
+        // answers for 9.6 m of it a fraction of a second from now, which is the
+        // only way a piece bigger than the box is ever seen. See the block over
+        // kFloatRegionVox -- and note this is INSIDE dig rather than at its
+        // call sites, for the reason carveLevelToBody was fused: a rule that
+        // depends on every caller remembering a second line is a rule that has
+        // already been deleted once.
+        markFloatDirty(p);
         const int ci = int(std::floor(p.x / VOXEL_M));
         const int cj = int(std::floor(p.z / VOXEL_M));
         const int cy = int(std::floor(p.y / VOXEL_M));
@@ -5408,7 +7216,10 @@ class World {
         }
         const std::vector<std::pair<int, int>> touched =
             mesher_.edits.carve(ci, cj, cy, radiusVox);
-        groundDirty_ = true;   // the floor the solver stands on has moved
+        // The bite, not the wood -- see markGroundDirty. The dig is a sphere of
+        // radiusVox about (ci, cj), so its footprint is that square.
+        markGroundDirty(ci - radiusVox - 1, cj - radiusVox - 1, ci + radiusVox + 1,
+                        cj + radiusVox + 1);   // the floor the solver stands on has moved
         // ...AND NOTHING THE BITE CUT LOOSE IS LEFT IN THE AIR.
         dropTerrainHangers(ci, cj, cy, radiusVox, spoil, spoil && spoilN ? *spoilN : 0);
         size_t asked = 0;
@@ -5988,6 +7799,297 @@ class World {
     }
 
     size_t instanceCount() const { return instanceDescs_.size(); }
+    // Where the first fruit of the run landed, or a zero vector if the
+    // orchard pass placed none. Read once, by the load report.
+    Vec3 firstFruit() const { return fruitSeen_.empty() ? Vec3(0, 0, 0) : fruitSeen_[0]; }
+    // What the last level hanger sweep freed, for --fire-test. -1 means no
+    // body: voxels removed with no slot is exactly the failure the RULE over
+    // kMinBodyVoxels exists to make loud.
+    // -----------------------------------------------------------------------
+    // WHAT IN THIS MAP IS ALREADY STANDING ON NOTHING.
+    //
+    // (user 2026-09-17: "audit for floating voxels and make them subject to
+    //  physics.")
+    //
+    // ONE FLOOD FROM THE FOUNDATION, and everything it does not reach is
+    // floating by definition. The voxeliser lays solid ground under the whole
+    // footprint, so y == 0 is a complete and exact seed -- there is no
+    // sampling and no tolerance in this answer.
+    //
+    // A DIAGNOSTIC, NOT A SWEEP, and deliberately so. dropLevelHangers deals
+    // with what the PLAYER cuts loose, which is the case that was reported.
+    // What this finds is different in kind: geometry the .fbx was authored
+    // with that never touched the ground in the first place -- a sign on a
+    // bracket, an awning, a wire. Turning all of that into rigid bodies at
+    // load would rain the map's own props on the floor the moment [O] is
+    // pressed, which is not what anybody means by nothing floats.
+    //
+    // So this REPORTS, and a person decides. --float-audit.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE MAP DID NOT REACH ITS OWN GROUND.
+    //
+    // (user 2026-09-17: "nothing in the world should be floating ... audit for
+    //  floating voxels and make them subject to physics.")
+    //
+    // AND THE AUDIT FOUND SOMETHING PHYSICS MUST NOT BE THE ANSWER TO.
+    // --float-audit reported 1,108,956 voxels -- 13.04% of the map -- in 610
+    // pieces that no flood from the foundation can reach, the largest of them
+    // 182,155 voxels and 18.4 m tall. That is a BUILDING. Turning it into a
+    // rigid body because it is unsupported would not stop it floating, it
+    // would drop the map.
+    //
+    // THE ONE NUMBER THAT SAID WHOSE FAULT IT WAS: that building sits at row
+    // 14 with solid TWO ROWS beneath it. Twenty centimetres. It is not
+    // suspended in the air, it is standing just short of the floor -- the .fbx
+    // models the houses sitting on a lawn slab that is half a voxel thick, the
+    // foundation is laid to the MEASURED lawn row, and between the two there
+    // is a gap nothing fills. Every house in the map is hovering.
+    //
+    // SO THE FIX IS TO CLOSE THE GAP, NOT TO SIMULATE IT. Walk each column up
+    // from the foundation, and where the next solid above it is within
+    // kLevelSeatVox, fill the air between with what is already underneath. The
+    // geometry added is under the buildings and is never seen; what changes is
+    // that they are attached to the world, which is what nothing floats means
+    // for a static map.
+    //
+    // BOUNDED, AND THAT IS WHAT KEEPS IT HONEST. Four rows is 40 cm -- enough
+    // for a slab that was rounded away, not enough to grow a pillar under a
+    // sign hanging two metres up. Anything still floating after this is
+    // floating on purpose, and --float-audit will say so.
+    // -----------------------------------------------------------------------
+    void seatLevelOnItsFoundation() {
+        if (levelVol_.empty()) return;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        auto idx = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ);
+        };
+        long long filled = 0;
+        int columns = 0;
+        for (int z = 0; z < SZ; ++z)
+            for (int x = 0; x < SX; ++x) {
+                if (levelVol_[idx(x, 0, z)] == mat::AIR) continue;   // no foundation here
+                // The top of the solid run that starts at the foundation.
+                int top = 0;
+                while (top + 1 < SY && levelVol_[idx(x, top + 1, z)] != mat::AIR) ++top;
+                // ...and the next solid above it, if it is close enough to be a
+                // gap rather than a gap on purpose.
+                int next = -1;
+                for (int d = 2; d <= kLevelSeatVox + 1 && top + d < SY; ++d)
+                    if (levelVol_[idx(x, top + d, z)] != mat::AIR) {
+                        next = top + d;
+                        break;
+                    }
+                if (next < 0) continue;
+                // FILLED WITH WHAT IS ALREADY UNDER IT, so the seam wears the
+                // ground's own colour rather than inventing one. It is buried
+                // either way, but a material nothing else in the map uses is
+                // how an invisible fill becomes a visible stripe the first
+                // time somebody digs near it.
+                const uint8_t m = levelVol_[idx(x, top, z)];
+                for (int y = top + 1; y < next; ++y) {
+                    levelVol_[idx(x, y, z)] = m;
+                    ++filled;
+                }
+                ++columns;
+            }
+        if (filled)
+            std::printf("  level    seated on its foundation: %lld voxels filled under %d "
+                        "columns (gaps up to %.2f m)\n",
+                        filled, columns, double(kLevelSeatVox) * VOXEL_M);
+    }
+
+    // -----------------------------------------------------------------------
+    // WHAT THE MAP HELD UP BEFORE ANYBODY SHOT AT IT.
+    //
+    // (user 2026-09-17: "its breaking things vertically, it should only leave
+    //  the initial shot mark ... things are glitching when they become rigid
+    //  bodies.")
+    //
+    // dropLevelHangers asks CAN THIS REACH THE GROUND, and on its own that is
+    // the wrong question for a map that was never fully grounded to begin
+    // with. --float-audit measures 489 pieces and 4.74% of the voxels that no
+    // flood from the foundation reaches even before a round is fired -- roofs
+    // and upper storeys with real gaps in the source model. Shoot anywhere
+    // near one of those and the sweep correctly observes that it cannot reach
+    // the ground, and cuts the whole thing loose. THAT is the vertical
+    // breaking: a post or a panel that was always floating, turned into a
+    // rigid body by a shot that happened to pass it.
+    //
+    // SO THE QUESTION BECOMES: DID THIS SHOT DISCONNECT IT. This is the
+    // before picture -- every voxel the foundation held up at load -- and a
+    // component is severed only if it USED to be in here. Something that was
+    // already floating stays exactly where the map author left it.
+    //
+    // A BIT PER CELL. 136 M cells is 17 MB resident, which is the price of the
+    // sweep being able to tell a thing it broke from a thing it found broken.
+    // -----------------------------------------------------------------------
+    void markLevelGrounded() {
+        levelGrounded_.assign(levelVol_.size(), false);
+        if (levelVol_.empty()) return;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        auto idx = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ);
+        };
+        auto solid = [&](int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return false;
+            return levelVol_[idx(x, y, z)] != mat::AIR;
+        };
+        static const int kN[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                     {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        std::vector<size_t> stack;
+        long long n = 0;
+        for (int z = 0; z < SZ; ++z)
+            for (int x = 0; x < SX; ++x) {
+                if (!solid(x, 0, z) || levelGrounded_[idx(x, 0, z)]) continue;
+                stack.clear();
+                stack.push_back(idx(x, 0, z));
+                levelGrounded_[idx(x, 0, z)] = true;
+                while (!stack.empty()) {
+                    const size_t k = stack.back();
+                    stack.pop_back();
+                    ++n;
+                    const int yy = int(k / (size_t(SX) * size_t(SZ)));
+                    const int rem = int(k % (size_t(SX) * size_t(SZ)));
+                    const int zz = rem / SX, xx = rem % SX;
+                    for (const auto &nb : kN) {
+                        const int ax = xx + nb[0], ay = yy + nb[1], az = zz + nb[2];
+                        if (!solid(ax, ay, az)) continue;
+                        const size_t nk = idx(ax, ay, az);
+                        if (levelGrounded_[nk]) continue;
+                        levelGrounded_[nk] = true;
+                        stack.push_back(nk);
+                    }
+                }
+            }
+        std::printf("  level    %lld voxels stand on the foundation -- only these can be "
+                    "cut loose\n", n);
+    }
+
+    struct FloatAudit {
+        long long solid = 0;     // solid voxels in the map
+        long long grounded = 0;  // ...reachable from the foundation
+        long long floating = 0;  // ...not
+        int pieces = 0;          // how many separate floating components
+        int largest = 0;         // voxels in the biggest one
+        int tallest = 0;         // and how many voxels tall it stands
+        // -- AND THE ONE NUMBER THAT SAYS WHOSE FAULT IT IS ---------------
+        //
+        // How far the biggest floating piece's underside is above the nearest
+        // solid beneath it. ONE means it is resting on something and the flood
+        // simply could not step across -- a gap the voxeliser left, and a data
+        // problem. A large number means it is genuinely suspended in air.
+        // Without this the audit cannot tell a broken map from a broken test.
+        int largestBaseY = 0;    // the lowest row the biggest piece occupies
+        int largestGapY = -1;    // ...and the drop from it to the next solid
+    };
+
+    FloatAudit auditLevelFloaters() const {
+        FloatAudit a;
+        if (levelVol_.empty()) return a;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        auto idx = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ);
+        };
+        auto solid = [&](int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return false;
+            return levelVol_[idx(x, y, z)] != mat::AIR ||
+                   levelDisplay_.a[idx(x, y, z)] != mat::AIR;
+        };
+        for (int y = 0; y < SY; ++y)
+            for (int z = 0; z < SZ; ++z)
+                for (int x = 0; x < SX; ++x)
+                    if (solid(x, y, z)) ++a.solid;
+
+        // A BIT PER CELL. The map is 136 M cells, so this is 17 MB and a
+        // vector<bool> is the right container for once -- a byte each would be
+        // 136 MB to answer a question and throw the answer away.
+        std::vector<bool> seen(size_t(SX) * size_t(SY) * size_t(SZ), false);
+        std::vector<size_t> stack;
+        static const int kN[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                     {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        auto flood = [&](int sx, int sy, int sz, int *count, int *loY, int *hiY) {
+            stack.clear();
+            stack.push_back(idx(sx, sy, sz));
+            seen[idx(sx, sy, sz)] = true;
+            while (!stack.empty()) {
+                const size_t k = stack.back();
+                stack.pop_back();
+                const int y = int(k / (size_t(SX) * size_t(SZ)));
+                const int rem = int(k % (size_t(SX) * size_t(SZ)));
+                const int z = rem / SX, x = rem % SX;
+                ++(*count);
+                if (loY && y < *loY) *loY = y;
+                if (hiY && y > *hiY) *hiY = y;
+                for (const auto &nb : kN) {
+                    const int nx = x + nb[0], ny = y + nb[1], nz = z + nb[2];
+                    if (!solid(nx, ny, nz)) continue;
+                    const size_t nk = idx(nx, ny, nz);
+                    if (seen[nk]) continue;
+                    seen[nk] = true;
+                    stack.push_back(nk);
+                }
+            }
+        };
+
+        // ---- everything the foundation holds up --------------------------
+        for (int z = 0; z < SZ; ++z)
+            for (int x = 0; x < SX; ++x)
+                if (solid(x, 0, z) && !seen[idx(x, 0, z)]) {
+                    int n = 0;
+                    flood(x, 0, z, &n, nullptr, nullptr);
+                    a.grounded += n;
+                }
+
+        // ---- and everything it does not ----------------------------------
+        for (int y = 1; y < SY; ++y)
+            for (int z = 0; z < SZ; ++z)
+                for (int x = 0; x < SX; ++x) {
+                    if (!solid(x, y, z) || seen[idx(x, y, z)]) continue;
+                    int n = 0, loY = y, hiY = y;
+                    flood(x, y, z, &n, &loY, &hiY);
+                    a.floating += n;
+                    ++a.pieces;
+                    if (hiY - loY + 1 > a.tallest) a.tallest = hiY - loY + 1;
+                    if (n > a.largest) {
+                        a.largest = n;
+                        a.largestBaseY = loY;
+                        // Straight down from this seed until something solid
+                        // turns up. The seed is on the piece's own lowest row
+                        // by construction -- the scan walks y upward -- so it
+                        // is a fair place to measure the gap from.
+                        a.largestGapY = -1;
+                        for (int d = 1; d <= y; ++d)
+                            if (solid(x, y - d, z)) {
+                                a.largestGapY = d;
+                                break;
+                            }
+                    }
+                }
+        return a;
+    }
+
+    int lastHangVox() const { return lastHangVox_; }
+    int lastHangSlot() const { return lastHangSlot_; }
+    void clearHangReport() {
+        lastHangVox_ = 0;
+        lastHangWorst_ = 0;
+        lastHangPieces_ = 0;
+        lastHangDim_[0] = lastHangDim_[1] = lastHangDim_[2] = 0;
+        lastHangSlot_ = -1;
+    }
+    int lastHangWorst() const { return lastHangWorst_; }
+    int lastHangPieces() const { return lastHangPieces_; }
+    // THE SHAPE OF THE BIGGEST ONE, because a voxel count cannot tell a chip
+    // from a rip. "its breaking things vertically" is a statement about
+    // DIMENSIONS -- 2 x 2 x 25 is the report, 5 x 4 x 5 is a chip -- and the
+    // report had no way to say which had happened.
+    void lastHangDims(int *w, int *h, int *d) const {
+        if (w) *w = lastHangDim_[0];
+        if (h) *h = lastHangDim_[1];
+        if (d) *d = lastHangDim_[2];
+    }
+
     size_t decorCount(int kind) const {
         size_t n = 0;
         for (const auto &kv : chunks_) n += size_t(kv.second.decorKind[kind]);
@@ -6209,49 +8311,185 @@ class World {
         if (on == level_) return level_;
         if (on) {
             buildLevelBlas();
-            if (!levelBlas_.valid()) return false;   // nothing to travel to
+            if (levelBlocks_.empty()) return false;   // nothing to travel to
         }
         level_ = on;
+        // -- A PER-PLACE MATERIAL TABLE WAS TRIED HERE AND DOES NOT WORK YET --
+        //
+        // (user 2026-09-17: "surely we can have multiple color paletes for
+        // multiple worlds?" -- and the idea is right. The wood is not in the
+        // acceleration structure while the level is open, so the two can never
+        // disagree on screen about what entry 243 means.)
+        //
+        // WHAT WAS BUILT: Palette::beginLevelTable / forLevelColor, a second
+        // 255-entry table allocated top-down over the entries the level does
+        // not share, with the fixed mat:: band, the held kit and the wood's
+        // flower models reserved out of it. World::buildLevelPalette still
+        // builds it -- that half works and the numbers were right: 13 colours
+        // into the level's own table with 121 free, and the WOOD dropped from
+        // 255 of 255 (the wheat losing two of its colours) to 245.
+        //
+        // WHAT DOES NOT WORK is getting the device to read it. Swapping
+        // materials_ here -- by in-place update AND by rebuilding the buffer --
+        // changes nothing on screen. MEASURED, so nobody has to measure it
+        // again:
+        //
+        //   * the level's mesh really does carry the level's ids: id 243 is
+        //     552,327 voxels of it (histogram in buildLevelBlas).
+        //   * the table really is uploaded: entry 243 was forced to pure
+        //     MAGENTA and uploadMaterials printed (1.000,0.000,1.000) going in.
+        //   * nothing on screen was magenta, and the map kept rendering in the
+        //     WOOD's colours at those ids.
+        //
+        // AND THE STRONGEST CLUE CAME AFTERWARDS, from a different bug: the
+        // level's entries were ALSO invisible on the shared table until
+        // buildLevelPalette was made to call uploadMaterials itself (see the
+        // note there). So an upload from buildLevelPalette LANDS and an upload
+        // from here, one call later in the same start-up, does NOT. That is
+        // where to start -- not in the palette, but in what is different about
+        // this call site. gMaterials is bound per frame from materialBuffer()
+        // at three sites in tracer.h.
+        //
+        // UNTIL THEN THE LEVEL ALLOCATES OUT OF THE WOOD'S TABLE, as it always
+        // did -- see buildLevelPalette, which is one call away from switching
+        // back the moment the above is understood.
         rebuildTlas();
         return level_;
     }
     bool levelOn() const { return level_; }
     bool levelReady() const { return levelLoaded_; }
     static Vec3 levelOrigin() { return Vec3(kLevelAtX, kLevelAtY, kLevelAtZ); }
+
+    // IS THERE ANYTHING AT THIS WORLD POINT IN THE MAP? For --rip-test, which
+    // fires on a lattice and must not spend its budget on open air. Asks both
+    // grids, the same pair carveLevel cuts.
+    bool levelSolidAtM(const Vec3 &at) const {
+        if (levelVol_.empty() || levelDisplay_.a.empty()) return false;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        const int x = int((at.x - kLevelAtX) / VOXEL_M);
+        const int y = int((at.y - kLevelAtY) / VOXEL_M);
+        const int z = int((at.z - kLevelAtZ) / VOXEL_M);
+        if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return false;
+        const size_t k = size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ);
+        return levelVol_[k] != mat::AIR || levelDisplay_.a[k] != mat::AIR;
+    }
     float levelMinX() const { return kLevelAtX; }
     float levelMaxX() const { return kLevelAtX + float(levelAsset_.sx) * VOXEL_M; }
     float levelMinZ() const { return kLevelAtZ; }
     float levelMaxZ() const { return kLevelAtZ + float(levelAsset_.sz) * VOXEL_M; }
 
-    // -- WHERE YOU ARRIVE: A CORNER OF THE PAD, LOOKING AT THE WHOLE THING ---
+    // -- WHERE YOU ARRIVE: A FRONT YARD, LOOKING DOWN THE MAP ----------------
     //
-    // MEASURED, NOT WRITTEN DOWN. The .glb's own origin is nothing in
-    // particular -- its platform starts at x -13.94 -- so a spawn in level
-    // metres would have to be re-derived by hand every time the sculpt moved.
-    // Everything here comes off the asset's own extent and its own
-    // heightfield, so a re-voxelised building takes the arrival with it.
+    // MEASURED, NOT WRITTEN DOWN. The model's own origin is nothing in
+    // particular, so a spawn in level metres would have to be re-derived by
+    // hand every time the asset moved. Everything here comes off the asset's
+    // own extent and its own heightfield, so a re-voxelised map takes the
+    // arrival with it.
     //
-    // THE CORNER RATHER THAN THE DOOR. The first cut put you three and a half
-    // metres from the front wall, which makes a photograph of stucco: the
-    // building is 23 m wide and 11 m tall and none of that is visible from
-    // there. The far corner is eighteen metres back on the diagonal, the
-    // longest sightline this platform has and enough to see the whole of it,
-    // mast included. Two metres in from each edge so the fence in
-    // App::clampToLevel is not already pressing on you when you land.
+    // -- WHY THIS IS NOT THE BUILDING'S CORNER ANY MORE ----------------------
+    //
+    // It used to be "two metres in from the far corner", and that was right for
+    // what it was: a building is a thing you photograph, the far corner is the
+    // longest sightline a 33 m pad has, and the whole of it including the mast
+    // fits in the frame from there. A MAP is not a thing you photograph. You
+    // stand in one, and the corner of Nuketown is the strip of foundation
+    // outside the fence, facing across the short axis at the back of a house.
+    //
+    // So the spawn is down the LONG axis instead -- the map is 16.4 x 32.7 m
+    // and that axis is yard, house, street, house, yard -- standing in a front
+    // yard at one end, looking the full 32.7 m down it. That is the view the
+    // map is built around.
+    //
+    // AND IT IS SEARCHED RATHER THAN NAMED. The ideal point is the middle of
+    // the width, four metres in from the end; what is actually AT that point
+    // depends on the asset, and on this one it can be a hedge or a porch. So
+    // the ideal is a starting point for a ring search over the asset's own
+    // heightfield, and the first open column wins. "Open" is a column with
+    // less than kOpenM of anything in it -- the foundation and its painted
+    // slab and nothing else. A fence, a car, a wall or a roof all fail it.
+    //
+    // THE FALLBACK IS THE IDEAL POINT, unsearched. It is reached only if the
+    // asset has no open ground anywhere near the end of it, which would mean
+    // the level is not what this function was written for -- and a spawn that
+    // is merely wrong is better than one that returns nothing.
     Vec3 levelSpawn() const {
-        const float inset = 2.0f;
-        const float x = kLevelAtX + inset;
-        const float z = kLevelAtZ + float(levelAsset_.sz) * VOXEL_M - inset;
-        float y = kLevelAtY;
-        if (!levelColTop_.empty()) {
-            const int mx = std::min(levelAsset_.sx - 1,
-                                    std::max(0, int((x - kLevelAtX) / VOXEL_M)));
-            const int mz = std::min(levelAsset_.sz - 1,
-                                    std::max(0, int((z - kLevelAtZ) / VOXEL_M)));
-            y = kLevelAtY +
-                float(levelColTop_[size_t(mx) + size_t(mz) * size_t(levelAsset_.sx)]) * VOXEL_M;
+        const float spanX = float(levelAsset_.sx) * VOXEL_M;
+        const float spanZ = float(levelAsset_.sz) * VOXEL_M;
+        const float idealX = kLevelAtX + spanX * 0.5f;
+        const float idealZ = kLevelAtZ + spanZ - 4.0f;
+        if (levelColTop_.empty())
+            return Vec3(idealX, kLevelAtY, idealZ);
+
+        // -- WHAT COUNTS AS OPEN GROUND IS MEASURED, NOT NAMED ---------------
+        //
+        // (user 2026-09-17: "when the player spawns into nuketown, he spawns in
+        // the ground".)
+        //
+        // THIS WAS AN ABSOLUTE HEIGHT AND IT STOPPED BEING TRUE. It read "a
+        // column with more than one metre in it is something you would be
+        // standing inside" -- ten voxels -- which was right when the map sat
+        // on a 7-row foundation. The 3x rebuild put the ground at row 11 and
+        // every open column on the map now answers TWELVE, so the test rejected
+        // all of them, the ring search ran to its radius and fell out of the
+        // bottom, and the fallback below returned kLevelAtY: the BASE of the
+        // grid, which is half a metre under the concrete. The player spawned
+        // inside the foundation.
+        //
+        // So the ground is read off the asset the way the voxelizer reads it --
+        // the most common column top is the floor of the place, because a map
+        // is mostly floor -- and "open" is that plus a metre of clutter. It is
+        // right at any scale because it is not a height.
+        int ground = 0;
+        {
+            std::vector<int> hist;
+            for (int16_t v : levelColTop_) {
+                if (v <= 0) continue;
+                if (size_t(v) >= hist.size()) hist.resize(size_t(v) + 1, 0);
+                ++hist[size_t(v)];
+            }
+            int best = 0;
+            for (size_t i = 1; i < hist.size(); ++i)
+                if (hist[i] > best) {
+                    best = hist[i];
+                    ground = int(i);
+                }
         }
-        return Vec3(x, y, z);
+        constexpr float kOpenM = 1.0f;
+        const int top = ground + int(kOpenM / VOXEL_M);
+        const int cx = int((idealX - kLevelAtX) / VOXEL_M);
+        const int cz = int((idealZ - kLevelAtZ) / VOXEL_M);
+        auto colAt = [&](int x, int z) {
+            return int(levelColTop_[size_t(x) + size_t(z) * size_t(levelAsset_.sx)]);
+        };
+        // Rings outward from the ideal, so the nearest open ground to it wins
+        // and the search is over as soon as it starts on an ordinary map. The
+        // radius is half the map: past that there is nowhere left to look.
+        const int maxR = std::max(levelAsset_.sx, levelAsset_.sz) / 2;
+        for (int r = 0; r <= maxR; ++r)
+            for (int dz = -r; dz <= r; ++dz)
+                for (int dx = -r; dx <= r; ++dx) {
+                    // The ring, not the disc -- the inside of it was tested on
+                    // an earlier pass and testing it again would make this
+                    // quadratic in the radius for no new answers.
+                    if (r > 0 && std::abs(dx) != r && std::abs(dz) != r) continue;
+                    const int x = cx + dx, z = cz + dz;
+                    // TWO VOXELS IN FROM THE EDGE, so App::clampToLevel's fence
+                    // is not already pressing on the body when it lands.
+                    if (x < 2 || z < 2 || x >= levelAsset_.sx - 2 || z >= levelAsset_.sz - 2)
+                        continue;
+                    const int t = colAt(x, z);
+                    // BELOW the ground is a pit or a lake bed and is not
+                    // somewhere to arrive either; above it by more than a metre
+                    // is standing on something.
+                    if (t < ground || t > top) continue;
+                    return Vec3(kLevelAtX + (float(x) + 0.5f) * VOXEL_M,
+                                kLevelAtY + float(t) * VOXEL_M,
+                                kLevelAtZ + (float(z) + 0.5f) * VOXEL_M);
+                }
+        // ...AND EVEN THE FALLBACK STANDS ON THE FLOOR. It used to return
+        // kLevelAtY, which is the bottom of the GRID and not the bottom of the
+        // map -- see above for what that did.
+        return Vec3(idealX, kLevelAtY + float(maxi(ground, 1)) * VOXEL_M, idealZ);
     }
     // ...AND FACING THE MIDDLE OF IT, worked out FROM the spawn rather than
     // written down beside it: two descriptions of one aim drift apart, and
@@ -6266,6 +8504,393 @@ class World {
         const float cx = kLevelAtX + float(levelAsset_.sx) * VOXEL_M * 0.5f;
         const float cz = kLevelAtZ + float(levelAsset_.sz) * VOXEL_M * 0.5f;
         return atan2f(cx - s.x, -(cz - s.z)) * 180.0f / PI;
+    }
+
+    // -- THE LAMPS -----------------------------------------------------------
+    //
+    // WHICH MATERIAL IS THE GLASS -- also the tracer's on switch, so a level
+    // with no bulb art returns mat::AIR here and the caller leaves the light
+    // off rather than lighting a material that nothing wears.
+    uint8_t levelBulbMtl() const { return levelGlassMtl_; }
+
+    // -- THE LEVEL'S FLOOR, FOR ANYTHING FALLING IN IT ---------------------
+    //
+    // updateDebris clamps every loose piece above "the one floor nothing may
+    // ever be under", and in the wood that is the TERRAIN. The level has no
+    // terrain -- it is four kilometres away and 640 m below -- so a chip cut
+    // out of a wall here had nothing under it and fell out of the world. This
+    // is the heightfield the walk already stands on, and carveLevel keeps it up
+    // to date so a hole shot in a floor is a hole a chip can fall through.
+    // -- ...AND WHY THAT IS THE WRONG QUESTION FOR A FALLING BODY ---------
+    //
+    // (user 2026-09-17: "the chunking mechanic caused by the bullet is not
+    //  obeying physics correctly. the chunks teleport to the top of the
+    //  building where they proceed to endlessly fall forever.")
+    //
+    // levelGroundM below answers WHAT IS THE TOP OF THIS COLUMN, which is the
+    // right question for a walk -- you stand on top of things -- and a
+    // catastrophic one for the debris backstop, because indoors there is
+    // geometry ABOVE you. A chip cut out of a wall on the ground floor asked
+    // it and got the ROOF, four metres over its head; the clamp in
+    // updateDebris then fired (the piece is far below that floor) and
+    // teleported the body onto the roof. It fell off, dropped below the roof
+    // line again, and was clamped straight back up -- once per frame, for
+    // ever. That is the report, exactly: teleport to the top of the building,
+    // then fall endlessly.
+    //
+    // In the wood the same code is harmless only because a heightfield IS the
+    // ceiling there: nothing is ever above the terrain, so "the top of this
+    // column" and "the floor under this body" are the same number. A building
+    // is the case that distinction was always waiting for.
+    //
+    // SO THIS ASKS DOWNWARD FROM THE BODY. The first solid voxel at or below
+    // the body's own height, and its TOP face -- which is the floor it would
+    // land on. Starting the scan at the body's centre rather than at its top
+    // is deliberate and is the safe end to be wrong at: a body whose centre
+    // has sunk INTO a slab starts on a solid voxel and is lifted back onto
+    // that slab, while starting from its top could find a CEILING just above
+    // it and clamp the body up through it -- the same class of bug in the
+    // other direction.
+    //
+    // Falls through to kLevelAtY, the underside of the foundation, which is
+    // the one height in this map that genuinely has nothing below it.
+    float levelFloorBelowM(float wx, float wy, float wz) const {
+        if (levelVol_.empty()) return kLevelAtY;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        const int x = int((wx - kLevelAtX) / VOXEL_M);
+        const int z = int((wz - kLevelAtZ) / VOXEL_M);
+        if (x < 0 || z < 0 || x >= SX || z >= SZ) return kLevelAtY;
+        int y = int((wy - kLevelAtY) / VOXEL_M);
+        if (y >= SY) y = SY - 1;
+        for (; y >= 0; --y) {
+            const size_t k = size_t(x) + size_t(z) * size_t(SX) +
+                             size_t(y) * size_t(SX) * size_t(SZ);
+            if (levelVol_[k] != mat::AIR) return kLevelAtY + float(y + 1) * VOXEL_M;
+        }
+        return kLevelAtY;
+    }
+
+    float levelGroundM(float wx, float wz) const {
+        if (levelColTop_.empty()) return kLevelAtY;
+        const int x = int((wx - kLevelAtX) / VOXEL_M);
+        const int z = int((wz - kLevelAtZ) / VOXEL_M);
+        if (x < 0 || z < 0 || x >= levelAsset_.sx || z >= levelAsset_.sz) return kLevelAtY;
+        return kLevelAtY +
+               float(levelColTop_[size_t(x) + size_t(z) * size_t(levelAsset_.sx)]) * VOXEL_M;
+    }
+    // ...AND WHICH ONE TO LIGHT FROM.
+    //
+    // THE SHADER HAS EXACTLY ONE POINT LIGHT. bulbPos is a single position and
+    // sampleBulbSplit traces one shadow ray at it, so a map with six pendants
+    // in it cannot have six lights without a renderer-wide change (see the
+    // note in Shared.slang, which weighed that and said no for one room).
+    //
+    // What it CAN have is six glowing bulbs and one of them lighting the room
+    // you are standing in, because the material test is per-voxel and free:
+    // every bulb renders at bulbRadiance whatever this returns. So the light
+    // follows the eye to the nearest glass, and the others are lamps you can
+    // see but that do not cast. You are in one room at a time; the seam is
+    // outdoors, between rooms, where the sun is doing the work anyway.
+    // ...AND WHERE EVERY ONE OF THEM IS.
+    //
+    // ALL OF THEM, not the nearest. An earlier cut here answered "which bulb
+    // should light the world this frame" and that question has no good answer:
+    // whichever it picked, the rooms it did not pick went dark, which is a
+    // light that follows the player around. The shader chooses per SHADING
+    // POINT out of this list instead -- see kBulbSlots in Shared.slang.
+    const std::vector<Vec3> &levelBulbs() const { return levelBulbs_; }
+
+    // -----------------------------------------------------------------------
+    // PLACING AND PULLING DOWN LAMPS BY HAND.
+    //
+    // (user 2026-09-17: "left click to remove the bulb and right click to place
+    // a bulb".)
+    //
+    // EACH EDIT REBUILDS THE LEVEL, and that is affordable exactly because it
+    // is an edit: meshing this map measures ~380 ms (printed by buildLevelBlas)
+    // and a click is a deliberate act a third of a second apart at worst. The
+    // same cost per BULLET is what stops the rounds carving this place -- see
+    // the note over carveLevel.
+    //
+    // THE CEILING IS FOUND FROM THE HIT, not from the aim: a lamp goes on the
+    // slab above wherever you pointed, so pointing at the floor of a room still
+    // hangs it from that room's ceiling.
+    bool placeLevelBulb(const Vec3 &at) {
+        if (!levelPaletteReady_ || levelGlassMtl_ == mat::AIR) return false;
+        if (int(levelBulbs_.size()) >= kLevelBulbMax) return false;
+        const int bx = int((at.x - kLevelAtX) / VOXEL_M);
+        const int bz = int((at.z - kLevelAtZ) / VOXEL_M);
+        int y = int((at.y - kLevelAtY) / VOXEL_M);
+        if (bx < 2 || bz < 2 || bx >= levelAsset_.sx - 2 || bz >= levelAsset_.sz - 2) return false;
+        if (y < 0) y = 0;
+        if (y >= levelAsset_.sy) y = levelAsset_.sy - 1;
+        auto solidAt = [&](int py) {
+            return levelVol_[size_t(bx) + size_t(bz) * size_t(levelAsset_.sx) +
+                             size_t(py) * size_t(levelAsset_.sx) * size_t(levelAsset_.sz)] !=
+                   mat::AIR;
+        };
+        // UP TO THE FIRST THING OVERHEAD. If the aim landed inside solid, climb
+        // out of it first -- pointing at a wall should hang the lamp off the
+        // ceiling above that wall rather than refusing.
+        while (y < levelAsset_.sy - 1 && solidAt(y)) ++y;
+        int roof = y;
+        while (roof + 1 < levelAsset_.sy && !solidAt(roof + 1)) ++roof;
+        noteBulb(bx, bz, roof, levelAsset_.sx, levelAsset_.sz, levelAsset_.sy);
+        rebuildLevelBlas();
+        return true;
+    }
+
+    // ...AND THE NEAREST ONE WITHIN `reach` COMES DOWN. Nearest to a POINT
+    // rather than the first along a ray: a bulb is five voxels of glass on a
+    // ceiling and asking a ray to hit it exactly is asking the player to be
+    // precise about something they cannot quite see.
+    // -----------------------------------------------------------------------
+    // A BULB COMES OUT, AND IT DOES NOT COST THE WHOLE MAP.
+    //
+    // (user 2026-09-17: "when shooting a bulb it just dissapears. make the
+    //  lightbulb break into peices and fall due to gravity. also it spikes bad
+    //  when shooting the bulb. optimize it.")
+    //
+    // THE SPIKE AND THE DISAPPEARANCE WERE ONE LINE. This used to erase the
+    // bulb from the light list and call rebuildLevelBlas() -- which releases
+    // every block's triangles, CLEARS levelDisplay_ ENTIRELY, and meshes the
+    // whole map again. That is the 621 ms the boot report prints for building
+    // the level, paid on a trigger pull. And because the removal was a rebuild
+    // rather than a carve, there were never any voxels to hand to physics: the
+    // bulb was simply absent from the next mesh.
+    //
+    // SO IT IS A CARVE NOW, and the same carve the rounds already use: clear
+    // the voxels, re-mesh only the blocks they were in, hand the voxels to
+    // spawnDebris. One block instead of a hundred and twenty-eight.
+    //
+    // ONLY THE GLASS IS IDENTIFIED BY MATERIAL, and that is not fussiness --
+    // levelCordMtl_ IS mat::ROCK (see loadLevelBulb), so scanning for the cord
+    // would match every stone in the box. The flex stays on the ceiling, which
+    // is also what a shot-out bulb leaves behind.
+    //
+    // THE BULB IS IN THE DISPLAY GRID AND NOT THE COLLIDER -- dressLevel
+    // stamps into the copy buildLevelBlas meshes, never into levelVol_ -- so
+    // there is no collider to keep in step and nothing to fix in levelColTop_.
+    //
+    // `shatter` is the difference between shooting one and unscrewing one. A
+    // round breaks it into pieces that fall; the lamp in hand takes it whole.
+    // -----------------------------------------------------------------------
+    bool takeLevelBulbNear(Physics *ph, const Vec3 &at, float reach, double nowMs,
+                           bool shatter) {
+        int best = -1;
+        float bd = reach * reach;
+        for (size_t i = 0; i < levelBulbs_.size(); ++i) {
+            const Vec3 d = levelBulbs_[i] - at;
+            const float q = lengthSq(d);
+            if (q < bd) {
+                bd = q;
+                best = int(i);
+            }
+        }
+        if (best < 0) return false;
+        const Vec3 bulb = levelBulbs_[size_t(best)];
+        levelBulbs_.erase(levelBulbs_.begin() + best);
+
+        // ---- the glass, out of the display grid --------------------------
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        if (levelDisplay_.a.empty() || levelGlassMtl_ == mat::AIR) {
+            rebuildTlas();
+            return true;
+        }
+        const int cx = int((bulb.x - kLevelAtX) / VOXEL_M);
+        const int cy = int((bulb.y - kLevelAtY) / VOXEL_M);
+        const int cz = int((bulb.z - kLevelAtZ) / VOXEL_M);
+        // The model's own size plus a voxel, which is the honest bound on how
+        // far its glass can reach from the position that was recorded for it.
+        const int r = maxi(2, maxi(levelBulbAsset_.sx, maxi(levelBulbAsset_.sy,
+                                                            levelBulbAsset_.sz)));
+        const int n = r * 2 + 1;
+        std::vector<uint8_t> vol(size_t(n) * size_t(n) * size_t(n), mat::AIR);
+        int got = 0;
+        int b0x = levelBX_, b1x = -1, b0z = levelBZ_, b1z = -1;
+        for (int y = maxi(0, cy - r); y <= mini(SY - 1, cy + r); ++y)
+            for (int z = maxi(0, cz - r); z <= mini(SZ - 1, cz + r); ++z)
+                for (int x = maxi(0, cx - r); x <= mini(SX - 1, cx + r); ++x) {
+                    const size_t k = size_t(x) + size_t(z) * size_t(SX) +
+                                     size_t(y) * size_t(SX) * size_t(SZ);
+                    if (levelDisplay_.a[k] != levelGlassMtl_) continue;
+                    vol[size_t(x - cx + r) + size_t(z - cz + r) * size_t(n) +
+                        size_t(y - cy + r) * size_t(n) * size_t(n)] = levelDisplay_.a[k];
+                    levelDisplay_.a[k] = mat::AIR;
+                    ++got;
+                    const int bx = x / kLevelBlockVox, bz = z / kLevelBlockVox;
+                    b0x = mini(b0x, bx);
+                    b1x = maxi(b1x, bx);
+                    b0z = mini(b0z, bz);
+                    b1z = maxi(b1z, bz);
+                }
+        if (got) {
+            const auto t0 = std::chrono::steady_clock::now();
+            int blocks = 0;
+            for (int bz = maxi(0, b0z); bz <= mini(levelBZ_ - 1, b1z); ++bz)
+                for (int bx = maxi(0, b0x); bx <= mini(levelBX_ - 1, b1x); ++bx) {
+                    meshLevelBlock(bz * levelBX_ + bx);
+                    ++blocks;
+                }
+            size_t total = 0;
+            for (size_t t : levelBlockTris_) total += t;
+            levelTris_ = total;
+            if (carveLog) {
+                std::printf("v2: bulb out -- %d glass voxels, %d block(s) re-meshed in "
+                            "%.1f ms\n", got, blocks,
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0)
+                                .count());
+                std::fflush(stdout);
+            }
+        }
+
+        // ---- ...AND IT FALLS, IN PIECES ----------------------------------
+        //
+        // SPLIT INTO OCTANTS about the glass's own middle, which is v1's
+        // phShatter and the same split shatterFlyer uses on a corpse -- each
+        // piece is a contiguous corner of the thing rather than confetti. A
+        // bulb is small, so most octants are a voxel or two and kMinBodyVoxels
+        // being 1 is what lets them all be real.
+        //
+        // A LITTLE OUTWARD, NOT A LAUNCH. Glass that drops straight down in
+        // eight touching pieces reads as one object falling; a metre a second
+        // apart is enough to read as breaking, and small enough that nothing
+        // is thrown across the room.
+        if (shatter && ph && got > 0) {
+            for (int oct = 0; oct < 8; ++oct) {
+                std::vector<uint8_t> part(vol.size(), mat::AIR);
+                int pn = 0;
+                for (int y = 0; y < n; ++y)
+                    for (int z = 0; z < n; ++z)
+                        for (int x = 0; x < n; ++x) {
+                            const size_t k = size_t(x) + size_t(z) * size_t(n) +
+                                             size_t(y) * size_t(n) * size_t(n);
+                            if (vol[k] == mat::AIR) continue;
+                            const int o = ((x >= r) ? 1 : 0) | ((y >= r) ? 2 : 0) |
+                                          ((z >= r) ? 4 : 0);
+                            if (o != oct) continue;
+                            part[k] = vol[k];
+                            ++pn;
+                        }
+                if (!pn) continue;
+                const Vec3 centre{kLevelAtX + (float(cx) + 0.5f) * VOXEL_M,
+                                  kLevelAtY + (float(cy) + 0.5f) * VOXEL_M,
+                                  kLevelAtZ + (float(cz) + 0.5f) * VOXEL_M};
+                const Vec3 away{((oct & 1) ? 1.0f : -1.0f) * kBulbBurstMs,
+                                ((oct & 2) ? 0.6f : -0.2f) * kBulbBurstMs,
+                                ((oct & 4) ? 1.0f : -1.0f) * kBulbBurstMs};
+                const Vec3 spin{0.0f, 0.0f, 0.0f};
+                markLeftLying(spawnDebris(*ph, part, n, centre, away, spin, nowMs, 0.0f,
+                                          nullptr, uint8_t(kDebrisStone), kArrowAbsorbM),
+                              kLevelChipLifeMs);   // see carveLevelToBody
+            }
+        }
+        rebuildTlas();
+        return true;
+    }
+
+    // The lamp in hand takes one whole -- see takeLevelBulbNear.
+    bool removeLevelBulbNear(const Vec3 &at, float reach) {
+        return takeLevelBulbNear(nullptr, at, reach, 0.0, /*shatter=*/false);
+    }
+
+    // Throw the level's geometry away and mesh it again. The only way to see an
+    // edit: the map is ONE structure, so there is no smaller unit to rebuild.
+    void rebuildLevelBlas() {
+        for (size_t i = 0; i < levelBlocks_.size(); ++i) {
+            if (levelBlockTri_[i] == TriPool::kInvalid) continue;
+            pool_.release(levelBlockTri_[i], levelBlockTris_[i]);
+            levelBlockTri_[i] = TriPool::kInvalid;
+        }
+        levelBlocks_.clear();
+        levelBlockTri_.clear();
+        levelBlockTris_.clear();
+        levelDisplay_.a.clear();
+        levelDisplay_.a.shrink_to_fit();
+        levelTris_ = 0;
+        buildLevelBlas();
+        rebuildTlas();
+    }
+
+    // Give the level its own material table, once the kit is loaded. Called
+    // from App's start-up; see buildLevelPalette for why the order is fixed.
+    bool prepareLevelPalette() { return buildLevelPalette(); }
+
+    // Take a chip out of the map -- see the definition for why the level needs
+    // its own carve and cannot use dig() or carveModel().
+    bool carveLevelAt(const Vec3 &at, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
+                      int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
+        return carveLevel(at, radiusVox, spoil, spoilN, spoilAt);
+    }
+
+    // -- ...AND THE SAME CUT WITH THE RULE BUILT IN ----------------------
+    //
+    // CARVE AND BODY IN ONE CALL. See the RULE block over kMinBodyVoxels: the
+    // level is the path that has actually regressed -- its spawn line was
+    // deleted by a concurrent edit and the map went back to holes that nothing
+    // comes out of -- and the reason it could regress is that the carve and
+    // the spawn were two statements. They are one now, so the only way to cut
+    // the map without producing a body is to stop calling this, which is not a
+    // thing an edit does by accident.
+    //
+    // Returns the debris slot, or -1 if nothing was cut. `nVox` reports what
+    // came out so a caller (and --fire-frame) can tell "the round missed" from
+    // "the round cut and the voxels vanished" -- two failures that look
+    // identical from in front of the wall.
+    int carveLevelToBody(Physics &ph, const Vec3 &at, int radiusVox, double nowMs,
+                         float absorbR, int *nVox = nullptr, Vec3 *atOut = nullptr) {
+        if (nVox) *nVox = 0;
+        // NOT clearHangReport() -- see lastHangVox_. Clearing per carve is
+        // how the first shot's 2 x 2 x 25 rod hid behind the second shot's
+        // four specks for three builds. The caller clears it when it wants
+        // a fresh count; a carve only adds to it.
+        std::vector<uint8_t> vol;
+        int n = 0;
+        Vec3 spoilAt{0.0f, 0.0f, 0.0f};
+        if (!carveLevel(at, radiusVox, &vol, &n, &spoilAt) || n <= 0) return -1;
+        int solid = 0;
+        for (uint8_t v : vol)
+            if (v != mat::AIR) ++solid;
+        if (nVox) *nVox = solid;
+        if (atOut) *atOut = spoilAt;
+        // Dropped where it came from with no throw and no spin, stopped by the
+        // map it was cut out of, and collected by walking up to it.
+        const Vec3 kNoVel{0.0f, 0.0f, 0.0f};
+        const int slot = spawnDebris(ph, vol, n, spoilAt, kNoVel, kNoVel, nowMs, 0.0f, nullptr,
+                                     uint8_t(kDebrisStone), absorbR);
+        // -- NOBODY PICKS ANYTHING UP IN HERE ----------------------------
+        //
+        // (user 2026-09-17: "in the fps map, dont have the player absorb the
+        //  chunks caused by the bullet. just leave them there. have them be
+        //  removed after 100 seconds.")
+        //
+        // APPLIED AT THE SPAWN, NOT AT THE CALL SITE, and for the reason the
+        // carve and the spawn were fused in the first place: a rule that
+        // depends on every caller remembering a second line is a rule that has
+        // already been deleted once here. Every body the LEVEL makes gets this
+        // -- the chips, the hangers and the bulb glass -- because the level has
+        // no gathering mechanic at all: the kit is stowed on the way in and
+        // only the rifle is in the hand, so a chunk flying into the player was
+        // never collecting anything, it was just disappearing.
+        //
+        // `absorbR` stays on the signature because the argument is what the
+        // WOOD's callers use, and this function is shared.
+        markLeftLying(slot, kLevelChipLifeMs);
+        // -- ...AND WHATEVER THE CUT LEFT STANDING ON AIR -------------------
+        //
+        // THE OTHER HALF OF THE RULE. kMinBodyVoxels' note says voxels that
+        // leave the static world become a body; this is the case where the
+        // voxels that have to become a body are the ones the carve did NOT
+        // touch. Cut a light pole at the ankle and every voxel above the cut
+        // is still in the grid, still drawn, and no longer attached to
+        // anything -- which is the NOTHING FLOATS rule, broken by the one
+        // static thing that had no sweep to catch it.
+        //
+        // INSIDE carveLevelToBody, so it cannot be forgotten by a caller for
+        // the same reason the spawn above cannot be: they are one act.
+        dropLevelHangers(ph, at, radiusVox, nowMs);
+        return slot;
     }
 
     // The level AS A COLLIDER. One Solid over the whole asset, borrowing the
@@ -6370,6 +8995,7 @@ class World {
         loadMushrooms();
         loadPinecones();
         loadHives();
+        loadFruit();
         palette.deriveGroundFromTrees();
         // AFTER deriveGroundFromTrees, which reads the TREES' greens and browns
         // off the table and would otherwise have a building's stucco in the
@@ -6397,8 +9023,16 @@ class World {
             mesher_.pineconeFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : hives_)
             mesher_.hiveFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
+        for (const ModelTemplate &t : fruit_)
+            mesher_.fruitFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : pines_) mesher_.pinePerch.push_back(t.perches);
         for (const ModelTemplate &t : pines_) mesher_.pineHivePerch.push_back(t.hivePerches);
+        // THE CONES' ANCHORS, RE-SORTED BY ANGLE -- see fruitAnchors for why
+        // a crop wants an order the cones do not, and why it gets its own
+        // list instead of permuting theirs. Built for every tree so the
+        // index stays positional into one array; only the oaks ever read it.
+        for (const ModelTemplate &t : pines_)
+            mesher_.oakFruitPerch.push_back(fruitAnchors(t.perches, t.sx, t.sz));
         mesher_.pineconesPerTree = pineconesPerTree;
         mesher_.mushroomBig0 = mushroomBig0;
 
@@ -6472,8 +9106,28 @@ class World {
         const auto tk = std::chrono::steady_clock::now();
         std::vector<ChunkBuild> batch;
         ChunkBuild b;
+        // -- AND THE ADOPT BUDGET STAYS PUT. MEASURED, TWICE ----------------
+        //
+        // This lifted the budget by the number of outstanding edit chunks, on
+        // the theory that a till's disc was arriving a slab at a time. Both
+        // halves of that were wrong and the measurements say so:
+        //
+        //   * a hoe bite re-meshes ONE chunk, sometimes two (--swing-log prints
+        //     it now) -- which already fits in a budget of two, so there was
+        //     never a queue here to jump;
+        //   * lifting it adopted several chunks on one frame, and every adopt
+        //     feeds the BLAS compaction drain. That drain is deliberately
+        //     budgeted (see kDrainPerFrame and the note in walking-hitches)
+        //     because it was 61 ms unbounded -- and it went straight back
+        //     there: 28.9, 40.2 and 60.7 ms drain spikes appeared on the worst
+        //     frames the moment this shipped.
+        //
+        // The queue jump in remesh() is the half that was worth keeping: it
+        // costs nothing and puts an edit in front of STREAMING, which is a real
+        // queue with real depth. `urgent_` is still tracked for that.
         while (int(batch.size()) < buildBudget && mesher_.take(&b)) {
             requested_.erase(chunkKey(b.cx, b.cz));
+            urgent_.erase(chunkKey(b.cx, b.cz));
             if (wanted_.count(chunkKey(b.cx, b.cz)) == 0) continue;  // evicted while queued
             batch.push_back(std::move(b));
         }
@@ -6552,7 +9206,24 @@ class World {
     // EditStore::get takes a lock, and 25,600 of those per rebuild is a
     // different cost from 25,600 array reads.
     // -----------------------------------------------------------------------
-    void groundPatch(int16_t *out, int n, int i0, int j0, int step) const {
+    // -----------------------------------------------------------------------
+    // `ri0..rj1` LIMITS THE RE-SAMPLE TO A WORLD-VOXEL RECT.
+    //
+    // (user 2026-09-17: "keep pursuing the hoe glitch".)
+    //
+    // A hoe bite is 28 voxels across -- seven of these cells by seven, out of
+    // 25,600 -- and the patch was re-sampled WHOLE for it because the dirty
+    // flag could not say where. Handed the box (see markGroundDirty), the loop
+    // walks only the rows and columns that overlap it and leaves the rest of
+    // `out` exactly as the caller had it.
+    //
+    // THE CALLER MUST HAVE THE PREVIOUS PATCH, which is the one precondition:
+    // this writes a subset now, so a partial call is only valid when `out`
+    // already holds the last full sample AT THE SAME ORIGIN. App::
+    // rebuildGroundPatch checks the origin and asks for everything when it has
+    // moved. Defaulted to the whole world, so every other caller is unchanged.
+    void groundPatch(int16_t *out, int n, int i0, int j0, int step, int ri0 = INT_MIN,
+                     int rj0 = INT_MIN, int ri1 = INT_MAX, int rj1 = INT_MAX) const {
         TerrainMemo memo;
         long long haveKey = 0;
         bool have = false;
@@ -6600,8 +9271,26 @@ class World {
             }
             return y;
         };
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i < n; ++i) {
+        // The cell range that overlaps the rect. A cell `i` covers world voxels
+        // [i0 + i*step, i0 + i*step + step - 1], so it is in if its far edge
+        // reaches ri0 and its near edge does not pass ri1. Clamped, and empty
+        // when the rect misses the patch entirely.
+        auto lo = [&](int r, int base) {
+            if (r == INT_MIN) return 0;
+            const long long v = (long long)(r) - base - step + 1;
+            const long long q = v >= 0 ? v / step : -((-v + step - 1) / step);
+            return int(q < 0 ? 0 : (q > n - 1 ? n : q));
+        };
+        auto hi = [&](int r, int base) {
+            if (r == INT_MAX) return n - 1;
+            const long long v = (long long)(r) - base;
+            const long long q = v >= 0 ? v / step : -((-v + step - 1) / step);
+            return int(q < 0 ? -1 : (q > n - 1 ? n - 1 : q));
+        };
+        const int ci0 = lo(ri0, i0), ci1 = hi(ri1, i0);
+        const int cj0 = lo(rj0, j0), cj1 = hi(rj1, j0);
+        for (int j = cj0; j <= cj1; ++j)
+            for (int i = ci0; i <= ci1; ++i) {
                 const int wi = i0 + i * step, wj = j0 + j * step;
                 const int h = terrain.heightVox(wi, wj, memo);
                 // -- THE LOWEST GROUND IN THE CELL, NOT THE GROUND AT ONE
@@ -6681,14 +9370,57 @@ class World {
                 // and it is the CHUNK that owns an edit map. Clean chunks --
                 // which is nearly every chunk in the world, for ever -- answer
                 // this in four integer divisions and a cached pointer test.
-                const bool anyDug = editsFor(wi, wj) || editsFor(wi + step - 1, wj) ||
-                                    editsFor(wi, wj + step - 1) ||
-                                    editsFor(wi + step - 1, wj + step - 1);
+                // ...AND AGAINST THE EDITED BOX, NOT MERELY THE CHUNK. Asking
+                // "has this chunk any edits" turned the sweep back on for every
+                // cell of a chunk the moment one hoe bite landed in it -- see
+                // ChunkEdits::touchesRect, which records what that measured.
+                // A cell is 4x4 voxels and a chunk is hundreds of them, so the
+                // box is the difference between sweeping the bite and sweeping
+                // the wood around it.
+                const int wi1 = wi + step - 1, wj1 = wj + step - 1;
+                auto dugNear = [&](int qi, int qj) {
+                    const std::shared_ptr<const ChunkEdits> &e = editsFor(qi, qj);
+                    return e && e->touchesRect(wi, wj, wi1, wj1);
+                };
+                const bool anyDug = dugNear(wi, wj) || dugNear(wi1, wj) || dugNear(wi, wj1) ||
+                                    dugNear(wi1, wj1);
                 if (anyDug)
                     for (int dj = 0; dj < step; ++dj)
                         for (int di = 0; di < step; ++di) {
                             if (!di && !dj) continue;
                             const int qi = wi + di, qj = wj + dj;
+                            // -- THE CHEAP HALF FIRST, AND IT IS WHY TILLING
+                            //    HITCHED (user 2026-09-17: "when tilling the
+                            //    land, the terrain glitches out").
+                            //
+                            // `anyDug` above turns this scan on for a whole
+                            // CHUNK, and a till makes a chunk dirty for as long
+                            // as the bed lasts -- so every ground-patch rebuild
+                            // near tilled earth paid the full fifteen-neighbour
+                            // sweep again, and the hoe sets groundDirty_ on
+                            // every swing. MEASURED, walking while tilling:
+                            // worst frame 68.5 ms with 25-42 ms of it in the
+                            // physics rebuild, against 26-33 ms for the same
+                            // walk without the hoe.
+                            //
+                            // AND IT WAS DEAD WORK, for the same reason the
+                            // skip above was. This loop can only lower `y` when
+                            // a column's EDITED top is under its generated one,
+                            // which needs an edit entry in that column -- and a
+                            // column with no edit span has none by definition.
+                            // So the span is asked first: a hash lookup against
+                            // a map that is empty for all but the eighty-one
+                            // columns a bite actually turned, while heightVox
+                            // under it is several octaves of noise.
+                            //
+                            // A TILL CANNOT FALL BETWEEN THE SAMPLES ANYWAY --
+                            // it is twenty-eight voxels across and they are four
+                            // apart -- so the sweep never had anything to find
+                            // there. The narrow pick bite this scan exists for
+                            // still works: its columns carry spans.
+                            const std::shared_ptr<const ChunkEdits> &qe = editsFor(qi, qj);
+                            if (!qe) continue;
+                            if (qe->col.find(ChunkEdits::ckey(qi, qj)) == qe->col.end()) continue;
                             // ONCE, and used for both questions below. It was
                             // evaluated twice: once inside topAt and again for
                             // the dug test.
@@ -6739,10 +9471,54 @@ class World {
     // Has anything been dug since the patch was last built? Read-and-clear:
     // the floor the solver stands on has to be rebuilt when the ground under
     // it changes, and a dig is the only thing that changes it.
+    // A PEEK, because the decision to rebuild and the act of clearing the flag
+    // are not the same moment any more -- see App::maybeRebuildGroundPatch.
+    bool groundDirty() const { return groundDirty_; }
+
     bool takeGroundDirty() {
         const bool d = groundDirty_;
         groundDirty_ = false;
         return d;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND *WHERE* IT GOT DIRTY, IN WORLD VOXELS.
+    //
+    // (user 2026-09-17, still on the hoe: "keep pursuing the hoe glitch".)
+    //
+    // THE FLAG ALONE COSTS A WHOLE PATCH. rebuildGroundPatch re-samples 25,600
+    // cells because the flag cannot say which of them moved, and a hoe bite is
+    // twenty-eight voxels across -- seven cells by seven. So every swing paid
+    // for the wood when it had changed a doormat. With the sweep fixed that is
+    // down to ~4.4 ms a swing, which is no longer a stall but is still the
+    // largest thing a till does.
+    //
+    // UNIONED, NOT REPLACED, because several edits can land between two
+    // rebuilds -- a till, the revert of an older bed, and a dig are all
+    // possible in one frame and all of them must be re-sampled.
+    void markGroundDirty(int i0, int j0, int i1, int j1) {
+        if (!groundDirty_) {
+            gdI0_ = i0;
+            gdJ0_ = j0;
+            gdI1_ = i1;
+            gdJ1_ = j1;
+        } else {
+            gdI0_ = mini(gdI0_, i0);
+            gdJ0_ = mini(gdJ0_, j0);
+            gdI1_ = maxi(gdI1_, i1);
+            gdJ1_ = maxi(gdJ1_, j1);
+        }
+        groundDirty_ = true;
+    }
+    // The union since the last take, or false if nothing is pending. Read
+    // BEFORE takeGroundDirty, which is what clears the flag.
+    bool groundDirtyBox(int *i0, int *j0, int *i1, int *j1) const {
+        if (!groundDirty_) return false;
+        *i0 = gdI0_;
+        *j0 = gdJ0_;
+        *i1 = gdI1_;
+        *j1 = gdJ1_;
+        return true;
     }
 
     // WHERE THE HOLES ARE, for anything that has to ask outside this class.
@@ -6868,9 +9644,17 @@ class World {
     // every adopt (see reapplyDamage), so a flower that is merely masked off
     // stands straight back up the next time the chunk comes back.
     // -----------------------------------------------------------------------
+    // Set by --soil-test while it is asking why a flower did not fall.
+    bool undermineLog = false;
     int dropScatterUndermined(Physics &ph, const Vec3 &at, float radiusM, double nowMs) {
-        if (!ph.available()) return 0;
+        if (!ph.available()) {
+            if (undermineLog) std::printf("  [under] SKIPPED -- no physics\n");
+            return 0;
+        }
         const float span = radiusM + 2.0f;
+        if (undermineLog)
+            std::printf("  [under] called at (%.2f, %.2f, %.2f) span %.2f\n", double(at.x),
+                        double(at.y), double(at.z), double(span));
         const int x0 = floorDiv(int(std::floor((at.x - span) / VOXEL_M)), CHUNK_VOX);
         const int x1 = floorDiv(int(std::floor((at.x + span) / VOXEL_M)), CHUNK_VOX);
         const int z0 = floorDiv(int(std::floor((at.z - span) / VOXEL_M)), CHUNK_VOX);
@@ -6886,7 +9670,25 @@ class World {
                 Chunk &c = it->second;
                 for (size_t i = 0; i < c.decorAt.size() && i < c.decorDesc.size(); ++i) {
                     const DecorAt &q = c.decorAt[i];
-                    if (q.kind != 2 && q.kind != 4) continue;
+                    // -- THE CAP TOO, WHICH IT NEVER WAS ------------------
+                    //
+                    // (user 2026-09-16: "the terrain glitches out" -- this is
+                    // the half of that report which is not the hoe.)
+                    //
+                    // FLOWER, CAP AND CONE ARE ONE SET EVERYWHERE ELSE. Both
+                    // scatterShownNear and hideScatterOn test
+                    // `kind != 2 && kind != 3 && kind != 4`, and this one line
+                    // left the CAP out -- so a mushroom whose ground was dug
+                    // away stayed hanging in the air, and NOTHING FLOATS is the
+                    // rule this engine has been told twice.
+                    //
+                    // IT HID BEHIND THE MISMATCH. --soil-test counts what is
+                    // still drawn with scatterShownNear, which DOES include the
+                    // cap, so the failure read as "a flower did not fall" and
+                    // the flower code looked correct because it was. What gave
+                    // it away was the diagnostic staying silent: the item was
+                    // being skipped before the support test ever ran.
+                    if (q.kind != 2 && q.kind != 3 && q.kind != 4) continue;
                     if (!c.decorDesc[i].instanceMask) continue;   // already down or hidden
                     const float dx = q.midX() - at.x, dz = q.midZ() - at.z;
                     if (dx * dx + dz * dz > r2) continue;
@@ -6899,14 +9701,29 @@ class World {
                     const int qj = int(std::floor(q.midZ() / VOXEL_M));
                     const int qy = int(std::floor(q.y / VOXEL_M));
                     bool held9 = false;
+                    int heldBy = 0, heldAt = 0;
                     for (int d = 1; d <= 3 && !held9; ++d)
-                        if (probe.material(qi, qj, qy - d) != mat::AIR) held9 = true;
-                    if (held9) continue;
+                        if (probe.material(qi, qj, qy - d) != mat::AIR) {
+                            held9 = true;
+                            heldBy = int(probe.material(qi, qj, qy - d));
+                            heldAt = d;
+                        }
+                    if (held9) {
+                        if (undermineLog)
+                            std::printf("  [under]   HELD kind %d at vox (%d,%d,%d) by material "
+                                        "%d, %d below\n",
+                                        int(q.kind), qi, qj, qy, heldBy, heldAt);
+                        continue;
+                    }
                     // ---- it is standing on nothing: down it goes ----------
                     const ModelTemplate &t = templateFor(q.kind, int(q.index));
                     c.decorDesc[i].instanceMask = 0;
                     fellSlots_.insert({key, int(i)});
                     ++dropped;
+                    if (undermineLog)
+                        std::printf("  [under]   DROPPED kind %d slot %d, mask now %u\n",
+                                    int(q.kind), int(i),
+                                    unsigned(c.decorDesc[i].instanceMask));
                     if (t.volume.empty() || t.sx <= 0) continue;   // hidden, at least
                     const int n = maxi(maxi(t.sx, t.sy), t.sz);
                     std::vector<uint8_t> cube(size_t(n) * size_t(n) * size_t(n), mat::AIR);
@@ -7010,6 +9827,44 @@ class World {
 
     // Block until the ring around the camera is fully resident. Used once at
     // startup so the first frame is not a hole in the ground.
+    // -----------------------------------------------------------------------
+    // THE WOOD, AS IT WAS GENERATED. Everything the player did to it, undone.
+    //
+    // (user 2026-09-17: "let me press q to refresh the game" -- bound to G,
+    //  because Q already throws the held item out of your hand.)
+    //
+    // THREE THINGS, AND ALL THREE OR NONE. The edits are what make this world
+    // different from the one the generator describes; the meshed chunks have
+    // those edits baked into their geometry; and the ring is what decides a
+    // chunk is already present and need not be built. Clear the edits alone and
+    // every pit stays on screen until something happens to re-mesh it. Drop the
+    // chunks alone and they come straight back with the holes still in them.
+    //
+    // THE CHUNKS ARE RELEASED, NOT JUST FORGOTTEN. Each one holds a run of the
+    // triangle pool, and erasing the map without handing that back leaks it --
+    // rering's own eviction path is the shape this follows, because it is the
+    // same operation done to all of them at once rather than to the ones that
+    // fell outside the disc.
+    //
+    // WHAT THIS DOES NOT DO is re-read anything from disk. The terrain is
+    // compiled in, so a reload cannot pick up a changed constant -- that still
+    // wants a build. What it gives back is the world without the digging.
+    void reloadWorld() {
+        mesher_.edits.clear();
+        for (auto it = chunks_.begin(); it != chunks_.end();) {
+            pool_.release(it->second.triOffset, it->second.tris);
+            it = chunks_.erase(it);
+        }
+        wanted_.clear();
+        requested_.clear();
+        urgent_.clear();
+        // ...and the ring has to be re-drawn rather than assumed unchanged: it
+        // short-circuits on the player not having moved, and on a reload he has
+        // not.
+        primed_ = false;
+        groundDirty_ = true;
+    }
+
     void primeBlocking(Vec3 camPos) {
         update(camPos, 0, false);
         while (mesher_.inFlight() > 0 || !requested_.empty()) {
@@ -7117,6 +9972,21 @@ class World {
     // The beehives. One model, and only the birch wood plants it -- see
     // loadHives and the hive pass in scene/chunks.h.
     std::vector<ModelTemplate> hives_;
+    // The apple and the orange -- see loadFruit and the fruit pass in
+    // scene/chunks.h, which hangs a crop in one bearing oak in seven.
+    std::vector<ModelTemplate> fruit_;
+    // The first few fruit the ring adopted -- see the note at the push.
+    std::vector<Vec3> fruitSeen_;
+    // What the last level hanger sweep freed -- see lastHangVox().
+    // The before picture -- see markLevelGrounded. One bit per cell.
+    std::vector<bool> levelGrounded_;
+    // Which row the hinge gave at, or -1 when the flood decided. Set inside
+    // fellTree and read by the split a few lines later; see kHingeFrac.
+    int hingeCut_ = -1;
+    int lastHangVox_ = 0;
+    int lastHangWorst_ = 0, lastHangPieces_ = 0;
+    int lastHangDim_[3] = {0, 0, 0};
+    int lastHangSlot_ = -1;
     Blas waterBlas_;
     // The editor's floor -- see buildStage.
     // -----------------------------------------------------------------------
@@ -7183,12 +10053,12 @@ class World {
     uint32_t waterTriOffset_ = TriPool::kInvalid;
 
     // -----------------------------------------------------------------------
-    // -- THE BUILDING LEVEL -------------------------------------------------
+    // -- THE LEVEL: NUKETOWN ------------------------------------------------
     //
     // A place, in the sense the asset deck above is one and for the same
     // reason (user: "this level is in a seperate world from the main world").
     // The wood is not in the acceleration structure while you are here -- no
-    // chunks, no water, no decor -- so a ray that misses the building finds the
+    // chunks, no water, no decor -- so a ray that misses the map finds the
     // sky, and there is nothing of the forest to walk back into by accident.
     //
     // IT IS ITS OWN CORNER OF THE COORDINATE SPACE, not a second space. This
@@ -7199,11 +10069,31 @@ class World {
     // third at (-4096, 2048, -4096) before it came down into the wood; nothing
     // is there now, and this takes the same quarter at the stage's height.
     //
-    // THE ASSET IS THE WHOLE .glb -- the building AND the slab it stands on --
-    // voxelised at the engine's own 10 cm by tools/voxelize_building.py. See
-    // that file for how the rooms are kept hollow while the platform is filled,
-    // which is the only interesting decision in it.
-    static constexpr const char *kLevelVox = "C:/voxelbit/game/assets/level/building.vox";
+    // -- IT WAS THE BUILDING UNTIL 2026-09-17 -------------------------------
+    //
+    // (user: "take nuket.fbx, voxelize it to the 10cm voxel framework. I want
+    // you to replace the current building on the o keybind with this new
+    // nuketown map.")
+    //
+    // building.vox and tools/voxelize_building.py are both still here and both
+    // still work -- the swap is this one line, and the tools are siblings
+    // rather than one having replaced the other. What the change cost the rest
+    // of the engine is worth writing down, because it was NOTHING: the level is
+    // an asset behind a path, so a map that is 16 x 33 m where the building was
+    // 33 x 36 m needed no edit to the collider, the fence, the streamer or the
+    // BLAS. levelSpawn is the one thing that moved, and it moved because a
+    // CORNER is the right place to photograph a building from and the wrong
+    // place to stand in a map. See its own note.
+    //
+    // THE ASSET IS THE WHOLE .fbx voxelised at the engine's own 10 cm by
+    // tools/voxelize_nuketown.py -- 164 x 99 x 327 voxels, about 519 k
+    // triangles once meshed, seventeen colours. That tool's header carries the
+    // two decisions worth knowing about: the map is 1,374 solid boxes rather
+    // than a shell, so the cavity rule is separating a BOX's inside from a room
+    // rather than a wall seam from one; and the model has no ground outside its
+    // painted slabs, so the tool lays a foundation under the whole footprint.
+    // Without that last one this is a level you fall out of.
+    static constexpr const char *kLevelVox = "C:/voxelbit/game/assets/level/nuketown.vox";
     static constexpr float kLevelAtX = -4096.0f;
     static constexpr float kLevelAtY = 640.0f;
     static constexpr float kLevelAtZ = -4096.0f;
@@ -7214,11 +10104,106 @@ class World {
     VoxAsset levelAsset_;
     std::vector<uint8_t> levelVol_;     // global material ids, VoxAsset layout
     std::vector<int16_t> levelColTop_;
-    Blas levelBlas_;
-    uint32_t levelTri_ = TriPool::kInvalid;
+    // -- THE PENDANT IN THE DARK ROOMS -- see loadLevelBulb and dressLevel ---
+    //
+    // The pause room's own lamp, at the path its buildRoom used.
+    static constexpr const char *kLevelBulbVox =
+        "C:/voxelbit/source/wip/technology/lightbulb.vox";
+    // The ceiling on how many a place may have. The shader lights the nearest
+    // kBulbSlots of them (see Shared.slang) and every one past that is geometry
+    // that glows but does not cast -- still worth having, but not without a
+    // limit, because each one is also triangles and a rebuild.
+    static constexpr int kLevelBulbMax = 64;
+
+    // -----------------------------------------------------------------------
+    // -- WHERE THE LAMPS ARE, BAKED -----------------------------------------
+    //
+    // PASTE HERE. Place them in the game with the lightbulb in hand -- right
+    // click hangs one, left click takes the nearest one down -- then press
+    // CTRL+C and paste what lands on the clipboard between the braces below.
+    // That is the whole round trip, and it is the same one the asset editor's
+    // [C] and the pose panel's "copy pose" use: this engine bakes by pasting,
+    // because a tuned number that only exists in a running process is a number
+    // that dies with it.
+    //
+    // WORLD METRES, absolute. They carry kLevelAtX/Y/Z in them, so they are
+    // only meaningful for THIS level at THIS origin -- which is also why they
+    // can be pasted back without being converted.
+    //
+    // EMPTY ON PURPOSE (user 2026-09-17: "I want you to also remove every
+    // lightbulb from the world, I will place them manually"). The survey that
+    // used to fill this is gone; see the note where it stood in dressLevel.
+    // A FUNCTION AND NOT AN ARRAY, for one dull reason: C++ has no zero-length
+    // array, and this list starts empty and is MEANT to. An initializer list
+    // may be empty, so the braces below take a paste of nought entries or forty
+    // without the shape of the declaration changing.
+    static std::vector<Vec3> levelBulbSeed() {
+        return {
+            // PLACED BY HAND 2026-09-17 and pasted back in from CTRL+C. Two
+            // lamps a room, on two floors, in each of the two houses.
+            { -4071.75f, 645.05f, -4059.85f },
+            { -4073.05f, 645.05f, -4067.65f },
+            { -4073.45f, 649.85f, -4069.15f },
+            { -4073.05f, 649.85f, -4060.05f },
+            { -4078.25f, 645.15f, -4035.75f },
+            { -4077.85f, 650.05f, -4028.85f },
+            { -4077.55f, 650.05f, -4035.95f },
+            { -4078.05f, 645.15f, -4028.85f },
+        };
+    }
+    // v1's FLWPATCH: how far one flower species runs before the next takes
+    // over. 96 voxels, 9.6 m. A LENGTH, so it does not scale with the map.
+    static constexpr int kFlowerPatchVox = 96;
+    // The bulb's art, already resolved to GLOBAL material ids -- so stamping it
+    // is a copy and the palette is not touched at [O] time.
+    VoxAsset levelBulbAsset_;
+    uint8_t levelGlassMtl_ = mat::AIR;   // ...and the tracer's bulbMtl
+    uint8_t levelCordMtl_ = mat::AIR;
+    // The file's own palette, kept between loadLevel and buildLevelPalette --
+    // see the note on why those are two functions. VoxModel::pal's own type,
+    // so this is a copy and not a conversion.
+    std::array<std::array<uint8_t, 4>, 255> levelPal_{};
+    bool levelPaletteReady_ = false;
+    // EVERY ENTRY A HELD MODEL WEARS. Filled by addHeldVox as the kit loads and
+    // read once by buildLevelPalette; the kit is the one thing that is drawn in
+    // both places, so these are the ids the level's table may not reuse.
+    std::array<uint8_t, 256> heldMtl_{};
+    // Where every bulb ended up, world metres. The tracer lights ONE point, so
+    // App points it at whichever of these is nearest the eye -- see the note
+    // there. Filled by dressLevel, so empty until the first [O].
+    std::vector<Vec3> levelBulbs_;
+    // Whether the baked seed has been taken. After that the list above is the
+    // player's -- see the note at the bulb pass in dressLevel.
+    bool levelBulbsSeeded_ = false;
+    // -- THE LEVEL IN BLOCKS -- see buildLevelBlas for why it is not one ----
+    //
+    // 64 voxels square, full height: 6.4 m columns, 128 of them over this map.
+    // Small enough that re-meshing one after a bullet is a few milliseconds and
+    // large enough that the map is not a thousand structures.
+    static constexpr int kLevelBlockVox = 64;
+
+  public:
+    // One line per chip, under --swing-log. Off by default: a burst is five a
+    // second and each would print.
+    bool carveLog = false;
+
+  private:
+    // The identity material map the block mesher reads -- mat::COUNT long, built
+    // on first use. See meshLevelBlock for what a 256-long one did to [O].
+    decltype(VoxAsset::a) levelIdent_;
+    std::vector<Blas> levelBlocks_;
+    std::vector<uint32_t> levelBlockTri_;
+    std::vector<size_t> levelBlockTris_;
+    int levelBX_ = 0, levelBZ_ = 0;
+    // The DRESSED grid -- the map plus its grass, flowers and lamps. Resident
+    // while the level is open because a block rebuild has to re-read it.
+    VoxAsset levelDisplay_;
     size_t levelTris_ = 0;
     bool level_ = false;
     bool levelLoaded_ = false;
+    // Whether the device is holding the LEVEL's material table rather than the
+    // wood's. Only setLevel writes it; uploadMaterials reads it.
+    bool levelTableActive_ = false;
 
     std::map<long long, Chunk> chunks_;
 
@@ -7247,6 +10232,11 @@ class World {
         // kArrowAbsorbM; kAbsorbAnywhere is the default and is what a tool's
         // chip has always had.
         float absorbR = kAbsorbAnywhere;
+        // HOW LONG THIS ONE LASTS, or the sentinel for "whatever its kind
+        // lasts". Per body rather than per kind because the level's chips want
+        // their own number and are otherwise ordinary debris -- see
+        // kLevelChipLifeMs.
+        double lifeMs = -1.0;
         double absorbT0 = 0.0;
         Vec3 from{0, 0, 0};
         // WHERE THE MESH SITS RELATIVE TO THE BODY. The body's position is
@@ -7431,6 +10421,9 @@ class World {
     std::vector<Solid> winSolids_;
     std::vector<Solid> underSolids_;
     bool groundDirty_ = false;
+    // The world-voxel box of what moved since the last patch rebuild -- see
+    // markGroundDirty. Only meaningful while groundDirty_ is set.
+    int gdI0_ = 0, gdJ0_ = 0, gdI1_ = 0, gdJ1_ = 0;
     // Scratch for dropTerrainHangers, kept so a blow allocates nothing.
     std::vector<uint8_t> hangSolid_, hangSeen_;
     std::vector<int> hangStack_;
@@ -7519,6 +10512,9 @@ class World {
     // count() tests and one iteration that does not care what order it gets.
     std::unordered_set<long long> wanted_;
     std::set<long long> requested_;
+    // The subset of `requested_` that an EDIT asked for, which update() adopts
+    // without waiting for the streaming budget. See remesh().
+    std::set<long long> urgent_;
 
     ref<Buffer> materials_, instanceInfo_, instanceDescBuf_, tlasBuffer_, tlasScratch_;
     ref<RtAccelerationStructure> tlas_;
@@ -8215,7 +11211,39 @@ class World {
                       // and it is not a default: a shared entry carries the
                       // MATERIAL of whatever minted it, so a set that folds is
                       // a set that has agreed to wear another's surface.
-                      int matchTol = 0) {
+                      int matchTol = Palette::kModelMatch) {
+        // -- TOLERANCE REUSE IS THE DEFAULT NOW --------------------------
+        //
+        // (user 2026-09-17, on adding the cherry forest and the desert:
+        //  "ok go ahead and do tolerance reuse".)
+        //
+        // THE WORLD USED TO MINT EVERY SHADE IT ASKED FOR. This defaulted to 0
+        // -- "zero for the world, which mints what it asks for" -- while the
+        // LIFE band had been folding at kModelMatch for weeks. So the trees,
+        // the rocks and the decor each took an entry per distinct authored
+        // colour, and the 255-entry table filled up: it read 255 of 255 on the
+        // build this landed in, with nothing left for another biome.
+        //
+        // v1 runs the SAME 256 ceiling with five biomes in it, and this is how:
+        // its PAL_TOL reuses an entry that is already close enough rather than
+        // minting a neighbour of it. MEASURED over v2's own .vox files, what
+        // the world costs and what the cherry forest and the desert would add:
+        //
+        //     tol  0   world 205   + 80   -- over the ceiling
+        //     tol 16   world 103   + 18   <- here
+        //     tol 20   world  87   + 13
+        //
+        // kModelMatch RATHER THAN A SECOND NUMBER, because 16 is already the
+        // engine's answer to "how close is the same colour" -- the flyer band
+        // has used it since the life was imported. One constant is one thing to
+        // tune.
+        //
+        // WHAT STILL MINTS EXACTLY: anything registered with `exact` -- the
+        // held kit and the flyer band's own frames -- because that path takes
+        // the exact key and never reaches the tolerance branch. And the private
+        // materials (the firefly's glow, the sparks, the smoke) ask
+        // resolveModelColor and PRINT how many entries share them, so if this
+        // ever folds one of them onto the world the load line says so.
         for (const std::string &path : paths) {
             std::vector<VoxModel> models;
             std::string err;
@@ -8262,6 +11290,8 @@ class World {
                 for (int e = 1; e <= 255; ++e)
                     if (used[e]) {
                         const std::array<uint8_t, 4> &pc = mo.pal[e - 1];
+                        // Green-dominant is the stem and its leaves; the bloom
+                        // is not, and keeps its authored colour.
                         // Green-dominant is the stem and its leaves; the bloom
                         // is not, and keeps its authored colour.
                         if (stemId != mat::AIR && pc[1] > pc[0] && pc[1] > pc[2])
@@ -8412,6 +11442,30 @@ class World {
         // the translucency and the waxy roughness -- which is the right surface
         // for it and is what conifer=true hands any green-dominant colour here
         // anyway. This is the one case where sharing is not a compromise.
+        // -- ...AND THE OAK WEARS THE PINE'S BARK ON PURPOSE ---------------
+        //
+        // (user 2026-09-17: "the oak tree color looks terrible. match the
+        //  pine trees wood color for the oak trees.")
+        //
+        // MEASURED, all three of the oak's authored barks fold onto entries
+        // the PINES minted, and they are the nearest thing in the table by a
+        // long way:
+        //
+        //     oak (101, 89, 67) -> pine (112, 86, 63)
+        //     oak (113,104, 88) -> pine (129, 99, 72)
+        //     oak ( 84, 76, 51) -> pine ( 94, 73, 53)
+        //
+        // SO THE FOLD IS THE FEATURE HERE, NOT A COMPROMISE. It was briefly
+        // treated as one: the oak was given its own three entries, lifted
+        // x1.25 to answer "use a lighter brown on the oak trees wood", and
+        // the answer was rejected on sight. The lift is gone and so are the
+        // three entries -- one wood colour for every trunk in the world, which
+        // is what was asked for and is also what the table would prefer.
+        //
+        // The LEAVES fold too and always did, onto the birches' greens, which
+        // the note above calls "the one case where sharing is not a
+        // compromise". Both halves of this set now share, for two different
+        // reasons that happen to agree.
         mesher_.oakBase = int(pines_.size());
         if (!terrain.forced || terrain.biome == Biome::Oak) {
             std::vector<std::string> oaks;
@@ -8553,6 +11607,38 @@ class World {
         loadModelSet({decorDir + "/beehive.vox"}, &hives_, false, true);
     }
 
+    // -- THE TREE FRUIT: AN APPLE AND AN ORANGE ---------------------------
+    //
+    // (user 2026-09-17: "add apples and oranges to some of the trees in the
+    //  oak forest. import the v1 mechanics of this.")
+    //
+    // OAK ONLY, and the gate is the same one loadHives uses: no model set
+    // means no pass, with no second flag to keep in step.
+    //
+    // THE LEAF WEARS THE OAK'S OWN CANOPY, WHICH IS WHAT stemId IS FOR.
+    // Each fruit is 19 voxels of flesh and 3 to 5 of stem and leaf, and the
+    // leaf is authored (171,178,100) -- a green that belongs to the bake
+    // rather than to this wood. Handed to stemId it is replaced by the
+    // crown's own entry instead of minting a fourth green, which is exactly
+    // what the browser engine does with `near(fj.pal[fj.nbody], OAKLEAF)`,
+    // and exactly what a flower's stem already does with the grass ramp.
+    //
+    // SO THE FRUIT COSTS TWO PALETTE ENTRIES, one red and one orange, and
+    // those two are the whole point of it: they are minted at tolerance 0
+    // rather than folded, because a fruit that shares an entry with
+    // something near it is a fruit you cannot see in a crown.
+    void loadFruit() {
+        if (!terrain.oak()) return;
+        // THE NEAREST CANOPY entry to the bake's leaf green -- not the
+        // nearest entry, which is a different question and gave a wrong
+        // answer here. See Palette::nearestFoliage for the measurement.
+        const uint8_t leaf = palette.nearestFoliage({171, 178, 100, 255});
+        loadModelSet({decorDir + "/fruit_apple.vox", decorDir + "/fruit_orange.vox"},
+                     &fruit_, false, true, 0u, /*perches=*/false, /*upscale=*/0,
+                     /*colourSink=*/nullptr, /*stemId=*/leaf ? leaf : mat::AIR,
+                     /*solidify=*/false, /*matchTol=*/0);
+    }
+
     void loadPinecones() {
         loadModelSet({decorDir + "/pinecone.vox"}, &pinecones_, true, false);
         loadedPinecones = int(pinecones_.size());
@@ -8666,13 +11752,13 @@ class World {
     // pause room; HeldItem::prewarmColors is the fix both times and this is the
     // same move. See the palette notes in scene/voxelworld.h.
     //
-    // THE STRUCTURE IS STILL LAZY, and that is the half worth deferring: a
-    // million-voxel building is a megabyte of triangles and a BLAS to match,
-    // and most runs never press the key. buildLevelBlas does that on arrival.
+    // THE STRUCTURE IS STILL LAZY, and that is the half worth deferring: half a
+    // million voxels is half a million triangles and a BLAS to match, and most
+    // runs never press the key. buildLevelBlas does that on arrival.
     //
-    // A MISSING FILE IS A WARNING, NOT A FAILURE. The .glb it is voxelised from
-    // is gitignored, so a fresh clone has no building until the tool is run,
-    // and refusing to start the wood over that would be absurd.
+    // A MISSING FILE IS A WARNING, NOT A FAILURE. The .fbx it is voxelised from
+    // is gitignored, so a fresh clone has no map until tools/voxelize_nuketown.py
+    // is run, and refusing to start the wood over that would be absurd.
     // -----------------------------------------------------------------------
     bool loadLevel() {
         if (levelLoaded_) return true;
@@ -8689,6 +11775,69 @@ class World {
             return false;
         }
 
+        // -- THE COLOURS ARE NOT ALLOCATED HERE ANY MORE ---------------------
+        //
+        // They are allocated in buildLevelPalette, which runs after the held
+        // kit has loaded, and the ORDER is the whole reason it was split out:
+        // the level has a palette table of its own now, and the one thing that
+        // table may not touch is an entry the KIT wears -- because the kit
+        // walks through the door with you. The kit's ids are not known until it
+        // has loaded. See Palette::beginLevelTable.
+        //
+        // WHAT IT COSTS is levelAsset_.a staying alive a few hundred
+        // milliseconds longer than it used to: the file's own palette entries,
+        // one byte a voxel, freed at the end of buildLevelPalette exactly as
+        // they were freed at the end of this function before.
+        levelPal_ = mo.pal;
+        levelLoaded_ = true;
+        // -- AND ITS COLOURS ARE TAKEN NOW, NOT AFTER THE KIT ----------------
+        //
+        // This was deferred to App start-up while the level had a palette TABLE
+        // of its own: that table may not reuse an entry the held kit wears, and
+        // the kit's ids are not known until it has loaded. The table is gone
+        // (see World::setLevel) and the reason went with it.
+        //
+        // MOVING IT BACK MATTERS, it is not tidying. Deferred, the level was the
+        // LAST thing in the program to ask for colours -- after the trees, the
+        // animals, the flyer band and the kit -- and colours are served
+        // first-come. The moment the rifle went byte-exact and took three more,
+        // the level overran the table: 204,021 voxels came back AIR, and the
+        // bulb's glass came back AIR with them, which silently skipped every
+        // lamp in the map (`levelGlassMtl_ != mat::AIR` guards the whole pass).
+        // One overflow, two features gone, and the log only mentioned one.
+        buildLevelPalette();
+        std::printf("  level    %d x %d x %d voxels (%.1f x %.1f x %.1f m), colours deferred\n",
+                    levelAsset_.sx, levelAsset_.sy, levelAsset_.sz,
+                    float(levelAsset_.sx) * VOXEL_M, float(levelAsset_.sy) * VOXEL_M,
+                    float(levelAsset_.sz) * VOXEL_M);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE LEVEL'S OWN PALETTE -- after the kit, and that is not negotiable.
+    //
+    // (user 2026-09-17: "surely we can have multiple color paletes for multiple
+    // worlds?")
+    //
+    // Palette::beginLevelTable says what a second table is and why the level is
+    // allowed one. This is the caller that decides WHAT IS STILL SHARED, which
+    // is the only judgement in the whole thing:
+    //
+    //   * the fixed mat:: band, 0 .. TREE_BASE. The level borrows BGRASS_0 for
+    //     its lawns and ROCK for the bulb's flex, and every ramp the device
+    //     spreads in groundShade() lives in there.
+    //   * every entry the HELD KIT wears (heldMtl_). You carry the axe and the
+    //     rifle through [O] and they must not change colour on the way.
+    //   * every entry the WOOD'S FLOWERS wear, because dressLevel stamps those
+    //     models' own voxels into the map -- wood art standing in a level.
+    //
+    // Everything else the wood owns -- every tree, rock, animal, butterfly and
+    // bird -- is invisible from inside the level, so its entries are free. That
+    // is roughly 130 of them against the dozen the map wants, which is the
+    // difference between a table that is full and one that is not.
+    // -----------------------------------------------------------------------
+    bool buildLevelPalette() {
+        if (!levelLoaded_ || levelPaletteReady_) return levelPaletteReady_;
         // Only the entries some voxel actually wears -- the trap every .vox
         // walks into otherwise is that the file ships all 255 palette slots
         // whether the artist used them or not, and allocating per SLOT would
@@ -8697,9 +11846,42 @@ class World {
         std::vector<bool> used(256, false);
         for (uint8_t v : levelAsset_.a) used[v] = true;
         int asked = 0;
+        int greens = 0;
+        const int before = palette.used();
         for (int e = 1; e <= 255; ++e)
             if (used[size_t(e)]) {
-                idOfEntry[size_t(e)] = palette.forModelColor(mo.pal[size_t(e) - 1], false);
+                // -- THE MAP'S GREENS ARE THE OAK WOOD'S GRASS --------------
+                //
+                // (user 2026-09-17: "on the grass terrain in nuketown, I want
+                // you to make the ground have the same colors as the oak forest
+                // grass, multiple random colors".)
+                //
+                // ONE ID, SIX SHADES, AND THE DEVICE PICKS. mat::BGRASS_0 is
+                // the broadleaf ramp the oak floor already wears -- six greens
+                // sampled off the oaks' own foliage -- and groundShade() spreads
+                // it per voxel out of a hash of the voxel's position. So this
+                // single substitution IS the "multiple random colors": nothing
+                // has to be scattered, and two neighbouring lawn voxels come out
+                // different shades for free. See the ramp note over GRASS_0.
+                //
+                // AND IT PAYS FOR THE RIFLE. The level's two greens were two
+                // entries of a table that had three left in it; borrowing a ramp
+                // that already exists hands them back, which is where the gun's
+                // eleven exact colours came from. See HeldItem::mergeTolFor.
+                //
+                // BY SATURATION, NOT BY INDEX, so a re-voxelised map still
+                // lands the same way -- the same test the pause-room bulb used
+                // to tell its glass from its cap. The lawns are (21,121,39) and
+                // the hedges (6,107,0); the tree canopies are CYAN in this model
+                // (79,213,231) and correctly fail it, because blue beats green
+                // there.
+                const std::array<uint8_t, 4> &c = levelPal_[size_t(e) - 1];
+                if (int(c[1]) > int(c[0]) + 24 && int(c[1]) > int(c[2]) + 24) {
+                    idOfEntry[size_t(e)] = mat::BGRASS_0;
+                    ++greens;
+                    continue;
+                }
+                idOfEntry[size_t(e)] = palette.forModelColor(c, false);
                 ++asked;
             }
 
@@ -8710,7 +11892,10 @@ class World {
             levelVol_[k] = id;
             if (levelAsset_.a[k] && id == mat::AIR) ++lost;
         }
+        seatLevelOnItsFoundation();
+        markLevelGrounded();
         levelColTop_ = columnTops(levelAsset_, idOfEntry);
+        loadLevelBulb();
         // ...AND THE PALETTE-INDEX COPY IS DONE WITH. levelVol_ now holds the
         // same grid as GLOBAL material ids, which is what the mesher, the
         // collider and the renderer all want; keeping the file's own entries
@@ -8718,11 +11903,30 @@ class World {
         // survives of levelAsset_ is its DIMENSIONS -- see the member.
         levelAsset_.a.clear();
         levelAsset_.a.shrink_to_fit();
-        levelLoaded_ = true;
-        std::printf("  level    %d x %d x %d voxels (%.1f x %.1f x %.1f m), %d colours\n",
-                    levelAsset_.sx, levelAsset_.sy, levelAsset_.sz,
-                    float(levelAsset_.sx) * VOXEL_M, float(levelAsset_.sy) * VOXEL_M,
-                    float(levelAsset_.sz) * VOXEL_M, asked);
+        levelPaletteReady_ = true;
+        // -- AND THE DEVICE HAS TO BE TOLD, WHICH IT USED NOT TO NEED --------
+        //
+        // While the level's colours were minted inside World::build this was
+        // free: a dozen later loaders each call uploadMaterials, and the last
+        // of them carried the level's entries along with their own. This
+        // function runs AFTER all of that -- it has to, so that the held kit's
+        // ids are known -- which makes it the last thing in the program to
+        // mint, and nothing was ever going to push it.
+        //
+        // WHAT IT LOOKED LIKE, because the symptom does not point here: every
+        // surface in the map rendered the same cool grey, measured at sRGB
+        // (170,177,184). That is MaterialLook's DEFAULT albedo of 0.4 with the
+        // sky on it -- the entries existed, the geometry pointed at them, and
+        // the device's copy of the table had simply never been told what they
+        // were. Nothing in the log was wrong, which is what cost the time.
+        uploadMaterials();
+        // MINTED, NOT ASKED, and the difference is the point: the level
+        // registers with exact=false, so a colour within kQuantStep of one the
+        // wood already owns costs NOTHING. "asked" made the level look like it
+        // was spending fifteen entries out of the scarcest thing in this
+        // engine, and it is not.
+        std::printf("  level    %d colours asked, %d minted, %d greens on the grass ramp\n", asked,
+                    palette.used() - before, greens);
         if (lost)
             std::fprintf(stderr,
                          "v2: PALETTE FULL -- %d level voxels came back AIR and will not draw\n",
@@ -8730,30 +11934,944 @@ class World {
         return true;
     }
 
-    // The level's geometry, built the first time anybody goes there. Everything
-    // it needs was settled at load; this is the megabyte of triangles.
+    // -----------------------------------------------------------------------
+    // THE PENDANT'S ART AND ITS TWO COLOURS -- at start-up, with the level.
+    //
+    // (user 2026-09-17: "use the same lightbulb from the original ui white
+    // box".) That box is the pause room, which was deleted -- but the ART
+    // survives on disk and the tracer's hook for it survives in the shader, so
+    // this is the room's own bulb put somewhere new rather than a new one. The
+    // glass colour, the saturation split, the cap-down flip and the flex are
+    // all buildRoom's, recovered from the commit that removed the room.
+    //
+    // THE COLOURS ARE MINTED HERE AND THE GEOMETRY IS STAMPED LATER, which is
+    // the same split the level itself runs on and for the same reason: palette
+    // entries are served first-come, dressLevel does not run until the first
+    // [O], and a colour asked for at that point is a colour handed mat::AIR.
+    // The glass going AIR would be a room with an invisible light in it.
+    //
+    // AND THE GLASS IS ALSO THE SWITCH. V6Params::bulbMtl is one field for
+    // "which material is the bulb" and "is the bulb on", so there is no state
+    // where one is set and the other is not -- see the note in Shared.slang.
+    void loadLevelBulb() {
+        // A WARM WHITE, and its exact value is the room's. The tracer returns
+        // bulbRadiance off any voxel wearing this, so what is registered here
+        // mostly decides what the glass looks like when the lamp is OFF.
+        // OUT OF THE LEVEL'S OWN TABLE, which is where it belongs -- there is
+        // no lamp in the wood and this entry would be dead weight in the wood's
+        // 255. loadLevelBulb is called from buildLevelPalette, after
+        // beginLevelTable, so forLevelColor is live by the time this runs.
+        levelGlassMtl_ = palette.forModelColor({255, 246, 214, 255}, false);
+        // -- THE CAP AND THE FLEX COST NOTHING, AND THAT IS THE POINT --------
+        //
+        // mat::ROCK rather than a colour of their own. The table was FULL when
+        // this went in -- three colours refused -- and a screw cap and a metre
+        // of flex are the cheapest thing in the room to stop minting for: the
+        // cap is a dozen voxels behind the glass and the flex is one voxel
+        // wide. The stone ramp is six dark greys the device already spreads by
+        // hash (see groundShade), which is a better cord than one flat grey
+        // would have been anyway.
+        //
+        // NOT THE GLASS, obviously -- that has to be its own id because it IS
+        // the emitter test.
+        levelCordMtl_ = mat::ROCK;
+        VoxModel mo;
+        std::string err;
+        if (!voxLoad(kLevelBulbVox, &mo, &err)) {
+            std::fprintf(stderr, "v2: level bulb %s: %s -- using a plain sphere\n", kLevelBulbVox,
+                         err.c_str());
+            return;
+        }
+        const VoxAsset raw = toWorldWhole(mo);
+        levelBulbAsset_.sx = raw.sx;
+        levelBulbAsset_.sy = raw.sy;
+        levelBulbAsset_.sz = raw.sz;
+        levelBulbAsset_.a.assign(raw.a.size(), mat::AIR);
+        for (int y = 0; y < raw.sy; ++y)
+            for (int z = 0; z < raw.sz; ++z)
+                for (int x = 0; x < raw.sx; ++x) {
+                    const uint8_t e = raw.at(x, y, z);
+                    if (!e) continue;
+                    const std::array<uint8_t, 4> &c = mo.pal[size_t(e) - 1];
+                    const int mx = maxi(c[0], maxi(c[1], c[2]));
+                    const int mn = mini(c[0], mini(c[1], c[2]));
+                    levelBulbAsset_.a[size_t(x) + size_t(z) * size_t(raw.sx) +
+                                      size_t(y) * size_t(raw.sx) * size_t(raw.sz)] =
+                        (mx - mn > 24) ? levelGlassMtl_ : levelCordMtl_;
+                }
+    }
+
+    // -----------------------------------------------------------------------
+    // WHAT GROWS ON THE MAP, AND WHAT HANGS IN IT -- stamped into a COPY.
+    //
+    // (user 2026-09-17: "I also want to have grass strands with flowers on the
+    // grass as well in nuketown" / "put a lightbulb in the dark rooms".)
+    //
+    // -- THE COPY IS THE WHOLE DESIGN, NOT AN IMPLEMENTATION DETAIL ---------
+    //
+    // This runs on `a`, the display asset buildLevelBlas is about to mesh, and
+    // NEVER on levelVol_. levelVol_ is the COLLIDER (see levelSolid, which
+    // hands the walk both it and levelColTop_), so a blade of grass written
+    // there is a blade of grass you climb: `blocked()` tests the body's box
+    // against those voxels and `solidColumnTopBelow` would stand you on top of
+    // the sward. The wood does not have this problem because its blades are
+    // terrain geometry and its collider is a heightfield; here one array is
+    // both, so the only place to put scenery is a copy of it.
+    //
+    // levelColTop_ is therefore also LEFT ALONE, and is read here rather than
+    // recomputed -- it already says where the ground is, and the ground is the
+    // one thing none of this may move.
+    //
+    // ONCE, LAZILY, on the first [O]. Everything it spends is already paid for:
+    // the grass is mat::BGRASS_0 (the level's own greens map onto it at load),
+    // the flowers are the wood's flower models with their palettes long since
+    // registered, and the bulb's two colours were minted at start-up for the
+    // reason written over levelGlassMtl_.
+    // -----------------------------------------------------------------------
+    void dressLevel(VoxAsset *a) {
+        const int SX = a->sx, SY = a->sy, SZ = a->sz;
+        if (SX <= 0 || SY <= 0 || SZ <= 0 || levelColTop_.empty()) return;
+        auto at = [&](int x, int y, int z) -> uint8_t & {
+            return a->a[size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ)];
+        };
+        auto solidAt = [&](int x, int y, int z) {
+            return at(x, y, z) != mat::AIR;
+        };
+
+        // -- 1. GRASS, AND FLOWERS STANDING IN IT ---------------------------
+        //
+        // The oak wood's density, and for the oak wood's reason: a lawn is
+        // sward from edge to edge, not a pine floor with glades in it. What is
+        // NOT borrowed is the wood's patch field -- there is no noise here at
+        // all, because a mown yard has no thickets and inventing some would be
+        // the one thing that stops it reading as a lawn.
+        //
+        // HEIGHT IS THE VARIATION INSTEAD. Two to six voxels, 20 to 60 cm,
+        // hashed per column. See v2-tall-grass: height never density.
+        //
+        // The blades take mat::BGRASS_0 like the ground under them, so
+        // groundShade() hands every one of them its own shade out of the six --
+        // which is also why no strand code is set here. A blade in the wood is
+        // shaded by its ROW off the strand field the chunk mesher packs;
+        // meshAsset packs none, so these fall through to the position hash and
+        // come out as a mix rather than as a gradient. On a 3-voxel blade that
+        // is the same picture.
+        int blades = 0, flowers = 0;
+        const int fl0 = mesher_.flowerBirch0;
+        const int flN = int(flowers_.size()) - fl0;
+        for (int z = 0; z < SZ; ++z)
+            for (int x = 0; x < SX; ++x) {
+                const int top = int(levelColTop_[size_t(x) + size_t(z) * size_t(SX)]) - 1;
+                if (top < 0 || top >= SY - 4) continue;
+                if (!isBGrass(at(x, top, z))) continue;
+                const uint32_t h = hashU32(uint32_t(x) * 2654435761u, uint32_t(z) * 40503u);
+                // A FLOWER FIRST, and it takes the column out of the running
+                // for a blade: v1's own note is that a flower grows OUT of the
+                // grass, but two things cannot stand in one voxel column and a
+                // stem is greener than a blade is anyway.
+                // -- AND THE SPECIES COMES FROM A PATCH, NOT FROM THE COLUMN --
+                //
+                // (user 2026-09-17: "make sure the flowers group together like
+                // in the sandbox world. and not random.")
+                //
+                // THE PLACEMENT STAYS UNIFORM AND THAT IS THE POINT. This is
+                // v1's flowerAt and the wood's own scatter, and the obvious
+                // reading of "grouped" is the one both of them rejected: there
+                // is no colony field gating PRESENCE. Every lawn column may
+                // carry a flower at one flat rate, and what reads as a group is
+                // A DRIFT OF ONE COLOUR INTO ANOTHER -- the species is constant
+                // over a patch, so a dozen scattered plants of one kind read as
+                // a bed without any of them being clumped. v1's own words:
+                // "nothing draws the boundary, ~11 scattered plants do". The
+                // wood tried the other structure three times and never got
+                // there; see the note over Chunks::flowerDensity.
+                //
+                // kFlowerPatchVox is v1's FLWPATCH. It is a LENGTH, so it does
+                // NOT scale with the map -- a 9.6 m bed is a 9.6 m bed whether
+                // the houses round it are authored small or tripled.
+                //
+                // HALVED TWICE (user, both on 2026-09-17). 6/1024 was one
+                // flower per ~170 lawn columns, 3/1024 one per ~340, and
+                // 3/2048 is one per ~680. The mask is widened rather than the
+                // numerator cut, because 3 -> 1.5 is not a thing a mask can say.
+                if (flN > 0 && (h & 2047u) < 3u) {
+                    const uint32_t cell = hashU32(uint32_t(x / kFlowerPatchVox) * 0x9E3779B9u,
+                                                  uint32_t(z / kFlowerPatchVox) * 0x85EBCA6Bu);
+                    const ModelTemplate &f = flowers_[size_t(fl0 + int(cell % uint32_t(flN)))];
+                    if (f.sx > 0 && f.sy > 0 && f.sz > 0 && !f.volume.empty()) {
+                        const int ox = x - f.sx / 2, oz = z - f.sz / 2;
+                        for (int fy = 0; fy < f.sy; ++fy)
+                            for (int fz = 0; fz < f.sz; ++fz)
+                                for (int fx = 0; fx < f.sx; ++fx) {
+                                    const uint8_t v =
+                                        f.volume[size_t(fx) + size_t(fz) * size_t(f.sx) +
+                                                 size_t(fy) * size_t(f.sx) * size_t(f.sz)];
+                                    if (!v) continue;
+                                    const int wx2 = ox + fx, wy = top + 1 + fy, wz = oz + fz;
+                                    if (wx2 < 0 || wz < 0 || wx2 >= SX || wz >= SZ || wy >= SY)
+                                        continue;
+                                    if (solidAt(wx2, wy, wz)) continue;
+                                    at(wx2, wy, wz) = v;
+                                }
+                        ++flowers;
+                        continue;
+                    }
+                }
+                // HALVED (user 2026-09-17: "reduce the grass frequency in
+                // half"). 107/256 was the oak wood's 0.42; 53/256 is 0.21.
+                if ((h >> 12 & 255u) >= 53u) continue;
+                // ...AND TWO TO SIX VOXELS TALL, 20 to 60 cm. It shipped at
+                // 1..3, went to 1..8 on the first ask and settled here on the
+                // second: the single-voxel blades read as litter rather than
+                // grass and the eight-voxel ones hid the map. Height is the
+                // only thing that varies -- see the note above on why a mown
+                // yard gets no patch field.
+                const int hgt = 2 + int((h >> 20) % 5u);
+                for (int k = 1; k <= hgt; ++k) {
+                    if (top + k >= SY || solidAt(x, top + k, z)) break;
+                    at(x, top + k, z) = mat::BGRASS_0;
+                }
+                ++blades;
+            }
+
+        // -- 2. THE LAMPS, AND EVERY ONE OF THEM IS PLACED BY HAND ----------
+        //
+        // (user 2026-09-17: "I want you to also remove every lightbulb from the
+        // world, I will place them manually".)
+        //
+        // THERE WAS A SURVEY HERE AND IT IS GONE. It walked every column for
+        // air gaps with standing room, flooded them into rooms by adjacency and
+        // a shared ceiling, and hung a lattice of lamps in each -- and it was
+        // deleted rather than tuned, because no amount of tuning answers the
+        // real objection. "Too many lightbulbs on the field" is not a threshold
+        // being wrong; it is a machine guessing at something the person can
+        // simply say. A carport, an awning, the underside of a balcony and the
+        // gap beside a parked bus are all a ceiling over a floor, and none of
+        // them wants a pendant.
+        //
+        // WHAT REPLACES IT IS A LIST, filled two ways and drawn one way:
+        //
+        //   * kLevelBulbSeed below -- the baked positions, pasted in from the
+        //     game. Empty until somebody places some.
+        //   * placeLevelBulb / removeLevelBulbNear -- right click and left
+        //     click, with the lamp in hand. See the level's kit block.
+        //
+        // The loop under this comment draws whatever is in the list, whichever
+        // way it got there.
+        //
+        // THE SEED IS TAKEN ONCE. After that the list is the player's -- every
+        // later dress runs because they placed or removed one, and re-seeding
+        // would put the baked set back and throw the edit away.
+        if (levelGlassMtl_ != mat::AIR && !levelBulbsSeeded_) {
+            levelBulbsSeeded_ = true;
+            for (const Vec3 &baked : levelBulbSeed()) levelBulbs_.push_back(baked);
+        }
+        for (const Vec3 &bulb : levelBulbs_) stampBulbWorld(a, bulb);
+        std::printf("  level    dressed: %d grass blades, %d flowers, %zu bulbs\n", blades,
+                    flowers, levelBulbs_.size());
+        std::fflush(stdout);
+    }
+
+    // The pause room's pendant, rebuilt where the room's own buildRoom put it.
+    //
+    // THE MODEL IS AUTHORED CAP-DOWN and is read bottom-up here for it -- the
+    // room's note is worth keeping because the symptom was a glowing ball with
+    // its screw cap hanging underneath and the flex growing out of the glass.
+    //
+    // GLASS AND CAP ARE TOLD APART BY SATURATION, not by palette index, so a
+    // re-authored bulb still splits the same way. Same test the level's greens
+    // use, and the butterflies' yellow before either of them.
+    // -- WHERE A LAMP GOES, AND IT IS AGAINST THE CEILING ----------------
+    //
+    // (user 2026-09-17: "have the lightbulbs attach to the cieling ... try to
+    // put the lightbulbs in the center of the room at the top of the cieling".)
+    //
+    // The pause room hung its pendant 40 cm down on a flex, which is right for
+    // a 6 m room with nothing else in it and wrong for a house: the bulbs stood
+    // in mid-air with a string over them. So the model's TOP voxel sits on the
+    // ceiling row and there is no flex to speak of -- the fitting is the thing
+    // touching the slab.
+    //
+    // NOTE, DO NOT STAMP. This only records a position; stampBulbWorld draws
+    // whatever is in the list. The two are separate so the player's edits and
+    // the survey's findings go through the same door -- see dressLevel.
+    void noteBulb(int bx, int bz, int ceilY, int SX, int SZ, int SY) {
+        if (bx < 2 || bz < 2 || bx >= SX - 2 || bz >= SZ - 2) return;
+        if (ceilY < 3 || ceilY >= SY - 1) return;
+        if (int(levelBulbs_.size()) >= kLevelBulbMax) return;
+        const int h = levelBulbAsset_.sx > 0 ? levelBulbAsset_.sy : 5;
+        const int by = ceilY - h / 2;
+        if (by < 2) return;
+        levelBulbs_.push_back(Vec3(kLevelAtX + (float(bx) + 0.5f) * VOXEL_M,
+                                   kLevelAtY + (float(by) + 0.5f) * VOXEL_M,
+                                   kLevelAtZ + (float(bz) + 0.5f) * VOXEL_M));
+    }
+
+    // ...AND DRAW ONE THE LIST ALREADY HOLDS. The ceiling is found again here
+    // rather than stored beside the position, so a lamp the player put under a
+    // different slab still gets its fitting drawn against the right one.
+    void stampBulbWorld(VoxAsset *a, const Vec3 &w) {
+        const int SX = a->sx, SY = a->sy, SZ = a->sz;
+        const int bx = int((w.x - kLevelAtX) / VOXEL_M);
+        const int by = int((w.y - kLevelAtY) / VOXEL_M);
+        const int bz = int((w.z - kLevelAtZ) / VOXEL_M);
+        if (bx < 0 || by < 0 || bz < 0 || bx >= SX || by >= SY || bz >= SZ) return;
+        auto solid = [&](int y) {
+            return a->a[size_t(bx) + size_t(bz) * size_t(SX) +
+                        size_t(y) * size_t(SX) * size_t(SZ)] != mat::AIR;
+        };
+        int roof = by;
+        while (roof + 1 < SY && !solid(roof + 1)) ++roof;
+        stampBulb(a, bx, by, bz, roof);
+    }
+
+    void stampBulb(VoxAsset *a, int bx, int by, int bz, int roof) {
+        const int SX = a->sx, SY = a->sy, SZ = a->sz;
+        auto at = [&](int x, int y, int z) -> uint8_t & {
+            return a->a[size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ)];
+        };
+        auto put = [&](int x, int y, int z, uint8_t m) {
+            if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return;
+            if (at(x, y, z) != mat::AIR) return;
+            at(x, y, z) = m;
+        };
+        int hiY = by;
+        if (levelBulbAsset_.sx > 0) {
+            const VoxAsset &b = levelBulbAsset_;
+            const int x0 = bx - b.sx / 2, z0 = bz - b.sz / 2, y0 = by - b.sy / 2;
+            hiY = y0 + b.sy - 1;
+            for (int y = 0; y < b.sy; ++y)
+                for (int z = 0; z < b.sz; ++z)
+                    for (int x = 0; x < b.sx; ++x) {
+                        const uint8_t m = b.at(x, b.sy - 1 - y, z);
+                        if (!m) continue;
+                        put(x0 + x, y0 + y, z0 + z, m);
+                    }
+        } else {
+            // No art: a plain sphere, exactly as the room fell back to.
+            for (int dy = -2; dy <= 2; ++dy)
+                for (int dz = -2; dz <= 2; ++dz)
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        if (dx * dx + dy * dy + dz * dz > 6) continue;
+                        put(bx + dx, by + dy, bz + dz, levelGlassMtl_);
+                    }
+            hiY = by + 2;
+        }
+        // ...AND WHATEVER IS LEFT BETWEEN IT AND THE SLAB, which is now at
+        // most a voxel or two of fitting rather than a flex -- see noteBulb.
+        // Still drawn, because a bulb whose top lands one short of the ceiling
+        // reads as floating.
+        for (int y = hiY + 1; y <= roof; ++y) put(bx, y, bz, levelCordMtl_);
+    }
+
+    // -----------------------------------------------------------------------
+    // THE LEVEL'S GEOMETRY, IN BLOCKS.
+    //
+    // (user 2026-09-17, three times: "the bullets are not making impact on the
+    // terrain ... the bullets should be taking small chunks out of the
+    // environment like the bow does".)
+    //
+    // IT WAS ONE BLAS AND THAT IS WHY IT COULD NOT BE CARVED. A chip has to
+    // re-mesh whatever it damaged, and whatever it damaged was 136 M cells --
+    // MEASURED at 383 ms, which is not a hitch, it is a stall. So a round hit
+    // the map, `arrowChip` ran, `carveModel` refused it (the level's collider
+    // has no chunk and no decor slot) and nothing happened at all. Three
+    // reports, one cause, and the cause was the shape of the asset.
+    //
+    // CUT INTO 64-VOXEL COLUMNS -- full height, 6.4 m square -- the map is 128
+    // blocks and one of them is about 1.2 M cells, which meshes in a few
+    // milliseconds. That is a cost a weapon can pay.
+    //
+    // THE SEAMS COST NOTHING, and that is the one thing that had to be got
+    // right: meshAssetBlock loops over the block and tests NEIGHBOURS against
+    // the whole grid, so a face is emitted where solid meets air and never
+    // where solid meets the next block. See its note.
+    //
+    // levelDisplay_ STAYS RESIDENT, which the single-BLAS version did not need:
+    // a block rebuild has to re-read the dressed grid -- the grass, the flowers
+    // and the lamps -- and re-dressing the map to carve a hole in a wall would
+    // be the 383 ms back again. 130 MB for a level that is open, freed with the
+    // rest of it when it is not.
     void buildLevelBlas() {
-        if (levelBlas_.valid() || !levelLoaded_) return;
+        if (!levelBlocks_.empty() || !levelLoaded_) return;
         // levelVol_ already holds GLOBAL material ids, so the mesher's table is
-        // the identity -- the translation happened once, at load, and this is
-        // the same asset seen through it.
-        VoxAsset a;
-        a.sx = levelAsset_.sx;
-        a.sy = levelAsset_.sy;
-        a.sz = levelAsset_.sz;
-        a.a = levelVol_;
-        std::vector<uint8_t> ident(256, mat::AIR);
-        for (int i = 1; i < 256; ++i) ident[size_t(i)] = uint8_t(i);
-        const VoxMesh mesh = meshAsset(a, ident, VOXEL_M);
-        if (mesh.triCount() == 0) {
+        // the identity -- the translation happened once, at load.
+        levelDisplay_.sx = levelAsset_.sx;
+        levelDisplay_.sy = levelAsset_.sy;
+        levelDisplay_.sz = levelAsset_.sz;
+        // A COPY, AND dressLevel IS WHY -- the grass, the flowers and the bulbs
+        // go into this and never into levelVol_, which is what the body walks
+        // into. See the long note over dressLevel.
+        levelDisplay_.a = levelVol_;
+        dressLevel(&levelDisplay_);
+
+        levelBX_ = (levelAsset_.sx + kLevelBlockVox - 1) / kLevelBlockVox;
+        levelBZ_ = (levelAsset_.sz + kLevelBlockVox - 1) / kLevelBlockVox;
+        levelBlocks_.assign(size_t(levelBX_) * size_t(levelBZ_), Blas{});
+        levelBlockTri_.assign(levelBlocks_.size(), TriPool::kInvalid);
+        levelBlockTris_.assign(levelBlocks_.size(), 0);
+
+        const auto tMesh = std::chrono::steady_clock::now();
+        size_t total = 0;
+        for (int bi = 0; bi < int(levelBlocks_.size()); ++bi) total += meshLevelBlock(bi);
+        const double meshMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tMesh)
+                .count();
+        levelTris_ = total;
+        if (total == 0) {
             std::fprintf(stderr, "v2: the level meshed to nothing\n");
             return;
         }
-        levelTri_ = pool_.upload(ctx_, mesh.tri);
-        levelBlas_ = buildBlas(mesh);
-        levelTris_ = mesh.triCount();
-        std::printf("v2: level built, %zu triangles\n", levelTris_);
+        std::printf("v2: level built, %zu triangles in %d x %d blocks (meshed in %.0f ms)\n", total,
+                    levelBX_, levelBZ_, meshMs);
         std::fflush(stdout);
+    }
+
+    // -----------------------------------------------------------------------
+    // NOTHING IN THE LEVEL FLOATS EITHER.
+    //
+    // (user 2026-09-17: "im breaking a light pole from the static terrain and
+    //  its floating. nothing in the world should be floating. everything that
+    //  gets disconnected from the static terrain becomes a rigid body.")
+    //
+    // THE LEVEL WAS THE ONE STATIC THING WITH NO HANGER SWEEP. The terrain has
+    // dropTerrainHangers and a model has dropModelHangers; the map had nothing
+    // at all, so carveLevel cut voxels and never asked what the cut had left
+    // standing on air. Shoot through a light pole and the whole pole above the
+    // hole simply stayed where it was.
+    //
+    // WHY A LOCAL BOX CANNOT DO THIS, which is what makes it a different
+    // problem from the terrain's. dropTerrainHangers works inside a 27-voxel
+    // cube and calls anything touching the boundary still attached. A light
+    // pole is four metres of geometry: cut its base and the severed piece runs
+    // straight out of any such box, so that test would call it attached every
+    // time -- which is exactly the bug being reported.
+    //
+    // SO THE QUESTION IS ASKED PROPERLY: CAN THIS REACH THE GROUND. The
+    // voxeliser lays a solid foundation under the entire footprint (see
+    // tools/voxelize_nuketown.py, BASE_M, and its note about there being no
+    // ground outside the painted slabs), so grounded has an exact meaning here
+    // that it does not have in the terrain: the flood reaches y == 0. Anything
+    // that cannot is severed, whatever shape it is.
+    //
+    // BOUNDED BY A CAP, NOT BY A BOX. A flood out of a cut wall reaches the
+    // whole building and would cost the map; it stops at kLevelHangCap and the
+    // piece is then treated as ATTACHED. The two ways of being wrong are not
+    // equal -- leaving a big piece standing is what the map does today, while
+    // cutting a house loose because a flood ran out of budget is a building
+    // falling out of the world.
+    //
+    // Returns how many pieces came away.
+    // -----------------------------------------------------------------------
+    int dropLevelHangers(Physics &ph, const Vec3 &at, int radiusVox, double nowMs) {
+        if (levelVol_.empty() || levelDisplay_.a.empty()) return 0;
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        const int cx = int((at.x - kLevelAtX) / VOXEL_M);
+        const int cy = int((at.y - kLevelAtY) / VOXEL_M);
+        const int cz = int((at.z - kLevelAtZ) / VOXEL_M);
+        const int r = maxi(1, radiusVox) + 2;
+        auto idx = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(SX) + size_t(y) * size_t(SX) * size_t(SZ);
+        };
+        auto solid = [&](int x, int y, int z) {
+            if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return false;
+            return levelVol_[idx(x, y, z)] != mat::AIR ||
+                   levelDisplay_.a[idx(x, y, z)] != mat::AIR;
+        };
+
+        // -- THE VISITED SET IS PER FLOOD, AND SHARING IT WAS THE RIP -------
+        //
+        // (user 2026-09-17, THREE times: "the bullet impact chunks are still
+        //  causing a vertical rip".)
+        //
+        // IT USED TO BE ONE SET ACROSS EVERY FLOOD THIS SWEEP RUNS, on the
+        // reasonable-sounding grounds that "a component reached from two
+        // different seeds is walked once". That is true only for floods that
+        // RUN TO COMPLETION, and most of these do not: a seed in a wall hits
+        // kLevelHangSpan within a metre and breaks out CAPPED, having already
+        // marked several hundred voxels as visited on the way.
+        //
+        // The next seed is the next solid voxel the scan reaches that is not
+        // in that set -- which is to say, a voxel right beside the poisoned
+        // blob. Its flood cannot enter the blob, so it runs along whatever
+        // corridor is left around it; it cannot reach y == 0 through the
+        // blockage; and being thin it never trips the span cap either. So it
+        // is declared floating and dropped.
+        //
+        // A CORRIDOR AROUND A BLOB IN A WALL IS A LONG THIN SLIVER. That is
+        // the vertical rip, exactly: not a piece the shot freed, a piece the
+        // PREVIOUS FLOOD'S BOOKKEEPING invented. Neither kLevelHangSpan nor
+        // kEmbeddedFrac could ever have fixed it, which is why tightening both
+        // did not -- they are tests on a component, and the component being
+        // handed to them was not real.
+        //
+        // So `seen` is cleared per seed, and what carries between floods is a
+        // separate record of what has been DECIDED.
+        std::unordered_set<uint32_t> seen;
+        // -- ...AND WHAT IS ALREADY KNOWN TO BE HELD UP --------------------
+        //
+        // Every voxel of a component this sweep has already resolved as
+        // attached, whether it was proved (it reached y == 0) or assumed (it
+        // hit the cap). Two jobs, and it is important they are both done by
+        // one set:
+        //
+        //   * a seed inside it is skipped, which is the cost saving the shared
+        //     `seen` was reaching for and is all it was ever entitled to;
+        //   * a flood that REACHES it is grounded on the spot, which is the
+        //     part that was missing. The mass is attached, so anything joined
+        //     to it is attached, and there is no need to walk it again to say
+        //     so.
+        //
+        // Assumed-attached propagating as if it were proved is deliberate and
+        // is the same bargain the cap already makes: leaving a big piece
+        // standing is the status quo, cutting a house loose because a flood ran
+        // out of budget is a building falling out of the world.
+        std::unordered_set<uint32_t> attached;
+        std::vector<int> stack, comp;
+        int pieces = 0;
+
+        for (int sy = maxi(0, cy - r); sy <= mini(SY - 1, cy + r) && pieces < kLevelHangMax; ++sy)
+        for (int sz = maxi(0, cz - r); sz <= mini(SZ - 1, cz + r) && pieces < kLevelHangMax; ++sz)
+        for (int sx = maxi(0, cx - r); sx <= mini(SX - 1, cx + r) && pieces < kLevelHangMax; ++sx) {
+            if (!solid(sx, sy, sz)) continue;
+            const uint32_t s0 = uint32_t(idx(sx, sy, sz));
+            if (attached.count(s0)) continue;   // already decided -- see above
+
+            // ---- one component, flooded until it grounds or runs out -------
+            comp.clear();
+            stack.clear();
+            seen.clear();
+            stack.push_back(int(s0));
+            seen.insert(s0);
+            bool grounded = false, capped = false;
+            int lo[3] = {sx, sy, sz}, hi[3] = {sx, sy, sz};
+            while (!stack.empty()) {
+                const int k = stack.back();
+                stack.pop_back();
+                const int y = int(size_t(k) / (size_t(SX) * size_t(SZ)));
+                const int rem = int(size_t(k) % (size_t(SX) * size_t(SZ)));
+                const int z = rem / SX, x = rem % SX;
+                comp.push_back(k);
+                if (y == 0) { grounded = true; break; }
+                if (x < lo[0]) lo[0] = x;
+                if (x > hi[0]) hi[0] = x;
+                if (y < lo[1]) lo[1] = y;
+                if (y > hi[1]) hi[1] = y;
+                if (z < lo[2]) lo[2] = z;
+                if (z > hi[2]) hi[2] = z;
+                if (int(comp.size()) >= kLevelHangCap || hi[0] - lo[0] >= kLevelHangSpan ||
+                    hi[1] - lo[1] >= kLevelHangSpan || hi[2] - lo[2] >= kLevelHangSpan) {
+                    capped = true;
+                    break;
+                }
+                // SIX-CONNECTED, not twenty-six. A piece joined to the map
+                // only through a diagonal is joined by nothing anybody would
+                // call a join, and treating that as attached is how a pole
+                // ends up hanging by one corner.
+                static const int kN[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                             {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+                bool met = false;
+                for (const auto &nb : kN) {
+                    const int nx = x + nb[0], ny = y + nb[1], nz = z + nb[2];
+                    if (!solid(nx, ny, nz)) continue;
+                    const uint32_t nk = uint32_t(idx(nx, ny, nz));
+                    // TOUCHING SOMETHING ALREADY KNOWN TO BE HELD UP IS BEING
+                    // HELD UP. See `attached` -- this is the memo that makes
+                    // a per-flood visited set affordable.
+                    if (attached.count(nk)) {
+                        met = true;
+                        break;
+                    }
+                    if (seen.count(nk)) continue;
+                    seen.insert(nk);
+                    stack.push_back(int(nk));
+                }
+                if (met) {
+                    grounded = true;
+                    break;
+                }
+            }
+            if (grounded || capped) {
+                // DECIDED, so neither this sweep's later seeds nor their floods
+                // need to walk it again -- and, crucially, a later flood that
+                // touches it is grounded rather than blocked. See `attached`.
+                for (int k : comp) attached.insert(uint32_t(k));
+                continue;
+            }
+            if (comp.empty()) continue;
+            // -- ...AND IT HAS TO BE SOMETHING THIS SHOT BROKE ------------
+            //
+            // See markLevelGrounded. A component that could not reach the
+            // ground BEFORE the carve either is one the map shipped floating;
+            // freeing it is not enforcing nothing-floats, it is demolishing
+            // the author's geometry because a round went past.
+            bool wasHeld = false;
+            if (!levelGrounded_.empty())
+                for (int k : comp)
+                    if (levelGrounded_[size_t(k)]) {
+                        wasHeld = true;
+                        break;
+                    }
+            if (!wasHeld) continue;
+            // -- ...AND IT HAS TO BE A THING, NOT PART OF A WALL -----------
+            //
+            // (user 2026-09-17, twice: "its breaking things vertically, it
+            //  should only leave the initial shot mark.")
+            //
+            // MEASURED, with the penetration audit: the piece a shot was
+            // freeing is 2 x 2 x 25 -- a two-and-a-half metre rod, 75 voxels,
+            // coming to rest with a third of itself inside the map. That is
+            // the long vertical scar in the report: a trim strip or a pipe run
+            // that sits in a shallow recess, touching the wall down its whole
+            // length, cut free at the bottom by a round and dropped.
+            //
+            // AND IT IS NOT WRONG BY THE RULE, which is what makes it awkward:
+            // that rod really was held up from below and really is disconnected
+            // now. The light pole this sweep was written for is the SAME
+            // event. The difference is not connectivity, it is what the thing
+            // IS -- and there is a physical test for that.
+            //
+            // A FREE-STANDING THING TOUCHES THE WORLD AT ITS FEET. A pole in
+            // the open has air on every side and one contact under it; a strip
+            // let into a wall touches that wall along its entire length. So
+            // count how many of the piece's voxels still have solid map beside
+            // them, as a fraction of the piece. Few contacts is an object that
+            // was standing there; many is masonry, and masonry stays.
+            //
+            // This is also the honest reading of "only leave the initial shot
+            // mark": a hole in a wall should be a hole in a wall.
+            {
+                static const int kNb[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                              {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+                int touching = 0;
+                for (int k : comp) {
+                    const int y = int(size_t(k) / (size_t(SX) * size_t(SZ)));
+                    const int rem = int(size_t(k) % (size_t(SX) * size_t(SZ)));
+                    const int z = rem / SX, x = rem % SX;
+                    bool met = false;
+                    for (const auto &nb : kNb) {
+                        const int ax = x + nb[0], ay = y + nb[1], az = z + nb[2];
+                        if (!solid(ax, ay, az)) continue;
+                        // Its OWN voxels are not contacts -- seen holds the
+                        // whole component by the time this runs.
+                        if (seen.count(uint32_t(idx(ax, ay, az)))) continue;
+                        met = true;
+                        break;
+                    }
+                    if (met) ++touching;
+                }
+                const float held =
+                    float(touching) / maxf(1.0f, float(comp.size()));
+                if (held > kEmbeddedFrac) continue;   // it is part of the building
+            }
+
+            // ---- it is standing on nothing, so it becomes a body -----------
+            //
+            // THE SAME CUBE CONTRACT dig() AND carveLevel USE -- an n-cube
+            // indexed x + z*n + y*n*n holding the material of every voxel in
+            // it. spawnDebris trims it to the piece's own bounds and puts the
+            // body at its centre of mass, so a four-metre pole in a
+            // four-metre cube is still a four-metre pole.
+            const int n = maxi(hi[0] - lo[0], maxi(hi[1] - lo[1], hi[2] - lo[2])) + 1;
+            std::vector<uint8_t> vol(size_t(n) * size_t(n) * size_t(n), mat::AIR);
+            int b0x = levelBX_, b1x = -1, b0z = levelBZ_, b1z = -1;
+            for (int k : comp) {
+                const int y = int(size_t(k) / (size_t(SX) * size_t(SZ)));
+                const int rem = int(size_t(k) % (size_t(SX) * size_t(SZ)));
+                const int z = rem / SX, x = rem % SX;
+                // THE DISPLAY GRID IS WHAT THE PIECE IS MADE OF -- the collider
+                // grid carries no dressing. Same choice carveLevel makes for
+                // its spoil, and the same reason.
+                uint8_t m = levelDisplay_.a[size_t(k)];
+                if (m == mat::AIR) m = levelVol_[size_t(k)];
+                vol[size_t(x - lo[0]) + size_t(z - lo[2]) * size_t(n) +
+                    size_t(y - lo[1]) * size_t(n) * size_t(n)] = m;
+                levelDisplay_.a[size_t(k)] = mat::AIR;
+                levelVol_[size_t(k)] = mat::AIR;
+                if (!levelGrounded_.empty()) levelGrounded_[size_t(k)] = false;
+                const int bx = x / kLevelBlockVox, bz = z / kLevelBlockVox;
+                b0x = mini(b0x, bx);
+                b1x = maxi(b1x, bx);
+                b0z = mini(b0z, bz);
+                b1z = maxi(b1z, bz);
+            }
+            const Vec3 centre{kLevelAtX + (float(lo[0]) + 0.5f * float(n)) * VOXEL_M,
+                              kLevelAtY + (float(lo[1]) + 0.5f * float(n)) * VOXEL_M,
+                              kLevelAtZ + (float(lo[2]) + 0.5f * float(n)) * VOXEL_M};
+            const Vec3 still{0.0f, 0.0f, 0.0f};
+            // -- AND WHAT PHYSICS IS HANDED HAS TO BE A SHAPE IT CAN HOLD ---
+            //
+            // (user 2026-09-17: "things are glitching when they become rigid
+            //  bodies.")
+            //
+            // EVERY BODY IN THIS ENGINE IS A CONVEX HULL. Physics::
+            // addChunkBody builds a PxConvexMesh from the piece's voxel
+            // corners, which is right for a CHIP -- a bite is a digital sphere
+            // and a hull of one is the same sphere. It is wrong for whatever a
+            // sever happens to cut loose: an L, a rail with a notch, a bracket.
+            // The hull FILLS THE CONCAVITY, and the volume it fills is map
+            // that was never removed -- so the body is born penetrating, and a
+            // solver answers that with an impulse proportional to the depth.
+            //
+            // MEASURED by --fire-frame's penetration audit, which is what this
+            // was written from: a 75-voxel piece with 25 of its voxels inside
+            // the map. A third of it buried, and it is thrown.
+            //
+            // SO A PIECE THE HULL WOULD LIE ABOUT IS SPLIT. Fill ratio is the
+            // test -- voxels over the bounding box that holds them -- and
+            // octants are the split, the same 2x2x2 of the piece's own box
+            // that shatterFlyer uses on a corpse and takeLevelBulbNear uses on
+            // glass. Each octant is a contiguous corner, so each is far nearer
+            // convex than the whole, and the sum of them is still the piece.
+            //
+            // A TIDY PIECE STAYS ONE BODY. Splitting everything would spend
+            // eight of sixty-four debris slots on every post in the map for no
+            // gain: a solid fragment's hull IS the fragment.
+            const int bw = hi[0] - lo[0] + 1, bh2 = hi[1] - lo[1] + 1, bd = hi[2] - lo[2] + 1;
+            const float fill =
+                float(comp.size()) / maxf(1.0f, float(bw) * float(bh2) * float(bd));
+            int slot = -1;
+            if (fill >= kHullFillOk) {
+                slot = spawnDebris(ph, vol, n, centre, still, still, nowMs, 0.0f, nullptr,
+                                   uint8_t(kDebrisStone), kArrowAbsorbM);
+                markLeftLying(slot, kLevelChipLifeMs);   // see carveLevelToBody
+            } else {
+                const int hx = (bw + 1) / 2, hy2 = (bh2 + 1) / 2, hz = (bd + 1) / 2;
+                for (int oct = 0; oct < 8; ++oct) {
+                    std::vector<uint8_t> part(vol.size(), mat::AIR);
+                    int pn = 0;
+                    for (int y = 0; y < n; ++y)
+                        for (int z = 0; z < n; ++z)
+                            for (int x = 0; x < n; ++x) {
+                                const size_t kk = size_t(x) + size_t(z) * size_t(n) +
+                                                  size_t(y) * size_t(n) * size_t(n);
+                                if (vol[kk] == mat::AIR) continue;
+                                const int o = ((x >= hx) ? 1 : 0) | ((y >= hy2) ? 2 : 0) |
+                                              ((z >= hz) ? 4 : 0);
+                                if (o != oct) continue;
+                                part[kk] = vol[kk];
+                                ++pn;
+                            }
+                    if (!pn) continue;
+                    const int sl = spawnDebris(ph, part, n, centre, still, still, nowMs, 0.0f,
+                                               nullptr, uint8_t(kDebrisStone), kArrowAbsorbM);
+                    markLeftLying(sl, kLevelChipLifeMs);   // see carveLevelToBody
+                    if (sl >= 0) slot = sl;
+                }
+            }
+            // THE MAP IS RE-MESHED WHETHER OR NOT A BODY TOOK, because the
+            // voxels have left the grid either way -- and geometry that is
+            // still drawn where nothing is any more is worse than a piece that
+            // failed to fall.
+            for (int bz = maxi(0, b0z); bz <= mini(levelBZ_ - 1, b1z); ++bz)
+                for (int bx = maxi(0, b0x); bx <= mini(levelBX_ - 1, b1x); ++bx)
+                    meshLevelBlock(bz * levelBX_ + bx);
+            // ...AND THE COLUMN TOPS IT STOOD IN. The walk stands on these; a
+            // pole that has fallen must stop being something to step onto.
+            for (int z = lo[2]; z <= hi[2]; ++z)
+                for (int x = lo[0]; x <= hi[0]; ++x) {
+                    int top = 0;
+                    for (int y = SY - 1; y >= 0; --y)
+                        if (levelVol_[idx(x, y, z)] != mat::AIR) {
+                            top = y + 1;
+                            break;
+                        }
+                    levelColTop_[size_t(x) + size_t(z) * size_t(SX)] = int16_t(top);
+                }
+            ++pieces;
+            // CUMULATIVE, AND THAT MATTERS. This was per-piece with the last
+            // one winning, so a 75-voxel rod freed by one shot was hidden
+            // behind a 1-voxel speck freed by the next -- and the report read
+            // "1 voxels cut loose" while something 2.5 m long was falling out
+            // of the map. A total and a worst say what actually happened.
+            lastHangVox_ += int(comp.size());
+            if (int(comp.size()) > lastHangWorst_) {
+                lastHangWorst_ = int(comp.size());
+                lastHangDim_[0] = hi[0] - lo[0] + 1;
+                lastHangDim_[1] = hi[1] - lo[1] + 1;
+                lastHangDim_[2] = hi[2] - lo[2] + 1;
+            }
+            ++lastHangPieces_;
+            lastHangSlot_ = slot;
+            if (carveLog) {
+                std::printf("v2: level hanger -- %d voxels cut loose, body slot %d\n",
+                            int(comp.size()), slot);
+                std::fflush(stdout);
+            }
+        }
+        if (pieces) rebuildTlas();
+        return pieces;
+    }
+
+    // One block, from the dressed grid. Returns how many triangles it holds.
+    // Releasing first is what makes this callable again on a block that already
+    // has geometry -- which is the whole point of it.
+    size_t meshLevelBlock(int bi) {
+        if (bi < 0 || bi >= int(levelBlocks_.size())) return 0;
+        if (levelBlockTri_[size_t(bi)] != TriPool::kInvalid) {
+            pool_.release(levelBlockTri_[size_t(bi)], levelBlockTris_[size_t(bi)]);
+            levelBlockTri_[size_t(bi)] = TriPool::kInvalid;
+        }
+        levelBlocks_[size_t(bi)] = Blas{};
+        levelBlockTris_[size_t(bi)] = 0;
+        // -- THE IDENTITY MAP COVERS EVERY MATERIAL, NOT THE FIRST 256 ------
+        //
+        // THIS CRASHED [O] (user 2026-09-17: "typing o crashed the game"). It
+        // was `ident(256)` filled 1..255 -- a literal, not a bound. A 16-bit
+        // material id was briefly in the tree at the time, and meshAssetBlock's
+        // `idOfEntry[v]` indexed that 256-element vector with a five-figure id
+        // and read off the end. The widening was reverted the same day, so a
+        // byte id fits again and 256 would work TODAY -- which is exactly why
+        // this is written against mat::COUNT instead. The literal was only ever
+        // right by coincidence, and the coincidence has already broken once.
+        //
+        // NOT A "WIDEN EVERY 256" BUG. Every OTHER idOfEntry(256) in this file
+        // is still 256 and still CORRECT, because those are indexed by a .vox
+        // palette ENTRY, which is 1..255 by the file format. This one is
+        // indexed by an ENGINE id, and the two look identical at the call site.
+        //
+        // BUILT ONCE -- mat::COUNT entries is 128 KB, nothing to hold and
+        // something to rebuild 128 times at [O] and again on every bullet.
+        if (levelIdent_.empty()) {
+            levelIdent_.assign(size_t(mat::COUNT) + 1, mat::AIR);
+            for (size_t i = 1; i < levelIdent_.size(); ++i)
+                levelIdent_[i] = decltype(levelIdent_)::value_type(i);
+        }
+        const int bx = bi % levelBX_, bz = bi / levelBX_;
+        const VoxMesh mesh =
+            meshAssetBlock(levelDisplay_, levelIdent_, VOXEL_M, bx * kLevelBlockVox, 0,
+                           bz * kLevelBlockVox, kLevelBlockVox, levelAsset_.sy, kLevelBlockVox);
+        if (mesh.triCount() == 0) return 0;   // an empty block is a legal block
+        levelBlockTri_[size_t(bi)] = pool_.upload(ctx_, mesh.tri);
+        levelBlocks_[size_t(bi)] = buildBlas(mesh);
+        levelBlockTris_[size_t(bi)] = mesh.triCount();
+        return mesh.triCount();
+    }
+
+    // -----------------------------------------------------------------------
+    // TAKE A CHIP OUT OF THE MAP.
+    //
+    // BOTH GRIDS, and that is not a duplicate: levelVol_ is what the BODY walks
+    // into and levelDisplay_ is what the EYE sees, and a hole that is only in
+    // one of them is either a wall you can see through and not walk through or
+    // the other way round. dressLevel's note explains why they are two arrays.
+    //
+    // A SPHERE, like every other carve in this engine -- see World::dig, whose
+    // radius this shares so a bullet hole and an arrow's chip are the same size.
+    //
+    // ONLY THE BLOCKS IT TOUCHED are rebuilt, which is normally one and at a
+    // corner is four.
+    bool carveLevel(const Vec3 &at, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
+                    int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
+        if (levelBlocks_.empty() || levelDisplay_.a.empty()) return false;
+        const int cx = int((at.x - kLevelAtX) / VOXEL_M);
+        const int cy = int((at.y - kLevelAtY) / VOXEL_M);
+        const int cz = int((at.z - kLevelAtZ) / VOXEL_M);
+        const int r = maxi(1, radiusVox);
+        const int SX = levelAsset_.sx, SY = levelAsset_.sy, SZ = levelAsset_.sz;
+        // -- WHAT CAME OUT, AS VOXELS -- dig()'s own contract, word for word --
+        //
+        // A (2r+1) CUBE indexed x + z*n + y*n*n, holding the material of every
+        // voxel actually removed and AIR everywhere else. That is the layout
+        // meshVolume reads and spawnDebris expects, so the piece that falls out
+        // of a wall here is built by the same code that builds the one an arrow
+        // knocks off a boulder -- which is the ask.
+        //
+        // SAMPLED AS IT CARVES. dig() samples first and then carves; this
+        // cannot, because the level has no generator to ask afterwards -- the
+        // grid IS the record.
+        if (spoil && spoilN) {
+            const int sn = r * 2 + 1;
+            *spoilN = sn;
+            spoil->assign(size_t(sn) * size_t(sn) * size_t(sn), mat::AIR);
+        }
+        if (spoilAt)
+            *spoilAt = Vec3{kLevelAtX + (float(cx) + 0.5f) * VOXEL_M,
+                            kLevelAtY + (float(cy) + 0.5f) * VOXEL_M,
+                            kLevelAtZ + (float(cz) + 0.5f) * VOXEL_M};
+        bool any = false;
+        int b0x = levelBX_, b1x = -1, b0z = levelBZ_, b1z = -1;
+        for (int y = cy - r; y <= cy + r; ++y) {
+            if (y < 0 || y >= SY) continue;
+            for (int z = cz - r; z <= cz + r; ++z) {
+                if (z < 0 || z >= SZ) continue;
+                for (int x = cx - r; x <= cx + r; ++x) {
+                    if (x < 0 || x >= SX) continue;
+                    const int dx = x - cx, dy = y - cy, dz = z - cz;
+                    if (dx * dx + dy * dy + dz * dz > r * r) continue;
+                    const size_t k = size_t(x) + size_t(z) * size_t(SX) +
+                                     size_t(y) * size_t(SX) * size_t(SZ);
+                    if (levelDisplay_.a[k] == mat::AIR && levelVol_[k] == mat::AIR) continue;
+                    // THE DISPLAY GRID IS WHAT THE PIECE IS MADE OF, not the
+                    // collider: a chip off a wall should carry the wall's own
+                    // colour, and only that grid has the dressing in it.
+                    if (spoil && spoilN && levelDisplay_.a[k] != mat::AIR) {
+                        const size_t sn = size_t(*spoilN);
+                        (*spoil)[size_t(dx + r) + size_t(dz + r) * sn + size_t(dy + r) * sn * sn] =
+                            levelDisplay_.a[k];
+                    }
+                    levelDisplay_.a[k] = mat::AIR;
+                    levelVol_[k] = mat::AIR;
+                    any = true;
+                    const int bx = x / kLevelBlockVox, bz = z / kLevelBlockVox;
+                    b0x = mini(b0x, bx);
+                    b1x = maxi(b1x, bx);
+                    b0z = mini(b0z, bz);
+                    b1z = maxi(b1z, bz);
+                }
+            }
+        }
+        if (!any) return false;
+        // THE NEIGHBOUR OF A HOLE ON A SEAM ALSO CHANGES, because a voxel
+        // removed at a block's edge uncovers a face that belongs to the block
+        // NEXT to it. So the range is grown by ONE VOXEL and then mapped to
+        // blocks -- which reaches into the neighbour only when the hole is
+        // actually against the boundary.
+        //
+        // IT WAS GROWN BY A WHOLE BLOCK and that was nine blocks every time:
+        // 90 ms a round, measured, for a hole that touches one. A bullet in the
+        // middle of a wall now costs one block and about 10.
+        b0x = maxi(0, mini(b0x, (maxi(0, cx - r - 1)) / kLevelBlockVox));
+        b0z = maxi(0, mini(b0z, (maxi(0, cz - r - 1)) / kLevelBlockVox));
+        b1x = mini(levelBX_ - 1, maxi(b1x, mini(SX - 1, cx + r + 1) / kLevelBlockVox));
+        b1z = mini(levelBZ_ - 1, maxi(b1z, mini(SZ - 1, cz + r + 1) / kLevelBlockVox));
+        size_t total = 0;
+        const auto tRe = std::chrono::steady_clock::now();
+        int rebuilt = 0;
+        for (int bz = b0z; bz <= b1z; ++bz)
+            for (int bx = b0x; bx <= b1x; ++bx) {
+                meshLevelBlock(bz * levelBX_ + bx);
+                ++rebuilt;
+            }
+        for (size_t t : levelBlockTris_) total += t;
+        levelTris_ = total;
+        // WHAT A CHIP ACTUALLY COST, because the whole reason the level is cut
+        // into blocks is that this number used to be 383 ms for one hole.
+        if (carveLog) {
+            std::printf("v2: carve -- %d blocks re-meshed in %.1f ms, %zu triangles now\n",
+                        rebuilt,
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - tRe)
+                            .count(),
+                        total);
+            std::fflush(stdout);
+        }
+        // THE COLUMN TOPS MOVED, so the walk has to be told: a hole shot in a
+        // floor is a hole you can fall through, and levelColTop_ is what the
+        // collider stands on. Only the columns that changed.
+        for (int z = maxi(0, cz - r); z <= mini(SZ - 1, cz + r); ++z)
+            for (int x = maxi(0, cx - r); x <= mini(SX - 1, cx + r); ++x) {
+                int top = 0;
+                for (int y = SY - 1; y >= 0; --y)
+                    if (levelVol_[size_t(x) + size_t(z) * size_t(SX) +
+                                  size_t(y) * size_t(SX) * size_t(SZ)] != mat::AIR) {
+                        top = y + 1;
+                        break;
+                    }
+                levelColTop_[size_t(x) + size_t(z) * size_t(SX)] = int16_t(top);
+            }
+        rebuildTlas();
+        return true;
     }
 
     void buildWater() {
@@ -8893,11 +13011,15 @@ class World {
                 // drawn and not collided with. Trees and rocks are both.
                 Solid s;
                 V6Instance info{};
-                if (p.kind >= 0 && p.kind < 6) ++c.decorKind[p.kind];
+                if (p.kind >= 0 && p.kind < 7) ++c.decorKind[p.kind];
                 // A HIVE IS NOT WALKED INTO EITHER. It hangs several metres up
                 // in a crown, so a ground collider for it would be an invisible
                 // wall under the tree.
-                const bool walkThrough = (p.kind == 2 || p.kind == 4 || p.kind == 5);
+                // ...AND A FRUIT (kind 6), for the reason a cone is: it hangs in
+                // a crown out of reach, and a 40 cm collider up a tree is a
+                // thing to snag on rather than a thing to stand on.
+                const bool walkThrough =
+                    (p.kind == 2 || p.kind == 4 || p.kind == 5 || p.kind == 6);
                 // The slot this instance is about to take, recorded on its
                 // Solid so a blow can find its way back here. solids is a
                 // FILTERED subset of decorDesc, so its own index is no use.
@@ -8918,6 +13040,14 @@ class World {
                     da.hx = halfOf((p.yaw & 1) ? mt.sz : mt.sx);
                     da.hz = halfOf((p.yaw & 1) ? mt.sx : mt.sz);
                     c.decorAt.push_back(da);
+                    // WHERE THE ORCHARD IS, so the load report can say where
+                    // to look. A crop hangs several metres up inside a crown
+                    // and is 40 cm across, which makes "is the fruit there"
+                    // a question a screenshot answers badly and a coordinate
+                    // answers exactly. Capped, so this costs one compare per
+                    // placement once the first few are in.
+                    if (p.kind == 6 && fruitSeen_.size() < 4)
+                        fruitSeen_.push_back({da.x, da.y, da.z});
                 }
                 if (!walkThrough && s.hx > 0.0f) c.solids.push_back(s);
             }
@@ -8994,6 +13124,7 @@ class World {
             : (kind == 2) ? flowers_
             : (kind == 3) ? mushrooms_
             : (kind == 5) ? hives_
+            : (kind == 6) ? fruit_
                           : pinecones_;
         return v[size_t(index) % v.size()];
     }
@@ -9508,13 +13639,21 @@ class World {
             // only way to mean it is for the wood not to be in the structure.
             // One instance -- the building and its slab are one asset and one
             // BLAS, because they are one place.
-            if (levelBlas_.valid()) {
+            // ONE INSTANCE PER BLOCK, not one for the place. The level is cut
+            // into 64-voxel columns so a bullet can re-mesh what it hit without
+            // re-meshing the map -- see buildLevelBlas. Each block carries its
+            // own corner in the transform; an empty one has no structure and is
+            // skipped, which is most of the sky above this map.
+            for (size_t bi = 0; bi < levelBlocks_.size(); ++bi) {
+                if (!levelBlocks_[bi].valid()) continue;
+                const int bx = int(bi) % levelBX_, bz = int(bi) / levelBX_;
                 RtInstanceDesc lv = {};
-                writeTransform(lv, kI, kLevelAtX, kLevelAtY, kLevelAtZ);
+                writeTransform(lv, kI, kLevelAtX + float(bx * kLevelBlockVox) * VOXEL_M, kLevelAtY,
+                               kLevelAtZ + float(bz * kLevelBlockVox) * VOXEL_M);
                 lv.instanceMask = kMaskWorld;
-                lv.accelerationStructure = levelBlas_.as->getGpuAddress();
+                lv.accelerationStructure = levelBlocks_[bi].as->getGpuAddress();
                 V6Instance info{};
-                info.triOffset = levelTri_;
+                info.triOffset = levelBlockTri_[bi];
                 info.kind = KIND_TERRAIN;
                 info.tint = float3(1.0f, 1.0f, 1.0f);
                 push(lv, info);

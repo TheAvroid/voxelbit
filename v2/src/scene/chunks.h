@@ -118,10 +118,39 @@ class ChunkMesher {
         for (auto &t : workers_) if (t.joinable()) t.join();
     }
 
-    void request(int cx, int cz) {
+    // -----------------------------------------------------------------------
+    // `urgent` PUTS THE CHUNK AT THE FRONT, AND IT IS THE WHOLE OF THE HOE BUG.
+    //
+    // (user 2026-09-17: "the tilling with the hoe is still glitching out the
+    //  terrain. pursue it further".)
+    //
+    // THIS QUEUE IS FIFO AND AN EDIT WAS JOINING THE BACK OF IT. Streaming
+    // fills it continuously while the player walks -- that is what it is for --
+    // and a chunk costs about 46 ms to mesh, so a hoe swing's re-mesh sat
+    // behind however many chunks the streamer happened to have outstanding.
+    // MEASURED, standing still and tilling at frame 15: the 81 columns are in
+    // the edit layer immediately and the ground still had not changed on screen
+    // at frame 34, nineteen frames later. Rendered with --no-dlss as well, so
+    // it is not the denoiser holding a stale image: the GEOMETRY was still the
+    // old ground.
+    //
+    // That is the glitch. You swing, the hoe knocks, the earth does not turn --
+    // and then some fraction of a second later a disc of it pops. It gets worse
+    // the more the streamer has to do, which is why it shows up while walking
+    // and why chasing it as a frame-time spike only ever explained part of it.
+    //
+    // AN EDIT IS NOT STREAMING. A streamed chunk is at the edge of sight and
+    // nobody can tell what order those land in; an edit is under the crosshair,
+    // the player caused it, and it is the only thing they are looking at. So it
+    // goes to the front. It cannot starve the streamer: the player can only
+    // make a handful of edits a second and each is one or two chunks.
+    void request(int cx, int cz, bool urgent = false) {
         {
             std::lock_guard<std::mutex> lk(inMx_);
-            pending_.push_back({cx, cz});
+            if (urgent)
+                pending_.push_front({cx, cz});
+            else
+                pending_.push_back({cx, cz});
         }
         inCv_.notify_one();
     }
@@ -227,10 +256,41 @@ class ChunkMesher {
     // 0.30 of a footprint clear, so a high roll here would be spent almost
     // entirely on candidates that are then thrown away for standing in each
     // other. Sparse and large is what an oak wood is.
-    float oakDensity = 0.42f;
+    //
+    // 0.42 -> 0.21 (user 2026-09-17: "reduce the oak trees in half"). This is
+    // the share of lattice cells that OFFER a candidate; the spacing rejection
+    // below then culls from that, so halving it does not halve the headcount
+    // exactly. MEASURED over one wood at --spawn 7:
+    //
+    //     3079 trees -> 1355   (44%, so slightly MORE than half removed)
+    //
+    // Slightly more rather than slightly less, and the rebaked oaks are why:
+    // they are half again as wide as the set this number was first tuned for,
+    // so each one that does stand keeps more ground clear of the next.
+    float oakDensity = 0.21f;
     // The subset of those wide enough to hang a beehive from -- empty in the
     // pine wood, which is one of the two things that turns the hive pass off.
     std::vector<std::vector<Perch>> pineHivePerch;
+    // -- AND THE ORCHARD --------------------------------------------------
+    //
+    // The two fruit models, and per OAK model the anchors a crop can hang
+    // from, angle-sorted so it rings the crown -- see fruitAnchors. Both are
+    // empty outside the oak wood, which is what turns the pass off there:
+    // the same no-flag arrangement hiveFoot uses for the pines.
+    // A crop is at most this many, which is the browser engine's cap moved
+    // 10 -> 20 when the counts were doubled: left at 10 the two giant tiers
+    // would both clip to it and the doubling would land on every tier EXCEPT
+    // the ones it was asked for. Also the size of hangFruit's column scan.
+    static constexpr int kFruitMax = 20;
+    // ...and what the count is a function of -- see hangFruit for how this was
+    // solved rather than picked.
+    static constexpr int kFruitFootDiv = 10000;
+    // NO FRUIT BELOW 4 m. oak_1 is a 2.1 m bush and the next model up is 11 m,
+    // so anywhere between them draws the same line; 40 voxels says WHY in the
+    // units the argument is made in.
+    static constexpr int kFruitMinTreeVox = 40;
+    std::vector<Footprint> fruitFoot;
+    std::vector<std::vector<Perch>> oakFruitPerch;
     int pineconesPerTree = 14;
     // mushroomFoot holds the small models first and the doubled ones after it.
     // Everything at or past this index is a big one.
@@ -703,6 +763,21 @@ class ChunkMesher {
     // rather than every other wood. It matters more than it did: the bees are
     // here now, and a hive you never find is five bees you never meet.
     float birchHiveRate = 0.05f;
+    // -- AND HOW MANY OAKS BEAR FRUIT --------------------------------------
+    //
+    // (user 2026-09-17: "add apples and oranges to some of the trees in the
+    //  oak forest. import the v1 mechanics of this.")
+    //
+    // 0.15, WHICH IS THE BROWSER ENGINE'S OWN SETTLED VALUE and carries its
+    // history with it: it shipped at 0.10, was measured in-game at 7 of 124
+    // oaks, was doubled to 0.20, read as TOO MANY, and settled here -- about
+    // one oak in nine. Importing the mechanic means importing the number it
+    // arrived at, not re-deriving one.
+    //
+    // A SHARE OF THE TREES THAT CAN BEAR, not of every oak. The bush tier is
+    // excluded below, and the browser engine keeps the exclusion visible in
+    // the number rather than re-basing it onto the whole population.
+    float oakFruitRate = 0.15f;
     uint32_t seed = 20260904u;
     // V4 SCAFFOLDING, AND OFF IN v2. This was the blank canvas a NanoVDB
     // world was going to be built into, and it defaulted ON there. v2 has no
@@ -1099,6 +1174,7 @@ class ChunkMesher {
                         b->decor.push_back({0, k, ci, cj, h, yaw, cell, 0, extraSink});
                         hangPinecones(b, k, ci, cj, h, yaw, cell, extraSink);
                         hangHive(b, k, ci, cj, h, yaw, cell, extraSink);
+                        hangFruit(b, k, ci, cj, h, yaw, cell, extraSink);
                     }
                 }
         }
@@ -1787,6 +1863,126 @@ class ChunkMesher {
         if (base < 0) return;
         b->decor.push_back({5, k, ci + rx, cj + rz, h, hyaw, cell, base - treeSink,
                             treeExtraSink});
+    }
+
+    // -----------------------------------------------------------------------
+    // AN ORCHARD IN THE OAK WOOD -- apples and oranges, the browser engine's
+    // rules brought across whole.
+    //
+    // (user 2026-09-17: "I want you to add apples and oranges to some of the
+    //  trees in the oak forest. import the v1 mechanics of this.")
+    //
+    // It is hangPinecones' geometry again -- a perch, the tree's quarter turn
+    // applied by hand, the tree's extra sink ridden down -- and four rules that
+    // are all "a crop is not a scatter". Every one of them is the browser
+    // engine's, and every one was argued there before it was written:
+    //
+    //   * ONE SPECIES PER TREE. An apple tree is an apple tree. Drawn on its
+    //     own salt, 50/50, so it cannot correlate with the bearing roll: share
+    //     that stream and every fruiting oak is the same fruit.
+    //   * THE BUSH TIER BEARS NOTHING. A berry bush already carries fruit, and
+    //     hanging a 40 cm apple in a 2 m shrub reads as litter. Asked as a
+    //     HEIGHT rather than as an index, so adding a model to the oak set
+    //     cannot quietly make a shrub bear -- see kFruitMinTreeVox.
+    //   * THE COUNT COMES OFF THE CROWN'S OWN FOOTPRINT, not a constant. A
+    //     young oak carries six and a giant eighteen, which is the difference
+    //     between a wood with fruit in it and a wood with fruit on it.
+    //   * ONE FRUIT PER COLUMN. Two apples in one column is one apple inside
+    //     another; the angular draw makes it rare and does not make it
+    //     impossible, so it is still refused.
+    //
+    // THE ELIGIBILITY TEST COMES BEFORE THE DRAW, for the reason written out
+    // over hangHive: rolled first, the rate is 15% of all oaks and then every
+    // tree with nowhere to hang anything silently drops out afterwards, so the
+    // number stops meaning what it says.
+    // -----------------------------------------------------------------------
+    void hangFruit(ChunkBuild *b, int treeIndex, int ci, int cj, int h, int yaw, uint32_t cell,
+                   int treeExtraSink) {
+        if (fruitFoot.empty() || oakFruitRate <= 0.0f) return;
+        if (treeIndex < oakBase || size_t(treeIndex) >= oakFruitPerch.size()) return;
+
+        const Footprint &pf = pineFoot[size_t(treeIndex)];
+        // THE BUSH TIER, AS A HEIGHT. The oak set is a size ladder -- 2.1 m,
+        // then 11 m and up -- so any line between the two is the same line;
+        // saying it in metres is what makes it survive a new model.
+        if (pf.sy < kFruitMinTreeVox) return;
+
+        const std::vector<Perch> &pp = oakFruitPerch[size_t(treeIndex)];
+        if (pp.empty()) return;
+        if (hashUnit(seed + 0xF2A7u, cell) >= oakFruitRate) return;
+
+        // ONE SPECIES, ON ITS OWN SALT.
+        const int kind = int(hashU32(seed + 0x3C91u, cell) & 1u) % int(fruitFoot.size());
+        const Footprint &ff = fruitFoot[size_t(kind)];
+
+        // HOW BIG A CROP THIS CROWN CARRIES. The browser engine's expression,
+        // verbatim in shape -- 2 * (3 + footprint / D), capped at 20 -- with D
+        // re-derived for v2's own models rather than carried across as a
+        // number. Its 2000 was calibrated against ITS oak set; v2's were
+        // revoxelised half again as large on 2026-09-16 and are a different
+        // ladder besides, so the constant that reproduces its documented
+        // 6 / 6 / 8 / 10 / 16 / 18 ramp here is 10000. Solved rather than
+        // guessed: each tier pins D to an interval and the six intersect at
+        // (9702, 10213].
+        //
+        // THE x2 WRAPS THE WHOLE EXPRESSION, which is also the browser
+        // engine's and also deliberate: folding it into the divisor instead
+        // flattens the ramp's low end, and the doubling was asked for because
+        // the BIG trees were carrying too few.
+        const int foot = pf.sx * pf.sz;
+        const int n = mini(kFruitMax, 2 * (3 + foot / kFruitFootDiv));
+
+        const int treeSink = decorSink(0, treeIndex, pf.sy, seed, cell);
+
+        // One fruit per column. A crop is at most 20, so a linear scan over
+        // what has been placed is cheaper than any structure that could
+        // replace it -- and it keeps the whole pass allocation-free.
+        int takenI[kFruitMax], takenJ[kFruitMax];
+        int taken = 0;
+
+        for (int j = 0; j < n; ++j) {
+            // THE j-TH FRUIT OUT OF THE j-TH ANGULAR SECTOR, jittered inside
+            // it. oakFruitPerch is angle-sorted (see fruitAnchors), so this is
+            // what rings the crop around the crown instead of clumping it.
+            // The jitter spans 0.7 of a sector so two neighbours cannot swap
+            // order and leave a gap.
+            const float u = (float(j) + 0.15f +
+                             hashUnit(seed + 0x6D2Bu + uint32_t(j) * 977u, cell) * 0.7f) /
+                            float(n);
+            const size_t a = size_t(u * float(pp.size())) % pp.size();
+            const Perch &q = pp[a];
+
+            // Offset from the model centre, then the tree's own quarter turn --
+            // the same four cases as kRot, exactly as the cones do it. Get
+            // this wrong and the crop hangs in the next tree along.
+            const int dx = int(q.x) - pf.sx / 2;
+            const int dz = int(q.z) - pf.sz / 2;
+            int rx = dx, rz = dz;
+            switch (yaw & 3) {
+                case 1: rx = dz;  rz = -dx; break;
+                case 2: rx = -dx; rz = -dz; break;
+                case 3: rx = -dz; rz = dx;  break;
+                default: break;
+            }
+
+            bool clash = false;
+            for (int t = 0; t < taken && !clash; ++t)
+                if (takenI[t] == rx && takenJ[t] == rz) clash = true;
+            if (clash) continue;
+
+            // The perch is where the fruit's TOP goes and makeInstance places
+            // by the base, so drop it by the model's height less one -- the
+            // cones' arithmetic, unchanged.
+            const int base = int(q.y) - (ff.sy - 1);
+            if (base < 0) continue;
+
+            takenI[taken] = rx;
+            takenJ[taken] = rz;
+            ++taken;
+            const int fyaw = int(hashU32(seed + 0x44B9u + uint32_t(j) * 613u, cell) & 3u);
+            b->decor.push_back({6, kind, ci + rx, cj + rz, h, fyaw, cell, base - treeSink,
+                                treeExtraSink});
+        }
     }
 
     // `avoid`, when given, is ground already taken by something of another

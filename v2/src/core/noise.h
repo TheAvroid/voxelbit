@@ -360,6 +360,28 @@ inline constexpr float kBirthConeCos = 0.342f;   // cos 70 degrees
 // metres ever; anything past ninety, whatever you are looking at; and between
 // the two, only behind you.
 inline constexpr float kBirthFarM = 90.0f;
+// -- ...AND A NEARER ONE FOR THINGS THAT DO NOT MOVE ------------------------
+//
+// "the lillypads are still having a delayed spawn ... this has been an issue
+//  for a while."                                           -- user 2026-09-17
+//
+// Ninety metres is the right number for an ANIMAL, whose arrival competes for
+// the eye with its own movement. It is too far for a lily pad, and the two
+// rules together are why: nothing may be born in the hundred and forty degrees
+// you are facing, and a lake you are standing at LOOKING AT is entirely inside
+// that cone out to ninety metres -- so the water in front of you stays empty
+// and fills only behind your back. Measured at a lake through the real frame
+// loop: the near water was still bare two and a half seconds after arriving.
+//
+// SIXTY, AND IT IS A TRADE RATHER THAN A FREE WIN. At sixty metres a 0.9 m
+// leaf is about twenty pixels, so an arrival there is small and still, against
+// a rippling surface, while you are walking -- and the alternative is the lake
+// in front of you having nothing in it, which has now been reported three
+// times. It cannot go lower without bringing back the complaint this cone was
+// built for ("the lillypads are still just appearing in", 2026-09-14), and it
+// cannot be solved by growing them in either -- that was tried and rejected in
+// the same breath. See LakeLife::fadeOf, which records both.
+inline constexpr float kPadBirthFarM = 60.0f;
 
 class BirthGate {
   public:
@@ -389,14 +411,42 @@ class BirthGate {
     bool may(float d2) const { return waive_ > 0.0f || d2 >= kBirthMinM * kBirthMinM; }
 
     // ...and not in front of you, when a heading was given. See kBirthConeCos.
-    bool mayAt(float dx, float dz) const {
+    // -- WHY THE FLOOR IS AN ARGUMENT AND NOT ALWAYS kBirthMinM -----------
+    //
+    // "the lillypads are still having a delayed spawn ... this has been an
+    //  issue for a while."                                   -- user 2026-09-17
+    //
+    // The floor and the cone answer the SAME question -- "could this be
+    // watched arriving" -- and for a thing that MOVES the floor is the honest
+    // half of it: a rabbit born at 15 m behind you walks into view in a couple
+    // of seconds, so where it was born is not where it is seen. Thirty metres
+    // buys the time for it to stop being an arrival.
+    //
+    // A LILY PAD DOES NOT GO ANYWHERE. It is born on its site and dies on its
+    // site, so the only way it is seen arriving is if the site itself is in
+    // view -- which is exactly what the cone tests, and tests better. For
+    // scenery the floor is not a second line of defence, it is a blanket
+    // refusal: stand at a pond forty metres across and EVERY site on it is
+    // inside thirty metres, so no pad can be born there at all while you are
+    // stood there. That is the delay. It is not slow, it is never -- the pads
+    // that do arrive come from the yield rule and the drop radius, both of
+    // which work on the population somewhere else.
+    //
+    // So a population passes the floor its own behaviour earns. The default is
+    // unchanged, so every moving population keeps the thirty metres it was
+    // measured with.
+    // `farM` is where the cone STOPS applying, and it is a population's own
+    // number for the same reason the floor is. See kBirthFarM for the rule and
+    // kPadBirthFarM for why a lily pad's is nearer than a rabbit's.
+    bool mayAt(float dx, float dz, float minM = kBirthMinM,
+               float farM = kBirthFarM) const {
         const float d2 = dx * dx + dz * dz;
         if (waive_ > 0.0f) return true;
-        if (d2 < kBirthMinM * kBirthMinM) return false;
+        if (d2 < minM * minM) return false;
         // FAR ENOUGH IS FAR ENOUGH, whichever way you are facing -- see
         // kBirthFarM. This is what keeps a lake you are walking toward from
         // being empty when you reach it.
-        if (d2 >= kBirthFarM * kBirthFarM) return true;
+        if (d2 >= farM * farM) return true;
         if (fx_ == 0.0f && fz_ == 0.0f) return true;
         const float d = sqrtf(d2);
         if (d <= 1e-4f) return false;

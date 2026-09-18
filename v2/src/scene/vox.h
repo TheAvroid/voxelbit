@@ -31,6 +31,27 @@ struct VoxModel {
     }
 };
 
+// -- HOW BIG A .vox IS ALLOWED TO CLAIM TO BE --------------------------------
+//
+// A SANITY CHECK ON A FILE, NOT A BUDGET. Nothing structural in this parser
+// cares how large a model is -- every index is long long or size_t and the
+// storage is one flat vector -- so this exists purely so that a truncated or
+// hand-edited header claiming a few billion cells allocates nothing and is
+// reported as a bad file instead.
+//
+// IT WAS 64 M AND NUKETOWN AT 3x DOES NOT FIT (user 2026-09-17: "revoxelize
+// the nuketown scene and make it 3x bigger"). That map is 489 x 285 x 977 =
+// 136 M cells, which is 130 MB as the uint8 grid this fills -- entirely
+// ordinary, and it was being refused as "implausible model dimensions", which
+// is the least helpful message it could have produced.
+//
+// 256 M is the new line: four times what any asset here has ever wanted, still
+// only a quarter of a gigabyte if something does allocate it, and still six
+// orders of magnitude below what a corrupt 32-bit SIZE chunk can claim. Raise
+// it again when a real asset gets close rather than leaving headroom for its
+// own sake -- the whole value of the check is that it is near the truth.
+inline constexpr long long kVoxMaxCells = 256LL << 20;
+
 // A model in WORLD layout: x and z horizontal, y vertical, indexed
 // x + z*sx + y*sx*sz -- the same indexing the voxel grid uses.
 struct VoxAsset {
@@ -459,7 +480,7 @@ inline bool voxParse(const std::vector<uint8_t> &raw, VoxModel *out, std::string
 
     const long long w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
     if (w <= 0 || h <= 0 || d <= 0 ||
-        double(w) * double(h) * double(d) > 64.0 * double(1 << 20)) {
+        double(w) * double(h) * double(d) > double(kVoxMaxCells)) {
         if (err) *err = "implausible model dimensions";
         return false;
     }
@@ -514,7 +535,7 @@ inline bool voxParseAll(const std::vector<uint8_t> &raw, std::vector<VoxModel> *
             sy = i32le(raw.data(), body + 4);
             sz = i32le(raw.data(), body + 8);
             haveSize = (sx > 0 && sy > 0 && sz > 0 &&
-                        double(sx) * sy * sz <= 64.0 * (1 << 20));
+                        double(sx) * sy * sz <= double(kVoxMaxCells));
         } else if (std::memcmp(id, "XYZI", 4) == 0 && content >= 4 && haveSize) {
             const size_t n = size_t(std::max(0, i32le(raw.data(), body)));
             if (content >= 4 + n * 4) {

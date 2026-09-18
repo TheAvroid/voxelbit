@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <functional>   // Drops::FloorF
 #include "../core/vecmath.h"
 #include "../gpu/world.h"
 #include "../scene/collide.h"
@@ -294,7 +295,27 @@ class Drops {
     // CLEARED AT THE TOP, the same idiom snatchedNow uses for the other end of
     // the flight.
     // -----------------------------------------------------------------------
-    int update(float dt, const WalkWorld &w, const Vec3 &player, const Vec3 &eye) {
+    // WHAT IS UNDER A FALLING ITEM, when the terrain is not the answer.
+    //
+    // (user 2026-09-17: "when pressing q on the nuketown map, the item goes
+    //  right through the map".)
+    //
+    // A DROP IS AN ARC AND A GROUND TEST, not a physics body -- which is why
+    // it is cheap and why it fell through. The test asked
+    // `w.terrain->heightM`, and in the level the terrain is the WOOD's, six
+    // hundred metres below the floor you are standing on. Debris does not have
+    // this problem because a debris body is a real actor and buildWindow puts
+    // the level in its collider; a drop has no collider at all.
+    //
+    // A FUNCTION RATHER THAN A SECOND WORLD POINTER, because the level is not
+    // a VoxelTerrain and never will be -- it is a voxel grid in its own sky.
+    // The caller knows which place it is in; this only needs a floor. Null is
+    // the ordinary case and means "ask the terrain", which is what every wood
+    // caller wants.
+    using FloorF = std::function<float(float, float, float)>;
+
+    int update(float dt, const WalkWorld &w, const Vec3 &player, const Vec3 &eye,
+               const FloorF &floorAt = nullptr) {
         arrived_.clear();
         snatched_ = false;
         const float h = minf(dt, 0.25f);
@@ -364,8 +385,13 @@ class Drops {
                     // has. MAX of the two rather than a replacement, so a floor
                     // handed to a drop that then drifts over the bank still
                     // comes to rest on the bank rather than inside it.
-                    const float gt =
-                        w.terrain ? w.terrain->heightM(next.x, next.z, tm) : next.y;
+                    // THE LEVEL'S FLOOR WHEN THERE IS ONE -- see FloorF. It
+                    // takes the item's own y because a map has floors above
+                    // floors and the one that matters is the one under THIS
+                    // item, not the top of the column.
+                    const float gt = floorAt ? floorAt(next.x, next.y, next.z)
+                                    : w.terrain ? w.terrain->heightM(next.x, next.z, tm)
+                                                : next.y;
                     const float g = d.floorY > -1e8f ? maxf(gt, d.floorY) : gt;
                     // The hover LINE is still what stops the arc -- see the
                     // note above -- but where it comes to rest is subject to

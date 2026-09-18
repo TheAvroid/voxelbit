@@ -113,6 +113,35 @@ inline constexpr float kBeeHiveGap = 3.0f;   // BEE_HIVE_GAP
 // the difference between a bee and a butterfly visible at a glance -- one darts
 // between two points, the other drifts.
 inline constexpr float kBeeSpeed = 5.6f;
+
+// -- AND WHAT HAPPENS WHEN YOU HIT ONE ---------------------------------------
+//
+// (user 2026-09-16: "when attacking a bee or the beehive, have all of the bees
+// near start attacking the player".)
+//
+// THE WHOLE SWARM, NOT THE ONE YOU HIT. That is the ask and it is also the
+// point of a hive: a bee on its own is an insect, and thirty of them coming off
+// a broken hive is the reason you leave hives alone. The trigger is the ATTACK
+// rather than the kill, so swinging at a hive and missing the bees still brings
+// them -- and killing one outright brings the rest, which is the case a
+// kill-only trigger would silently miss.
+//
+// 18 m IS WIDER THAN THE HIVE'S OWN 3 m HOME. A swarm that only answered within
+// its orbit would be a swarm you could stand outside and dismantle; this
+// reaches the foragers out on the flowers too, which are up to kBeeFlowerM away
+// from a hive that may itself be 40 m off.
+inline constexpr float kBeeAngerM = 18.0f;
+// HOW LONG THEY STAY ANGRY. Long enough to be a consequence and short enough
+// that a wood is not permanently hostile because of one swing an hour ago.
+inline constexpr float kBeeAngrySec = 12.0f;
+// FASTER WHEN ANGRY, which is most of what makes it read as an attack rather
+// than as bees drifting toward you. v1's own hunt multiplier on the marchers is
+// the same idea.
+inline constexpr float kBeeAngryMul = 1.45f;
+// ...AND THEY STOP SHORT RATHER THAN SITTING INSIDE THE CAMERA. A bee that
+// reaches the eye has nowhere left to fly and jitters on the spot; holding at
+// arm's length keeps it legible as a bee.
+inline constexpr float kBeeAngryHoldM = 0.75f;
 inline constexpr float kBeeEase = 3.5f;      // how sharply it comes onto a new bearing
 inline constexpr float kBeeDownM = 1.2f;     // BEE_DOWN: it SETTLES onto a bloom, never snaps
 
@@ -191,6 +220,7 @@ class Bees {
         if (!ready_) return;
         solids_ = solids;
         clock_ += dt;
+        player_ = player;   // for kAngry, which is the one mode that chases
         recycle(hives, dt);
         fill(player, hives);
         for (size_t i = 0; i < bees_.size(); ++i)
@@ -245,7 +275,7 @@ class Bees {
     // records the same lesson in the same words. These are BEE-TICKS per mode
     // since the bees loaded.
     void modeShare(long *out5) const {
-        for (int k = 0; k < 5; ++k) out5[k] = modeTicks_[k];
+        for (int k = 0; k < 5; ++k) out5[k] = modeTicks_[k];   // the caller's array is five
     }
 
     // How many are ON an errand rather than at the hive, for the offline
@@ -279,6 +309,43 @@ class Bees {
     }
 
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // SOMETHING HIT THE HIVE, OR ONE OF US -- every bee near it comes for you.
+    //
+    // (user 2026-09-16: "when attacking a bee or the beehive, have all of the
+    // bees near start attacking the player".)
+    //
+    // POSITION, NOT SLOT. The two callers are a blow on a bee and a blow on a
+    // hive, and only one of those has a bee to name -- so the thing they have
+    // in common is WHERE it happened, and every bee near there answers. That
+    // also makes it right for free when the hive a bee belongs to is out of
+    // range of the swarm that comes: proximity to the ATTACK is what matters,
+    // not shared ownership.
+    //
+    // RETURNS HOW MANY so a caller can say so, and so --bee-test can measure it
+    // rather than infer it from behaviour.
+    // -----------------------------------------------------------------------
+    int anger(const Vec3 &at, float radiusM) {
+        const float r2 = radiusM * radiusM;
+        int woke = 0;
+        for (Bee &b : bees_) {
+            if (!b.live) continue;
+            const float dx = b.x - at.x, dy = b.y - at.y, dz = b.z - at.z;
+            if (dx * dx + dy * dy + dz * dz > r2) continue;
+            b.mode = kAngry;
+            b.angryTo = clock_ + kBeeAngrySec;
+            ++woke;
+        }
+        return woke;
+    }
+    // ...and how many are on the warpath right now, for the test.
+    int angryCount() const {
+        int n = 0;
+        for (const Bee &b : bees_)
+            if (b.live && b.mode == kAngry) ++n;
+        return n;
+    }
+
     // THAT ONE IS DEAD -- the population's half of a kill.
     //
     // (user 2026-09-14: "when killing life, the life breaks apart into multiple
@@ -299,11 +366,13 @@ class Bees {
     }
 
   private:
-    enum Mode { kWander = 0, kToFlower, kSit, kToHive, kOrbit };
+    enum Mode { kWander = 0, kToFlower, kSit, kToHive, kOrbit, kAngry, kModeCount };
 
     struct Bee {
         bool live = false;
         int mode = kWander;
+        // When the anger runs out, on the same clock everything else here uses.
+        float angryTo = 0.0f;
         // ITS HIVE, by position rather than by index: the gather is rebuilt
         // twice a second and an index into it would name a different hive the
         // moment one drops out of range. Same trap the perched birds' stale
@@ -464,8 +533,46 @@ class Bees {
     }
 
     void step(Bee *b, uint32_t i, float dt, const std::vector<Vec3> &blooms) {
-        if (b->mode >= 0 && b->mode < 5) ++modeTicks_[b->mode];
+        if (b->mode >= 0 && b->mode < kModeCount) ++modeTicks_[b->mode];
         switch (b->mode) {
+            // -- STRAIGHT AT THE PLAYER -- see kBeeAngerM -----------------
+            //
+            // NO ERRAND AND NO HIVE. An angry bee abandons whatever it was
+            // doing; letting it keep a flower target would have it breaking off
+            // mid-attack to pollinate, which reads as the anger wearing off
+            // early rather than as a bee with priorities.
+            //
+            // THE TARGET IS RE-READ EVERY TICK because the player moves. It is
+            // the one mode here that chases something that does not stand
+            // still, which is why it cannot use the fly-to-a-point helper the
+            // other four share.
+            case kAngry: {
+                if (clock_ >= b->angryTo) {
+                    // Calmed down. Back to the hive it came from, which is
+                    // where a bee that has lost its errand belongs.
+                    b->mode = kToHive;
+                    b->until = clock_ + kBeeHiveSec;
+                    break;
+                }
+                const float dx = player_.x - b->x, dy = player_.y - b->y, dz = player_.z - b->z;
+                const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (d <= kBeeAngryHoldM) break;   // at the face; hold station
+                // THROUGH THE VELOCITY, NOT STRAIGHT ONTO THE POSITION. A
+                // bee has no `th` -- publish derives its heading from vx/vz
+                // (see the note there) -- so writing the step directly would
+                // move an insect that went on facing the way it last flew.
+                // Setting the velocity turns it and moves it with one number,
+                // which is what every other mode here does.
+                const float inv = 1.0f / maxf(0.001f, d);
+                const float sp = kBeeSpeed * kBeeAngryMul;
+                b->vx = dx * inv * sp;
+                b->vy = dy * inv * sp;
+                b->vz = dz * inv * sp;
+                b->x += b->vx * dt;
+                b->y += b->vy * dt;
+                b->z += b->vz * dt;
+                break;
+            }
             case kWander:
                 // Drifting near the hive, looking. The look is on a clock so a
                 // bee that finds nothing is not searching every frame.
@@ -658,7 +765,11 @@ class Bees {
     std::vector<Bee> bees_;
     float hx_ = 0.1f, hy_ = 0.1f, hz_ = 0.1f;
     float clock_ = 0.0f;
-    long modeTicks_[5] = {0, 0, 0, 0, 0};
+    long modeTicks_[kModeCount] = {0, 0, 0, 0, 0, 0};
+    // Where the player was on the last update, so an angry bee has something to
+    // fly at. Stored rather than threaded through step(): the other five modes
+    // fly at fixed points and have never needed it.
+    Vec3 player_{0.0f, 0.0f, 0.0f};
     bool ready_ = false;
     const std::vector<Solid> *solids_ = nullptr;
 };

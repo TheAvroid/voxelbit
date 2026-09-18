@@ -416,7 +416,26 @@ inline constexpr float kFrogDropM = 165.0f;
 // ---------------------------------------------------------------------------
 inline constexpr int kFireflyFrames = 4;
 inline constexpr float kFireflySpeed = 2.6f;   // v1's kind-1 26 vox/s
-inline constexpr float kFireflyFps = 12.0f;
+// 12 -> 24 (user 2026-09-17: "make sure the firefly is running at 24 fps").
+// 24 is the house rate every other strip in the browser engine is played at --
+// see its EAT_FPS -- so this stops being the one population with a rate of its
+// own.
+inline constexpr float kFireflyFps = 24.0f;
+// -- AND IT BLINKS ---------------------------------------------------------
+//
+// (user 2026-09-17: "have the fire fly blink its spark voxel from emmitting to
+//  off".)
+//
+// ON FOR kFireflyOnS, OFF FOR kFireflyOffS, on its OWN phase per insect -- a
+// field of them blinking in step is a string of fairy lights, not fireflies.
+//
+// IT IS THE INSTANCE THAT GOES, NOT THE MATERIAL. The firefly wears the spark's
+// voxel now, and that voxel is emissive for everything that wears it -- a
+// material is shared by definition, so there is no per-insect way to dim one.
+// Not drawing the slot is the only switch that belongs to ONE firefly, and it
+// takes the point light with it because publishSparkLights asks the same flag.
+inline constexpr float kFireflyOnS = 0.55f;
+inline constexpr float kFireflyOffS = 0.85f;
 inline constexpr float kFireflyCruiseM = 1.3f;
 inline constexpr float kFireflyBobM = 0.45f;
 inline constexpr float kFireflyBobSec = 3.1f;
@@ -449,7 +468,8 @@ class Critters {
   public:
     using GroundF = std::function<float(float, float)>;
     using WetF = std::function<bool(float, float)>;
-    using BirchF = std::function<float(float)>;
+    // Which wood a column is in, as a kWood* bit -- see VoxelTerrain::woodBit.
+    using BirchF = std::function<uint8_t(float)>;
 
     bool ready() const { return ready_; }
 
@@ -457,14 +477,38 @@ class Critters {
     // LOAD. A missing species disables THAT species and nothing else, which is
     // the rule every other loader in this engine follows -- see the songbirds.
     // -----------------------------------------------------------------------
-    bool load(World &world, const std::string &lifeDir) {
+    // -- ...AND THE FIREFLY IS THE SPARK ---------------------------------
+    //
+    // (user 2026-09-17: "have the lightning bug at night share the same lit
+    //  voxel as the spark voxel.")
+    //
+    // `sparkRgb` / `sparkMtl` are what Particles actually took (its private
+    // tint is chosen at runtime, so neither is a constant anybody can write
+    // down). Given them, the firefly repaints onto that exact voxel instead of
+    // claiming a lamp of its own -- which is the ask, and which also gives it
+    // the spark's emitter entry and its volumetric glow for nothing.
+    //
+    // IT ALSO HANDS BACK A PALETTE ENTRY. The firefly used to claim a private
+    // yellow of its own; two things that glow the same way no longer cost two
+    // slots on a 255-entry table.
+    bool load(World &world, const std::string &lifeDir, const uint8_t *sparkRgb = nullptr,
+              uint8_t sparkMtl = 0) {
         // THE GLOW IS CLAIMED BEFORE THE MODEL THAT WEARS IT. Registered
         // exactly, so the snap below finds this entry rather than minting a
         // near-miss -- and so nothing else in the world can be handed it.
         // THE LAMP PICKS A COLOUR NOBODY IS NEAR, then the model is repainted
         // to it on the way in -- see privateTint.
-        const uint8_t *glow = privateTint(world, kGlowCand,
-                                          int(sizeof(kGlowCand) / sizeof(kGlowCand[0])));
+        // THE SPARK'S OWN VOXEL WHEN THERE IS ONE, and a lamp of its own only
+        // if the particles never loaded -- so a world with no embers still has
+        // fireflies rather than invisible ones.
+        const uint8_t fallback[3] = {kGlowCand[0][0], kGlowCand[0][1], kGlowCand[0][2]};
+        const uint8_t *glow = sparkRgb
+                                  ? sparkRgb
+                                  : privateTint(world, kGlowCand,
+                                                int(sizeof(kGlowCand) / sizeof(kGlowCand[0])));
+        if (!glow) glow = fallback;
+        sharesSpark_ = sparkRgb != nullptr;
+        sparkMtl_ = sparkMtl;
         const uint8_t glowPaint[6] = {kGlowRgb[0], kGlowRgb[1], kGlowRgb[2],
                                       glow[0],     glow[1],     glow[2]};
         glowWant_[0] = glow[0];
@@ -511,14 +555,14 @@ class Critters {
                         kAntCount, double(kAntGap));
         if (!fly_.empty())
             std::printf("  fly      %zu frames, %d slots, bunches of %d, wings solid white, "
-                        "pine only\n",
+                        "pine and oak\n",
                         fly_.size(), kHouseflyCount, kHouseflyPerBunch);
         if (!lbug_.empty())
             std::printf("  ladybug  %zu frames, %d slots, lands from %.1f m, all forests\n",
                         lbug_.size(), kLbugCount, double(kLbugDropMax));
         if (!frogHop_.empty())
             std::printf("  frog     %zu hop + %zu ribbet + %zu tongue frames, %d slots, "
-                        "%.1f m of bank, birch only\n",
+                        "%.1f m of bank, birch and oak\n",
                         frogHop_.size(), frogRib_.size(), frogTon_.size(), kFrogCount,
                         double(kFrogShoreM));
         return ready_;
@@ -606,7 +650,22 @@ class Critters {
     void publish(World &world, int slot0) {
         if (!ready_) return;
         int s = slot0;
-        for (const Firefly &f : fireflies_) place(world, s++, ffly_, f, int(f.frame), 0.0f);
+        // DARK FOR PART OF ITS CYCLE -- see kFireflyOnS.
+        //
+        // HIDDEN, NOT SKIPPED (user 2026-09-17: "when the firefly blinks, the
+        // blinked spark voxel freezes in place"). Leaving the slot alone does
+        // not turn it off -- an instance keeps whatever transform it last had,
+        // so a firefly that stopped being placed stayed exactly where it was
+        // and stopped moving, which is the report. The slot has to be told.
+        //
+        // THE SAME CALL place() MAKES FOR A DEAD BODY, so there is one way to
+        // switch a flyer slot off rather than two.
+        for (const Firefly &f : fireflies_) {
+            if (f.live && f.blink >= kFireflyOnS)
+                world.setFlyerInstance(s++, 0, nullptr, 0, 0, 0, nullptr, false);
+            else
+                place(world, s++, ffly_, f, int(f.frame), 0.0f);
+        }
         for (const Ant &a : ants_) putAnt(world, s++, a);
         for (const Fly &f : flies_) putFly(world, s++, f);
         for (const Lbug &b : bugs_) putBug(world, s++, b);
@@ -690,10 +749,29 @@ class Critters {
     }
 
     int livingFireflies() const { return count(fireflies_); }
+    // Where each lit one is, for the point-light publish -- a firefly that
+    // wears the spark's voxel should light the air the way an ember does. See
+    // App::publishSparkLights.
+    bool fireflyAt(int i, Vec3 *out) const {
+        if (i < 0 || i >= int(fireflies_.size())) return false;
+        const Firefly &f = fireflies_[size_t(i)];
+        // ...AND A DARK ONE LIGHTS NOTHING. The blink has to reach the light
+        // list as well as the draw, or a firefly you cannot see still throws a
+        // glow on the grass beneath it.
+        if (!f.live || f.blink >= kFireflyOnS) return false;
+        if (out) *out = Vec3(f.x, f.y, f.z);
+        return true;
+    }
+    int fireflySlots() const { return int(fireflies_.size()); }
     // WHICH PALETTE ENTRY GLOWS, for App to hand the tracer. 0 until the
     // firefly has loaded, and 0 is mat::AIR -- which the shader reads as "no
     // glow" without a special case.
     uint8_t glowMtl() const { return glowMtl_; }
+    // TRUE WHEN THE FIREFLY WEARS THE SPARK'S MATERIAL. The caller then leaves
+    // V6Params::glowMtl OFF: the emitter table already lights that voxel, and
+    // two mechanisms claiming one material means whichever the shader tests
+    // first decides how bright every ember in the world is.
+    bool sharesSpark() const { return sharesSpark_; }
     int livingAnts() const { return count(ants_); }
     int livingFlies() const { return count(flies_); }
     int livingBugs() const { return count(bugs_); }
@@ -782,6 +860,11 @@ class Critters {
     struct Firefly : Body {
         float vx = 0, vz = 0;
         float bob = 0;
+        // Where in its own on/off cycle this one is -- see kFireflyOnS.
+        // SEEDED AT BIRTH off the insect's site, never left at zero: nightfall
+        // fills the whole population in one pass, so without a seed all six are
+        // born in the same frame and blink in step for ever. See fillFireflies.
+        float blink = 0;
     };
 
     struct Ant : Body {
@@ -841,7 +924,7 @@ class Critters {
             if (f.live) continue;
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(fireflies_, kFireflyCellM, kFireflySalt, player, -1, 0.0f, &sx, &sz, &cx,
+            if (!claim(fireflies_, kFireflyCellM, kFireflySalt, player, kWoodAll, 0.0f, &sx, &sz, &cx,
                        &cz))
                 break;
             f = Firefly{};
@@ -855,6 +938,23 @@ class Critters {
             f.vx = sinf(a);
             f.vz = cosf(a);
             f.bob = hashUnit(0x2Fu, uint32_t(i) * 31u) * 6.2831853f;
+            // -- ...AND NOT ALL AT ONCE ----------------------------------
+            //
+            // (user 2026-09-17: "fireflies seem to appear all at the same
+            //  time. make it random across fireflies".)
+            //
+            // THE PHASE HAS TO BE SEEDED, NOT LEFT TO DRIFT. The first cut
+            // started every insect at zero and relied on them being born at
+            // different moments to spread out -- but nightfall fills the whole
+            // population in ONE pass of this loop, so they are all born in the
+            // same frame and then walked by the same dt for ever. Six lamps on
+            // one switch. Seeded here they never agree in the first place.
+            //
+            // OFF ITS CELL, not off `i`: the slot index is recycled and would
+            // hand the next tenant of a slot the same phase, while the cell is
+            // the site this insect actually belongs to.
+            f.blink = hashUnit(0x6Bu, hashU32(uint32_t(cx), uint32_t(cz)) + uint32_t(i)) *
+                      (kFireflyOnS + kFireflyOffS);
         }
     }
 
@@ -894,6 +994,7 @@ class Critters {
             }
             f.th = atan2f(f.vx, f.vz) + 3.14159265f;
             f.frame = fmodf(f.frame + kFireflyFps * dt, float(maxi(1, int(ffly_.size()))));
+            f.blink = fmodf(f.blink + dt, kFireflyOnS + kFireflyOffS);
         }
     }
 
@@ -917,6 +1018,27 @@ class Critters {
             if (leader >= 0) {
                 // Joins the column that exists, at the back of the trail.
                 const Ant &L = ants_[size_t(leader)];
+                // -- ...AND A JOIN IS A BIRTH, WHICH HAS A FLOOR -------------
+                //
+                // (user 2026-09-17: "when attacking the ant, it does not die".)
+                //
+                // IT DID DIE. --kill-test has always killed an ant in one blow
+                // and still does. What the player was watching was the
+                // REPLACEMENT: this branch was the one spawn in the file that
+                // never asked the birth gate, so a squashed follower was reborn
+                // AT THE LEADER on the very next tick and stepAnts put it
+                // straight back on the crumb trail at its rank -- a few
+                // centimetres from the body, a sixtieth of a second later.
+                // There is no way to read that except as a blow that did
+                // nothing, and no amount of looking at the kill path would have
+                // found it, because the kill path is right.
+                //
+                // THE GATE IS ASKED AT THE LEADER, because that is where this
+                // ant appears -- not at the player, who is only the reference
+                // point. Column formation is untouched: the leader's own claim
+                // has already passed this same gate, so every follower it
+                // gathers in that moment passes it too.
+                if (!birth_.mayAt(L.x - player.x, L.z - player.z)) continue;
                 a = Ant{};
                 a.live = true;
                 a.lead = leader;
@@ -934,7 +1056,7 @@ class Critters {
             }
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(ants_, kAntCellM, kAntSalt, player, -1, 0.0f, &sx, &sz, &cx, &cz)) break;
+            if (!claim(ants_, kAntCellM, kAntSalt, player, kWoodAll, 0.0f, &sx, &sz, &cx, &cz)) break;
             a = Ant{};
             a.live = true;
             a.lead = -1;
@@ -1077,7 +1199,7 @@ class Critters {
             int cx = 0, cz = 0;
             // PINE ONLY, as asked. v1 has the fly in its broadleaf wood; this
             // is the one species of the seven whose home the user MOVED.
-            if (!claim(flies_, kHouseflyCellM, kHouseflySalt, player, 0, 0.0f, &sx, &sz, &cx, &cz))
+            if (!claim(flies_, kHouseflyCellM, kHouseflySalt, player, uint8_t(kWoodPine | kWoodOak), 0.0f, &sx, &sz, &cx, &cz))
                 break;
             f = Fly{};
             f.live = true;
@@ -1195,7 +1317,7 @@ class Critters {
             if (b.live) continue;
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(bugs_, kLbugCellM, kLbugSalt, player, -1, 0.0f, &sx, &sz, &cx, &cz)) break;
+            if (!claim(bugs_, kLbugCellM, kLbugSalt, player, kWoodAll, 0.0f, &sx, &sz, &cx, &cz)) break;
             b = Lbug{};
             b.live = true;
             b.cx = cx;
@@ -1352,7 +1474,12 @@ class Critters {
                 if (d2 > kFrogSpawnM * kFrogSpawnM) continue;
                 if (!birth_.mayAt(ex, ez)) continue;
                 if (wet_ && wet_(b.x, b.z)) continue;   // ON the bank, never in it
-                if (birch_ && birch_(b.x) < 0.5f) continue;   // birch only, as asked
+                // BIRCH AND OAK (user 2026-09-17: "add the grass snake, frog, and
+                // mouse to the oak forest"). This read `birchMix < 0.5`, which is
+                // true everywhere in the oak band, so the frog was refused there --
+                // see VoxelTerrain::woodBit. v1 agrees: its frog is BIO_OAKF, and
+                // BIO_OAKF means EITHER broadleaf band.
+                if (birch_ && !(birch_(b.x) & kWoodBroad)) continue;
                 // ...AND NOT UP AGAINST A TRUNK. A bank spot is chosen from
                 // the shoreline and the shoreline runs right past the trees on
                 // it. The hop guard cannot help here -- it refuses a leap INTO
@@ -1487,7 +1614,9 @@ class Critters {
     // fly are unaffected in the way that matters: only a column's LEADER and a
     // bunch's ANCHOR ever call this, and those two SHOULD take separate cells.
     template <class T>
-    bool claim(const std::vector<T> &pop, float cellM, uint32_t salt, const Vec3 &player, int wood,
+    // `woods` is a set of kWood* bits, or kWoodAll for "anywhere".
+    bool claim(const std::vector<T> &pop, float cellM, uint32_t salt, const Vec3 &player,
+               uint8_t woods,
                float shoreM, float *ox, float *oz, int *ocx, int *ocz) {
         const int r = int(kCritSpawnM / cellM) + 1;
         const int c0x = int(floorf(player.x / cellM));
@@ -1506,10 +1635,7 @@ class Critters {
                 const float ord = siteOrder(salt, cx, cz);
                 if (ord >= best) continue;
                 if (!birth_.mayAt(ex, ez)) continue;
-                if (wood >= 0 && birch_) {
-                    const float bm = birch_(sx);
-                    if ((wood == 1) != (bm >= 0.5f)) continue;
-                }
+                if (woods != kWoodAll && birch_ && !(birch_(sx) & woods)) continue;
                 if (wet_ && wet_(sx, sz)) continue;   // never IN the water
                 // ...NOR INSIDE A TREE OR A ROCK. A site is a point on a
                 // lattice and nothing about the lattice avoids the wood, so one
@@ -1940,6 +2066,8 @@ class Critters {
     std::vector<Frame> ffly_, ant_, fly_, lbug_, frogHop_, frogRib_, frogTon_;
     std::vector<Firefly> fireflies_;
     uint8_t glowMtl_ = 0;
+    bool sharesSpark_ = false;
+    uint8_t sparkMtl_ = 0;
     uint8_t wingMtl_ = 0;
     int glowShared_ = 0, wingShared_ = 0;
     uint8_t glowWant_[3] = {kGlowRgb[0], kGlowRgb[1], kGlowRgb[2]};

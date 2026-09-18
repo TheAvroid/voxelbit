@@ -9,8 +9,9 @@
 names, SDK availability and limits below should be checked against `discord.com/developers/docs`
 before anything depends on them. Where I am unsure, this document says so rather than guessing.
 
-Companion documents: [arcade-financial-layer.md](arcade-financial-layer.md) (§2 here is a direct
-dependency of its Phase 1), [arcade.md](arcade.md), [v2-engine-rewrite.md](v2-engine-rewrite.md).
+Companion documents: [arcade.md](arcade.md) — §2 here is a direct dependency of its Part II, phase 1 —
+and [v2-engine-rewrite.md](v2-engine-rewrite.md). *(The financial layer was squashed into `arcade.md`
+on 2026-09-17; it is Part II of that document now.)*
 
 ---
 
@@ -61,7 +62,7 @@ single most important line in this document.
 
 ## 2. Sign in with Discord
 
-**This is Phase 1 of [arcade-financial-layer.md](arcade-financial-layer.md), delivered cheaply.** That
+**This is phase 1 of [arcade.md](arcade.md) §14, delivered cheaply.** That
 plan needs identity before a ledger can exist, and Discord OAuth is the lowest-friction credible
 option for a gaming audience — no password, no email verification round trip, and the player is
 already logged in.
@@ -148,7 +149,7 @@ Useful, and **nothing else depends on it** — which is why it sits fourth. Sens
   the shared-world server tier and should wait for it.
 
 Keep the bot stateless against your own API. A bot that owns data is a second source of truth, and
-[arcade-financial-layer.md](arcade-financial-layer.md) §1 is emphatic about why that ends badly.
+[arcade.md](arcade.md) §12 is emphatic about why that ends badly.
 
 ---
 

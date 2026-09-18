@@ -308,6 +308,15 @@ inline constexpr float kSparkUpClash = 1.6f, kSparkUpHit = 1.4f, kSparkUpDeath =
 class Particles {
   public:
     bool ready() const { return spark_ >= 0; }
+    // THE SPARK'S OWN ONE-VOXEL MODEL, lent to whatever else wants exactly it.
+    // The rifle's rounds are drawn with this -- "have it share the same
+    // properties as the spark voxel" -- so a tracer costs no model, no material
+    // and none of the 255-entry palette. See render/bullets.h.
+    int sparkModel() const { return spark_; }
+    // WHAT THE EMBER ACTUALLY IS, for anything that wants to BE one -- see
+    // Critters::load, where the firefly repaints itself onto this exact voxel.
+    uint8_t sparkMtl() const { return sparkMtl_; }
+    const uint8_t *sparkRgb() const { return sparkRgb_; }
 
     // -----------------------------------------------------------------------
     // THREE ONE-VOXEL MODELS, BUILT IN CODE.
@@ -320,7 +329,7 @@ class Particles {
     // do.
     // -----------------------------------------------------------------------
     bool load(World &world, Tracer *tracer) {
-        spark_ = one(world, kSparkCand, 5, &sparkMtl_, &sparkShared_);
+        spark_ = one(world, kSparkCand, 5, &sparkMtl_, &sparkShared_, sparkRgb_);
         red_ = one(world, kSparkRedCand, 5, &redMtl_, &redShared_);
         smoke_ = one(world, kSmokeCand, 5, &smokeMtl_, &smokeShared_);
         // -- ...AND THE TEAR IS THE SMOKE'S OWN VOXEL ----------------------
@@ -697,7 +706,12 @@ class Particles {
     // crowded grey. A particle is one voxel of one colour; being a shade off
     // what was authored costs nothing and being see-through does not.
     // -----------------------------------------------------------------------
-    static int one(World &world, const uint8_t (*cand)[3], int n, uint8_t *mtl, int *shared) {
+    // `chosen`, when given, comes back with the RGB this actually took --
+    // which is NOT any of the candidates in general (see the sweep below).
+    // The firefly needs it to repaint itself onto the same voxel; see
+    // Critters::load.
+    static int one(World &world, const uint8_t (*cand)[3], int n, uint8_t *mtl, int *shared,
+                   uint8_t *chosen = nullptr) {
         const uint8_t *rgb = cand[n - 1];
         uint8_t found[3] = {rgb[0], rgb[1], rgb[2]};
         bool got = false;
@@ -732,6 +746,11 @@ class Particles {
         // learn: registering a colour is not the same as wearing it.
         *mtl = world.palette.resolveModelColor({rgb[0], rgb[1], rgb[2], 255},
                                                Palette::kModelMatch, shared);
+        if (chosen) {
+            chosen[0] = rgb[0];
+            chosen[1] = rgb[1];
+            chosen[2] = rgb[2];
+        }
         return id;
     }
 
@@ -756,6 +775,7 @@ class Particles {
     // When publish() last ran, so the spin channel can be a delta. See there.
     double lastPub_ = 0.0;
     uint8_t sparkMtl_ = 0, redMtl_ = 0, smokeMtl_ = 0, tearMtl_ = 0;
+    uint8_t sparkRgb_[3] = {kSparkRgb[0], kSparkRgb[1], kSparkRgb[2]};
     int sparkShared_ = 0, redShared_ = 0, smokeShared_ = 0, tearShared_ = 0;
     float smokeIor_ = kSmokeIor;
 };

@@ -284,6 +284,7 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     }
     if (a == "--drop-frame") { argInt(argc, argv, i, &o->dropFrame); return true; }
     if (a == "--spark-frame") { argInt(argc, argv, i, &o->sparkFrame); return true; }
+    if (a == "--fire-frame") { argInt(argc, argv, i, &o->fireFrame); return true; }
     if (a == "--hurt-frame") { argInt(argc, argv, i, &o->hurtFrame); return true; }
     if (a == "--hurt-dim") { o->hurtDim = true; return true; }
     if (a == "--spark-only") { o->sparkOnly = true; return true; }
@@ -373,6 +374,11 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
             continue;
         }
         if (a == "--wheat-test") { o->wheatTest = true; continue; }
+        if (a == "--food-test") { o->foodTest = true; continue; }
+        if (a == "--float-audit") { o->floatAudit = true; continue; }
+        if (a == "--float-sweep") { o->floatSweep = true; continue; }
+        if (a == "--rip-test") { o->ripTest = true; continue; }
+        if (a == "--refresh-frame") { argInt(argc, argv, i, &o->refreshFrame); continue; }
         if (a == "--hoe-test") { o->hoeTest = true; continue; }
         if (a == "--shaft-test") { o->shaftTest = true; continue; }
         if (a == "--kill-test") { o->killTest = true; continue; }
@@ -661,7 +667,7 @@ int main(int argc, char **argv) {
     // covered by the minimise above.
     // -----------------------------------------------------------------------
     c.headless = o.outGiven || o.fellTest || o.floatTest || o.digTest || o.locateTest ||
-                 o.clipTest || o.wheatTest || o.hoeTest ||
+                 o.clipTest || o.wheatTest || o.hoeTest || o.foodTest || o.floatAudit || o.floatSweep || o.ripTest ||
                  o.shaftTest || o.killTest || o.soilTest || o.duckTest || o.lbugTest;
 
     // Every device failure in this engine arrives as an exception carrying the

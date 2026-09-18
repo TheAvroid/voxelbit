@@ -91,6 +91,28 @@ struct RenderSettings {
     // number only means what it does because the slider now resolves it -- at
     // the old 0..0.10 range this and the previous 0.0022 were the same pixel.
     float fogDensity = 0.00100f;  // user 2026-09-07; was 0.00164
+    // -- HOW BRIGHT THE AIR ROUND A SPARK OR A LAMP IS --------------------
+    //
+    // (user 2026-09-17: "can you give me a slider to adjust the intensity of
+    //  the voluemtric light coming from the spark voxel? put it on the y
+    //  settings toggle.")
+    //
+    // It was kFogPointGain, a constant in Trace.cs.slang, and the note over it
+    // said a fifth float would cost a whole new 16-byte row in V6Params to
+    // hold a number nothing outside that file reads. Something outside it
+    // reads it now, so the row is worth paying for.
+    //
+    // 1.0 is "the same irradiance the surface term sees", which is where it
+    // shipped. This scales BOTH halves of pointLightGlow -- the embers and the
+    // pendants -- because they are one light list and one integral; a slider
+    // that moved only the sparks would need a second one.
+    // 0.25 (user 2026-09-17: "turn the default spark / lamp glow to 0.25x",
+    // after 0.50, after the 1.0 it shipped at). 1.0 was "the same irradiance
+    // the surface term sees" and read as too much haze; a quarter of that is
+    // the value now asked for, in the units the [Y] slider is labelled in.
+    // That slider still spans 0 to 4, so this is the DEFAULT rather than a
+    // ceiling -- anybody who wants the old look can drag it back.
+    float sparkGlow = 0.25f;
     float fogHeight = 30.0f;      // e-folding height of the haze, metres
     uint32_t seed = 20260904u;
     // 0 = accumulate without limit. Set while the day/night clock is running,
@@ -382,6 +404,27 @@ class Tracer {
     Vec3 bulbRadiance{0.0f, 0.0f, 0.0f};
     float bulbRadius = 0.3f;
     uint32_t bulbMtl = 0xFFFFFFFFu;   // kNoBulb
+    // ...AND EVERY OTHER PENDANT IN THE PLACE. Empty means "use bulbPos", which
+    // is what a single-lamp caller wants and what the pause room did. With
+    // several, each shaded point lights from whichever is nearest IT -- see
+    // kBulbSlots in Shared.slang for why that is per point and not per frame.
+    std::vector<Vec3> bulbs;
+    // -- ...AND HOW BRIGHT EACH OF THEM IS ------------------------------
+    //
+    // (user 2026-09-17: "can you make the spark voxel emit volumetric light
+    //  like the lightbulbs?")
+    //
+    // A PARALLEL GAIN, because this list is no longer only lamps. A spark is
+    // a light on exactly the same terms as a pendant -- same list, same
+    // nearest-light choice, same single shadow ray -- and it is a burning
+    // fleck rather than a 60 W bulb, so it cannot share the lamp's intensity.
+    // bulbs[i].w carries this to the shader (see V6Params::bulbs); it was
+    // already being written as a constant 1.0f, so a lamp's behaviour is
+    // unchanged by construction.
+    //
+    // Short, and read by INDEX against bulbs: an entry with no gain is 1.0.
+    std::vector<float> bulbGain;
+
     // THE FIREFLY'S LAMP: a material that renders bright and lights nothing.
     // Its own pair of fields rather than a second bulb, because the bulb is an
     // ESTIMATOR as well as a test -- see V6Params::glowMtl in Shared.slang.
@@ -683,6 +726,15 @@ class Tracer {
         for (int i = 0; i < kEmitSlots; ++i)
             p.emitters[i] = float4(emitters[i].radiance.x, emitters[i].radiance.y,
                                    emitters[i].radiance.z, emitters[i].mtl);
+        // Filled from 0 up and terminated by a negative w, exactly as the
+        // emitters are and for the same reason -- see V6Params::bulbs.
+        for (int i = 0; i < kBulbSlots; ++i) {
+            if (size_t(i) < bulbs.size())
+                p.bulbs[i] = float4(bulbs[size_t(i)].x, bulbs[size_t(i)].y, bulbs[size_t(i)].z,
+                                    size_t(i) < bulbGain.size() ? bulbGain[size_t(i)] : 1.0f);
+            else
+                p.bulbs[i] = float4(0.0f, 0.0f, 0.0f, -1.0f);
+        }
         for (int i = 0; i < kHoloSlots; ++i) p.holo[i] = holo[i];
         p.waterTime = waterTime;
         p.waterFlags = waterFlags;
@@ -815,6 +867,10 @@ class Tracer {
         // the volume stores only what each cell can SEE. See VolFog.slang.
         p.fogAniso = volfog_ ? volfog_->anisotropy : 0.7f;
         p.fogAmbient = volfog_ ? volfog_->ambient : 0.25f;
+        p.sparkGlow = cfg.sparkGlow;
+        p.sparkPad0 = 0.0f;
+        p.sparkPad1 = 0.0f;
+        p.sparkPad2 = 0.0f;
         if (volfog_) {
             p.fogOrigin0 = volfog_->originWs(0);
             p.fogCell0 = volfog_->cellSize(0);

@@ -45,7 +45,11 @@ class Sky {
     // surface calibration, is deliberately NOT doubled: that is what lights the
     // forest floor, and it was fitted against a dark-adapted eye rather than a
     // photometer (see the note over it).
-    float moonScale = 2.0f;
+    // 2.0 -> 1.5, which is x0.75 (user 2026-09-17: "make the night brightness
+    // 0.75x"). This is the moon's radiance multiplier and therefore the whole
+    // of how bright a night is here: the sun is below the horizon and the only
+    // other term is the sky dome, which this same moon lights.
+    float moonScale = 1.5f;
     float moonKeyScale = 1.0f;
 
     // THE SUN'S COLOUR, WHEN THE ATMOSPHERE PASS IS SUPPLYING IT.

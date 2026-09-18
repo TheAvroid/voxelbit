@@ -120,6 +120,18 @@ class Arrows {
         float roll = 0.0f;
         bool live = false;   // in the air
         bool stuck = false;  // landed, and still standing in whatever it hit
+        // -- ON ITS WAY TO THE PLAYER'S HAND ------------------------------
+        //
+        // (user 2026-09-17: "when absorbing the arrow in the terrain, have to
+        //  get absorbed by the player just like chunks from tools".)
+        //
+        // Milliseconds into the collect, or a negative sentinel for a shaft
+        // that is simply standing there. `from` is where it set off, because
+        // the curve is read off a start POINT and a fraction rather than
+        // integrated -- the same shape World's debris absorb uses, and for the
+        // reason its note gives: a curve is the same at any frame rate.
+        double grabMs = -1.0;
+        Vec3 from{0, 0, 0};
         // Has the arc reached open air? False while a shaft is still inside
         // whatever it was loosed from -- see the note in launch().
         bool free_ = false;
@@ -277,6 +289,98 @@ class Arrows {
     // with a mask of zero rather than skipped -- see the note at the top about
     // the instance count.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // TAKE A SHAFT THAT IS STANDING IN SOMETHING.
+    //
+    // (user 2026-09-17: "no dont have the arrow levitate above the ground
+    //  after it lands. just the arrow thats actually impacted into the terrain
+    //  gets absorbed by the player. do not create another arrow.")
+    //
+    // THE FIRST CUT SPAWNED A DROP at the impact, which is the wheat's
+    // arrangement and wrong here for a reason the wheat does not have: a stalk
+    // of wheat is CONSUMED when it pays out, so the drop IS the plant. An
+    // arrow is still there. Paying out a drop as well made two arrows out of
+    // one -- the real shaft standing in the wall and a second one hovering
+    // beside it, which is the report exactly.
+    //
+    // So there is no drop. The shaft you can see is the thing that is taken,
+    // and taking it is what removes it.
+    //
+    // Returns true if one was taken. The caller gives the kit slot and plays
+    // the sound; this only owns the shafts.
+    // -- ...AND IT FLIES IN, IT DOES NOT BLINK OUT --------------------------
+    //
+    // (user 2026-09-17: "when absorbing the arrow in the terrain, have to get
+    //  absorbed by the player just like chunks from tools".)
+    //
+    // TWO CALLS, BECAUSE A COLLECT IS NOT AN INSTANT. This one only STARTS it:
+    // the nearest shaft in reach is taken off the wall and put on the curve.
+    // stepGrabs() below walks that curve and is the one that pays out, so the
+    // kit item and the sound land when the arrow arrives rather than when you
+    // walked past it.
+    //
+    // THE SAME CURVE AS A CHIP, deliberately and by the same constants -- see
+    // World's debris absorb: kAbsorbFlyMs, the smoothstep that leaves gently
+    // and arrives fast, the 0.3 m lift over the middle of the flight, and
+    // kAbsorbY for where on the body it disappears. "Just like chunks from
+    // tools" is a statement about what it LOOKS like, so the answer is to
+    // share the numbers rather than to pick similar ones.
+    bool takeStuckNear(const Vec3 &p, float reachM) {
+        int best = -1;
+        float bd = reachM * reachM;
+        for (int i = 0; i < kArrowSlots; ++i) {
+            const Shaft &a = shafts_[size_t(i)];
+            if (!a.stuck) continue;       // one in flight is not one you can pick up
+            if (a.grabMs >= 0.0) continue;   // ...and one already coming to you
+            const float dx = a.pos.x - p.x, dy = a.pos.y - p.y, dz = a.pos.z - p.z;
+            const float q = dx * dx + dy * dy + dz * dz;
+            if (q < bd) {
+                bd = q;
+                best = i;
+            }
+        }
+        if (best < 0) return false;
+        Shaft &a = shafts_[size_t(best)];
+        a.grabMs = 0.0;
+        a.from = a.pos;
+        // THE REST TIMER STOPS APPLYING. update() retires a stuck shaft at
+        // kArrowRestSec, and a shaft on its way to the hand that hit that limit
+        // mid-flight would vanish halfway there.
+        a.age = 0.0f;
+        return true;
+    }
+
+    // ONE STEP OF EVERY COLLECT IN PROGRESS. Returns how many ARRIVED this
+    // frame -- the caller gives that many kit items and plays the sound.
+    //
+    // `eye` rather than the feet, because that is what the chip flies to: the
+    // curve ends at eye.y + kAbsorbY, which is chest height on a 1.6 m eye.
+    int stepGrabs(const Vec3 &eye, float dt) {
+        int got = 0;
+        for (int i = 0; i < kArrowSlots; ++i) {
+            Shaft &a = shafts_[size_t(i)];
+            if (a.grabMs < 0.0 || (!a.stuck && !a.live)) continue;
+            a.grabMs += double(dt) * 1000.0;
+            const double kk = a.grabMs / kAbsorbFlyMs;
+            const float k = kk >= 1.0 ? 1.0f : (kk <= 0.0 ? 0.0f : float(kk));
+            const float e = k * k * (3.0f - 2.0f * k);   // leaves gently, arrives fast
+            const Vec3 to{eye.x, eye.y + kAbsorbY, eye.z};
+            a.pos.x = a.from.x + (to.x - a.from.x) * e;
+            a.pos.y = a.from.y + (to.y - a.from.y) * e + sinf(e * 3.14159265f) * 0.3f;
+            a.pos.z = a.from.z + (to.z - a.from.z) * e;
+            // IT SPINS ON THE WAY IN, which is the one thing a chip cannot do
+            // and the shaft can: publish already turns the fletching about the
+            // shaft off `roll`, so this costs a line and reads as being pulled
+            // rather than dragged.
+            a.roll += kArrowRoll * dt;
+            if (k >= 1.0f) {
+                a = Shaft{};   // both flags cleared -- see publish
+                ++got;
+            }
+        }
+        return got;
+    }
+
     void publish(World &world) const {
         if (!ready()) return;
         for (int i = 0; i < kArrowSlots; ++i) {

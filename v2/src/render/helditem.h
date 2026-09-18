@@ -82,6 +82,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace v2 {
@@ -206,6 +207,31 @@ struct Tool {
     int sx = 0, sy = 0, sz = 0;  // the strip's shared box, in its own voxels
     // Whether the draw clock drives which frame is shown.
     bool bow = false;
+    // -- CAN THE RIGHT BUTTON BRING THIS UP TO THE EYE ---------------------
+    //
+    // (user 2026-09-17: "when right clicking, have the gun aim down sights".)
+    //
+    // THE SAME BUTTON THE BOW DRAWS WITH, and they cannot collide: `wantDraw`
+    // asks holdingBow() and this asks `ads`, so a tool is one or the other or
+    // neither. A bow being pulled IS the bow's version of this and does not
+    // want a second pose on top of it.
+    //
+    // A SECOND POSE RATHER THAN AN OFFSET. The hip pose is a bake somebody
+    // read off the live panel and the sighted pose is another one; expressing
+    // the second as a delta from the first would mean re-tuning it every time
+    // the first moved, which is exactly what the pose panel is for changing.
+    bool ads = false;
+    HeldPose adsPose;
+    // -- IS THIS SOMETHING YOU CAN EAT ------------------------------------
+    //
+    // Its `models` are then a BITE STRIP -- kEatFrames of it being eaten down
+    // to nothing -- and the right button runs them. See addFood.
+    //
+    // A SEPARATE FLAG FROM `bow`, which is the other thing whose strip the
+    // right button drives, because the two must never both be true and a
+    // single enum would invite a tool that is half of each. `ads` is the third
+    // claimant on that button and is likewise exclusive.
+    bool food = false;
 };
 
 // -- the bow's own timing, from the JS engine's ui/audio.js -----------------
@@ -213,6 +239,25 @@ struct Tool {
 // The right button pulls 00 -> 02 and HOLDS at 02; releasing runs 03 out to the
 // end and returns to rest. Both are STEPPED, not interpolated: a frame is
 // picked, so the bow reads as drawn art rather than as a tween.
+// -- EATING, FROM THE BROWSER ENGINE'S OWN TWO NUMBERS ----------------------
+//
+// (user 2026-09-17: "import the eating mechanics from v1 onto all of the
+//  food.")
+//
+// 900 ms A BITE, held. Long enough that eating is a thing you commit to and
+// short enough that it is not a chore; v1 arrived at it and there is no reason
+// to re-derive it.
+//
+// TWENTY-ONE FRAMES, which is also v1's -- but NOT for v1's reason. There the
+// strip was played on a fixed 24 fps clock and the count had to be chosen so
+// the animation finished near the bite (13 frames ran 542 ms of a 900 ms bite
+// and the last frame hung for 358 ms, which reads as a stall). Here the frame
+// is picked from the bite's own PROGRESS, so any count finishes exactly with
+// it and this is purely how fine the carve looks. Twenty-one is about one
+// frame per 43 ms, which is smooth at any frame rate.
+inline constexpr float kEatMs = 900.0f;
+inline constexpr int kEatFrames = 21;
+
 inline constexpr float kBowDrawMs = 260.0f;
 // The loose and the return to rest -- TWICE the speed of the pull.
 inline constexpr float kBowRelMs = 130.0f;
@@ -227,6 +272,21 @@ inline constexpr float kSwingMs = 570.0f;
 inline constexpr float kImpactMs = 250.0f;
 // How long a tool takes to rise back into frame after a change of hands.
 inline constexpr float kSwapMs = 240.0f;
+
+// -- THE RECOIL CURVE -- see the block in HeldItem::xform ------------------
+//
+// 40 ms out and 200 ms back. At the rifle's 100 ms between rounds that means
+// automatic fire never lets the gun settle, which is correct: it climbs and
+// shakes while the trigger is down and drops home when it is let go.
+//
+// The travel is in the pose's own units (world voxels from the eye), so 2.2 is
+// 22 cm back and 0.9 is 9 cm up -- big for a viewmodel, and it has to be: the
+// gun is 90 cm from the eye and a centimetre there is nothing.
+inline constexpr float kRecoilOutS = 0.040f;
+inline constexpr float kRecoilBackS = 0.200f;
+inline constexpr float kRecoilBackVox = 2.2f;
+inline constexpr float kRecoilUpVox = 0.9f;
+inline constexpr float kRecoilPitch = 0.11f;   // radians of nose-up
 
 // -- AND IT OVERSHOOTS ON THE WAY UP (user 2026-09-07) ----------------------
 //
@@ -630,6 +690,29 @@ class HeldItem {
     // Whether there is anything in the hand at all. H puts it away.
     bool shown = true;
 
+    // -- HOLD THE SIGHTS UP WITHOUT HOLDING THE BUTTON -------------------
+    //
+    // (user 2026-09-17: "have a checkmark on the aim down site box, where when
+    // I check it, the gun aims down sights, where I can then adjust the
+    // position".)
+    //
+    // A SECOND WAY TO ASK FOR THE SAME THING, not a second state. It is OR'd
+    // with the right button in update() and everything downstream -- the ease,
+    // the pose blend, the steadied bob -- is untouched, so what you tune is
+    // exactly what the button gives you and not a preview of it.
+    //
+    // IT EXISTS BECAUSE THE PANEL NEEDS BOTH HANDS. The sighted pose is only on
+    // screen while the gun is up, and the gun was only up while the right
+    // button was down -- which is the button you would have to let go of to
+    // drag a slider. Seven sliders you can only see while you are not touching
+    // them are seven sliders nobody can use, which is the stack card's own
+    // complaint about its badge.
+    //
+    // CLEARED WHEN THE [K] PANEL CLOSES. The checkbox is drawn on that card and
+    // nowhere else, so leaving it set would weld the gun to your eye with no
+    // visible control to turn it off.
+    bool adsHold = false;
+
     // -------------------------------------------------------------------
     // HOW MUCH THE HAND MOVES, as a gain over the stride and the breath in
     // xform(). 1.0 is what the constants down there describe; defaults::
@@ -664,11 +747,18 @@ class HeldItem {
     // appears.
     // -----------------------------------------------------------------------
     bool add(World &world, const char *name, const std::string &voxPath, const HeldPose &pose,
-             Takes takes = Takes::Nothing, int selfMergeTol = 0) {
+             Takes takes = Takes::Nothing, int selfMergeTol = 0,
+             const HeldPose *adsPose = nullptr) {
         Tool t;
         t.name = name;
         t.takes = takes;
         t.pose = pose;
+        // An adsPose is what makes a tool aimable -- there is no second flag to
+        // disagree with it. See Tool::ads.
+        if (adsPose) {
+            t.ads = true;
+            t.adsPose = *adsPose;
+        }
         t.path = voxPath;
         const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz, selfMergeTol);
         if (m < 0) return false;
@@ -791,6 +881,68 @@ class HeldItem {
     // can see. Nine exact does not fit: it takes the palette past 255 and the
     // wheat starts losing voxels.
     static constexpr int kSteakMergeTol = 12;
+    // -- AND THE GUN IS NOT ON THIS LIST, WHICH IT WAS FOR A DAY ------------
+    //
+    // ("the guns color pallete is off", user 2026-09-17.)
+    //
+    // The assault rifle was folded at kRampMergeTol because eleven exact
+    // entries would not fit -- ELEVEN SHADES over 32 voxels: seven near-blacks
+    // from 43 to 64, three light greys from 152 to 166, and one red. Folded, it
+    // asked for five and the worst voxel moved 10 of 255.
+    //
+    // THAT WAS THE WRONG TRADE AND THIS FILE ALREADY SAID SO. The rule is
+    // written twice over in World::addHeldVox, once in v1's words: "the tool
+    // the player stares at stays byte-accurate". A stone axe 7/255 out was
+    // reported as broken three times. A gun is held closer and looked at more
+    // than any axe ever was, and 53% of its voxels are in the dark ramp that
+    // the fold collapsed -- so the fold is visible on the majority of the
+    // model, not on a corner of it.
+    //
+    // The table was made to fit instead, and the entries came from the level
+    // rather than from the gun: nuketown's two greens now map onto the
+    // broadleaf grass ramp the oak wood already owns (see World::loadLevel), so
+    // they cost nothing. What the kit stares at is exact again.
+    //
+    // -- WHAT THE GUN GETS INSTEAD: EIGHT OF ELEVEN, AND NOTHING MOVES 3/255 -
+    //
+    // Byte-exact did not fit. Restoring all eleven took the table to 255 of 255
+    // and the wheat lost two of its colours -- the same silent failure, moved
+    // onto a different model. (A per-level palette is the real answer to that
+    // and is half built; see the long note in World::setLevel for exactly where
+    // it stops.)
+    //
+    // So this is the smallest tolerance that frees the three entries needed,
+    // and it is nothing like the fold that was reported. MEASURED on the model:
+    //
+    //     tol 24  ->  5 entries, worst voxel moves 10/255   <- what was wrong
+    //     tol  8  ->  8 entries, worst voxel moves  3/255   <- this
+    //     tol  0  -> 11 entries, exact, does not fit
+    //
+    // At 8 the three shades that go are 61->64, 54->57 and 47->50: three levels
+    // each, on a near-black. sRGB quantisation is one level, so this is three
+    // of them on colours that differ by four -- against the SEVEN-shade collapse
+    // that flattened 53% of the model onto one grey. The receiver keeps its
+    // ramp, the light greys keep all three of theirs, and the red is untouched.
+    // -- ...AND IT IS ZERO NOW, WHICH IS WHERE IT SHOULD HAVE STAYED ------
+    //
+    // Reported twice: "the guns color pallete is off", then "its missing
+    // color". Both times the answer was a fold, and both times the fold was
+    // only there because the table was full:
+    //
+    //     tol 24  ->  5 of 11 entries, worst voxel 10/255
+    //     tol  8  ->  8 of 11 entries, worst voxel  3/255
+    //     tol  0  -> 11 of 11, byte-exact
+    //
+    // The table is NOT full any more -- it reads 242 of 255 with the level's
+    // greens on the grass ramp and the bulb's cap on the stone one -- so there
+    // is no trade left to make and the rule in World::addHeldVox applies
+    // unaltered: "the tool the player stares at stays byte-accurate". Three
+    // entries is what it costs and there are thirteen.
+    //
+    // kGunMergeTol IS GONE ON PURPOSE. If the table ever fills again, take the
+    // entries from the level -- which is a backdrop at tens of metres -- and
+    // not from the thing held 90 cm from the eye.
+    static constexpr int kGunMergeTol = 0;
     static int mergeTolFor(const std::string &p) {
         if (p.find("/food/") != std::string::npos) return kSteakMergeTol;
         return p.find("wheat") != std::string::npos ? kRampMergeTol : 0;
@@ -871,6 +1023,112 @@ class HeldItem {
     // this came from uses with BOW_IT and BOW_NOCK being two runs of
     // consecutive item ids.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // A FOOD, AND THE STRIP IT IS EATEN THROUGH.
+    //
+    // (user 2026-09-17: "import the eating mechanics from v1 onto all of the
+    //  food.")
+    //
+    // ONE WHOLE MODEL BECOMES kEatFrames FRAMES OF ITSELF BEING EATEN. This is
+    // the browser engine's `eatStrip`, ported, and the carve rule is the whole
+    // of it: score every voxel by its distance from a BITE POINT at one top
+    // corner, sort, and drop them in that order. An apple then loses the side
+    // you bit while the stalk at the far corner survives to the last frame,
+    // which is what makes it read as being eaten rather than dissolving.
+    //
+    // THE SORT IS MADE TOTAL ON PURPOSE. Ties break on z, then x, then y --
+    // v1's own tie-break, and the reason it has one is that a sort which is
+    // not total is a food that is eaten in a different order on every boot.
+    //
+    // FRAME 0 IS THE WHOLE FRUIT, so "an apple in your hand" and "frame zero
+    // of eating one" are the same model and can never disagree.
+    //
+    // THE LAST FRAME IS ONE VOXEL, not zero -- see biteFrame, where the reason
+    // is v2's and not v1's: an empty model cannot be registered here at all.
+    //
+    // IT COSTS NO PALETTE. Every frame is a subset of the same voxels, and
+    // addHeldVox registers held colours with an EXACT key -- so twenty-one
+    // frames of an apple mint the apple's two colours once between them.
+    // -----------------------------------------------------------------------
+    // ONE FRAME OF A FOOD BEING EATEN -- see addFood for the rule and why the
+    // sort has to be total. `f` runs 0 (whole) to kEatFrames - 1 (empty).
+    static VoxModel biteFrame(const VoxModel &m, int f) {
+        VoxModel out = m;
+        // Every solid cell, in one list, so the bite ORDER is a sort rather
+        // than a rule repeated per frame.
+        struct Cell { int i; float d2; int x, y, z; };
+        std::vector<Cell> cl;
+        cl.reserve(m.m.size() / 4);
+        // The bite point: one top corner of the model's own box. `by` is the
+        // middle of the depth axis, which is where a mouth meets a ball.
+        const float bx = float(m.sx - 1), by = 0.5f * float(m.sy - 1), bz = float(m.sz - 1);
+        for (int z = 0; z < m.sz; ++z)
+            for (int y = 0; y < m.sy; ++y)
+                for (int x = 0; x < m.sx; ++x) {
+                    const int i = x + y * m.sx + z * m.sx * m.sy;
+                    if (i >= int(m.m.size()) || !m.m[size_t(i)]) continue;
+                    const float dx = float(x) - bx, dy = float(y) - by, dz = float(z) - bz;
+                    cl.push_back({i, dx * dx + dy * dy + dz * dz, x, y, z});
+                }
+        std::sort(cl.begin(), cl.end(), [](const Cell &a, const Cell &b) {
+            if (a.d2 != b.d2) return a.d2 < b.d2;
+            if (a.z != b.z) return a.z < b.z;
+            if (a.x != b.x) return a.x < b.x;
+            return a.y < b.y;
+        });
+        // How many have been eaten by this frame.
+        //
+        // ...AND THE LAST FRAME KEEPS ONE VOXEL, WHICH IS NOT A TASTE
+        // DECISION. v1 eats a food down to nothing on its final frame and says
+        // why ("make sure the food dissapears properly" -- a scrap that blinks
+        // out reads as the model being switched off). Here an EMPTY model
+        // cannot be registered at all: World::addHeldVox meshes it to nothing
+        // and skips it, addFood then fails, and the whole food is left out of
+        // the kit. Measured -- all three foods came back "meshed to nothing --
+        // skipped" and every food slot was -1, which is the feature silently
+        // absent rather than visibly wrong.
+        //
+        // The crumb costs nothing to look at: the last frame is reached at
+        // progress 1.0, which is the same instant wantEat takes the food off
+        // the stack, so it is replaced by the next item in the hand on that
+        // frame rather than shown.
+        const int gone =
+            (kEatFrames < 2)
+                ? 0
+                : mini(int(cl.size()) - 1,
+                       int(float(cl.size()) * float(f) / float(kEatFrames - 1) + 0.5f));
+        for (int k = 0; k < gone && k < int(cl.size()); ++k) out.m[size_t(cl[size_t(k)].i)] = 0;
+        return out;
+    }
+
+    bool addFood(World &world, const char *name, const std::string &voxPath,
+                 const HeldPose &pose, int selfMergeTol = 0) {
+        VoxModel m;
+        std::string err;
+        if (!voxLoad(voxPath, &m, &err)) {
+            std::fprintf(stderr, "v2: food %s: %s -- skipped\n", voxPath.c_str(),
+                         err.c_str());
+            return false;
+        }
+        Tool t;
+        t.name = name;
+        t.pose = pose;
+        t.path = voxPath;
+        t.food = true;
+        t.takes = Takes::Nothing;   // you do not mine with an apple
+        for (int f = 0; f < kEatFrames; ++f) {
+            const VoxModel bit = biteFrame(m, f);
+            const int i = world.addHeldVox(bit, voxPath, &t.sx, &t.sy, &t.sz, selfMergeTol);
+            if (i < 0) return false;
+            t.models.push_back(i);
+        }
+        tools_.push_back(t);
+        std::printf("v2: food %s  %d bite frames, %dx%dx%d\n", voxPath.c_str(), kEatFrames,
+                    t.sx, t.sy, t.sz);
+        std::fflush(stdout);
+        return true;
+    }
+
     bool addBow(World &world, const char *name, const std::string &voxPath,
                 const HeldPose &pose) {
         std::string err;
@@ -912,18 +1170,20 @@ class HeldItem {
     // nothing is a real state here, which is why `shown` is cleared rather than
     // the selection being left pointing at something that is not there.
     // -----------------------------------------------------------------------
-    int dropSelected() {
+    // -- ONE OFF THE PILE, WHATEVER BECOMES OF IT -------------------------
+    //
+    // Shared by dropSelected (which then throws it on the ground) and by a
+    // BITE (which does not) -- see wantEat. The stack bookkeeping is the same
+    // act either way and two copies of it is how a slot ends up `carried`
+    // with a stack of zero, which draws nothing and cannot be scrolled off.
+    //
+    // Returns which slot gave one up, or -1.
+    int consumeSelected() {
         if (!ready() || !tools_[size_t(sel_)].carried) return -1;
-        // AN EMPTY HAND CANNOT BE PUT DOWN. Without this, Q on the fourth slot
-        // marked it uncarried -- taking it out of the wheel for good, since
-        // nothing can ever pick it up again -- and tossed a drop whose model is
-        // -1, which is an item lying in the wood that cannot be drawn or
-        // collected. Having no models is exactly what makes it the empty slot,
-        // so it is the right thing to ask.
         if (tools_[size_t(sel_)].models.empty()) return -1;
         const int gone = sel_;
-        // ONE OF THE PILE, NOT THE PILE. Dropping the top stalk of nine leaves
-        // eight in the hand and the hand where it was -- only the LAST one out
+        // ONE OF THE PILE, NOT THE PILE. Eating the top apple of nine leaves
+        // eight in the hand and the hand where it was -- only the LAST one
         // takes the slot out of the wheel and moves the selection on.
         if (tools_[size_t(gone)].stack > 1) {
             --tools_[size_t(gone)].stack;
@@ -949,6 +1209,16 @@ class HeldItem {
         return gone;
     }
 
+    int dropSelected() {
+        // AN EMPTY HAND CANNOT BE PUT DOWN. Without this, Q on the fourth slot
+        // marked it uncarried -- taking it out of the wheel for good, since
+        // nothing can ever pick it up again -- and tossed a drop whose model is
+        // -1, which is an item lying in the wood that cannot be drawn or
+        // collected. Having no models is exactly what makes it the empty slot,
+        // so it is the right thing to ask. consumeSelected asks it.
+        return consumeSelected();
+    }
+
     // -----------------------------------------------------------------------
     // ...AND PUT ONE IN THE KIT WITHOUT PUTTING IT IN THE WHEEL.
     //
@@ -963,6 +1233,7 @@ class HeldItem {
         if (tool < 0 || tool >= int(tools_.size())) return;
         tools_[size_t(tool)].carried = false;
         tools_[size_t(tool)].stack = 0;
+        if (tool == sel_) cancelEat();   // see cycle
     }
 
     // ...and take it back. The hand only changes to it if it was empty, so
@@ -989,6 +1260,90 @@ class HeldItem {
     const Tool &tool(int i) const { return tools_[size_t(i)]; }
 
     bool holdingBow() const { return ready() && tools_[size_t(sel_)].bow; }
+    // -- ...AND WHETHER IT IS SOMETHING YOU CAN EAT ------------------------
+    bool holdingFood() const { return ready() && tools_[size_t(sel_)].food; }
+    bool eating() const { return eating_; }
+    // 0 at the first bite, 1 when it is finished -- for the HUD and the test.
+    float eatProgress() const {
+        if (!eating_) return 0.0f;
+        return clampf(float((nowMs_ - eatT0_) / double(kEatMs)), 0.0f, 1.0f);
+    }
+
+    // THE RIGHT BUTTON, ON A FOOD. Returns true on the frame the bite
+    // FINISHES, which is the frame the caller pays out on.
+    //
+    // ONE PRESS, NOT A HOLD (user 2026-09-17: "when eating something, the user
+    // should only have to press right click once, not hold it down").
+    //
+    // IT WAS A HOLD because that is what v1 does and what the bow beside it
+    // does -- and a bow is the wrong model for this. A draw is a thing you
+    // aim, so holding it IS the action; a bite is a thing you commit to, and
+    // asking someone to keep a button down for nine tenths of a second while
+    // nothing they do changes the outcome is a hold that buys nothing.
+    //
+    // SO THE PRESS ARMS IT AND THE CLOCK FINISHES IT. `down` is only read on
+    // its RISING EDGE: once a bite has started, releasing does nothing and
+    // holding does nothing, and the food is eaten kEatMs later either way.
+    //
+    // THE EDGE IS TRACKED HERE rather than by the caller, because `eating_`
+    // and the thing that starts it belong to the same object -- a caller that
+    // owned the edge would have to know when a bite is already running to
+    // avoid restarting one on the next press, which is exactly this state.
+    // -----------------------------------------------------------------------
+    // THIS BUTTON IS ALREADY DOWN, AND IT WAS DOWN FOR SOMETHING ELSE.
+    //
+    // (user 2026-09-17: "as soon as I right click to pick it up, it
+    //  automatically starts eating it".)
+    //
+    // THE PICK AND THE BITE ARE THE SAME BUTTON, which is what makes this
+    // happen and is not itself wrong: right-click takes the fruit, right-click
+    // eats it. But wantEat starts a bite on the RISING EDGE, and until the
+    // fruit was picked there was no food in the hand, so eatWasDown_ was false
+    // -- so the press that put the apple in your hand read as a fresh press on
+    // an apple and started the mouthful in the same frame.
+    //
+    // So the pick says "this press is spent". The next one eats. Letting go
+    // and clicking again is what a player does anyway; taking a bite out of
+    // something the instant you pick it up is not.
+    void spendEatPress() { eatWasDown_ = true; }
+
+    bool wantEat(bool down, double nowMs) {
+        nowMs_ = nowMs;
+        const bool pressed = down && !eatWasDown_;
+        eatWasDown_ = down;
+        if (!holdingFood()) {
+            eating_ = false;
+            return false;
+        }
+        if (!eating_) {
+            // A FRESH PRESS STARTS ONE, and nothing else does.
+            if (!pressed) return false;
+            eating_ = true;
+            eatT0_ = nowMs;
+            bitNow_ = true;   // the caller's cue to play the chew -- see bitNow
+            return false;
+        }
+        if (nowMs - eatT0_ < double(kEatMs)) return false;
+        // ...AND IT IS SWALLOWED. One from the stack, and the clock is reset
+        // rather than left finished, or holding the button would eat the whole
+        // stack in one press.
+        eating_ = false;
+        consumeSelected();
+        return true;
+    }
+
+    // Anything that changes what is in the hand has to say so -- see eating_.
+    void cancelEat() { eating_ = false; }
+
+    // TRUE ON THE ONE FRAME A BITE BEGAN, and false ever after -- the same
+    // shape drewNow() has for the bow, and for the same reason: the sound
+    // belongs to the EDGE, and an edge read twice is an edge that fires twice.
+    bool bitNow() {
+        const bool b = bitNow_;
+        bitNow_ = false;
+        return b;
+    }
+
     Takes takes() const { return ready() ? tools_[size_t(sel_)].takes : Takes::Nothing; }
 
     // The arrow's offset on the string, in whole voxels -- see ArrowOffset in
@@ -1054,6 +1409,22 @@ class HeldItem {
 
     // The pose of whatever is in the hand, for the menu to edit.
     HeldPose &pose() { return tools_[size_t(sel_)].pose; }
+    // -- ...AND THE SIGHTED ONE, WHICH IS A SECOND BAKE ------------------
+    //
+    // (user 2026-09-17: "also let me adjust the aim down sights position in
+    // the settings menu".)
+    //
+    // The hip pose and the sighted pose are two independent seven-number bakes
+    // (see Tool::adsPose for why it is not stored as an offset), so they get
+    // two independent panels. `aimable` is what says whether the second one is
+    // worth drawing -- an axe has no sights.
+    HeldPose &adsPose() { return tools_[size_t(sel_)].adsPose; }
+    bool aimable() const { return ready() && tools_[size_t(sel_)].ads; }
+    // How far up to the eye the tool has travelled, 0..1. Read by the panel so
+    // that somebody tuning the sighted pose can see whether they are actually
+    // looking at it -- seven sliders that move nothing are seven sliders
+    // nobody can use, which is the stack card's own note.
+    float adsAmount() const { return ads_; }
 
     // -----------------------------------------------------------------------
     // Change tools. `d` is +1 or -1 and it wraps, which is what a wheel wants.
@@ -1073,11 +1444,96 @@ class HeldItem {
             if (tools_[size_t(sel_)].carried) break;
         }
         swapT0_ = nowMs_;
+        // A BITE DOES NOT SURVIVE THE HAND CHANGING. Scrolling from a
+        // half-eaten apple to an orange with the button still down would
+        // otherwise finish the apple's clock on the orange -- see eating_.
+        cancelEat();
     }
     void select(int i) {
         if (i < 0 || i >= int(tools_.size()) || i == sel_) return;
         sel_ = i;
         swapT0_ = nowMs_;
+        cancelEat();   // see cycle
+    }
+
+    // -----------------------------------------------------------------------
+    // A ROUND JUST WENT OFF -- kick the thing in the hand.
+    //
+    // (user 2026-09-17: "have it shoot bullets then give the gun recoil when it
+    // shoots".)
+    //
+    // ONE TIMESTAMP, LIKE THE SWING AND THE SWAP. Every movement in this file
+    // is a curve read off a start time rather than a velocity integrated per
+    // frame, and for the reason the swap's note gives: a curve is the same
+    // shape at any frame rate and cannot drift. Re-arming it mid-recoil simply
+    // restarts the curve, which is what automatic fire should look like.
+    void kick() { recoilT0_ = nowMs_; }
+
+    // -----------------------------------------------------------------------
+    // TAKE THE WHOLE WHEEL AWAY, AND GIVE IT BACK EXACTLY.
+    //
+    // (user 2026-09-17: "remove all the tools from the hand on the nuketown
+    // level. only the gun should be in the hand.")
+    //
+    // A SNAPSHOT RATHER THAN stow()/give(), and the stack is why. `give` sets a
+    // stack of one on anything that was not carried -- see its note -- so
+    // walking into the level with nine stalks of wheat and back out again would
+    // hand you one. carried AND stack are the pair that describe a slot, so the
+    // pair is what is saved and the pair is what comes back.
+    //
+    // The gun itself is not special-cased here: the caller stows everything,
+    // gives the rifle, and on the way out restores this -- which puts the kit
+    // back exactly as it was and leaves the rifle wherever the restore says,
+    // which is "not carried", because it never was in the wood.
+    std::vector<std::pair<bool, int>> snapshotKit() const {
+        std::vector<std::pair<bool, int>> out;
+        out.reserve(tools_.size());
+        for (const Tool &t : tools_) out.emplace_back(t.carried, t.stack);
+        return out;
+    }
+    void restoreKit(const std::vector<std::pair<bool, int>> &k) {
+        for (size_t i = 0; i < tools_.size() && i < k.size(); ++i) {
+            tools_[i].carried = k[i].first;
+            tools_[i].stack = k[i].second;
+        }
+        // THE HAND MAY BE POINTING AT SOMETHING THAT IS GONE. Restoring the kit
+        // can uncarry whatever was selected, and a selection on an uncarried
+        // slot draws nothing and scrolls oddly; step it to the next real one.
+        if (!ready() || tools_[size_t(sel_)].carried) return;
+        cycle(1);
+    }
+
+    // -----------------------------------------------------------------------
+    // THE MUZZLE, IN THE WORLD -- where a round is born.
+    //
+    // (user 2026-09-17: "the bullet should appear at the tip of the gun".)
+    //
+    // THE FAR END, FOUND RATHER THAN NAMED. The model's long axis is its DEPTH
+    // (see the pose note in app.h -- the gun is authored 3 x 4 x 11) but WHICH
+    // end of it points away from the player is a function of the pose's roll,
+    // and that roll was flipped once already. So both ends are computed and the
+    // one further from the eye wins: re-pose the gun, turn it end for end, and
+    // the muzzle follows without this function being told.
+    //
+    // It costs a full xform() -- the swing curve, the bob, the breath, the
+    // swap spring -- which is the point: the round leaves from where the barrel
+    // actually IS this frame, recoil and all, not from where the pose says it
+    // rests.
+    bool muzzle(const V6Camera &cam, float bobPhase, float bobAmp, Vec3 *out) const {
+        if (!out || !ready()) return false;
+        const HeldXform hx = xform(cam, bobPhase, bobAmp);
+        if (!hx.show) return false;
+        const Tool &t = tools_[size_t(sel_)];
+        const Vec3 colX(hx.m[0], hx.m[3], hx.m[6]);
+        const Vec3 colY(hx.m[1], hx.m[4], hx.m[7]);
+        const Vec3 colZ(hx.m[2], hx.m[5], hx.m[8]);
+        const Vec3 mid = Vec3(hx.tx, hx.ty, hx.tz) + colX * (0.5f * float(t.sx)) +
+                         colY * (0.5f * float(t.sy));
+        const Vec3 a2 = mid;
+        const Vec3 b2 = mid + colZ * float(t.sz);
+        const Vec3 eye(cam.pos.x, cam.pos.y, cam.pos.z);
+        *out = lengthSq(a2 - eye) > lengthSq(b2 - eye) ? a2 : b2;
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -1094,6 +1550,18 @@ class HeldItem {
         if (!ready()) return -1;
         const Tool &t = tools_[size_t(sel_)];
         if (t.models.empty()) return -1;
+        // -- A FOOD SHOWS HOW MUCH OF IT IS LEFT ---------------------------
+        //
+        // Picked from the bite's PROGRESS rather than from a frame clock of
+        // its own -- see kEatFrames for why that is the whole difference from
+        // v1 here. Not eating is frame 0, which is the whole food, so this is
+        // also the ordinary held model and the two can never disagree.
+        if (t.food) {
+            const float k = eating_ ? clampf(float((nowMs_ - eatT0_) / double(kEatMs)), 0.0f, 1.0f)
+                                    : 0.0f;
+            const size_t f = size_t(mini(kEatFrames - 1, int(k * float(kEatFrames - 1) + 0.5f)));
+            return t.models[f < t.models.size() ? f : 0];
+        }
         if (!t.bow || bowFrames_ <= 0) return t.models[0];
 
         int f = 0;
@@ -1146,6 +1614,30 @@ class HeldItem {
         bool loosedNow = false;
         drewNow_ = false;
         nockedNow_ = false;
+        // -- AIMING DOWN THE SIGHTS, ON THE SAME BUTTON AS THE DRAW ----------
+        //
+        // Eased rather than switched: a gun that teleports to the eye reads as
+        // a glitch, and every other movement in this file is a curve. 90 ms up
+        // and the same down, which is about as fast as a viewmodel can travel
+        // without the eye losing it -- kSwapMs is 240 and that is a change of
+        // hands, a bigger thing than this.
+        //
+        // EXPONENTIAL, FRAME-RATE INDEPENDENT. `1 - exp(-dt/tau)` rather than a
+        // fixed step per frame, or the aim is twice as fast at 120 fps as it is
+        // at 60 -- which is the bug the bob amplitudes above were written to
+        // avoid and it would be a shame to reintroduce it one function later.
+        {
+            // THE BUTTON OR THE PANEL'S TOGGLE -- see adsHold. Both mean
+            // "bring it up", so they are one condition rather than two states
+            // that could disagree about where the gun is.
+            const bool wantAds =
+                (drawHeld || adsHold) && shown && ready() && tools_[size_t(sel_)].ads;
+            const float tau = 0.090f;
+            const float k = 1.0f - expf(-maxf(0.0f, dt) / tau);
+            ads_ += ((wantAds ? 1.0f : 0.0f) - ads_) * k;
+            if (ads_ < 0.001f) ads_ = 0.0f;
+            if (ads_ > 0.999f) ads_ = 1.0f;
+        }
         const bool wantDraw = drawHeld && shown && holdingBow();
         if (wantDraw && !drawing_) {
             drawing_ = true;
@@ -1253,7 +1745,34 @@ class HeldItem {
         out.show = shown && ready();
         if (!out.show) return out;
         const Tool &tool = tools_[size_t(sel_)];
-        const HeldPose &pose = tool.pose;
+        // -- THE HIP POSE, OR SOMEWHERE ON THE WAY TO THE SIGHTED ONE --------
+        //
+        // A plain lerp of all seven numbers. The two rotations a gun uses are
+        // identical between its poses so nothing here has to think about angle
+        // wrap-around; if an aimable tool is ever given poses that differ in
+        // yaw by more than half a turn, this is the line that would need to
+        // shortest-arc them.
+        HeldPose posed = tool.pose;
+        if (tool.ads && ads_ > 0.0f) {
+            const HeldPose &a = tool.adsPose;
+            const float u = ads_;
+            auto mix = [u](float from, float to) { return from + (to - from) * u; };
+            posed.x = mix(tool.pose.x, a.x);
+            posed.y = mix(tool.pose.y, a.y);
+            posed.z = mix(tool.pose.z, a.z);
+            posed.yaw = mix(tool.pose.yaw, a.yaw);
+            posed.pitch = mix(tool.pose.pitch, a.pitch);
+            posed.roll = mix(tool.pose.roll, a.roll);
+            posed.scale = mix(tool.pose.scale, a.scale);
+        }
+        const HeldPose &pose = posed;
+        // AND THE HAND GOES STILL WHILE IT IS UP. The stride bob and the idle
+        // breath are what make a carried thing read as carried; down the sights
+        // they read as a wobble you cannot aim through. Damped to a sixth
+        // rather than to nothing, so the gun is steady without being welded to
+        // the screen.
+        const float steady = 1.0f - 0.85f * ads_;
+        bobAmp *= steady;
 
         // -- the swing ------------------------------------------------------
         //
@@ -1279,10 +1798,42 @@ class HeldItem {
 
         // The windup tips the head back and up; the strike drives it down and
         // forward, and drags the anchor most of the way to the screen centre.
-        const float swPitch = -0.9f * wind + 1.35f * chop;
+        float swPitch = -0.9f * wind + 1.35f * chop;
         float hx = pose.x * (1.0f + 0.06f * wind - 0.85f * chop);
         float hy = pose.y + 0.22f * wind - 0.18f * chop;
         float hz = pose.z - 0.05f * wind + 0.18f * chop;
+
+        // -- ...AND THE RECOIL, WHICH IS A THIRD CURVE ON THE SAME THREE -----
+        //
+        // (user 2026-09-17: "give the gun recoil when it shoots".)
+        //
+        // SHARP OUT, SLOW BACK, which is the whole of what recoil looks like:
+        // the gun is thrown back and up in kRecoilOutS -- about two frames, so
+        // it reads as an impulse rather than a movement -- and then eases home
+        // over five times that. A symmetric curve reads as a bounce, which is
+        // the swap's job and not this one.
+        //
+        // IT RIDES ON TOP OF THE SWING rather than replacing it, because the
+        // two are independent: nothing stops a tool being swung and fired, and
+        // if anything ever is, adding the two displacements is the answer that
+        // does not need a rule.
+        //
+        // THE PITCH IS THE PART YOU SEE. Moving the anchor alone slides the gun
+        // about the screen; tipping its nose up is what reads as a gun going
+        // off, and it is one term because swPitch is already in the rotation
+        // below.
+        {
+            const float rt = float(nowMs_ - recoilT0_) * 0.001f;
+            if (rt >= 0.0f && rt < kRecoilOutS + kRecoilBackS) {
+                const float env = rt < kRecoilOutS
+                                      ? rt / kRecoilOutS
+                                      : 1.0f - (rt - kRecoilOutS) / kRecoilBackS;
+                const float e = env * env * (3.0f - 2.0f * env);   // smooth both ends
+                hz -= kRecoilBackVox * e;   // back toward the eye
+                hy += kRecoilUpVox * e;     // ...and up
+                swPitch -= kRecoilPitch * e;
+            }
+        }
 
         // -- the swap, which bounces -----------------------------------------
         // See kSwapW: this is the spring's step response, and the sign is what
@@ -1344,11 +1895,11 @@ class HeldItem {
         hx += (sinf(bobPhase) * 0.300f * bobAmp +
                (sinf(ms * 0.0013f) * 0.0138f + sinf(ms * 0.00073f + 1.7f) * 0.0078f) *
                    live_) *
-              sway;
+              sway * steady;
         hy += (-fabsf(cosf(bobPhase)) * 0.112f * bobAmp +
                (sinf(ms * 0.0017f + 0.9f) * 0.0138f + sinf(ms * 0.00091f) * 0.0072f) *
                    live_) *
-              sway;
+              sway * steady;
 
         // -- the three axes, in CAMERA space --------------------------------
         //
@@ -1430,11 +1981,31 @@ class HeldItem {
     // -- the bow ------------------------------------------------------------
     int bowFrames_ = 0;
     bool drawing_ = false;  // the right button is down on a bow
+    // WHEN THE LAST ROUND WENT OFF. Far enough in the past that nothing is
+    // recoiling on the first frame. See kick() and the recoil block in xform().
+    double recoilT0_ = -1.0e9;
+    // ...and how far up to the eye an aimable tool has travelled -- 0 at the
+    // hip, 1 down the sights. Eased in update(); see Tool::ads.
+    float ads_ = 0.0f;
     bool loosed_ = false;   // shot, and not yet settled back to rest
     ArrowOffset arrow_;     // where the nocked arrow sits, in voxels
     bool drewNow_ = false;  // the pull began this frame
     bool nockedNow_ = false;  // ...and the string settled back this frame
     double bowT0_ = -1.0e9, bowRel_ = -1.0e9;
+    // -- THE BITE ---------------------------------------------------------
+    //
+    // `eating_` is the right button held on a food and `eatT0_` is when it
+    // went down. Both are cleared by anything that could make the food in hand
+    // stop being the food in hand -- a scroll, a drop, a stow -- because a
+    // clock that survives the item it was started on finishes a bite on
+    // whatever is now in the hand. See cancelEat.
+    bool eating_ = false;
+    // The right button's state LAST frame, so a bite starts on the press
+    // rather than on the hold -- see wantEat.
+    bool eatWasDown_ = false;
+    bool bitNow_ = false;
+    double eatT0_ = -1.0e9;
+
     bool swungNow_ = false;
 };
 

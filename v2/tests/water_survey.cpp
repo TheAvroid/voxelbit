@@ -67,6 +67,9 @@ int main(int argc, char **argv) {
     if (argc > 8) terrain.birchWater = float(std::atof(argv[8]));
     if (argc > 9) terrain.sandRiseM = float(std::atof(argv[9]));
     if (argc > 10) terrain.birchSandRiseM = float(std::atof(argv[10]));
+    // argv[11]: the puddle fill's release ramp. 0 disables the fill entirely,
+    // which is how the shore-step figures below are attributed -- see puddleT.
+    if (argc > 11) terrain.puddleFade = float(std::atof(argv[11]));
     std::printf("%d x %d columns at %.1f m (%.0f m square)\n", n, n, step, span);
     char bw[32];
     if (terrain.birchWater == VoxelTerrain::kNoWater) std::snprintf(bw, sizeof(bw), "dry");

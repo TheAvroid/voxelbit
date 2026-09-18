@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // voxelworld.h -- the world as 10 cm voxels, meshed into faces for the RT cores.
 //
 // The terrain is quantised to the same 10 cm grid the pine models are authored
@@ -179,6 +179,46 @@ constexpr uint8_t SAND_COUNT = 4;  // 28..31
 // meadow can be the birches' green and a pine floor the pines'.
 constexpr uint8_t BGRASS_0 = 32;
 constexpr uint8_t BGRASS_COUNT = 6;  // 32..37
+
+// -- ...AND HOW MUCH OF IT THE FLOOR UNDER THE OAKS IS ALLOWED -------------
+//
+// (user 2026-09-17: "I want you to make the terrain in the oak forest match
+//  the same green as the grass strands.")
+//
+// THE FLOOR AND THE BLADES WERE ALREADY THE SAME RAMP AND STILL DID NOT
+// MATCH, which is the whole of this constant. topMaterial lays mat::BGRASS_0
+// under the oaks and bladeMaterial grows mat::BGRASS_0 out of it, so there was
+// no colour to correct -- but the two read the ramp in completely different
+// ways, and they landed on disjoint halves of it:
+//
+//   * a BLADE reads it as a GRADIENT along its own height, one shade per
+//     STRAND_ROW_STEP up from the soil. Short grass is 3 to 6 voxels, so a
+//     blade tops out at shade (6-1)/2 == 2 and NEVER reaches 3, 4 or 5.
+//   * the FLOOR reads it as a SCATTER, hashVoxel % BGRASS_COUNT, so half its
+//     area wore the three lightest greens -- greens no blade in the wood has
+//     ever shown.
+//
+// MEASURED over the oak band, albedo luminance, before: floor 0.3048 against
+// blade 0.2358 -- THE GROUND WAS 29% BRIGHTER THAN THE GRASS STANDING IN IT.
+// That is the same failure kBroadleafFloorV was introduced to fix one level
+// up, and the same answer: the hue was never wrong, only the value.
+//
+// SO THE FLOOR SCATTERS OVER WHAT THE SWARD ACTUALLY REACHES, and that is not
+// a fudge -- it is what the gradient already says. The ramp encodes a light
+// field over height: a blade's base is buried in its own sward and sees no
+// sky, its tip sees all of it. The floor BETWEEN the blades is at exactly the
+// height of their bases, in exactly that shadow, so the bottom of the ramp is
+// where it belongs. Reading the whole ramp there was lighting the ground as
+// if it stood at the top of the grass.
+//
+// STILL A SCATTER, NOT A FLAT GREEN. Three shades rather than six is plenty
+// to keep the floor off a painted plane -- sand does the job on four and rock
+// on six over much flatter ground -- and collapsing it to one value is the
+// mistake the note at the head of this file spends a paragraph on.
+//
+// DERIVED, NOT PICKED. See BLADE_RAMP_REACH below: raise grassMaxRows and the
+// floor follows the grass up the ramp on its own.
+constexpr uint8_t BGRASS_FLOOR_COUNT = 3;  // 32..34
 
 // -- WHEAT: WHAT A TALL BLADE WEARS -----------------------------------------
 //
@@ -444,10 +484,57 @@ class Palette {
 
     // The nearest MODEL entry to this colour within `tol`, or 0 for none.
     // Euclidean in sRGB, which is what the art was authored in.
-    uint8_t nearestModelColor(const std::array<uint8_t, 4> &c, int tol) const {
+    // `avoidFoliage` keeps a creature's colour off an id that carries BEHAVIOUR.
+    // v1 learned this the hard way and its note is the clearest statement of it:
+    // a body stamped with a foliage id "stops colliding", one wearing a cactus
+    // id stings. v2's foliage bit does the same two jobs -- it is the fell
+    // collider's wood/leaf classifier and it turns on translucency -- so a
+    // rabbit snapped onto a leaf would go see-through and read as crown to
+    // World::fellTree. Scenery may land on scenery; life may not.
+    uint8_t nearestModelColor(const std::array<uint8_t, 4> &c, int tol,
+                              bool avoidFoliage = false) const {
         int best = tol * tol + 1;
         uint8_t hit = 0;
         for (int id = mat::TREE_BASE; id < int(next_); ++id) {
+            if (avoidFoliage && foliage_[size_t(id)]) continue;
+            const Vec3 a = look_[size_t(id)].albedo;
+            const int dr = srgbByte(a.x) - int(c[0]);
+            const int dg = srgbByte(a.y) - int(c[1]);
+            const int db = srgbByte(a.z) - int(c[2]);
+            const int d = dr * dr + dg * dg + db * db;
+            if (d < best) {
+                best = d;
+                hit = uint8_t(id);
+            }
+        }
+        return hit;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE NEAREST CANOPY ENTRY, WHICH IS A DIFFERENT QUESTION FROM THE NEAREST
+    // ENTRY -- and asking the general one instead is a real bug, found here.
+    //
+    // The tree fruit carries three to five voxels of stem and leaf, authored
+    // (171,178,100), and it should wear the crown it hangs in. Asked of
+    // nearestModelColor over the whole model range it came back with
+    // (180,180,108), 12 away and NOT GREEN -- a straw shade off some other
+    // model that simply happens to sit closer in RGB than any leaf does. The
+    // nearest canopy green is 29 away, and 29 away is the right answer,
+    // because the question is "which leaf" and not "which colour".
+    //
+    // This is what the browser engine means by `near(fj.pal[fj.nbody],
+    // OAKLEAF)`: it hands the search a LIST of canopy ids rather than the
+    // table. Here the list already exists -- foliage_ is set by forModelColor
+    // as each entry is classified -- so the restriction is one test.
+    //
+    // Returns 0 if nothing has been classified as foliage yet, which is a real
+    // state (no tree model loaded) and is why every caller has a fallback.
+    // -----------------------------------------------------------------------
+    uint8_t nearestFoliage(const std::array<uint8_t, 4> &c) const {
+        int best = 1 << 30;
+        uint8_t hit = 0;
+        for (int id = mat::TREE_BASE; id < int(next_); ++id) {
+            if (!foliage_[size_t(id)]) continue;
             const Vec3 a = look_[size_t(id)].albedo;
             const int dr = srgbByte(a.x) - int(c[0]);
             const int dg = srgbByte(a.y) - int(c[1]);
@@ -528,7 +615,25 @@ class Palette {
             // ones is the honest count. It is bounded by how many distinct
             // colours the world wanted and cannot grow without bound.
             overflowKeys_.insert(key);
-            return mat::AIR;
+            // -- SNAP TO THE NEAREST COLOUR, DO NOT HAND BACK AIR -----------
+            //
+            // v1's palNearest, and its note is the argument: "the wrong colour
+            // is a bug you can see, and a wrapped id is one you cannot". v2's
+            // version of the invisible bug is this line returning AIR -- the
+            // voxel is not drawn at all, so a model that loads once the table
+            // is full comes out with HOLES in it, silently, and what you cannot
+            // see is whatever loaded last.
+            //
+            // Snapping costs a shade. It cannot cost a voxel, and it cannot
+            // cost the thing that made "the newly imported life is missing
+            // voxels" take a day to find.
+            //
+            // THE OVERFLOW COUNTERS ARE STILL KEPT. This is a fallback, not a
+            // licence: the startup line and the stderr warning still report
+            // exactly how many distinct colours could not be minted, so a table
+            // that has actually run out still says so loudly.
+            const uint8_t snapped = nearestModelColor(c, 1 << 15, /*avoidFoliage=*/!conifer);
+            return snapped ? snapped : mat::AIR;
         }
 
         const uint8_t id = next_++;
@@ -753,6 +858,101 @@ class Palette {
     bool authoredExact(uint8_t id) const { return srcExact_[id] != 0u; }
     const std::vector<MaterialLook> &table() const { return look_; }
     int used() const { return next_; }
+
+    // -----------------------------------------------------------------------
+    // -- A SECOND TABLE, FOR A PLACE THE WOOD IS NEVER ON SCREEN WITH -------
+    //
+    // (user 2026-09-17: "can you make sure that the nuketown map is using a
+    // different color palette from the real world one? They exist in seperate
+    // levels so surely we can have multiple color paletes for multiple
+    // worlds?")
+    //
+    // YES, AND IT IS THE ONLY REAL ANSWER TO A TABLE THAT KEEPS FILLING UP.
+    // 255 is a FORMAT limit -- eight bits of the packed triangle word, see the
+    // note over forModelColor -- so it cannot be raised. But it is 255 entries
+    // PER TABLE, and the level is a separate place by construction: the wood is
+    // not in the acceleration structure while you are there, so its trees, its
+    // animals and its flowers cannot be on screen to disagree about what entry
+    // 200 means. Two tables, swapped at the door, and the level stops competing
+    // with the wood for colours it will never be seen beside.
+    //
+    // WHAT MUST STILL AGREE, and this is the whole of the danger: anything
+    // drawn in BOTH places. That is the held kit (you carry it through the
+    // door), the fixed mat:: band the level borrows -- BGRASS for the lawns,
+    // ROCK for the flex -- and the wood's FLOWER models, whose voxels are
+    // stamped into the level. The caller passes those in as `reserved` and this
+    // allocator never touches them.
+    //
+    // TOP-DOWN, so the level's own colours land as far from the fixed band as
+    // the table allows and a reserved range low down is never in the way.
+    //
+    // MERGING IS AGAINST THE LEVEL'S OWN ENTRIES ONLY. Two colours that would
+    // have shared in the wood's table share here too; what does not happen any
+    // more is a level colour being bent onto a TREE's green because the tree
+    // got there first.
+    void beginLevelTable(const std::vector<uint8_t> &reserved) {
+        levelLook_ = look_;
+        levelReserved_ = reserved;
+        levelReserved_.resize(256, 0);
+        levelIndex_.clear();
+        // THE LAST REAL ENTRY, WHICH IS 254 AND NOT 255. The table is
+        // mat::COUNT long and mat::COUNT IS 255, so the ids run 0..254 -- a
+        // top-down allocator that starts at the count writes one past the end
+        // on its very first colour. It did, and the symptom named nothing: the
+        // heap corruption sat quiet through the whole of start-up and the
+        // engine then died between the last line it prints and its first frame,
+        // with no error on either stream and nothing in the log to say which of
+        // the day's changes had done it.
+        levelNext_ = int(levelLook_.size()) - 1;
+        levelMinted_ = 0;
+        levelOverflow_ = 0;
+        haveLevel_ = true;
+    }
+
+    uint8_t forLevelColor(const std::array<uint8_t, 4> &c) {
+        if (!haveLevel_) return forModelColor(c, false);
+        const uint32_t key = (uint32_t(c[0] / kQuantStep) << 16) |
+                             (uint32_t(c[1] / kQuantStep) << 8) | uint32_t(c[2] / kQuantStep);
+        auto it = levelIndex_.find(key);
+        if (it != levelIndex_.end()) return it->second;
+        while (levelNext_ > int(mat::TREE_BASE) && levelReserved_[size_t(levelNext_)]) --levelNext_;
+        if (levelNext_ <= int(mat::TREE_BASE)) {
+            ++levelOverflow_;
+            return mat::AIR;
+        }
+        const uint8_t id = uint8_t(levelNext_--);
+        MaterialLook &m = levelLook_[id];
+        m = MaterialLook{};
+        m.albedo = Vec3(srgbToLinearF(float(c[0]) / 255.0f), srgbToLinearF(float(c[1]) / 255.0f),
+                        srgbToLinearF(float(c[2]) / 255.0f));
+        // A LEVEL IS BUILT, NOT GROWN. There is no conifer rule here and there
+        // should not be: the foliage branch in forModelColor exists to stop a
+        // pine canopy reading as a black cut-out, and a green wall in a map is
+        // a green wall. Bark's roughness for everything, which is what that
+        // function gives anything that is not a needle.
+        m.roughness = 0.88f;
+        m.specular = 0.020f;
+        m.translucency = 0.0f;
+        levelIndex_.emplace(key, id);
+        ++levelMinted_;
+        return id;
+    }
+
+    // Lend the level an entry it must NOT allocate for itself -- the bulb's
+    // glass, which is the tracer's emitter test and has to be one known id.
+    const std::vector<MaterialLook> &levelTable() const { return levelLook_; }
+    bool hasLevelTable() const { return haveLevel_; }
+    int levelMinted() const { return levelMinted_; }
+    int levelOverflowed() const { return levelOverflow_; }
+    // How many entries the level could still take. Printed at start-up so the
+    // day this one fills up is a number rather than a surprise, exactly as the
+    // wood's own line is.
+    int levelFree() const {
+        int n = 0;
+        for (int i = int(mat::TREE_BASE) + 1; i <= levelNext_; ++i)
+            if (!levelReserved_[size_t(i)]) ++n;
+        return n;
+    }
     int overflowed() const { return overflow_; }
     // HOW MANY COLOURS YOU ACTUALLY CANNOT SEE, as against how many times the
     // table said no. Prefer this one in any report a human reads: overflowed()
@@ -775,10 +975,71 @@ class Palette {
     // MagicaVoxel model are usually a shading ramp of one hue, so the first
     // four would have been four barely-different greens.
     // -----------------------------------------------------------------------
+    // HOW MUCH OF THE CANOPY'S VALUE THE FLOOR UNDER IT KEEPS.
+    //
+    // "make the grass/grass strands in the oak forest match the colors of the
+    //  oak trees foilage"                                  -- user, 2026-09-17
+    //
+    // THE HUE ALREADY MATCHED AND THE VALUE DID NOT, which is the only reason
+    // this is one number rather than a new ramp. Measured off the running
+    // engine before changing anything -- the broadleaf foliage entries against
+    // the ramp built from them, both as sRGB bytes:
+    //
+    //     foliage   (110,151, 66) (137,185, 71) (140,183,102) (173,215,116)
+    //     BGRASS    ( 83,115, 51) ( 97,129, 68) (105,138, 73) (130,162, 87)
+    //
+    // Same hue family throughout, uniformly about 27% down in sRGB. And the
+    // oak has no quarrel with the BIRCH here either: an oak green lands within
+    // 14 of a birch one and the oak set loads at matchTol 30, so the oaks mint
+    // almost nothing and wear the birches' entries -- the ramp built from those
+    // entries is already the oak's own colour. There was nothing to correct
+    // except how dark it is.
+    //
+    // WHY IT IS SCALED AT ALL, AND WHY 0.52 WAS NEARLY RIGHT. A foliage entry
+    // is not the authored colour: forModelColor lifts it 1.7x with a floor
+    // under the blue, because a needle sits inside its own crown in shade. So
+    // 1/1.7 = 0.588 is "undo the shade lift", and 0.52 is just under it -- the
+    // old shared constant was, in effect, the sunlit reading of the canopy
+    // colour, and defensible.
+    //
+    // WHY THE BROADLEAF WOODS GET MORE ANYWAY. The lift's premise is a closed
+    // crown, and it is strongest exactly where it is least true: a birch and an
+    // oak wood are bright, open-floored and lit through the leaves rather than
+    // under them. Pushing the broadleaf floor above "undo the lift" is reading
+    // that transmitted light into the albedo, which is the cheap way to get it
+    // -- there is no subsurface term here to get it honestly.
+    //
+    // THE CONIFER FLOOR IS LEFT ALONE at the old value. A pine wood's floor is
+    // needle duff in deep shade; it is dark because it is, and the note under
+    // GRASS_0 about the floor glowing under a dark canopy is about this ramp.
+    // Sharing one constant would have brightened it for a complaint that was
+    // never about it.
+    static constexpr float kConiferFloorV = 0.52f;
+    static constexpr float kBroadleafFloorV = 0.72f;
+    // HOW HARD THE BROADLEAF GREENS ARE PULLED APART -- see the contrast block
+    // in fillGrassRamp for what this does and why it pivots rather than
+    // stretches.
+    //
+    // 2.5 takes the three shades the oak wood actually shows from a 1.53x
+    // spread to 2.91x, which is the difference between a floor that reads as
+    // one painted green and one you can see the blades standing in. It is a
+    // CONTRAST control and not a brightness one: the mean of those three moves
+    // 0.2497 -> 0.2529.
+    static constexpr float kBroadleafContrast = 2.5f;
+    // The most any of these may reflect. A leaf is not a mirror and an albedo
+    // over 1 is not a bright surface, it is a broken one -- see the cap in
+    // fillGrassRamp's contrast block.
+    static constexpr float kAlbedoCeil = 0.85f;
+
+    // -----------------------------------------------------------------------
     // ONE RAMP FILL, USED BY BOTH WOODS. The pines' greens become GRASS_0 and
     // the birches' BGRASS_0; everything about how a ramp is built is here once
     // so the two cannot drift apart.
-    void fillGrassRamp(uint8_t base, uint8_t count, std::vector<uint8_t> src) {
+    // `valueScale` is how much of the FOLIAGE's value the floor keeps; see the
+    // long note on it below, and kConiferFloorV / kBroadleafFloorV for why the
+    // two woods do not use the same number.
+    void fillGrassRamp(uint8_t base, uint8_t count, std::vector<uint8_t> src,
+                       float valueScale, float contrast = 1.0f, int pivotK = -1) {
         std::sort(src.begin(), src.end(), [this](uint8_t a, uint8_t b) {
             return luminance(look_[a].albedo) < luminance(look_[b].albedo);
         });
@@ -816,7 +1077,7 @@ class Palette {
                 // full sun, so the same albedo renders far brighter. Reading it
                 // across literally is what once made the floor glow under a
                 // dark canopy.
-                m.albedo = c * 0.52f + Vec3(0.006f, 0.008f, 0.005f);
+                m.albedo = c * valueScale + Vec3(0.006f, 0.008f, 0.005f);
             }
             m.roughness = 0.88f;
             m.specular = 0.022f;
@@ -825,6 +1086,66 @@ class Palette {
             // Kept well below the needles' 0.45: grass caught the sun from
             // every angle at that value and the whole floor glowed.
             m.translucency = 0.22f;
+        }
+
+        // -- ...AND THEN PULLED APART, BECAUSE IT READ AS ONE COLOUR -------
+        //
+        // (user 2026-09-17: "in the oak forest, I want more contrast between
+        //  the terrain/grass voxels. basically all of the grass. it looks like
+        //  one color.")
+        //
+        // AND IT MEASURED AS ONE COLOUR. Everything green in the oak wood --
+        // the floor and every blade standing on it -- lives in shades 0..2 of
+        // this ramp, because a blade reads it as a gradient at one shade per
+        // STRAND_ROW_STEP and short grass is only 3 to 6 voxels tall. Those
+        // three shades spanned luminance 0.1944 to 0.2982: a range of 1.53x,
+        // or sRGB (96,132,59) to (122,160,85). They are close enough that the
+        // eye reads a single flat green, which is the report.
+        //
+        // The SOURCE is narrow to begin with -- broadleaf foliage is a tight
+        // family of greens -- so interpolating along it faithfully, which is
+        // what the loop above does, cannot produce contrast that is not in the
+        // art. This puts it there.
+        //
+        // A POWER ABOUT A PIVOT, NOT A STRETCH ABOUT THE MEAN, and the
+        // difference is the whole reason this works. The shades in use are the
+        // BOTTOM of the ramp, so expanding about the ramp's own mean drags all
+        // of them down and the wood just gets darker. Pivoting on the middle
+        // shade the wood actually SHOWS holds the visible brightness still and
+        // spends the expansion entirely on spread: measured, 0.1944..0.2982
+        // becomes 0.1285..0.3738 -- 2.91x instead of 1.53x -- while the mean
+        // of the three moves 0.2497 -> 0.2529.
+        //
+        // ONE SCALAR PER SHADE, so the hue cannot move. That is the identical
+        // argument valueScale makes a few lines up, and it is why this can be
+        // a contrast control rather than a recolour.
+        if (contrast != 1.0f && count > 1) {
+            const int pk = (pivotK >= 0 && pivotK < int(count)) ? pivotK : int(count) / 2;
+            const float pivot = luminance(look_[base + pk].albedo);
+            if (pivot > 1e-5f) {
+                for (int k = 0; k < int(count); ++k) {
+                    MaterialLook &m = look_[base + k];
+                    const float l = luminance(m.albedo);
+                    if (l <= 1e-5f) continue;
+                    m.albedo = m.albedo * (powf(l / pivot, contrast) * pivot / l);
+                    // ...AND NOTHING MAY REFLECT MORE THAN IT RECEIVES.
+                    // Expanding the TOP of the ramp is how a power about a low
+                    // pivot pays for the spread it puts at the bottom, and at
+                    // 2.5 the brightest shade came out at 1.07 in green --
+                    // an albedo over one, which is a surface that gains energy
+                    // on every bounce. Measured, and invisible in the oak
+                    // because nothing there wears that shade; it would have
+                    // shown up in the straw ramp, which blends these greens.
+                    //
+                    // Scaled by the WHOLE colour rather than clamped per
+                    // channel, or the cap would desaturate the shade it
+                    // catches -- green is the largest channel here, so a
+                    // per-channel clamp would pull green down toward red and
+                    // blue and turn the top of the ramp grey.
+                    const float mx = maxComp(m.albedo);
+                    if (mx > kAlbedoCeil) m.albedo = m.albedo * (kAlbedoCeil / mx);
+                }
+            }
         }
     }
 
@@ -952,12 +1273,33 @@ class Palette {
         // Sorted by luminance first: the palette's order is the artist's, and
         // it is not monotonic, so interpolating along it unsorted would walk
         // back and forth across the ramp instead of up it.
-        fillGrassRamp(mat::GRASS_0, mat::GRASS_COUNT, foliage);
+        fillGrassRamp(mat::GRASS_0, mat::GRASS_COUNT, foliage, kConiferFloorV);
         // THE BIRCHES' OWN, from the entries only they carry. Falls back to
         // the pines' set if no birch model loaded, so a pine-only world still
         // has grass rather than the built-in default green.
+        // THE FALLBACK TAKES THE CONIFER VALUE WITH IT. If no birch or oak
+        // model loaded there is no broadleaf green to be brighter than, and
+        // this ramp is the pines' set -- lifting it then would just be a
+        // second, paler pine floor. Measured: --oak alone reports 0 broadleaf
+        // greens and takes this branch.
+        // ...AND PULLED APART. See the contrast block in fillGrassRamp: the
+        // broadleaf woods read as one flat green without it, because the only
+        // part of this ramp they ever show is its bottom third.
+        //
+        // THE PIVOT IS THE MIDDLE OF WHAT IS SHOWN, derived rather than
+        // picked -- mat::BGRASS_FLOOR_COUNT is already the number of shades a
+        // blade can reach (and the number the floor scatters over), so the
+        // middle of it is the one shade that must not move.
+        //
+        // THE PINE RAMP IS DELIBERATELY LEFT FLAT. Needle duff in deep shade
+        // genuinely is close to one colour, the request was about the oak, and
+        // the note over kConiferFloorV is a standing warning about brightening
+        // that floor.
         fillGrassRamp(mat::BGRASS_0, mat::BGRASS_COUNT,
-                      bfoliage.empty() ? foliage : bfoliage);
+                      bfoliage.empty() ? foliage : bfoliage,
+                      bfoliage.empty() ? kConiferFloorV : kBroadleafFloorV,
+                      bfoliage.empty() ? 1.0f : kBroadleafContrast,
+                      int(mat::BGRASS_FLOOR_COUNT) / 2);
 
         // -- AND WHAT THE TALL BLADES DRY TO, one ramp per wood ---------------
         //
@@ -1120,6 +1462,18 @@ class Palette {
     std::vector<uint8_t> srcExact_ = std::vector<uint8_t>(mat::COUNT, 0u);
     std::map<uint32_t, uint8_t> index_;
     uint8_t next_ = mat::TREE_BASE;
+    // -- THE LEVEL'S OWN TABLE -- see beginLevelTable ----------------------
+    //
+    // A full copy of look_ with the level's colours written over the entries
+    // the level does not need the wood's meaning of. Allocated TOP-DOWN, so
+    // levelNext_ walks toward TREE_BASE rather than away from it.
+    std::vector<MaterialLook> levelLook_;
+    std::vector<uint8_t> levelReserved_;
+    std::map<uint32_t, uint8_t> levelIndex_;
+    int levelNext_ = 255;
+    int levelMinted_ = 0;
+    int levelOverflow_ = 0;
+    bool haveLevel_ = false;
     int pineEnd_ = 0;
     int birchStart_ = 0;
     int stoneFromRocks_ = 0;
@@ -1274,6 +1628,79 @@ constexpr int TRI_STRAND_SHIFT = 11, TRI_STRAND_MASK = 0x1F;
 constexpr int STRAND_MAX_ROWS = 32;
 // How many voxels one step of the stored row covers. See the note above.
 constexpr int STRAND_ROW_STEP = 2;
+
+// -- HOW TALL SHORT GRASS STANDS, AND WHAT THAT MAKES THE FLOOR ------------
+//
+// AT NAMESPACE SCOPE, AND THAT IS NOT A STYLE CHOICE. These were members of
+// VoxelTerrain and a constexpr member function cannot be CALLED to initialise
+// a constexpr member of the same class -- the class is not complete yet, and
+// the error says so in exactly those words. They belong out here anyway: they
+// are properties of the grass, and both the terrain and the shader's contract
+// read them.
+//
+// The ceiling is a constant rather than a literal in the member because
+// mat::BGRASS_FLOOR_COUNT is DERIVED from it -- the floor under the oaks
+// scatters over exactly the shades the sward standing on it can reach, so the
+// two cannot be changed independently without the ground and the grass
+// drifting apart again. The static_asserts are the whole of that contract.
+//
+// The BIRCH ceiling is the shorter of the two (birchGrassMaxRows 5), so the
+// pine's is the reach for both: a shorter blade cannot reach a shade a taller
+// one misses.
+constexpr int kGrassMinRows = 3;
+constexpr int kGrassMaxRows = 6;
+// One shade per STRAND_ROW_STEP, counting the shade AT the soil -- see
+// groundShade()'s gradient, which is floor(row / step) clamped.
+constexpr int kBladeRampReach = (kGrassMaxRows - 1) / STRAND_ROW_STEP + 1;
+static_assert(int(mat::BGRASS_FLOOR_COUNT) == kBladeRampReach,
+              "the oak floor scatters over shades no blade reaches, or misses some it does");
+static_assert(int(mat::BGRASS_FLOOR_COUNT) <= int(mat::BGRASS_COUNT),
+              "the floor cannot use more of the ramp than the ramp has");
+
+// -- ...AND IN WHAT PROPORTION A BLADE ACTUALLY WEARS THEM -----------------
+//
+// (user 2026-09-17: "again, I want you to take the terrain grass, and make it
+//  match the same colors as the grass strand grass".)
+//
+// THE FLOOR AND THE BLADES ALREADY USED THE SAME THREE GREENS AND STILL DID
+// NOT MATCH, because they mix them in different proportions -- and a different
+// mix of the same paints is a different colour. The floor scattered them
+// uniformly, 33/33/33; a blade lays them down its own height, two voxels per
+// shade from the soil up, so a 3-voxel blade never reaches shade 2 at all and
+// the aggregate is weighted to the dark end. Measured, the floor was 15.5%
+// brighter than the grass standing in it -- worse than the 5.9% it started at,
+// because widening the ramp for contrast also widened the gap this opens.
+//
+// SO THE WEIGHTS ARE COUNTED, NOT CHOSEN. Every blade height the oak grows,
+// every voxel row in it, binned by the shade groundShade would give it:
+//
+//     rows 3   0 0 1          rows 5   0 0 1 1 2
+//     rows 4   0 0 1 1        rows 6   0 0 1 1 2 2
+//
+// which is 8 / 7 / 3 out of 18 -- 44.4%, 38.9%, 16.7%, the measured
+// distribution to a tenth of a per cent. Deal the floor those odds and the two
+// average to the same green by construction.
+//
+// DERIVED AT COMPILE TIME so raising the grass moves the floor with it. The
+// shader mirrors the three numbers and is asserted against them in world.h.
+constexpr int bladeShadeWeight(int shade) {
+    int n = 0;
+    for (int r = kGrassMinRows; r <= kGrassMaxRows; ++r)
+        for (int v = 0; v < r; ++v) {
+            const int k = v / STRAND_ROW_STEP;
+            const int c = int(mat::BGRASS_FLOOR_COUNT) - 1;
+            if ((k > c ? c : k) == shade) ++n;
+        }
+    return n;
+}
+constexpr int kBladeW0 = bladeShadeWeight(0);
+constexpr int kBladeW1 = bladeShadeWeight(1);
+constexpr int kBladeW2 = bladeShadeWeight(2);
+constexpr int kBladeWTotal = kBladeW0 + kBladeW1 + kBladeW2;
+static_assert(mat::BGRASS_FLOOR_COUNT == 3,
+              "the floor's weight table is written for three shades");
+static_assert(kBladeWTotal > 0, "a blade with no voxels has no colour");
+
 
 // The value the mesher stores for a blade standing on surface voxel `hc` --
 // its base row is the one above. Never 0, which is what marks a face as a
@@ -1520,6 +1947,57 @@ inline std::vector<Perch> collectPerches(const VoxAsset &a,
 }
 
 // ---------------------------------------------------------------------------
+// WHERE FRUIT HANGS IN AN OAK -- the same anchors, RINGED instead of scattered.
+//
+// (user 2026-09-17: "add apples and oranges to some of the trees in the oak
+//  forest. import the v1 mechanics of this.")
+//
+// collectPerches already answers the hard question -- a cell with wood over it
+// and clear air below, so nothing can hang inside the dome or float near a
+// branch instead of on one -- and a fruit wants exactly that cell. What it does
+// NOT answer is WHICH of them, and for a crop that matters in a way it does not
+// for cones.
+//
+// A PINE DROPS FOURTEEN CONES AND AN OAK CARRIES SIX TO EIGHTEEN APPLES. The
+// cones are drawn uniformly and there are enough of them that clumping averages
+// out; six fruit drawn the same way land in whatever corner of the crown the
+// hash happens to favour, and a tree with all its apples on one side reads as a
+// mistake rather than as a tree. The browser engine hit this first and its
+// answer is the one worth copying: sort the anchors by ANGLE about the crown's
+// centre, and take the j-th fruit out of the j-th angular sector. The crop then
+// rings the crown by construction, at any count, with no rejection loop.
+//
+// EVENLY SAMPLED TO A CAP, which is the second half of the same trick. These
+// crowns offer hundreds of anchors and a list that long costs memory per model
+// for no placement freedom -- 96 sectors is more than five times the most fruit
+// any tree carries. Sampling AFTER the sort spreads the survivors around the
+// crown; sampling before it would keep one arc and throw the rest away.
+//
+// ITS OWN LIST RATHER THAN A SORT IN PLACE. `perches` is shared with the
+// pinecones, which draw uniformly and do not care about order -- but they do
+// care about WHICH index a hash lands on, so permuting the list they read would
+// move every cone in the pine wood for a change that has nothing to do with
+// pines. Cheaper to be wrong about memory than about that.
+// ---------------------------------------------------------------------------
+inline std::vector<Perch> fruitAnchors(const std::vector<Perch> &src, int sx, int sz,
+                                       int cap = 96) {
+    std::vector<Perch> a = src;
+    const float cx = float(sx) * 0.5f, cz = float(sz) * 0.5f;
+    auto ang = [&](const Perch &p) { return atan2f(float(p.z) - cz, float(p.x) - cx); };
+    std::sort(a.begin(), a.end(),
+              [&](const Perch &p, const Perch &q) { return ang(p) < ang(q); });
+    if (int(a.size()) <= cap) return a;
+    std::vector<Perch> out;
+    out.reserve(size_t(cap));
+    // The half-step keeps the samples off both ends of the sorted run, so the
+    // first and last survivors are a sector apart like every other pair rather
+    // than adjacent across the wrap.
+    for (int i = 0; i < cap; ++i)
+        out.push_back(a[size_t((float(i) + 0.5f) / float(cap) * float(a.size()))]);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // WHAT IS IN EACH BLOCK OF A MODEL: nothing, some of it, or all of it.
 //
 // A COARSE SUMMARY THAT PAYS FOR ITSELF TWICE. Re-meshing a damaged boulder
@@ -1731,6 +2209,65 @@ inline VoxMesh meshAsset(const VoxAsset &a, const std::vector<uint8_t> &idOfEntr
 }
 
 // ---------------------------------------------------------------------------
+// ONE BLOCK OF A BIG ASSET, MESHED AGAINST THE WHOLE OF IT.
+//
+// meshAsset's sibling, and the difference is the only interesting thing about
+// it: the LOOP runs over the block, and the NEIGHBOUR TEST reads the full grid.
+// Mesh a block as an asset in its own right and every one of its six faces
+// comes out walled, because the voxels on the other side of the cut are simply
+// not in the asset -- 128 blocks of a map would gain the surface area of 128
+// boxes, all of it buried inside solid rock and all of it traced.
+//
+// WHY BLOCKS AT ALL: a bullet takes a chip out of the level, and the level is
+// 136 M cells that take 383 ms to mesh in one piece. Nothing can carve that.
+// Cut into 64-voxel columns it is 3-4 ms for the block the round hit, which a
+// weapon can afford. See World::carveLevel.
+//
+// Vertices are RELATIVE to the block's own corner, so the instance transform
+// places it -- exactly as every other asset in this engine is placed.
+// ---------------------------------------------------------------------------
+inline VoxMesh meshAssetBlock(const VoxAsset &a, const std::vector<uint8_t> &idOfEntry, float scale,
+                              int bx0, int by0, int bz0, int bsx, int bsy, int bsz) {
+    VoxMesh m;
+    const float s = scale;
+    auto solid = [&](int x, int y, int z) -> bool {
+        const uint8_t v = a.at(x, y, z);      // at() answers 0 outside the grid
+        return v != 0 && idOfEntry[v] != mat::AIR;
+    };
+    const int x1e = mini(bx0 + bsx, a.sx), y1e = mini(by0 + bsy, a.sy), z1e = mini(bz0 + bsz, a.sz);
+    for (int y = by0; y < y1e; ++y)
+        for (int z = bz0; z < z1e; ++z)
+            for (int x = bx0; x < x1e; ++x) {
+                const uint8_t v = a.at(x, y, z);
+                if (!v) continue;
+                const uint8_t id = idOfEntry[v];
+                if (id == mat::AIR) continue;
+                const float x0 = float(x - bx0) * s, x1 = x0 + s;
+                const float y0 = float(y - by0) * s, y1 = y0 + s;
+                const float z0 = float(z - bz0) * s, z1 = z0 + s;
+                if (!solid(x, y + 1, z))
+                    m.addQuad({x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}, id,
+                              face::POS_Y);
+                if (!solid(x, y - 1, z))
+                    m.addQuad({x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}, id,
+                              face::NEG_Y);
+                if (!solid(x + 1, y, z))
+                    m.addQuad({x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}, id,
+                              face::POS_X);
+                if (!solid(x - 1, y, z))
+                    m.addQuad({x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}, id,
+                              face::NEG_X);
+                if (!solid(x, y, z + 1))
+                    m.addQuad({x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}, id,
+                              face::POS_Z);
+                if (!solid(x, y, z - 1))
+                    m.addQuad({x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}, id,
+                              face::NEG_Z);
+            }
+    return m;
+}
+
+// ---------------------------------------------------------------------------
 // The terrain
 //
 // A heightfield, so the world is a pure function of (i, j) and never has to be
@@ -1833,6 +2370,17 @@ struct ChunkScratch {
 // second world class. The two woods differ in their LANDFORM and their PALETTE,
 // not in how a voxel becomes a triangle.
 // ---------------------------------------------------------------------------
+// -- WHICH WOODS A SPECIES LIVES IN, as a set. See VoxelTerrain::woodBit.
+//
+// One bit per band so a table can say "both broadleaf bands" (kWoodBroad),
+// which is what the mouse, the grass snake and the frog all want and which no
+// single index can express.
+inline constexpr uint8_t kWoodPine = 1u;
+inline constexpr uint8_t kWoodBirch = 2u;
+inline constexpr uint8_t kWoodOak = 4u;
+inline constexpr uint8_t kWoodBroad = kWoodBirch | kWoodOak;
+inline constexpr uint8_t kWoodAll = kWoodPine | kWoodBirch | kWoodOak;
+
 enum class Biome : uint8_t {
     Pine,   // the original: high relief, ridges, basins, a needle floor
     Birch,  // low rounded hills, one light green everywhere, beehives
@@ -1877,6 +2425,42 @@ struct ChunkEdits {
     // heightmap path -- see the note over the voxel pass.
     std::unordered_map<uint64_t, std::pair<int, int>> col;
 
+    // -----------------------------------------------------------------------
+    // THE BOUNDING BOX OF THE EDITED COLUMNS, IN WORLD VOXELS.
+    //
+    // (user 2026-09-17: "when tilling the land, the terrain glitches out".)
+    //
+    // THE GROUND PATCH ASKED THE WRONG QUESTION AND IT COST 25 ms A REBUILD.
+    // World::groundPatch skips its fifteen-neighbour sweep where nothing has
+    // been dug, and it decided that per CHUNK -- but a chunk is hundreds of
+    // cells and a hoe bite is one, so the first till turned the sweep back on
+    // for the whole chunk and every cell in it paid the lookups again. MEASURED
+    // over the same walk, with and without the hoe in hand:
+    //
+    //     sampling   2-4 ms, 4 rebuilds      ->   20-31 ms, 35 rebuilds
+    //
+    // -- 25 ms landing on the frame of every swing, and that is what "the
+    // terrain glitches out" is: a stall, not a hole.
+    //
+    // A BOX IS THE RIGHT GRANULARITY. Four ints, exact for the one shape an
+    // edit ever has (a disc or a sphere), and it answers "is this 4x4 cell
+    // anywhere near an edit" in four comparisons instead of sixteen hash
+    // lookups. It is never SHRUNK -- a revert leaves it as it was, which costs
+    // a sweep over ground that no longer needs one and can never miss one that
+    // does.
+    int ei0 = INT_MAX, ej0 = INT_MAX, ei1 = INT_MIN, ej1 = INT_MIN;
+
+    void noteColumn(int i, int j) {
+        if (i < ei0) ei0 = i;
+        if (j < ej0) ej0 = j;
+        if (i > ei1) ei1 = i;
+        if (j > ej1) ej1 = j;
+    }
+    // Does [a0,a1] x [b0,b1] (world voxels) touch anything edited here?
+    bool touchesRect(int a0, int b0, int a1, int b1) const {
+        return ei0 <= ei1 && a1 >= ei0 && a0 <= ei1 && b1 >= ej0 && b0 <= ej1;
+    }
+
     static uint64_t vkey(int i, int j, int y) {
         return (uint64_t(uint32_t(i) & 0x1fffffu) << 42) |
                (uint64_t(uint32_t(j) & 0x1fffffu) << 21) |
@@ -1903,6 +2487,25 @@ struct ChunkEdits {
 // The edit sets of every chunk that has any, and the one thing that writes them.
 class EditStore {
   public:
+    // -----------------------------------------------------------------------
+    // FORGET EVERY EDIT THE PLAYER HAS MADE.
+    //
+    // (user 2026-09-17: "let me press q to refresh the game" -- G, in the end.)
+    //
+    // Every pit, every tilled bed, every planted seed. The generator is a pure
+    // function of (x, z), so the wood that comes back is the one it always
+    // described -- this map IS the difference between the world as generated
+    // and the world as played in, and dropping it is the whole of a reload.
+    //
+    // THE CHUNKS HAVE TO GO WITH IT. A meshed chunk already has these edits
+    // baked into its geometry, so clearing this alone would leave every hole on
+    // screen until something happened to re-mesh it. See World::reloadWorld,
+    // which is the only caller and does both.
+    void clear() {
+        std::lock_guard<std::mutex> lk(mx_);
+        byChunk_.clear();
+    }
+
     std::shared_ptr<const ChunkEdits> get(int cx, int cz) const {
         std::lock_guard<std::mutex> lk(mx_);
         const auto it = byChunk_.find(ChunkEdits::ckey(cx, cz));
@@ -1942,7 +2545,8 @@ class EditStore {
                                            : std::make_shared<ChunkEdits>(*it->second);
                             }
                             slot->vox[ChunkEdits::vkey(i, j, y)] = mat::AIR;
-                            auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
+                            slot->noteColumn(ni, nj);
+                    auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
                             if (span.first == 0 && span.second == 0) span = {y, y + 1};
                             else {
                                 span.first = mini(span.first, y);
@@ -1981,6 +2585,7 @@ class EditStore {
                                                     : std::make_shared<ChunkEdits>(*it->second);
                     }
                     slot->vox[ChunkEdits::vkey(i, j, y)] = mat::AIR;
+                    slot->noteColumn(ni, nj);
                     auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
                     if (span.first == 0 && span.second == 0) span = {y, y + 1};
                     else {
@@ -2021,6 +2626,7 @@ class EditStore {
                                                     : std::make_shared<ChunkEdits>(*it->second);
                     }
                     slot->vox[ChunkEdits::vkey(i, j, y)] = cm.second;
+                    slot->noteColumn(ni, nj);
                     auto &span = slot->col[ChunkEdits::ckey(ni, nj)];
                     if (span.first == 0 && span.second == 0) span = {y, y + 1};
                     else {
@@ -2077,6 +2683,7 @@ class EditStore {
                 const int sy = (y & 0x100000) ? y - 0x200000 : y;
                 for (int rj = -1; rj <= 1; ++rj)
                     for (int ri = -1; ri <= 1; ++ri) {
+                        ce.noteColumn(si + ri, sj + rj);
                         auto &span = ce.col[ChunkEdits::ckey(si + ri, sj + rj)];
                         if (span.first == 0 && span.second == 0) span = {sy, sy + 1};
                         else {
@@ -2136,8 +2743,24 @@ inline bool isSoilMat(uint8_t m) {
     // TILLED EARTH IS STILL SOIL. A shovel that could not move ground a hoe had
     // just turned over would be the one patch of dirt in the world you cannot
     // dig, which is a trap rather than a rule.
+    // -- AND THE BROADLEAF GREEN, WHICH IS THE OAK'S WHOLE FLOOR ------------
+    //
+    // (user 2026-09-16: "when planting a seed or tilling the land with a hoe,
+    // the terrain glitches out".)
+    //
+    // isGrass WAS HERE AND isBGrass WAS NOT, and that gap became the oak wood's
+    // entire surface the day its floor was made green. Everything that asks
+    // "can a tool move this ground" runs through here -- toolTakes(Takes::Soil),
+    // the hoe's till, the shovel's dig -- so in the oak the hoe found no soil
+    // under the crosshair at all. --hoe-test said it plainly once it was run
+    // there: "the swing found no ground to aim at".
+    //
+    // isGrass itself is vestigial -- the pine and birch floors have been soil
+    // and litter since the green paint was removed -- but it is the exact slot
+    // this needed, and leaving it while adding the other ramp keeps the rule
+    // honest: a green FLOOR is diggable ground whichever wood painted it.
     return m == mat::DIRT || m == mat::SAND || m == mat::SILT || m == mat::TILLED ||
-           isSeed(m) || isGrass(m) || isSoil(m) || isLitter(m);
+           isSeed(m) || isGrass(m) || isBGrass(m) || isSoil(m) || isLitter(m);
 }
 
 class VoxelTerrain {
@@ -2294,6 +2917,37 @@ class VoxelTerrain {
     const char *woodName(float x) const {
         return oakAt(x) ? "oak" : birchAt(x) ? "birch" : "pine";
     }
+    // -----------------------------------------------------------------------
+    // WHICH WOOD THIS IS, AS A BIT, FOR THE POPULATIONS THAT BELONG TO ONE.
+    //
+    // (user 2026-09-17: "add the grass snake, frog, and mouse to the oak
+    //  forest. remove the armadillo and porcupine from the oak forest.")
+    //
+    // Every per-wood life gate used to be
+    // `(sp.wood == 1) != (birchMix(sx) >= 0.5f)`, which is a TWO-wood test --
+    // and birchMix is 0 through the whole oak band, so a pine-only species
+    // PASSED there and a birch-only species was REFUSED. Not a mis-tuning: the
+    // oak silently answering "pine" to every question about which wood it is.
+    // The armadillo, the porcupine and the fly stood in the oak with "pine
+    // only" printed beside them at load, and the mouse, the grass snake and the
+    // frog could not be there at all.
+    //
+    // A BIT RATHER THAN AN INDEX, so a table can name a SET -- "both broadleaf
+    // bands" is the commonest answer and has no index. v1 reached the same
+    // shape from the other side: its BIO_OAKF is read by sim/nav.js as EITHER
+    // broadleaf band, and DES_BIRCHF exists only to narrow one species back out
+    // of the oak again.
+    //
+    // THE LARGEST WEIGHT WINS, rather than a threshold on one mix. Inside a
+    // seam both neighbours have weight and the larger is the wood you are in --
+    // the same answer woodName gives, so a creature and the /locate line that
+    // sends you to it cannot disagree about where it lives.
+    uint8_t woodBit(float x) const {
+        float wp = 0.0f, wb = 0.0f, wo = 0.0f;
+        woodMix(x, &wp, &wb, &wo);
+        if (wo >= wb && wo >= wp) return kWoodOak;
+        return (wb >= wp) ? kWoodBirch : kWoodPine;
+    }
     float oakMix(float x) const {
         return forced ? (biome == Biome::Oak ? 1.0f : 0.0f) : oakWeight(x);
     }
@@ -2356,7 +3010,21 @@ class VoxelTerrain {
     // itself keeps all of them describing one lake. A lift applied at
     // waterVoxAt would move the SURFACE and leave the carve shaping a basin
     // for the old one.
-    float pineWater = 34.0f;          // metres, read off the pine field above
+    // 34 -> 36 (user 2026-09-17: "increase the water surface area ... theres
+    // way too much sand"). Two metres of line is 3.3x the water and it CUTS
+    // the beach rather than growing it, which is the part worth stating
+    // plainly: the shore band is a fixed rise above the LINE, so raising the
+    // line does not widen it -- it moves it up onto steeper ground, where the
+    // same rise covers less plan area. Measured over 640 x 1600 m of pine:
+    //
+    //     34.0   4.41% wet, 28 bodies, 68 dry sandy columns per 100 wet
+    //     36.0   8.17% wet, 38 bodies, 53
+    //     38.0  13.41% wet, 44 bodies, 40
+    //
+    // 38 was tempting and is too much -- 13% of a wood under water is a
+    // wetland, and the body count says it gets there by flooding the ground
+    // between lakes rather than by making lakes.
+    float pineWater = 36.0f;          // metres, read off the pine field above
     // The fade starts AT the band boundary and runs 120 m. sstep has zero
     // derivative at each end, so the line is already flat where the fade
     // approaches 1 -- which is exactly where the lakes are -- and all the steep
@@ -2414,7 +3082,27 @@ class VoxelTerrain {
     // 0.81 -> 0.73 against the pine wood's 0.45. What closes the rest of that
     // gap is a shorter sand band for this wood -- 0.7 m puts it at 0.46 --
     // and that is a separate constant, not this one.
-    float birchWater = 7.5f;   // +1 m again -- see the sweep above
+    // ONE BROADLEAF LINE, 2026-09-17 ("the birch and oak should share the same
+    // terrain/water generation"). 7.5 was measured against the birch's OWN
+    // field, which no longer exists -- heightM now gives the birch oakHeight,
+    // and a waterline is a property of the height DISTRIBUTION rather than of
+    // the wood, so the old number stopped meaning anything the moment the
+    // ground under it changed. See the note over oakWater, which says exactly
+    // this about the oak and is the reason that one had to be re-measured too.
+    // 5 -> 6, WITH THE OAK, and the two still match each other. See
+    // pineWater for the lever and tests/puddle_survey.cpp for the sweep:
+    //
+    //     5.0   6.52% wet, 15 bodies, 57 dry sandy columns per 100 wet
+    //     6.0   8.52% wet, 24 bodies, 54
+    //     7.0  10.86% wet, 27 bodies, 52
+    //
+    // THE BIRCH HAS THE PINE'S MECHANICS ALREADY and has had since both woods
+    // were put through one carve and one bank -- see the single return at the
+    // end of heightM. What it does not have, and must not, is the pine's
+    // NUMBER: 36 m sits eleven metres over the birch field's median. A wood
+    // with a quarter of the relief needs its own line against its own height
+    // distribution, and that is the whole of the difference between them.
+    float birchWater = 6.0f;   // == oakWater, and must stay equal
     // -- AND THE OAK'S, WHICH IS NOT OPTIONAL ---------------------------------
     //
     // (user 2026-09-16: "import the oak forest from v1 into v2".)
@@ -2452,7 +3140,11 @@ class VoxelTerrain {
     // a property of the wood's height DISTRIBUTION, so it has to be re-measured
     // every time the field moves. Nothing warns you: a drowned band still
     // renders.
-    float oakWater = 5.0f;
+    // 5 -> 6, with the birch, and for the same sweep -- see birchWater. The
+    // oak ends up the wettest of the three at 11.3% because its floor was
+    // already dropped kOakDropM to give it water at all; that is the band
+    // reading as a valley wood rather than a hillside one, and it is wanted.
+    float oakWater = 6.0f;
 
     // THE BASIN THRESHOLD. It decides where heightM CARVES A HOLLOW, and that
     // is now the only thing it decides -- it used to gate the wet test too,
@@ -2484,6 +3176,112 @@ class VoxelTerrain {
     // heightM, which is where getting this wrong cost the lakes their depth.
     float basinGateOver = 14.0f;
     float basinGateRamp = 14.0f;
+
+    // -----------------------------------------------------------------------
+    // NO PUDDLES: GROUND THAT DIPS UNDER THE LINE WITHOUT A BASIN IS FILLED IN.
+    //
+    // (user 2026-09-17: "can you prevent little puddles from forming? we want
+    //  lakes more then ponds".)
+    //
+    // THERE ARE TWO WAYS TO BE WET IN THIS ENGINE AND ONLY ONE OF THEM IS A
+    // LAKE. A basin is CARVED -- basinAt clears basinT, the hollow is cut to
+    // basinBed, and what fills it is a body of water with a shape somebody
+    // chose. The other way is an accident: the landform happens to wander a few
+    // centimetres under a line that is drawn across the whole band, and the dip
+    // fills. That second kind is every puddle in the world, it is arbitrarily
+    // small, and no amount of moving the waterline removes it -- lowering the
+    // line just moves the accident somewhere else, which is what the birch's
+    // long sweep of waterlines was really discovering.
+    //
+    // THE BIRCH ALREADY HAD THE ANSWER, BY CONSTRUCTION AND BY LUCK. Its line
+    // sits UNDER its field minimum, so there are no accidental dips there at
+    // all -- see birchWater, whose note calls that out in as many words: "water
+    // can only exist where a basin was actually CARVED". That property is worth
+    // having on purpose and in every wood, rather than as a coincidence of one
+    // band's numbers that any change to its relief would break. Giving the oak
+    // real water (kOakDropM) put its line back INSIDE its field, which is why
+    // the puddles turned up there first.
+    //
+    // SO THE GROUND IS RAISED, NOT THE WATER TEST GATED. A gate on the wet test
+    // is what this engine tried before and removed, and its note says why: a
+    // threshold leaves a DRY PIT below the waterline the moment it bites, which
+    // is a cliff at the edge of the water. Lifting the ground has no such edge
+    // -- the column stops being under the line because it is not under the line
+    // any more, and everything downstream (the mesher, the sand, the walk, the
+    // lake life) agrees without being told.
+    //
+    // AND IT IS EXACTLY THE COMPLEMENT OF THE CARVE, WHICH IS WHAT MAKES IT
+    // SAFE. Note the sense of this field: in basinAt a LOW value is a bowl.
+    // The carve runs on `b < basinT`, at full strength by basinT - 0.10 and at
+    // nothing by basinT, so the fill is full at basinT and gone by
+    // basinT - puddleFade. Wherever the carve does anything, this does
+    // proportionally less; where the carve does nothing -- which is every
+    // accidental dip in the world -- this does all of it.
+    //
+    // GETTING THAT SENSE BACKWARDS IS WORTH RECORDING, because the measurement
+    // read as a plausible result rather than as a bug: the first cut filled
+    // where b was LOW, which is inside the lakes, and it took the birch from
+    // 6.52% wet to 1.54% and its largest body from 17,940 m2 to 5,132. That is
+    // "fewer, smaller lakes" -- a believable answer to a request phrased as
+    // "fewer puddles", arrived at by eating the lakes from the middle outwards.
+    // The histogram is what showed it: the >10k bucket emptied in all three
+    // woods at once, and nothing that only removed puddles could do that.
+    // 0.50 RATHER THAN basinT ITSELF, and the sweep is why. At 0.40 the fill
+    // reached full strength the instant the carve stopped, which chopped the
+    // RIM off every real lake -- the pine wood went 4.41% wet to 1.89% and its
+    // biggest body lost a fifth of its area. Held back to 0.50 the fill only
+    // bites where the basin field is well clear of any bowl, and the measured
+    // difference is entirely ponds:
+    //
+    //                 wet          bodies    >400 m2   biggest      in >2k m2
+    //     pine    4.41 -> 2.57%    28 -> 17   23 -> 12  7452 -> 5856  69 -> 71%
+    //     birch   6.52 -> 6.52%    15 -> 15   10 -> 10  17940 (same)  90 -> 90%
+    //     oak     9.11 -> 8.14%    21 -> 16   15 -> 10  29400 (same)  89 -> 93%
+    //
+    // THE BIRCH IS THE CONTROL AND IT DOES NOT MOVE AT ALL. Its line already
+    // sits under its field minimum, so it had no accidental water to lose --
+    // which is exactly the prediction, and the reason to believe the other two
+    // lost puddles rather than lake.
+    float puddleT = 0.50f;     // where the fill is at full strength
+    // -- OFF BY DEFAULT, AND IT IS THE FILL THAT MADE THE SAND BANKS -------
+    //
+    // (user 2026-09-17: "THERES no water in the oak forest ... increase the
+    //  water surface area ... theres way too much sand".)
+    //
+    // THIS IS WHAT THE FILL ACTUALLY DOES, and it took a per-band shore census
+    // to see it. It lifts sub-waterline ground to wl + VOXEL_M -- one voxel
+    // ABOVE the line -- and the shore rule paints sand on everything up to
+    // wl + sandRise. So every puddle it removed became a BEACH. It did not
+    // make the water tidier, it converted it into the exact thing being
+    // complained about, and it did so worst in the wood with the widest
+    // shore:
+    //
+    //                  wet        dry sand per 100 wet
+    //     pine    2.51 -> 4.41%      196 -> 68
+    //     birch   6.52 -> 6.52%       58 -> 57
+    //     oak     8.12 -> 9.11%       72 -> 53
+    //
+    // The birch is the control again and does not move, for the same reason it
+    // did not move when the fill landed: its line sits under its field minimum
+    // so it had no shallow water to convert.
+    //
+    // KEPT, NOT DELETED. The machinery is correct for what it was asked --
+    // "lakes more then ponds" -- and it is the only thing in here that can
+    // express that. What it cost was not visible from the pond census it was
+    // tuned on, only from the shore census that came after. Set puddleFade
+    // back to 0.20 to have it, and re-run the shore ratio before believing it
+    // is free. The anti-puddle job is done by the WATERLINE now: a higher line
+    // merges neighbouring bodies rather than erasing them, which is the same
+    // goal reached from the other side and it adds surface area instead of
+    // taking it away.
+    float puddleFade = 0.0f;   // 0 = off; 0.20 was the tuned width when it ran
+    // AND A CEILING ON HOW MUCH GROUND MAY BE INVENTED. Without one, a deep
+    // hollow that happens to score no basin would be filled to the brim and
+    // read as a plateau -- tens of metres of flat ground where there was a
+    // valley. At 4.0 m a filled dip can never be deeper than a carved lake's
+    // own bed (basinBed 4.5), so anything deeper than this keeps its water and
+    // becomes a pond on its own merits.
+    float puddleCapM = 4.0f;
 
     // -----------------------------------------------------------------------
     // THE BANK: how far above the line the shore reaches, and how hard it
@@ -2599,7 +3397,101 @@ class VoxelTerrain {
     // twice as far in plan as it did at 0.125. bankGrainM is the only thing
     // stopping that reading as a flight of boards, so it is raised in the same
     // breath rather than left to be discovered later.
-    float bankFlat = 0.070f;
+    // -----------------------------------------------------------------------
+    // 0.070 -> 0.50, AND IT MEANS SOMETHING DIFFERENT NOW.
+    //
+    // "when making the sandbanks flatter, you seem to only be making the bottom
+    //  layers flat instead of all of the sand layers. make all of the sand bank
+    //  steps more even."                                     -- user 2026-09-17
+    //
+    // THE OLD SHAPE COULD NOT DO WHAT THE OLD NUMBER PROMISED. `k` ramped from
+    // bankFlat at the water to 1.0 at the top of the band, so the multiplier
+    // was only ever bankFlat at ONE POINT -- the waterline. The effective
+    // slope, d(out)/dd = bf + (1-bf)(S + uS'), runs 0.07 -> 1.23 -> 1.0 across
+    // the band: flat at the water, and then STEEPER THAN THE NATURAL GROUND
+    // through the middle, because a curve that compresses the bottom has to get
+    // the height back somewhere. Measured as treads, which is what the eye
+    // reads:
+    //
+    //     first step / last step, inside the sand
+    //       pine 4.0x    birch 4.4x    oak 3.9x
+    //
+    // A beach whose first terrace is four times the depth of its last is what
+    // "only the bottom layers are flat" is.
+    //
+    // WHAT IT IS NOW: a CONSTANT slope over the sand, then the catch-up above
+    // it. Inside the flat core `k` does not vary at all, so out = d * k is
+    // linear, every 10 cm contour is the same distance from the last, and the
+    // ratio is 1 by construction rather than by tuning.
+    //
+    // WHY 0.50 AND NOT SOMETHING FLATTER. The core has to be wide enough in
+    // NATURAL height to contain the whole sand band -- d0 = sandRise / slope --
+    // and everything above it has to climb the rest of `rise` in what is left,
+    // at an average of (1 - t0*slope)/(1 - t0). Flatter sand is a wider beach
+    // AND a steeper strip of grass behind it, and there is no arrangement that
+    // escapes that: over the band the mean slope is 1 whatever happens inside.
+    // 0.50 puts the core at d0 = 2.8 m of a 5 m band and the catch-up at 1.64x
+    // natural, against the 1.23x the OLD curve already reached in the middle of
+    // the sand. So the steepest part of the shore barely moves; what changes is
+    // that it is now in the grass above the beach rather than in the beach.
+    float bankFlat = 0.50f;
+
+    // HOW MUCH OF THE BAND THE FLAT CORE MAY TAKE, whatever the arithmetic
+    // asks for. A puddle gets rise = bankRiseMinM = 1.5 m, which is shorter
+    // than the sand band itself, so d0/rise comes out above 1 and the catch-up
+    // would have no room at all. Capping it leaves a quarter of even the
+    // smallest bank to climb in, at the cost of the top voxel or two of a
+    // puddle's sand not being perfectly even -- which is the right thing to
+    // give up, a puddle having about four steps in total.
+    float bankCoreMax = 0.75f;
+
+    // -----------------------------------------------------------------------
+    // THE BROADLEAF BEACH, WHICH IS ONE SLOPE AND ONE WIDTH EVERYWHERE.
+    //
+    // (user 2026-09-17: "make the sand banks consistently flat all the way
+    //  around. only apply this to birch and oak forests.")
+    //
+    // bankBroadRiseM is chosen to make the floor below BITE rather than to be
+    // a band width in its own right: the derived slope is
+    // sandRise / (bankCoreMax * rise), and at 8 m that is 0.233, comfortably
+    // under bankBroadFlat -- so the clamp always takes the floor and the slope
+    // is bankBroadFlat on every broadleaf shore whatever its basin. Lowering
+    // it toward 5.3 m would let the derived value rise above the floor again
+    // and the steep patches would come back, so it has margin on purpose.
+    //
+    // 0.35 IS FLATTER THAN THE SHORE HAS EVER BEEN, and deliberately: the sand
+    // band is 1.4 m, so at this slope a beach is 4.0 m of natural rise wide
+    // against the 2.55 m the old curve gave. Flatter and wider is the direction
+    // every ask about these banks has pointed since 2026-09-12.
+    // 8 -> 11 and 0.35 -> 0.25, a second pass on the same ask. With the slope
+    // now a CONSTANT the spread that is left is the ground's own: measured
+    // shore to shore, the gentlest tenth of broadleaf beaches run a 5 m tread
+    // (a gradient near 0.02 -- a pan) and the steepest tenth about 0.35 m
+    // (0.29). So nothing is steep in absolute terms any more; what is left is
+    // that the steepest end is ten times the gentlest, and it is the steepest
+    // end the eye picks out. Lowering the constant lowers exactly that end --
+    // the pans cannot get much flatter, being already limited by the ground --
+    // so it closes the gap from the only side that can move.
+    //
+    // THE RISE HAS TO GO UP WITH IT or the floor stops biting and the derived
+    // slope comes back: sandRise / (coreMax * rise) must stay under
+    // bankBroadFlat, which at 0.25 needs rise above 7.5 m. 11 keeps the margin
+    // the 8 had.
+    //
+    // WHAT IT COSTS is the strip above the beach: the catch-up now climbs from
+    // 1.4 m to 11 m over the natural rise left in the band, about 1.95x the
+    // ground's own gradient. That is a firmer rise behind the sand, and it is
+    // the same trade recorded over bankFlat -- over the whole band the mean
+    // slope is 1 whatever happens inside it, so a flatter beach is a steeper
+    // something-else, always.
+    // 11 -> 6, FOLLOWING THE BAND DOWN. This only ever had to be big enough
+    // that the derived slope stays UNDER bankBroadFlat so the floor takes it
+    // (see above): at a 0.5 m band that needs 2.7 m, so 6 keeps a wide margin
+    // while reshaping less than half the ground 11 did. A bank band is ground
+    // the terrain no longer chooses the shape of, so it should be no larger
+    // than the job.
+    float bankBroadRiseM = 6.0f;
+    float bankBroadFlat = 0.25f;
 
     // -----------------------------------------------------------------------
     // THE GRAIN THAT KEEPS THE FLAT BEACH FROM BEING A STAIRCASE.
@@ -2632,8 +3524,53 @@ class VoxelTerrain {
     // the wavelength much below this and it starts failing the survey's
     // "nothing steps 4 voxels or more".
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+    // 0.09, PUT BACK (user 2026-09-17: "the sand banks are jagged instead of
+    // smooth now, make them smooth like they were").
+    //
+    // It was raised to 0.17 with the wavelength halved, to break up the clean
+    // parallel contours that making the treads EVEN had produced -- and it did
+    // break them up. It also made the beach jagged, which is the louder fault:
+    // a grain of 0.17 is nearly two voxels of wobble on a surface quantised at
+    // one, so the sand stopped reading as a smooth slope with a texture and
+    // started reading as rubble.
+    //
+    // THE STAIRCASE IS THE ACCEPTED COST, then, and it is the right way round:
+    // a smooth bank with visible contours is a beach, and a rough one is not a
+    // beach at all. The contours are also much less of a problem than they were
+    // when this was raised, because bankBroadFlat now holds the broadleaf banks
+    // at a gentle CONSTANT slope -- the treads are wide and few rather than
+    // stacked, which is what the grain was fighting.
     float bankGrainM = 0.09f;  // metres, plus and minus -- see bankFlat
     float bankGrainF = 1.10f;  // ~0.9 m wavelength
+
+    // -----------------------------------------------------------------------
+    // ...AND NONE OF IT ON THE BROADLEAF SHORE.
+    //
+    // "have the sand have a smooth step down effect instead of this random
+    //  effect. this is how it used to be. one sand layer after the other."
+    //                                                       -- user 2026-09-17
+    //
+    // THE GRAIN IS THE RANDOM EFFECT, and this is the third time it has been
+    // asked about from a different direction. It exists to break the shore's
+    // contour lines up so a flat bank does not read as a flight of dead-level
+    // boards -- and on a shore whose slope VARIED that was right, because the
+    // treads were all different depths anyway and the wobble hid the seam
+    // between them.
+    //
+    // THE BROADLEAF BANK IS NOT THAT SHORE ANY MORE. bankBroadFlat holds it at
+    // one constant gradient, so its contours are already even, concentric and
+    // the same width -- a flight of steps is exactly what it IS, and what the
+    // user is asking to be allowed to see. Displacing each contour by up to a
+    // whole voxel does not make that smoother, it makes a clean step ragged,
+    // which is the "random effect".
+    //
+    // ZERO ON THE BROADLEAF SIDE, faded on the same weight everything else
+    // here uses so the pine's shore -- which still has a varying slope and
+    // still wants its texture -- is untouched, and the two meet across the band
+    // seam without a line.
+    float bankBroadGrainM = 0.0f;
 
     // -----------------------------------------------------------------------
     // THE WAVES ARE NOT GEOMETRY, AND THE WATER HAS NO LID. BOTH ARE ZERO.
@@ -2819,7 +3756,13 @@ class VoxelTerrain {
     // 1.4 m. v4 uses 0.9, but with the bank now flattening 2.5 m the shore is
     // much broader in PLAN, and 0.9 m of rise across it left barely a strip of
     // sand visible -- the beach disappeared when the white band was removed.
-    float sandRiseM = 1.4f;
+    // 1.4 -> 0.9 (user 2026-09-17: "theres way too much sand"). The pine's
+    // beach was nearly three times the broadleaf's 0.5 and it is the widest
+    // shore in the world, so it is where the complaint lands hardest. At the
+    // new line this takes the pine from 53 dry sandy columns per 100 wet to
+    // 43, and changes no other number in the survey -- sand cannot make a
+    // column wet or dry, it only decides what the dry ones are made of.
+    float sandRiseM = 0.9f;
     // -----------------------------------------------------------------------
     // 0.7 m IN THE BIRCH, HALF THE PINE'S (user 2026-09-13, "there's too much
     // empty sandy bank"). The wood already keeps its own waterline and its own
@@ -2851,14 +3794,47 @@ class VoxelTerrain {
     // woods' shores meet along the band seam and a straight north-south edge is
     // the one shape nothing else in this terrain has.
     // -----------------------------------------------------------------------
-    float birchSandRiseM = 0.7f;
+    // -----------------------------------------------------------------------
+    // 0.7 -> 1.4 -> 0.5. THE BROADLEAF BAND, AND IT IS NOT THE PINE'S ANY MORE.
+    //
+    // (user 2026-09-17: "now theres way too much sandy banks".)
+    //
+    // TWO CHANGES COMPOUNDED AND THIS IS WHERE THEY MET. Unifying the two
+    // broadleaf woods doubled the birch's band (0.7 -> 1.4), and flattening the
+    // bank to bankBroadFlat spread whatever band there is over the plan
+    // distance that gradient needs to climb it -- so the SAME 1.4 m covered
+    // more than twice the ground it used to. MEASURED as the share of dry land
+    // wearing sand:
+    //
+    //     pine 3.35%      birch 26.08%      oak 19.42%
+    //
+    // A quarter of the birch wood was beach. The band height is the right lever
+    // rather than bankBroadFlat, and that is the whole point of separating
+    // them: beach width is sandRise / slope, so lowering the band narrows the
+    // shore WITHOUT making it steeper again -- which is what every earlier ask
+    // about these banks was for. Raising the slope instead would have undone
+    // them.
+    //
+    // IT IS NOT SHARED WITH THE PINE any more either. sandRiseAt lerps
+    // sandRiseM -> this on the broadleaf weight, so the conifer shore keeps the
+    // 1.4 m it was measured at and only the two woods that were asked about
+    // move.
+    float birchSandRiseM = 0.5f;  // the BROADLEAF band; the pine's is sandRiseM
 
     int bankRiseVox() const { return maxi(1, int(bankRiseM / VOXEL_M)); }
     // ASKED AT AN x, ALWAYS. There is deliberately no sandRiseVox() taking no
     // argument any more: it would answer with the pine's band everywhere, and a
     // caller in the birch wood would get a silently wrong shore rather than a
     // compile error.
-    float sandRiseAt(float x) const { return lerpf(sandRiseM, birchSandRiseM, birchMix(x)); }
+    // ON THE BROADLEAF WEIGHT, NOT birchMix. birchMix is 0 through the whole
+    // oak band, so this used to hand the oak the PINE's band -- which happened
+    // to be the right number and was never a visible fault, but it was the same
+    // two-wood assumption that drowned the oak in waterAt. The two constants
+    // are equal today; the lerp is written on the weight that actually means
+    // "broadleaf" so that stops being load-bearing.
+    float sandRiseAt(float x) const {
+        return lerpf(sandRiseM, birchSandRiseM, minf(1.0f, birchMix(x) + oakMix(x)));
+    }
     int sandRiseVoxAt(float x) const { return maxi(1, int(sandRiseAt(x) / VOXEL_M)); }
 
     // -----------------------------------------------------------------------
@@ -2892,9 +3868,43 @@ class VoxelTerrain {
     // `basin` is the carve's own field value at this column -- see
     // bankRiseMinM for what it is used for and for the two alternatives that
     // were measured and rejected.
-    float bankShaped(float h, float wlm, float basin, float x, float z,
+    // -----------------------------------------------------------------------
+    // `fine` IS HANDED IN RATHER THAN ALREADY ADDED, AND THAT IS THE SECOND
+    // HALF OF "CONSISTENTLY FLAT ALL THE WAY AROUND".
+    //
+    // heightM used to do `h += fine` and then call this, so the fine octave was
+    // INSIDE `d` -- and the bank multiplies d by a constant, so flattening the
+    // shore flattened the fine octave with it. At bankBroadFlat that is the
+    // detail's gradient cut to a third, and the note over `h += fine` says what
+    // that detail is for: "the fine octave is most of what stands between a
+    // hillside and a staircase ... its own gradient reaches 0.34, which holds
+    // the steps to about 30 cm wherever the landform underneath has gone flat."
+    // The flattening was quietly taking away the one thing holding the treads
+    // down, exactly where the ground was already flat.
+    //
+    // WHAT THAT MEASURED AS. A tread is VOXEL_M / (k * groundSlope), so with
+    // the detail scaled away a shore on flat ground had almost no gradient left
+    // and its terraces ran metres deep, while a shore on a hillside kept
+    // short ones. Shore to shore, p90 over p10 of the mean tread:
+    //
+    //     birch 16.9x    oak 15.1x     (pine, unflattened, 6.6x)
+    //
+    // That spread IS "some areas are steeper than other areas", and no constant
+    // multiplier can close it: multiplying every slope by the same number
+    // scales the variation, it does not remove it.
+    //
+    // ADDED AFTER THE FLATTENING, the detail keeps its full amplitude on the
+    // beach whatever the bank does, so every shore has a real gradient and none
+    // of them can spread into a pan. It stays SMOOTH -- an 11 m wavelength is a
+    // gentle undulation, not the rubble that raising bankGrainM produced (user:
+    // "the sand banks are jagged instead of smooth now").
+    //
+    // STILL CONTINUOUS AT THE TOP OF THE BAND: k reaches 1.0 there, so the
+    // in-band value is wlm + rise + fine, and the out-of-band value is h + fine
+    // with h = wlm + rise. The same number, with the detail on both sides.
+    float bankShaped(float h, float wlm, float basin, float x, float z, float fine,
                      TerrainMemo &memo) const {
-        if (wlm == kNoWater) return h;
+        if (wlm == kNoWater) return h + fine;
         // HOW BIG A BANK THIS BODY OF WATER HAS EARNED.
         // OVER 0.25 OF THE FIELD, NOT THE CARVE'S 0.10. The carve can afford a
         // tight ramp because it is applied to a height; this one changes the
@@ -2905,7 +3915,45 @@ class VoxelTerrain {
         // is not a decision with a sharp boundary.
         const float bm =
             (basin >= basinT) ? 0.0f : sstep(minf(1.0f, (basinT - basin) / 0.25f));
-        const float rise = bankRiseMinM + (bankRiseM - bankRiseMinM) * bm;
+        // -------------------------------------------------------------------
+        // THE BROADLEAF BANDS GET A FIXED BAND, AND THAT IS THE WHOLE OF
+        // "CONSISTENTLY FLAT ALL THE WAY AROUND".
+        //
+        // "theres still some areas where the sand banks are steeper then other
+        //  areas. make the sand banks consistently flat all the way around.
+        //  only apply this to birch and oak forests."       -- user 2026-09-17
+        //
+        // The steep patches are THIS LINE. `rise` is basin-driven -- a big lake
+        // earns 5 m of bank and a puddle 1.5 -- and the core slope below is
+        // derived from it, so a shore standing in thin basin got a band too
+        // short to hold the sand, the slope clamped up toward 1.0, and that
+        // stretch of shore came out at the hillside's own gradient with no
+        // flattening at all. Two shores of the same lake can sit in different
+        // basin values, so the steepness changed AROUND a single pond, which is
+        // exactly what was reported.
+        //
+        // A FIXED RISE MAKES THE SLOPE A CONSTANT. With `rise` fixed at
+        // bankBroadRiseM the derived slope is sandRise / (coreMax * rise) =
+        // 1.4 / (0.75 * 8) = 0.233, which is under bankBroadFlat -- so the
+        // FLOOR takes it and the answer is bankBroadFlat everywhere, for every
+        // basin value, on every shore of every broadleaf lake. Not merely
+        // similar: the same number.
+        //
+        // WHAT IT COSTS is the thing the basin ramp was protecting: a small
+        // pond now gets the same generous bank a big lake does, so it sits in a
+        // wider sandy bowl than its size argues for. That is the trade the ask
+        // makes, and it is the right way round here -- "consistent" and
+        // "scaled to the lake" cannot both be true, and only one of them was
+        // asked for.
+        //
+        // BLENDED ON THE BROADLEAF WEIGHT, NOT SWITCHED. The pine keeps the
+        // basin ramp, so the two meet across the band seam and a lake lying in
+        // it must not find a step in its own shore -- the wall-in-the-lake
+        // failure, at a fourth boundary. lerpf on the same weight the terrain
+        // and the waterline use.
+        const float broad = minf(1.0f, birchMix(x) + oakMix(x));
+        const float rise = lerpf(bankRiseMinM + (bankRiseM - bankRiseMinM) * bm,
+                                 bankBroadRiseM, broad);
         // THE `edge` FADE IS GONE WITH THE GATE IT EXISTED FOR. It ramped the
         // bank out over the basin mask so that gate's boundary was not a cliff
         // (6-voxel steps, 185 of them over 4 voxels). With no gate there is no
@@ -2939,9 +3987,52 @@ class VoxelTerrain {
         // -------------------------------------------------------------------
         if (d < 0.0f && d >= -VOXEL_M) return wlm;
 
-        if (d <= 0.0f || d > rise) return h;
+        if (d <= 0.0f || d > rise) return h + fine;
         const float u = d / rise;
-        const float ease = u * u * (3.0f - 2.0f * u);
+        // -------------------------------------------------------------------
+        // THE FLAT CORE: CONSTANT SLOPE OVER THE SAND, CATCH-UP ABOVE IT.
+        //
+        // t0 is where the sand ends measured in NATURAL height, as a fraction
+        // of the band -- d0 = sandRise / bankFlat is the depth at which a
+        // constant-slope bank has risen by one sand band. Below it the
+        // multiplier does not move, so every contour inside the beach is the
+        // same distance from the last. See bankFlat for the measurement this
+        // replaced.
+        //
+        // STILL C1 AT THE JOIN, which is why the core can be a hard switch
+        // rather than a third blend: smoothstep has zero derivative at both
+        // ends, so S'(0) = 0 makes the slope continuous where the core stops,
+        // and S'(1) = 0 makes it continuous where the bank meets the hillside.
+        // A kink at either would be a contour line running dead straight along
+        // the top of every beach in the world.
+        //
+        // STILL MONOTONIC. Inside the core out = d * bankFlat with bankFlat > 0;
+        // above it `k` only rises while `d` rises, so the product does too.
+        // THE CORE'S SLOPE IS DERIVED, NOT SET. First attempt used bankFlat
+        // directly and made the ratio WORSE -- 3.9x to 6.0x in the oak -- for a
+        // reason the constant cannot see: `rise` is not 5 m, it is between
+        // bankRiseMinM and bankRiseM depending on how much basin this shore
+        // stands in, and most shores are nearer the bottom of that. A 1.5 m
+        // band has no room for a 2.8 m core, so the sand spilled into the
+        // catch-up, which the core had just made SHORTER and therefore steeper.
+        //
+        // So the slope is whatever makes this band's sand fit its core:
+        //   * never below bankFlat  -- do not over-flatten a shore with room,
+        //   * never above 1.0       -- a bank steeper than the hill it is cut
+        //                             into is a scarp, not a beach. A small
+        //                             puddle simply gets no flattening, and
+        //                             since k is then constant at 1.0 the whole
+        //                             way, it is still perfectly EVEN, which is
+        //                             what was actually asked for.
+        // Continuous in `rise`, so neighbouring columns cannot disagree.
+        const float sandM = sandRiseAt(x);
+        // The FLOOR is what makes the broadleaf answer a constant -- see the
+        // note over `rise` above, and bankBroadFlat for the number.
+        const float slope =
+            clampf(sandM / (bankCoreMax * rise), lerpf(bankFlat, bankBroadFlat, broad), 1.0f);
+        const float t0 = minf(bankCoreMax, sandM / (slope * rise));
+        const float v = (u <= t0) ? 0.0f : (u - t0) / (1.0f - t0);
+        const float ease = v * v * (3.0f - 2.0f * v);
         // NEVER BELOW ONE VOXEL OVER THE LINE, and this clamp is the whole
         // difference between a beach and a drowned one.
         //
@@ -2959,10 +4050,13 @@ class VoxelTerrain {
         // construction. This is the continuous form of that floor.
         // k is the slope multiplier; `edge` fades it back to 1.0 (the ground's
         // own slope) as the basin mask falls away.
-        const float k = bankFlat + (1.0f - bankFlat) * ease;
+        const float k = slope + (1.0f - slope) * ease;
         // v4's `waterY + 1 + int(d * k)`, in the continuous form -- see the
         // one-voxel floor note above.
-        const float flat = wlm + maxf(d * k, VOXEL_M);
+        // THE DETAIL AT FULL AMPLITUDE -- see the note on this function. The
+        // one-voxel floor is applied over the top of it, so the detail can
+        // never be what pushes a beach column under the line.
+        const float flat = wlm + maxf(d * k + fine, VOXEL_M);
 
         // THE GRAIN, FADED AT BOTH ENDS OF THE BAND so it cannot introduce a
         // seam of its own -- which would be the basin-gate cliff all over
@@ -2979,8 +4073,14 @@ class VoxelTerrain {
         // The one-voxel floor is re-applied afterwards: grain must never be
         // what pushes a beach column under the line and turns it into lake.
         // That bug cost 6,000 columns of shore once already.
+        // GRAIN ONLY WHERE THE SLOPE STILL VARIES -- see bankBroadGrainM. The
+        // noise is skipped outright where the amplitude is zero, which is the
+        // whole broadleaf shore: an fbm nobody scales by anything is a pure
+        // cost, and this is the hot path for every column near water.
+        const float grainM = lerpf(bankGrainM, bankBroadGrainM, broad);
+        if (grainM <= 0.0f) return maxf(flat, wlm + VOXEL_M);
         const float g = (fbm(memo.bankGrain, x * bankGrainF, z * bankGrainF, 2) - 0.5f) * 2.0f;
-        return maxf(flat + g * bankGrainM * (1.0f - ease), wlm + VOXEL_M);
+        return maxf(flat + g * grainM * (1.0f - ease), wlm + VOXEL_M);
     }
 
     // -----------------------------------------------------------------------
@@ -3124,15 +4224,94 @@ class VoxelTerrain {
     // over half the distance would be dunes.
     static constexpr float kOakF1 = 0.01055f;   // ~95 m hills
     static constexpr float kOakF2 = 0.02170f;   // ~46 m, v1's ratio kept
-    static constexpr float kOakFloorM = 3.0f;
+    // -----------------------------------------------------------------------
+    // 3.0 -> 9.5, AND IT IS WHY THERE WERE FIFTY PUDDLES.
+    //
+    // (user 2026-09-17: "your creating multiple puddles, I would rather have
+    //  1-2 larger bodies of water".)
+    //
+    // THE LAND ITSELF WAS UNDER THE WATERLINE. This floor is 3.0 and the bowl
+    // term takes 2.5 more off a valley bottom, so the lowest natural ground sat
+    // at 0.5 m against a line at 5.0 -- every flat bottom in the wood was wet
+    // BEFORE any basin was carved. Water is a plain depth test (see
+    // lakeLineAt, and do NOT re-add the basin gate -- it was measured
+    // fragmenting one lake into 26 scraps), so the number of lakes was simply
+    // the number of places the landform dipped: 51 in the oak, 59 in the birch,
+    // the largest holding a fifth of the water.
+    //
+    // Lifting the floor clear of the line makes the un-carved wood DRY, and
+    // then the only water is where basinAt digs a hollow -- which is what a
+    // basin field is for and the shape it already has. Fewer, larger, and in
+    // valleys rather than in every hollow.
+    //
+    // 9.5 - 2.5 = 7.0 m at the lowest, 2 m of clearance over the line. The
+    // whole wood moves up 6.5 m with it; nothing reads that as absolute height
+    // -- the waterline, the sand band and the bank are all measured FROM the
+    // line, and the relief is untouched.
+    // -- 8.0 -> 6.0, BECAUSE IT HAD DRAINED THE WOOD ---------------------
+    //
+    // (user 2026-09-17: "I dont see any water in the oak forest. match the
+    //  same water properties as the pine forest. I just see sand banks with no
+    //  water.")
+    //
+    // AND THAT IS EXACTLY WHAT THE NUMBERS SAID. A waterline is only
+    // meaningful against the height DISTRIBUTION under it, and measured over
+    // the three bands:
+    //
+    //     pine    water 34.00   p5 34.02    4.84% wet
+    //     birch   water  5.00   p5  3.86    6.46% wet
+    //     oak     water  5.00   p1  5.00    0.98% wet   <-- the report
+    //
+    // The pine's line sits at its FIFTH percentile. The oak's sat at its
+    // FIRST -- the whole wood had been lifted clear of its own water, so the
+    // only thing left was the sand band, which is painted from the line rather
+    // than from the water and therefore still appeared. Sand banks with no
+    // water in them, which is the report word for word.
+    //
+    // THE LIFT WAS DELIBERATE and its reasoning is below: a dry plain means
+    // lakes only where basinAt digs, which is how you get few large bodies
+    // instead of many puddles. That argument is sound and it overshot -- 6.5 m
+    // of lift against a 2 m clearance target.
+    //
+    // LOWERED RATHER THAN THE LINE RAISED, and that is the one real choice
+    // here. birchWater must equal oakWater (see the note over it -- they are
+    // blended across the seam, and two different lines make a lake with a
+    // sloping surface), so raising the line would have taken the birch from
+    // 6.46% to about 12% and turned that wood into marsh to water this one.
+    // This constant moves the oak alone.
+    //
+    // 6.0 is arithmetic, not a guess: the offset is purely additive, so the
+    // band moves down 2.0 m with it and p5 lands at 4.87 -- just under the
+    // 5.00 line, which is the pine's own relationship between the two.
+    static constexpr float kOakFloorM = 8.0f;
+    // -- ...AND THE OAK SITS LOWER IN ITS OWN BAND -----------------------
+    //
+    // LOWERING kOakFloorM MOVES BOTH WOODS, which is what the first attempt at
+    // this did and why it is not the lever. The birch was given oakHeight when
+    // the two were unified, so dropping the floor took the birch from 6.46% wet
+    // to 11.61% -- drowning one wood to water the other.
+    //
+    // The BLEND is per-wood, though: heightM sums wBirch * oakHeight and
+    // wOak * oakHeight separately, so handing the two calls different floors
+    // moves the oak alone and still crosses the seam smoothly -- the seam is a
+    // weighted sum of two continuous fields either way, so there is no step to
+    // make. That is the whole reason this can be a constant rather than a
+    // second waterline (birchWater must equal oakWater, or a lake at the seam
+    // has a sloping surface).
+    //
+    // 3.0 m puts the oak's p5 at 3.87 against the birch's 3.86 -- the two woods
+    // share a waterline AND now share a relationship to it.
+    static constexpr float kOakDropM = 3.0f;
     static constexpr float kOakHillM = 24.0f;
     static constexpr float kOakBowlM = 2.5f;
 
-    static float oakHeight(float x, float z, TerrainMemo &memo) {
+    // `floorM` is where this field's lowest plain sits. The BIRCH passes
+    // kOakFloorM and the OAK passes it less kOakDropM -- see the note there.
+    static float oakHeight(float x, float z, TerrainMemo &memo, float floorM = kOakFloorM) {
         const float a = fbm(memo.oakA, x * kOakF1 + 91.7f, z * kOakF1 + 33.1f, 3);
         const float b = fbm(memo.oakB, x * kOakF2 + 47.3f, z * kOakF2 + 8.9f, 3);
         const float u = sstep(sstep(a * 0.82f + b * 0.18f));
-        return kOakFloorM + kOakHillM * u - kOakBowlM * (1.0f - u) * (1.0f - u);
+        return floorM + kOakHillM * u - kOakBowlM * (1.0f - u) * (1.0f - u);
     }
 
     // -----------------------------------------------------------------------
@@ -3335,15 +4514,38 @@ class VoxelTerrain {
             const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
             h += wPine * (14.0f + roll * 48.0f + swell * 21.5f);
         }
-        if (wBirch > 0.001f) {
-            // ALL FIVE ROLL OCTAVES AND ALL THREE SWELL -- the birch field is
-            // the one it always had, value for value. See the note above.
-            const float bRoll = warpedFbm(memo.warpX, memo.warpZ, memo.birchRoll, x * 0.0130f,
-                                          z * 0.0130f, 1.5f, 5);
-            const float bSwell = fbm(memo.birchSwell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 3);
-            h += wBirch * (2.0f + bRoll * 15.0f + bSwell * 7.0f);
-        }
-        if (wOak > 0.001f) h += wOak * oakHeight(x, z, memo);
+        // ---------------------------------------------------------- birch
+        // THE BIRCH IS THE OAK'S FIELD NOW, NOT ONE OF ITS OWN.
+        //
+        // "make the birch forest more hilly like the oak. the birch and oak
+        //  should share the same terrain/water generation."  -- user 2026-09-17
+        //
+        // It used to be `2 + roll*15 + swell*7` over five roll octaves and
+        // three swell. MEASURED against the oak over a 900 m square, and the
+        // gap is not subtle -- it is the whole complaint:
+        //
+        //     birch  p5  6.26  med 12.54  p95 16.65   relief 10.39 m
+        //     oak    p5  3.57  med 15.52  p95 24.32   relief 20.75 m
+        //
+        // Half the relief. Calling oakHeight is the literal reading of "share
+        // the same terrain generation", and it is better than copying the
+        // constants across: there is now ONE broadleaf landform and no second
+        // place to edit when it is tuned.
+        //
+        // THE BIRCH|OAK SEAM DISAPPEARS BY CONSTRUCTION, which is the part
+        // worth having. A seam column has wBirch > 0 and wOak > 0 and both
+        // branches now call oakHeight(x, z, memo) -- the same function at the
+        // same point, hitting the same memo, so the second call returns the
+        // first one's value and the sum is (wBirch + wOak) * oakHeight, which
+        // is exactly the pure-band height. No blend, so nothing to step.
+        //
+        // WHAT IS LOST: memo.birchRoll and memo.birchSwell are now unused by
+        // this function. They are left in TerrainMemo rather than removed --
+        // the struct is a cache of noise lattices, costs nothing unasked, and
+        // the birch field is one line away if the two woods are ever split
+        // again.
+        if (wBirch > 0.001f) h += wBirch * oakHeight(x, z, memo);
+        if (wOak > 0.001f) h += wOak * oakHeight(x, z, memo, kOakFloorM - kOakDropM);
 
         // THE CARVE IS A FUNCTION OF THE WATERLINE AND EXISTS FOR NOTHING
         // ELSE. It pulls low ground down toward the line so that a lake has a
@@ -3354,7 +4556,7 @@ class VoxelTerrain {
         const float wlm = waterAt(x);
         const float b = (wlm == kNoWater)
                             ? 1.0f
-                            : fbm(memo.basin, x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
+                            : basinAt(x, z, memo);
         if (b < basinT) {
             // FADED WITH THE WATERLINE AT THE SEAM. A basin carves to
             // `wlm - basinBed`, so a hollow inside the fade would follow the
@@ -3388,7 +4590,13 @@ class VoxelTerrain {
             const float lowGate = saturate((wlm + basinGateOver - h) / basinGateRamp);
             // How far this wood's basins are cut. birchMix is a pure function
             // of x with no noise in it, so asking again here costs nothing.
-            const float bed = lerpf(basinBed, birchBasinBed, birchMix(x));
+            // ON THE BROADLEAF WEIGHT, NOT birchMix -- the third place this same
+            // two-wood assumption was hiding (waterAt and sandRiseAt were the
+            // others). birchMix is 0 through the whole oak band, so the oak was
+            // being carved to the PINE's bed and its lakes came out shallower
+            // than the birch's for no reason anybody chose.
+            const float bed =
+                lerpf(basinBed, birchBasinBed, minf(1.0f, birchMix(x) + oakMix(x)));
             h -= m * lowGate * (h - (wlm - bed));
         }
 
@@ -3404,13 +4612,40 @@ class VoxelTerrain {
         // fine octave is most of what stands between a hillside and a
         // staircase. Its own gradient reaches 0.34, which holds the steps to
         // about 30 cm wherever the landform underneath has gone flat.
-        h += fine;
+        // NOT ADDED HERE ANY MORE -- it is handed to bankShaped, which puts it
+        // on AFTER the flattening. See the note on that function: adding it
+        // first meant the shore's flattening also flattened the detail that
+        // stops a beach terracing, and that was most of the shore-to-shore
+        // variation in steepness.
+
         // ONE RETURN, FOR EVERY COLUMN IN THE WORLD. The wood-specific branch
         // is upstream, in the landform; from the carve down there is a single
         // path, so there is no threshold left for the carve or the bank to step
         // across. Both woods have water, both want a shore, and the shore is
         // shaped from the height the column actually has.
-        return bankShaped(h, wlm, b, x, z, memo);
+        return puddleFilled(bankShaped(h, wlm, b, x, z, fine, memo), wlm, b);
+    }
+
+    // -----------------------------------------------------------------------
+    // RAISE AN ACCIDENTAL DIP BACK OVER THE LINE. See puddleT for why.
+    //
+    // `basin` is the carve's own field value at this column, already in hand --
+    // this costs no noise evaluation anywhere in the world.
+    //
+    // ONE VOXEL CLEAR, not a hair: the wet test quantises to voxels, so a
+    // column raised to the line itself lands in the same voxel as the line and
+    // is still wet. Lifting by VOXEL_M is the smallest lift that is actually a
+    // lift, and it is a tenth of what the eye can read on a 10 cm grid.
+    // -----------------------------------------------------------------------
+    float puddleFilled(float h, float wlm, float basin) const {
+        if (wlm == kNoWater || puddleFade <= 0.0f) return h;
+        const float below = wlm - h;
+        if (below <= 0.0f) return h;   // dry ground is nobody's puddle
+        // A LOW BASIN VALUE IS A BOWL -- see puddleT. So the fill grows with
+        // `basin`, the opposite way round to the carve.
+        const float g = sstep(saturate((basin - (puddleT - puddleFade)) / puddleFade));
+        if (g <= 0.0f) return h;       // a real basin: leave the lake alone
+        return h + g * (minf(below, puddleCapM) + VOXEL_M);
     }
 
     // The memo-less form, for the scatter paths -- see the note on TerrainMemo.
@@ -3484,7 +4719,7 @@ class VoxelTerrain {
     float grassSparse = 0.12f;     // a clearing: bare litter, a few blades
     float grassFull = 1.76f;       // a thicket
     float flowerChance = 0.035f;
-    int grassMinRows = 3, grassMaxRows = 6;
+    int grassMinRows = kGrassMinRows, grassMaxRows = kGrassMaxRows;
     // -----------------------------------------------------------------------
     // A FEW TALL STRANDS, AND NOTHING ELSE MOVES (user 2026-09-13, second
     // pass: "revert the grass changes. you seemed to just increase the density
@@ -3683,6 +4918,13 @@ class VoxelTerrain {
     // the 17 the floor can carry. MEASURED over 300 m of birch, the strands per
     // tuft moved 21.0 -> 21.4, so nothing in the shipped spread reaches it.
     float birchGrassDensity = 0.155f;
+    // ...and the oak's. See the note at its use in strandRows.
+    //
+    // 0.40 -> 0.20 (user 2026-09-17: "make the grass strands twice as sparse in
+    // the oak"). Still the thickest floor in the world -- the birch's uniform
+    // sward is 0.155 -- but the ground between the blades shows again, which at
+    // 0.40 it essentially did not.
+    float oakGrassDensity = 0.20f;
     // TWO VOXELS SHORTER ON AVERAGE (user 2026-09-14: "decrease the grass in
     // the birch forest by 2 voxels on average"), and that is why there is a
     // birch MIN as well as a birch max now.
@@ -3972,8 +5214,35 @@ class VoxelTerrain {
     // the ground down; lakeColumn uses it to decide where water may stand. One
     // function so the two can never drift apart.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // ONE LAKE, NOT FIFTY PUDDLES.
+    //
+    // "your creating multiple puddles, I would rather have 1-2 larger bodies of
+    //  water"                                              -- user 2026-09-17
+    //
+    // 0.0160 AND FOUR OCTAVES IS A FIELD FULL OF SMALL DIPS. At that frequency
+    // a basin is about sixty metres across, and the three octaves under it add
+    // wiggle at 30, 15 and 8 m -- so a hollow that would have been one lake is
+    // broken into a handful of separate ones by detail far smaller than the
+    // thing being described. MEASURED over a 680 x 1200 m square per band:
+    //
+    //     pine 35 bodies   birch 59   oak 51,  largest only ~20% of the water
+    //
+    // AND IT IS ALSO THE SAND COMPLAINT. A beach is SHORELINE, and shoreline
+    // goes with the COUNT: fifty puddles have several times the edge of one
+    // lake holding the same water, so cutting the count cuts the sand without
+    // touching the sand band at all -- which is the lever that does not make
+    // the shore steeper again.
+    //
+    // 0.0042 IS A ~240 m BASIN, and TWO octaves: enough to keep the outline
+    // irregular, not enough to carve an island out of the middle of it. The
+    // seed offsets are unchanged so the basins stay where they were, only
+    // larger and joined up.
+    static constexpr float kBasinF = 0.0020f;
+    static constexpr int kBasinOct = 2;
+
     float basinAt(float x, float z, TerrainMemo &memo) const {
-        return fbm(memo.basin, x * 0.0160f + 311.7f, z * 0.0160f + 157.3f, 4);
+        return fbm(memo.basin, x * kBasinF + 311.7f, z * kBasinF + 157.3f, kBasinOct);
     }
 
     // -----------------------------------------------------------------------
@@ -4170,7 +5439,25 @@ class VoxelTerrain {
         // ground a blade could root in at all -- so sand, rock and a lake bed
         // still grow nothing, and that is the whole of what the old test was
         // really protecting.
-        if (!isSoil(top) && !isLitter(top)) return 0;
+        // -- ...AND THE OAK'S GREEN FLOOR, WHICH IS WHY IT HAD NO GRASS ----
+        //
+        // (user 2026-09-16: "there are still no grass strands in the oak
+        // forest".)
+        //
+        // THIS TEST IS WHAT BROKE IT, and it broke the moment the oak floor was
+        // made green a few hours earlier. It asks "is this ground a blade could
+        // root in", and it answered by naming the two materials that existed
+        // when it was written -- soil and litter. BGRASS_0 is neither, so every
+        // column in the oak wood returned 0 and the wood grew not one blade.
+        //
+        // The floor LOOKED right, which is exactly why this was not obvious: a
+        // green surface with no strands on it reads as grass rendered flat
+        // rather than as grass that is missing.
+        //
+        // isBGrass ONLY REACHES THE OAK. The birch floor is soil and litter
+        // like the pine's -- see the long note in topMaterial -- so the only
+        // ground in the world wearing this ramp is the oak's.
+        if (!isSoil(top) && !isLitter(top) && !isBGrass(top)) return 0;
         const float x = wx(i), z = wx(j);
         // HOW MUCH BIRCH THIS COLUMN IS. That wood is a meadow, so its floor
         // gets no clearings at all -- the patch field is faded out of the
@@ -4183,6 +5470,27 @@ class VoxelTerrain {
         // uniformly full, and the two crossfade so the seam is not a line.
         const float pineP = grassDensity * (grassSparse + grassFull * t);
         float p = lerpf(pineP, birchGrassDensity, bm);
+        // -- AND THE OAK IS THICK WITH IT -------------------------------
+        //
+        // (user 2026-09-16: "have the grass strands be abundant in the oak
+        // forest".)
+        //
+        // UNIFORM LIKE THE BIRCH'S AND MUCH DENSER. The pine floor keeps
+        // glades and thickets because a conifer stand is patchy underfoot;
+        // an oak wood under a closed broadleaf canopy is sward from trunk
+        // to trunk, so the patch field is faded out here exactly as it is
+        // for the birch -- what is left is one number.
+        //
+        // 0.40 against the birch's 0.155 and the pine's 0.037..0.578 swing.
+        // It sits above the pine's THICKET average rather than between the
+        // two woods, which is what "abundant" asks for: the floor a blade
+        // does not grow on is the exception rather than the rule.
+        //
+        // SAFE TO APPLY AFTER THE BIRCH LERP because no column is ever in
+        // two seams at once -- a seam is 90 m and a band is 800 -- so bm and
+        // om are never both non-zero and neither blend can undo the other.
+        const float om = oakMix(x);
+        if (om > 0.0f) p = lerpf(p, oakGrassDensity, om);
         // ...and SHORTER on the birch side -- 1 to 5 voxels against the pine's
         // 3 to 6, which is two voxels off the mean of what the meadow used to
         // stand at. BOTH ENDS CROSSFADE: carrying only the ceiling over would

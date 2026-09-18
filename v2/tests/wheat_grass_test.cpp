@@ -204,12 +204,22 @@ int main() {
            "even the shortest tuft blade reaches the head shades");
     }
 
-    // Neither ramp may run into the other or into the model palette --
-    // mat::TREE_BASE sits directly above them, and an overlap paints tall grass
-    // with whatever colour a tree happened to register.
+    // Neither ramp may run into the other or into the model palette -- an
+    // overlap paints tall grass with whatever colour a tree happened to
+    // register.
+    //
+    // THE STRAW NO LONGER BUTTS ONTO mat::TREE_BASE, and this asked that it
+    // did. The hoe's TILLED and the three SEED shades were inserted between
+    // them (2026-09-17), so this failed the moment the earth could be tilled --
+    // it was reading "nothing lies between the straw and the models" as "the
+    // straw ends where the models begin", and only the first is the rule.
+    // Walked to TREE_BASE through the reserved ids instead, which still catches
+    // an overlap and does not need editing the next time something is reserved.
     ck(mat::WHEAT_0 + mat::WHEAT_COUNT == mat::BWHEAT_0, "the two straw ramps do not overlap");
-    ck(mat::BWHEAT_0 + mat::BWHEAT_COUNT == mat::TREE_BASE,
-       "the model palette starts just above them");
+    ck(mat::BWHEAT_0 + mat::BWHEAT_COUNT == mat::TILLED,
+       "the tilled earth starts just above the straw");
+    ck(mat::SEED_0 == mat::TILLED + 1 && mat::SEED_0 + mat::SEED_COUNT == mat::TREE_BASE,
+       "the seed shades close the gap to the model palette");
 
     std::printf("\n%s\n\n", fails ? "FAILURES" : "all ok");
     return fails ? 1 : 0;

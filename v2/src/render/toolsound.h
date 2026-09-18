@@ -101,6 +101,16 @@ inline constexpr float kSfxReloadBase = 0.45f;    // bow/reload.mp4 -- absent, s
 // 10^((-40 - meanRMS)/20) lands every effect at the same -40 dB effective
 // level". Taking its number keeps this cue level with the rest of the bank.
 inline constexpr float kSfxPickUpBase = 0.0631f;
+// -- THE BITE -----------------------------------------------------------
+//
+// (user 2026-09-17: "play the eating sound when eating something.")
+//
+// 0.1084 IS THE BROWSER ENGINE'S OWN LEVELLED VALUE for this exact file, and
+// it is measured rather than chosen: every effect there was put through
+// ffmpeg volumedetect and given base = 10^((-40 - meanRMS)/20), so they all
+// land at the same -40 dB. Picking a fresh number here would put the bite out
+// of line with the kit it sits beside.
+inline constexpr float kSfxEatBase = 0.1084f;
 
 // Five takes each, and two voices per take. BOTH numbers are that engine's and
 // the second is the one that is easy to think optional: a held swing repeats
@@ -147,6 +157,9 @@ class ToolSounds {
         // ONE VOICE, and that engine says why: "only one grab flight is ever in
         // the air". The same rule holds here -- Drops arms one absorb at a time.
         pickUp_ = sfx_.load(dir + "/pick_up.mp4", kSfxPickUpBase, 1);
+        // ONE VOICE. A bite is 900 ms and there is one mouth; a second voice
+        // could only ever overlap the first with itself.
+        eat_ = sfx_.load(dir + "/eat.mp4", kSfxEatBase, 1);
         if (block_ >= 0) ++loaded;
         if (stretch_ >= 0) ++loaded;
         if (swish_ >= 0) ++loaded;
@@ -230,6 +243,10 @@ class ToolSounds {
 
     // -- the bow, one voice per stage of the shot ---------------------------
     void draw() { sfx_.play(stretch_); }
+    // A MOUTHFUL. Played when the bite STARTS rather than when it finishes:
+    // the sound IS the eating, and a chew that arrives after the food has gone
+    // is a sound effect for something that already happened.
+    void eat() { sfx_.play(eat_); }
     // Cut the moment the string is released, so a half-draw never rings on over
     // the loose. That engine's stopBowStretch, and its reason verbatim.
     void release() { sfx_.stop(stretch_); }
@@ -271,6 +288,7 @@ class ToolSounds {
     int wood_[kSfxTakes] = {-1, -1, -1, -1, -1};
     int rock_[kSfxTakes] = {-1, -1, -1, -1, -1};
     int block_ = -1, stretch_ = -1, swish_ = -1, impact_ = -1, reload_ = -1, pickUp_ = -1;
+    int eat_ = -1;
     // Seeded apart, or the two sets would walk the same permutation and a
     // chop-then-mine would repeat the same index in both.
     vb::SfxBag woodBag_{kSfxTakes, 0x51ED270Bu};

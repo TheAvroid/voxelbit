@@ -87,6 +87,22 @@ static const uint kGrassCount = 6;
 // mat::BGRASS_0 exactly.
 static const uint kBGrass0 = 32;
 static const uint kBGrassCount = 6;
+// ...AND HOW MANY OF THOSE SIX THE GROUND ITSELF IS ALLOWED. A blade reads
+// this ramp as a gradient up its own height and short grass is 3 to 6 voxels,
+// so no blade ever reaches the top three shades; the floor scattered over all
+// six and came out 29% brighter than the grass standing in it. Mirrors
+// mat::BGRASS_FLOOR_COUNT, which derives it from the blade height cap.
+static const uint kBGrassFloorCount = 3;
+// ...AND IN WHAT PROPORTION. The floor scattered those three uniformly while a
+// blade lays them down its own height two voxels per shade, so the same three
+// greens averaged to two different colours and the ground read as not matching
+// the grass standing in it -- measured at 15.5% brighter. These are the
+// blade's own odds, counted over every height the oak grows: 8 / 7 / 3 of 18.
+// Mirrors VoxelTerrain::kBladeW0/1/2, which derives them and is asserted
+// against these in gpu/world.h.
+static const uint kBGrassFloorW0 = 8;
+static const uint kBGrassFloorW1 = 7;
+static const uint kBGrassFloorW2 = 3;
 // TALL GRASS, WHICH GOES OVER TO STRAW ON THE WAY UP. Two more blade ramps,
 // one per wood for the same reason GRASS and BGRASS are split -- each STARTS at
 // its own wood's GRASS_0, so the foot of a tuft is the colour of the short
@@ -590,6 +606,29 @@ struct V6DdgiConsts
 // emissive particle being a fourth copy of the firefly's two fields.
 static const int kEmitSlots = 4;
 
+// -- ...AND HOW MANY PENDANTS A PLACE MAY HANG ---------------------------
+//
+// See V6Params::bulbs. bulbPos is ONE position and sampleBulbSplit traces one
+// shadow ray at it, which was right while the only lit room in the engine was
+// the pause room. Nuketown has eight, and picking the nearest to the CAMERA --
+// the first cut -- makes a room go dark as you walk out of it. Reported as
+// "the lightbulb seems to turn off when the player is away and turn on when
+// the player is near", which is exactly what a light that follows the eye does.
+//
+// THE FIX IS PER SHADING POINT, NOT PER FRAME, and that is why this is an array
+// rather than a better choice of the one: each shaded vertex lights from
+// whichever bulb is nearest IT, so every room is lit by its own lamp at all
+// times and the cost is still exactly ONE shadow ray. What it gives up is a
+// room lit by two of its own bulbs at once, which no room in this map has.
+//
+// TWELVE. The map measures eight and a slot is 16 bytes.
+static const int kBulbSlots = 12;
+
+// How much of the shadow ray nearest a lamp is ignored, in metres -- enough to
+// clear the whole fitting and not just the glass. See sampleBulbSplit, where
+// the cap printed a dark disc on every ceiling in the map.
+static const float kBulbSelfClearM = 0.55f;
+
 // -- THE WOUND RED -------------------------------------------------------
 //
 // v1's HURT_RED, unchanged, and its note is worth keeping with it: "it has to
@@ -771,6 +810,19 @@ struct V6Params
     float fogFar;
     float fogAniso;
     float fogAmbient;
+
+    // -- HOW MUCH OF A POINT LIGHT THE AIR CARRIES ------------------------
+    //
+    // A WHOLE ROW FOR ONE FLOAT, and knowingly. This was a constant in
+    // Trace.cs.slang whose own note said a fifth float on the fog row above
+    // would cost a new 16-byte line to hold a number nothing outside that file
+    // reads -- and then it was asked for on a slider, so something outside it
+    // reads it. The three pads are what a cbuffer row costs; they are not
+    // waste, they are the price of the one that is used.
+    float sparkGlow;
+    float sparkPad0;
+    float sparkPad1;
+    float sparkPad2;
 
     // Each cascade's min corner in world metres, and its cell size. Snapped to
     // a whole number of cells host-side; the shader only ever reads them.
@@ -991,6 +1043,18 @@ struct V6Params
     // one: an engine with no sparks loaded pays a single compare.
     float4 emitters[kEmitSlots];
 
+    // -- EVERY PENDANT IN THE PLACE, AND THE NEAREST ONE LIGHTS ------------
+    //
+    // xyz IS THE POSITION AND w IS 1 FOR A LIVE SLOT, negative for an empty
+    // one -- the emitters' own convention above, for the emitters' own reason:
+    // filled from 0 up, so the shader stops at the first negative and a world
+    // with no lamps pays one compare.
+    //
+    // bulbPos ABOVE IS STILL THE FALLBACK and is still what a single-bulb
+    // caller sets. This array overrides it when it has anything in it. See
+    // kBulbSlots for why the choice is made per shading point.
+    float4 bulbs[kBulbSlots];
+
     // -----------------------------------------------------------------------
     // THE WORDS OVER THE BUTTONS. All-zero everywhere but the pause room -- see
     // V2Holo, and V2Tracer::clearHolos.
@@ -1090,7 +1154,9 @@ static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows
 // 64, UP FROM 48, and the row is the hit flash -- see V6Instance::hurt.
 static_assert(sizeof(V6Instance) == 64, "V6Instance must fill whole 16-byte rows");
 static_assert(sizeof(V2Holo) == 112, "V2Holo must fill whole 16-byte rows");
-// 656, UP FROM 640, and the sixteen are the firefly's glowRadiance + glowMtl
+// 672, UP FROM 656, and the latest sixteen are sparkGlow and its three pads
+// -- one float on a slider, one row. See V6Params::sparkGlow.
+// 656, UP FROM 640, and those sixteen are the firefly's glowRadiance + glowMtl
 // -- one row, because they are packed as the float3 + uint pair immediately
 // above them rather than as a lone uint that would cost a row to padding.
 // ...AND THE HOLO SLOTS ARE COUNTED RATHER THAN TYPED. It said 3, and adding a
@@ -1099,7 +1165,7 @@ static_assert(sizeof(V2Holo) == 112, "V2Holo must fill whole 16-byte rows");
 // needed a person to notice. kHoloSlots is the one place that decides.
 // ...AND THE EMITTER TABLE IS COUNTED THE SAME WAY, for the same reason: it is
 // four float4s today and the number lives in exactly one place.
-static_assert(sizeof(V6Params) == 656 + kEmitSlots * 16 + kHoloSlots * 112,
+static_assert(sizeof(V6Params) == 672 + kEmitSlots * 16 + kBulbSlots * 16 + kHoloSlots * 112,
               "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2

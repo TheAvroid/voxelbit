@@ -80,6 +80,23 @@ TALLEST = 11.5
 # oak band's own field tops out at OAKY + OAKHILL = 162 -- so a 171-voxel oak on the highest oak ground
 # reaches 333 against WY 384. Nothing about HMAX or the reserve has to move for this.
 GROW = 1.0        # scale applied to every group EXCEPT the shortest; 1.0 = the original bake
+# -- --no-json: BAKE FOR v2 WITHOUT MOVING v1 ---------------------------------------------------
+# (user 2026-09-16, asking for the oaks 50% bigger again -- in v2 this time.)
+#
+# THE TWO ENGINES READ DIFFERENT ARTEFACTS. v1 loads oak_trees.json and only the json (see the
+# header). v2 loads the .vox files directly -- gpu/world.h, oakDir + "/oak_N.vox" -- and never opens
+# the json at all. So a bake aimed at one engine hits the other unless it is told not to.
+#
+# AND AT GROW 2.25 IT WOULD BREAK v1, which is why this flag exists rather than a note saying "be
+# careful". The arithmetic is the one the GROW note above already sets out: v1's oak band tops out
+# at OAKY + OAKHILL = 162 voxels of ground, WY is 384 on the common world, and the tallest oak here
+# is 256 voxels. 162 + 256 = 418. The crown is written past the top of the world and comes out flat.
+# CANOPY (265) is NOT the binding test -- 256 is under it; the world height is.
+#
+# So v2 can have 25.6 m oaks and v1 cannot, and --no-json is how one bake serves the engine that can
+# without touching the one that cannot. Re-running WITHOUT it is how to move v1, and that means
+# choosing a GROW its ceiling can take -- 1.5, which is what it already ships.
+WRITE_JSON = True
 PIN_PAL = None    # path to an existing oak_trees.json whose palette should be reused verbatim
 # -- THE PALETTE BUDGET IS THE REAL CONSTRAINT ON THESE TWO NUMBERS, AND IT WAS MEASURED, NOT GUESSED --
 # the game shares ONE 256-entry table across every material in the world, and booting with ?nooaks reports
@@ -112,6 +129,8 @@ for _a in sys.argv[1:]:
         GROW = float(_a[7:])
     if _a.startswith('--pin-pal='):
         PIN_PAL = _a[10:]
+    if _a == '--no-json':
+        WRITE_JSON = False
 
 d = open(GLB, 'rb').read()
 clen = struct.unpack_from('<I', d, 12)[0]
@@ -551,8 +570,13 @@ for m in trees:
 
 out = dict(pal=out_pal, nbark=NBARK, trees=trees)
 s = json.dumps(out, separators=(',', ':'))
-os.makedirs(os.path.dirname(OUT), exist_ok=True)
-open(OUT, 'w').write(s)
-print('wrote %s (%.0f KB), %d trees, %d palette ids (%d bark + %d leaf)'
-      % (OUT, len(s) / 1024, len(out_models), len(pal), NBARK, NLEAF))
+if WRITE_JSON:
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    open(OUT, 'w').write(s)
+    print('wrote %s (%.0f KB), %d trees, %d palette ids (%d bark + %d leaf)'
+          % (OUT, len(s) / 1024, len(out_models), len(pal), NBARK, NLEAF))
+else:
+    print('--no-json: left %s alone (%.0f KB would have been written)'
+          % (OUT, len(s) / 1024))
+    print('           v1 reads the json and only the json, so its oaks are unchanged.')
 print('wrote %d .vox to %s' % (len(trees), VOXDIR))

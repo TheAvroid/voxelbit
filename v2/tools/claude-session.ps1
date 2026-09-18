@@ -44,6 +44,11 @@ param(
     # Arguments for `run`, as one string, e.g. '--background --shot out.png --shot-frame 2'
     [string]$Args = '',
 
+    # `run`: where to put the engine's stdout. WITHOUT this a caller has to
+    # reach for Start-Process itself to capture output -- which is exactly how
+    # the focus rule got broken, so the capture lives here instead.
+    [string]$Out = '',
+
     # `build`: wait for the lock instead of giving up.
     [switch]$Wait,
 
@@ -225,9 +230,33 @@ switch ($Action) {
         if ($a -notmatch '--background') { $a = "--background $a" }
 
         Write-Host "running: v2.exe $a"
-        $p = Start-Process -FilePath "$Root\build\bin\Release\v2.exe" `
-                           -ArgumentList $a -WorkingDirectory $Root `
-                           -WindowStyle Minimized -PassThru
+        # -- NoNewWindow, NOT -WindowStyle Minimized ------------------------
+        #
+        # "stop opening up the terminal on my screen and stop taking my mouse
+        #  away. make this a rule. I thought we already made this a rule but
+        #  its not working"                               -- user 2026-09-17
+        #
+        # THE ENGINE WAS NOT AT FAULT THIS TIME. --background already opens the
+        # render window straight to the taskbar and REFUSES THE CURSOR outright
+        # (App::setLooking returns early on it), so what kept appearing over the
+        # user's work was the CONSOLE Start-Process makes for the child.
+        # -WindowStyle Minimized does not prevent that: the console is created
+        # and THEN minimised, which is a flash across the screen and a focus
+        # change however brief.
+        #
+        # -NoNewWindow creates no console at all -- the child inherits this
+        # session's, which is not on screen. It cannot flash because it does not
+        # exist. Redirection is required with it or two processes interleave on
+        # one console, which is why -Out is a parameter now: a caller that wants
+        # the output must never have to reach for Start-Process itself again.
+        $sp = @{ FilePath = "$Root\build\bin\Release\v2.exe"
+                 ArgumentList = $a; WorkingDirectory = $Root
+                 NoNewWindow = $true; PassThru = $true }
+        if ($Out) {
+            $sp['RedirectStandardOutput'] = $Out
+            $sp['RedirectStandardError'] = "$Out.err"
+        }
+        $p = Start-Process @sp
         if (-not $p.WaitForExit($TimeoutSec * 1000)) {
             Write-Host "timed out after ${TimeoutSec}s -- stopping pid $($p.Id)"
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue

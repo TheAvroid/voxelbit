@@ -373,7 +373,54 @@ uint groundShade(uint packed, float3 p, float3 ng)
         return base + min(row, count - 1u);
     }
 
-    return base + hashVoxel(v) % count;
+    // -- ...AND THE FLOOR DOES NOT GET THE WHOLE RAMP UNDER THE OAKS ------
+    //
+    // (user 2026-09-17: "make the terrain in the oak forest match the same
+    //  green as the grass strands.")
+    //
+    // The ground and the grass were ALREADY the same ramp and still did not
+    // match, because the two halves of this function read it differently. The
+    // gradient above walks a blade from the soil up, and short grass is 3 to 6
+    // voxels -- so at one shade per STRAND_ROW_STEP a blade stops at shade 2
+    // and the top three greens are ones nothing standing in the wood wears.
+    // The scatter below then handed the floor all six, and half the ground
+    // came out a green with no grass to match it: measured 0.3048 albedo
+    // luminance against the blades' 0.2358, 29% brighter.
+    //
+    // So the floor scatters over what the sward REACHES. That is the gradient's
+    // own argument, not a correction to it -- this ramp is a light field over
+    // height, and ground between blades sits at the height of their buried
+    // bases, not at their tips.
+    //
+    // ONLY THE SCATTER. `count` is left alone above so the gradient still has
+    // the whole ramp to climb, which is what a tall blade would need if the
+    // grass ceiling ever rises -- and mat::BGRASS_FLOOR_COUNT would then rise
+    // with it, by construction.
+    const uint scatter = (base == kBGrass0) ? kBGrassFloorCount : count;
+    // -- ...AND THE FLOOR UNDER THE OAKS DEALS THEM A BLADE'S OWN ODDS -
+    //
+    // (user 2026-09-17: "take the terrain grass, and make it match the
+    //  same colors as the grass strand grass".)
+    //
+    // SAME PAINTS, DIFFERENT RECIPE, DIFFERENT COLOUR. Narrowing the
+    // floor to the three shades a blade can reach made the two share a
+    // palette and not an appearance: a uniform scatter mixes them
+    // 33/33/33 while a blade lays them down its own height, two voxels
+    // per shade from the soil, so a short blade never reaches the top
+    // one at all. Measured, the ground came out 15.5% brighter than the
+    // grass standing in it.
+    //
+    // The weights are COUNTED off the blade heights the oak actually
+    // grows -- see VoxelTerrain::bladeShadeWeight, which derives them at
+    // compile time and is asserted against these. 8 / 7 / 3 of 18.
+    if (base == kBGrass0)
+    {
+        const uint w = hashVoxel(v) % (kBGrassFloorW0 + kBGrassFloorW1 + kBGrassFloorW2);
+        return base + (w < kBGrassFloorW0
+                           ? 0u
+                           : (w < kBGrassFloorW0 + kBGrassFloorW1 ? 1u : 2u));
+    }
+    return base + hashVoxel(v) % scatter;
 }
 
 float3 faceNormal(uint dir)
@@ -1449,10 +1496,57 @@ void sampleBulbSplit(Hit h, Frame fr, float3 wo, bool inWater, out float3 sumDif
 {
     sumDiff = float3(0.0f);
     sumSpec = float3(0.0f);
-    if (gParams.bulbMtl == kNoBulb || isBlack(gParams.bulbRadiance))
+    // -- THE LIST IS THE SWITCH NOW, NOT THE MATERIAL --------------------
+    //
+    // (user 2026-09-17: "can you make the spark voxel emit volumetric light
+    //  like the lightbulbs?")
+    //
+    // This used to return unless bulbMtl named a material, which was right
+    // while every point light in the game was a pendant with glass on it. A
+    // SPARK HAS NO SUCH MATERIAL -- it is an emitter (see V6Params::emitters)
+    // and it lives in the wood, where bulbMtl is deliberately kNoBulb so a
+    // level's id cannot light a pine. Gated on the material, a spark could
+    // never light anything anywhere it actually exists.
+    //
+    // So the LIST decides: a filled slot is a light, whatever drew it.
+    if (isBlack(gParams.bulbRadiance))
+        return;
+    if (gParams.bulbMtl == kNoBulb && gParams.bulbs[0].w < 0.0f)
         return;
 
-    const float3 toL = gParams.bulbPos - h.p;
+    // WHICH LAMP LIGHTS THIS POINT: the nearest one to the SHADING POINT, and
+    // not to the camera -- see kBulbSlots, where the difference is the whole
+    // bug this array exists to fix. The loop only CHOOSES; there is still
+    // exactly one shadow ray below, and a place with no array set falls back to
+    // the single bulbPos the pause room used.
+    float3 bulbAt = gParams.bulbPos;
+    // ...AND HOW BRIGHT THAT ONE IS. w is a per-light gain now (see
+    // V6Params::bulbs): 1 for a lamp, a fraction for an ember. Carried out of
+    // the loop with the position, or the nearest light would be chosen from
+    // the list and then lit at the lamp's intensity.
+    float bulbGain = 1.0f;
+    {
+        float best = 1e30f;
+        for (int bi = 0; bi < kBulbSlots; ++bi)
+        {
+            if (gParams.bulbs[bi].w < 0.0f)
+                break;   // filled from 0 up; the first empty slot ends the list
+            const float3 dq = gParams.bulbs[bi].xyz - h.p;
+            // WEIGHTED BY THE GAIN, so a dim ember three metres away does not
+            // outvote the lamp overhead simply by being closer. This is the
+            // one shadow ray in the frame; it should be spent on whichever
+            // light actually delivers the most here.
+            const float qd = dot(dq, dq) / max(gParams.bulbs[bi].w, 1e-4f);
+            if (qd < best)
+            {
+                best = qd;
+                bulbAt = gParams.bulbs[bi].xyz;
+                bulbGain = gParams.bulbs[bi].w;
+            }
+        }
+    }
+
+    const float3 toL = bulbAt - h.p;
     const float d2 = dot(toL, toL);
     if (d2 < 1e-8f)
         return;
@@ -1468,14 +1562,39 @@ void sampleBulbSplit(Hit h, Frame fr, float3 wo, bool inWater, out float3 sumDif
     if (pdf <= 0.0f || (isBlack(fD) && isBlack(fS)))
         return;
 
-    const float tmax = dist - gParams.bulbRadius * 1.9f;
-    if (tmax <= 0.0f)
-        return;
-    if (traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, tmax, inWater))
+    // -- THE LAMP DOES NOT SHADOW WHAT IT IS SCREWED TO --------------------
+    //
+    // (user 2026-09-17: "theres a circlular shadow caused by the bulb on the
+    // cieling, remove it".)
+    //
+    // The shadow ray stops short of the light so the glass does not occlude
+    // itself -- that is what the radius term has always been for. But a pendant
+    // is not just glass: it has a CAP and a fitting sitting between the bulb and
+    // the slab it hangs from, and the ceiling's rays to the light pass straight
+    // through them. Every lamp in the map printed a dark disc on the ceiling
+    // directly above it.
+    //
+    // A PHYSICAL SHADOW, AND STILL WRONG. A real ceiling rose does shade the
+    // plaster it is bolted to, by a few millimetres and invisibly; here the cap
+    // is a 10 cm voxel 40 cm from a point light, so it throws a ring you can
+    // read across the room.
+    //
+    // So the last kBulbSelfClearM of the ray is ignored -- enough to clear the
+    // whole fitting rather than just the glass. The cost is that a real
+    // occluder within half a metre of a bulb stops casting, and in a room lit by
+    // a pendant there is nothing that close to it but the pendant.
+    const float tmax = dist - max(gParams.bulbRadius * 1.9f, kBulbSelfClearM);
+    // STANDING INSIDE THE CLEARANCE IS NOT THE SAME AS BEING IN SHADOW.
+    // `tmax <= 0` means the shading point is within the self-clear distance of
+    // the bulb -- closer to it than the fitting is wide -- and returning there
+    // dropped the light entirely, so walking up to a pendant turned it off. It
+    // is the one place there is certainly nothing between you and the filament,
+    // so the occlusion test is what gets skipped, not the light.
+    if (tmax > 0.0f && traceOccluded(offsetRay(h.p, h.ng, wWorld), wWorld, tmax, inWater))
         return;
 
     const float r = gParams.bulbRadius;
-    const float3 E = gParams.bulbRadiance * (abs(wi.z) / max(d2, r * r));
+    const float3 E = gParams.bulbRadiance * bulbGain * (abs(wi.z) / max(d2, r * r));
     sumDiff = fD * E;
     sumSpec = fS * E;
 }
@@ -1746,6 +1865,7 @@ float3 sampleSky(Hit h, Frame fr, float3 wo, inout Rng rng, int depth, bool inWa
 // ---------------------------------------------------------------------------
 static const int kFogSteps = 40;
 
+
 // One sample of the volume: the near cascade if the point is inside it, the far
 // one otherwise, nothing past the edge of both. The margin keeps a trilinear
 // tap from reaching across the boundary and pulling in the clamped border.
@@ -1765,6 +1885,80 @@ bool fogSampleVolume(float3 p, out float4 s)
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// WHAT A POINT LIGHT PUTS INTO THE AIR IN FRONT OF IT -- analytically.
+//
+// (user 2026-09-17: "can you make the spark voxel emit volumetric light like
+//  the lightbulbs? this would effect the gun bullet and the spark animation.
+//  but they use the same voxel anyway.")
+//
+// THE FIRST CUT OF THIS WAS A TERM INSIDE THE FOG MARCH AND IT COULD NOT HAVE
+// WORKED. Two reasons, and the second is fatal: fogDensity is 0.001 per metre,
+// so ten metres of clear air scatters about one per cent and a halo built out
+// of it is invisible -- and volFog is switched OFF INDOORS (see tracer.h),
+// which is precisely where the lamps and the rifle are. A glow that needs the
+// world's haze is a glow that is absent from every room in the map.
+//
+// SO IT IS ITS OWN MEDIUM AND ITS OWN INTEGRAL. For a point light in a
+// homogeneous medium the in-scattered radiance along a ray has a closed form,
+// and it is one of the few in rendering that is genuinely exact:
+//
+//     integral of ds / (h^2 + s^2)  =  (1/h) * atan(s/h)
+//
+// where h is the perpendicular distance from the light to the ray and s runs
+// along it from the light's closest approach. So the whole shaft costs two
+// atans per light -- no march, no steps, no per-pixel jitter, and no shells to
+// dither away. It is cheaper than the single step it replaces.
+//
+// OCCLUSION COMES FREE FROM THE SEGMENT. The integral runs only to `dist`, the
+// first surface the eye ray hit, so a lamp on the far side of a wall
+// contributes nothing beyond that wall. What it does still contribute is the
+// air in FRONT of the wall, which is a real path (light goes round nothing, but
+// the medium in front is genuinely lit by... nothing, in truth). That is the
+// approximation, it is soft and small, and the alternative is a shadow ray per
+// light per pixel.
+//
+// ISOTROPIC, DELIBERATELY. The fog march uses fogPhase for the sun because a
+// sunbeam is forward-scattered and that is most of what makes it read as a
+// beam. A lamp is surrounded by its glow from every side; giving it a lobe
+// would make the halo depend on where you stand relative to a light that has
+// no direction.
+// ---------------------------------------------------------------------------
+
+// How much the air scatters for THIS effect, per metre. Not fogDensity: see
+// above. This is the knob that says how hazy a lit room looks. It is small
+// enough that a lamp has a halo you can see and big enough that nothing else
+// changes.
+static const float kGlowSigma = 0.030f;
+
+float3 pointLightGlow(float3 ro, float3 dir, float dist)
+{
+    if (isBlack(gParams.bulbRadiance) || gParams.bulbs[0].w < 0.0f)
+        return float3(0.0f);
+    const float t1 = min(dist, 60.0f);   // past this a lamp adds nothing visible
+    if (t1 <= 0.0f)
+        return float3(0.0f);
+    float acc = 0.0f;
+    for (int li = 0; li < kBulbSlots; ++li)
+    {
+        if (gParams.bulbs[li].w < 0.0f)
+            break;
+        const float3 toL = gParams.bulbs[li].xyz - ro;
+        // Where along the ray the light is closest, and how far off it is
+        // there. A light BEHIND the eye gives a negative tc, which the clamp
+        // below turns into a segment that starts at 0 -- correct, not a
+        // special case.
+        const float tc = dot(toL, dir);
+        const float h2 = max(dot(toL, toL) - tc * tc, 1e-4f);
+        const float h = sqrt(h2);
+        // The two ends of the visible segment, measured from closest approach.
+        const float s0 = (0.0f - tc) / h;
+        const float s1 = (t1 - tc) / h;
+        acc += gParams.bulbs[li].w * (atan(s1) - atan(s0)) / h;
+    }
+    // 1/(4 pi) is the isotropic phase function; kGlowSigma is the medium.
+    return gParams.bulbRadiance * acc * (kGlowSigma * 0.0795774715f * gParams.sparkGlow);
+}
 void fogTerms(float2 pixelUv, float3 dir, float dist, out float T, out float3 inscatter)
 {
     T = 1.0f;
@@ -1849,6 +2043,7 @@ void fogTerms(float2 pixelUv, float3 dir, float dist, out float T, out float3 in
         // closed form saturates, where multiplying through would let the fog
         // gain energy with density instead.
         const float3 stepL = sunTerm * s.r + skyTerm * s.g;
+
         scattering += stepL * (1.0f - stepT) * trans;
         trans *= stepT;
 
@@ -3264,6 +3459,12 @@ void main(uint3 tid: SV_DispatchThreadID)
         float3 inscatter;
         fogTerms((float2(pix) + 0.5f) / float2(gParams.dim), primaryDir, primaryDist, T,
                  inscatter);
+        // ...AND THE LAMPS AND THE EMBERS, WHICH DO NOT GO THROUGH THE FOG.
+        // pointLightGlow is its own medium and its own integral precisely so
+        // that it still works where fogTerms returns nothing -- indoors, and
+        // in air too clear to march. Added to the in-scatter because that is
+        // exactly what it is: light that never touched the surface.
+        inscatter += pointLightGlow(gParams.cam.pos, primaryDir, primaryDist);
         L = L * T + inscatter;
         // The haze dims what the surface sent and adds light of its own. The
         // dimming is a property of the path, so it scales both lobes; the added

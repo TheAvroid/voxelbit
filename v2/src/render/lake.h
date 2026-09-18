@@ -400,6 +400,19 @@ inline constexpr float kJumpMinDepthM = 0.5f;
 // bed instead of an eighth means a sampling error has to be twice as large
 // before any of it shows.
 inline constexpr float kFishShallowM = 0.45f;   // a cell under this is not swimmable
+// -- AND WHERE A FISH MAY BE BORN -------------------------------------------
+//
+// Twelve metres, against the engine-wide thirty, for the same reason as
+// kPadBirthMinM and with more room: a fish is 0.6 m, it is UNDER a rippling
+// surface, and from a bank you cannot see one arrive at twelve metres the way
+// you can see a leaf unfold. What the thirty was costing is the same thing it
+// cost the pads -- a pond smaller than sixty metres across has no site outside
+// the floor at all, so it could not be stocked while you stood on it.
+//
+// THE CONE IS LEFT AT kBirthFarM for fish, unlike the pads. A fish that is
+// born swims, so where it appears is not where it is seen a second later, and
+// the case for pulling the cone in was the pads' stillness.
+inline constexpr float kFishBirthMinM = 12.0f;
 inline constexpr float kFishBedClearM = 0.25f;  // ...and it keeps this far off the bed
 // -- HOW THE LEAP STARTS, WHICH IS NOT WITH A TELEPORT ---------------------
 //
@@ -664,6 +677,23 @@ inline constexpr uint32_t kBluegillSalt = 0x81C6u;
 // drifted a hundred metres from it would be recycled somewhere it is plainly
 // visible. Five metres is a lake-sized wander.
 inline constexpr float kLilyLeashM = 5.0f;
+// -- WHERE A PAD MAY BE BORN, WHICH IS NOT WHERE A RABBIT MAY ---------------
+//
+// Six metres, against the engine-wide thirty. See BirthGate::mayAt for the
+// argument in full: the floor is a proxy for `could this be watched arriving`
+// and for something that never moves the view cone answers that question
+// exactly, so the floor is only there to keep a leaf from unfolding at arm's
+// reach. At thirty it was refusing every site on any pond smaller than sixty
+// metres across -- so a small lake could not be populated at all while you
+// stood on it, and only filled once you walked away and the yield rule or the
+// drop radius moved the slots for you. That is the delay that has been
+// reported three times.
+//
+// THE CONE IS UNTOUCHED AND IS STILL DOING THE REAL WORK: nothing is born in
+// the hundred and forty degrees you are facing, at any distance under
+// kBirthFarM. A pad born six metres BEHIND you is simply there when you turn
+// round, which is what scenery is supposed to be.
+inline constexpr float kPadBirthMinM = 6.0f;
 // -- HOW FAST A SLOT MAY MOVE TO BETTER WATER -- see yieldSite --------------
 //
 // ONE EVERY TWO SECONDS WAS THE OTHER HALF OF "THE LIFE IN THE WATER HAS A VERY
@@ -3102,7 +3132,11 @@ class LakeLife {
         int cx, cz;
     };
 
-    void gatherSites(const Vec3 &player, float cellM, uint32_t salt, float minDepthM) {
+    // `birthMinM` is this population's own birth floor -- see BirthGate::mayAt.
+    // Defaulted, so every caller that has not thought about it keeps the
+    // engine-wide thirty metres.
+    void gatherSites(const Vec3 &player, float cellM, uint32_t salt, float minDepthM,
+                     float birthMinM = kBirthMinM, float birthFarM = kBirthFarM) {
         sites_.clear();
         const int r = int(kLakePlaceM / cellM) + 1;
         const int c0x = int(floorf(player.x / cellM)), c0z = int(floorf(player.z / cellM));
@@ -3120,7 +3154,7 @@ class LakeLife {
                 // not one a creature may be BORN into while you are stood next
                 // to it. Waived for a tick after a teleport, when there is no
                 // previous frame to pop against.
-                if (!birth_.mayAt(ex, ez)) continue;
+                if (!birth_.mayAt(ex, ez, birthMinM, birthFarM)) continue;
                 if (!field_.at(st.x, st.z, &st.top, &st.bed)) continue;
                 if (st.top - st.bed < minDepthM) continue;
                 sites_.push_back(st);
@@ -3250,7 +3284,7 @@ class LakeLife {
             }
 
             if (!gathered) {
-                gatherSites(player, cellM, salt, kFishShallowM);
+                gatherSites(player, cellM, salt, kFishShallowM, kFishBirthMinM);
                 gathered = true;
             }
             const Site *st = freeSite([&](int cx, int cz) {
@@ -3366,7 +3400,7 @@ class LakeLife {
             Pad &p = pads_[i];
             if (p.live || lily_.empty()) continue;
             if (!gatheredPads) {
-                gatherSites(player, kPadCellM, kPadSalt, 0.15f);
+                gatherSites(player, kPadCellM, kPadSalt, 0.15f, kPadBirthMinM, kPadBirthFarM);
                 gatheredPads = true;
             }
             // -- AND THE LEAF HAS TO FIT, WHICH IS NOT WHAT THE SITE SAYS ---
@@ -3420,7 +3454,8 @@ class LakeLife {
         if (clock_ >= yieldAt_) {
             yieldAt_ = clock_ + kYieldEverySec;
             if (!lily_.empty()) yieldSite(pads_, player, kPadCellM, kPadSalt,
-                                          [](const Pad &) { return true; });
+                                          [](const Pad &) { return true; }, kPadBirthMinM,
+                                          kPadBirthFarM);
             if (!dfly_.empty()) yieldSite(flies_, player, kDflyCellM, kDflySalt,
                                           [](const Dfly &) { return true; });
         }
@@ -3480,16 +3515,20 @@ class LakeLife {
     // is furthest.
     // -----------------------------------------------------------------------
     template <typename V, typename OwnsF>
-    void yieldSite(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns) {
+    void yieldSite(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns,
+                   float birthMinM = kBirthMinM, float birthFarM = kBirthFarM) {
         for (int n = 0; n < kYieldPerPass; ++n)
-            if (!yieldOne(v, player, cellM, salt, owns)) return;
+            if (!yieldOne(v, player, cellM, salt, owns, birthMinM, birthFarM)) return;
     }
 
     // One retirement, or false when there is nothing worth retiring for. The
     // caller runs it a few times a pass -- see kYieldPerPass.
     template <typename V, typename OwnsF>
-    bool yieldOne(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns) {
-        gatherSites(player, cellM, salt, 0.15f);
+    bool yieldOne(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns,
+                  float birthMinM = kBirthMinM, float birthFarM = kBirthFarM) {
+        // THE SAME FLOOR THE FILL USES, or this rule hunts for sites the fill
+        // is not allowed to take and retires a pad for nothing.
+        gatherSites(player, cellM, salt, 0.15f, birthMinM, birthFarM);
         const Site *want = nullptr;
         for (const Site &st : sites_) {
             if (claimed(v, st.cx, st.cz, owns)) continue;   // sorted, nearest first

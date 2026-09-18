@@ -193,7 +193,54 @@ uint groundShade(uint packed, float3 p, float3 ng)
             (uint(int(v.y) >> kStrandRowShift) - (strand - 1u)) & kStrandRowMask;
         return base + min(row, count - 1u);
     }
-    return base + hashVoxel(v) % count;
+    // -- ...AND THE FLOOR DOES NOT GET THE WHOLE RAMP UNDER THE OAKS ------
+    //
+    // (user 2026-09-17: "make the terrain in the oak forest match the same
+    //  green as the grass strands.")
+    //
+    // The ground and the grass were ALREADY the same ramp and still did not
+    // match, because the two halves of this function read it differently. The
+    // gradient above walks a blade from the soil up, and short grass is 3 to 6
+    // voxels -- so at one shade per STRAND_ROW_STEP a blade stops at shade 2
+    // and the top three greens are ones nothing standing in the wood wears.
+    // The scatter below then handed the floor all six, and half the ground
+    // came out a green with no grass to match it: measured 0.3048 albedo
+    // luminance against the blades' 0.2358, 29% brighter.
+    //
+    // So the floor scatters over what the sward REACHES. That is the gradient's
+    // own argument, not a correction to it -- this ramp is a light field over
+    // height, and ground between blades sits at the height of their buried
+    // bases, not at their tips.
+    //
+    // ONLY THE SCATTER. `count` is left alone above so the gradient still has
+    // the whole ramp to climb, which is what a tall blade would need if the
+    // grass ceiling ever rises -- and mat::BGRASS_FLOOR_COUNT would then rise
+    // with it, by construction.
+    const uint scatter = (base == kBGrass0) ? kBGrassFloorCount : count;
+    // -- ...AND THE FLOOR UNDER THE OAKS DEALS THEM A BLADE'S OWN ODDS -
+    //
+    // (user 2026-09-17: "take the terrain grass, and make it match the
+    //  same colors as the grass strand grass".)
+    //
+    // SAME PAINTS, DIFFERENT RECIPE, DIFFERENT COLOUR. Narrowing the
+    // floor to the three shades a blade can reach made the two share a
+    // palette and not an appearance: a uniform scatter mixes them
+    // 33/33/33 while a blade lays them down its own height, two voxels
+    // per shade from the soil, so a short blade never reaches the top
+    // one at all. Measured, the ground came out 15.5% brighter than the
+    // grass standing in it.
+    //
+    // The weights are COUNTED off the blade heights the oak actually
+    // grows -- see VoxelTerrain::bladeShadeWeight, which derives them at
+    // compile time and is asserted against these. 8 / 7 / 3 of 18.
+    if (base == kBGrass0)
+    {
+        const uint w = hashVoxel(v) % (kBGrassFloorW0 + kBGrassFloorW1 + kBGrassFloorW2);
+        return base + (w < kBGrassFloorW0
+                           ? 0u
+                           : (w < kBGrassFloorW0 + kBGrassFloorW1 ? 1u : 2u));
+    }
+    return base + hashVoxel(v) % scatter;
 }
 
 float3 faceNormal(uint dir)

@@ -142,9 +142,10 @@ struct MarchSpec {
     float speed, fleeSpeed;
     float fps, fleeFps;
     float fleeInM, fleeOutM;   // the sphere, and the hysteresis under it
-    // WHICH WOOD. -1 both, 0 pine only, 1 birch only. The skunk is in both
-    // because that is what was asked for; the other three are not.
-    int wood;
+    // WHICH WOODS, as a set of kWoodPine/kWoodBirch/kWoodOak -- see
+    // VoxelTerrain::woodBit for why this is a mask and not an index, and for
+    // the two-wood bug it replaces.
+    uint8_t woods;
 };
 
 // COUNTS ARE SIX ACROSS THE BOARD -- see the note over kBunnyCount for the
@@ -164,14 +165,37 @@ struct MarchSpec {
 // against the mammals' 11, so six worms cover about the ground two skunks do.
 // The snake keeps v1's own rarity rather than its count (5 over that disc), at
 // THREE, because it is birch-only and the birch band is a slice of the world.
+// The load line's wording, from the mask. Every combination the table actually
+// uses has a name a reader recognises; anything else prints the bits rather
+// than guessing, so a new row cannot be quietly described as something it is
+// not.
+inline const char *woodsName(uint8_t w) {
+    switch (w) {
+        case kWoodAll:   return "all woods";
+        case kWoodPine:  return "pine only";
+        case kWoodBirch: return "birch only";
+        case kWoodOak:   return "oak only";
+        case kWoodBroad: return "birch and oak";
+        case uint8_t(kWoodPine | kWoodOak):  return "pine and oak";
+        case uint8_t(kWoodPine | kWoodBirch): return "pine and birch";
+        default: return "some woods";
+    }
+}
+
 inline constexpr MarchSpec kMarchSpec[kMarchKinds] = {
-    // dir            name          fr  n  cell  salt      spd  flee  fps  ffps  in    out   wood
-    {"skunk",         "skunk",      10, 6, 11.0f, 0x5C0Fu, 2.4f, 4.8f, 6.0f, 12.0f, 3.0f, 4.6f, -1},
-    {"armadillo/walk","armadillo",   8, 6, 11.0f, 0xA2DAu, 0.9f, 0.9f, 24.0f, 24.0f, 3.0f, 4.6f, 0},
-    {"porcupine",     "porcupine",   6, 6, 11.0f, 0x90C0u, 0.9f, 1.8f, 12.0f, 24.0f, 3.0f, 4.6f, 0},
-    {"desert_mouse",  "mouse",       9, 6, 11.0f, 0x3005u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f, 1},
-    {"worm",          "worm",       12, 6,  7.0f, 0x7E2Bu, 1.6f, 1.6f, 24.0f, 24.0f, 3.0f, 4.6f, -1},
-    {"grass_snake",   "snake",      12, 3, 13.0f, 0x4D91u, 1.6f, 3.2f, 24.0f, 48.0f, 7.0f, 8.6f, 1},
+    // THE OAK'S ROSTER, SET 2026-09-17 ("add the grass snake, frog, and mouse
+    // to the oak forest. remove the armadillo and porcupine from the oak
+    // forest"). Until woodBit existed these rows could not say it: the oak
+    // read as pine, so the two pine rows were IN it and the two birch rows
+    // could not be. Both halves of the ask are this column.
+    //
+    // dir            name          fr  n  cell  salt      spd  flee  fps  ffps  in    out   woods
+    {"skunk",         "skunk",      10, 6, 11.0f, 0x5C0Fu, 2.4f, 4.8f, 6.0f, 12.0f, 3.0f, 4.6f, kWoodAll},
+    {"armadillo/walk","armadillo",   8, 6, 11.0f, 0xA2DAu, 0.9f, 0.9f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
+    {"porcupine",     "porcupine",   6, 6, 11.0f, 0x90C0u, 0.9f, 1.8f, 12.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
+    {"desert_mouse",  "mouse",       9, 6, 11.0f, 0x3005u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
+    {"worm",          "worm",       12, 6,  7.0f, 0x7E2Bu, 1.6f, 1.6f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodAll},
+    {"grass_snake",   "snake",      12, 3, 13.0f, 0x4D91u, 1.6f, 3.2f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
 };
 
 // SUMMED OVER THE TABLE, not typed out. It was four terms added by hand and a
@@ -585,9 +609,7 @@ class Bunnies {
             std::printf("  %-8s %zu walk frames, %d slots, %.2f x %.2f m body, %s\n",
                         kMarchSpec[k].name, march_[k].size(), kMarchSpec[k].count,
                         double(marchHX_[k] * 2.0f), double(marchHZ_[k] * 2.0f),
-                        kMarchSpec[k].wood < 0 ? "both woods"
-                                               : (kMarchSpec[k].wood == 0 ? "pine only"
-                                                                          : "birch only"));
+                        woodsName(kMarchSpec[k].woods));
         }
         return ready_;
     }
@@ -626,12 +648,12 @@ class Bunnies {
     template <typename GroundF, typename WetF>
     void update(float dt, const Vec3 &player, const GroundF &ground, const WetF &wet,
                 const std::vector<Solid> &solids,
-                std::function<float(float)> birch = nullptr,
+                std::function<uint8_t(float)> wood = nullptr,
                 std::function<bool(float, float)> sand = nullptr) {
         if (!ready_) return;
         wet_ = wet;
         sand_ = std::move(sand);
-        birch_ = std::move(birch);
+        wood_ = std::move(wood);
         // BORROWED, NOT COPIED, and only for this call. It is the same list the
         // perched birds are handed -- gathered once every half second because
         // trees and boulders do not move, and re-gathering it per animal per
@@ -1271,10 +1293,7 @@ class Bunnies {
                     // across the seam afterwards and that is fine -- what would
                     // not be fine is a population that thins out every time one
                     // of them crosses it.
-                    if (sp.wood >= 0 && birch_) {
-                        const float bm = birch_(sx);
-                        if ((sp.wood == 1) != (bm >= 0.5f)) continue;
-                    }
+                    if (sp.woods != kWoodAll && wood_ && !(wood_(sx) & sp.woods)) continue;
                     const float g0 = ground(sx, sz);
                     const float sl = maxf(maxf(fabsf(ground(sx + 1.0f, sz) - g0),
                                                fabsf(ground(sx - 1.0f, sz) - g0)),
@@ -1914,7 +1933,7 @@ class Bunnies {
     // and for the same reason: the fill asks it per candidate site and nothing
     // else in this file cares, so threading a third template parameter through
     // every sensor to save an indirect call would spread it over the class.
-    std::function<float(float)> birch_;
+    std::function<uint8_t(float)> wood_;
     float clock_ = 0.0f;
     float hx_ = 0.25f, hz_ = 0.4f;   // half the body, across and along -- see loadStrip
     bool ready_ = false;
