@@ -257,7 +257,39 @@ class Player {
     // -----------------------------------------------------------------------
     float fallRamp = 0.41f;    // per second of falling      (v1)
     float fallRampMax = 1.125f;  // so gravity tops out at 2.125x (v1)
-    float fallTermV = 34.5f;   // m/s, terminal              (v1 -345)
+    // -- THE TERMINAL IS 75, NOT v1's 34.5, AND THAT IS THE WHOLE FIX ------
+    //
+    // (user 2026-09-18: "falling still doesnt have proper momentum. look to v1,
+    // it did it properly. the fall needs to speed up the longer the player is
+    // falling.")
+    //
+    // EVERY OTHER FALL CONSTANT HERE IS ALREADY v1'S, character for character,
+    // and tests/fall_curve_test.cpp runs both rules side by side and gets the
+    // same curve to zero. So the arithmetic was never the problem -- the WORLD
+    // was. v1's was 384 voxels tall, 38 metres, and a fall in it reached maybe
+    // 24 m/s before it landed: still winding up the whole way down, which is
+    // what "v1 did it properly" is remembering. v2 has 399 m of relief, so the
+    // cap is reachable now -- hit at 1.4 s, after which the speed is CONSTANT
+    // and the rest of a long drop reads as floating.
+    //
+    // That is precisely the failure v1's own note says the ramp was added to
+    // cure: "a flat GRAVITY into a -160 terminal hit its cap in 0.8 s, so
+    // anything past a short drop fell at a CONSTANT speed and read as
+    // floating". v1 fixed it by raising the terminal until it was out of reach
+    // of its own world. Ours has to go further because our world is ten times
+    // taller.
+    //
+    // 75 m/s IS REACHED AT ABOUT 2.8 s, roughly 130 m down -- past any cliff in
+    // this window, so in practice a fall now accelerates until it lands. It is
+    // also still a survivable number to model: terminal for a human is about
+    // 55 m/s, and this is a voxel game with a 2.4 km mountain in it.
+    float fallTermV = 75.0f;   // m/s (v1 used 34.5, for a world 38 m tall)
+    // How fast horizontal velocity chases the input. The ground/air split is
+    // v1's; airGripFallT is what turns a fall into momentum.
+    float groundGrip = 14.0f;      // 1/s
+    float airGrip = 3.2f;          // 1/s at the instant the fall starts
+    float airGripFallT = 0.85f;    // s -- the air grip's decay constant
+    float airGripMin = 0.45f;      // 1/s floor, so you are never stranded
     float eye = 2.00f;        // 20 voxels -- and the whole of the figure,
                               // since nothing is modelled above the eye
 
@@ -585,7 +617,22 @@ class Player {
             // slowly in the air (3.2 against 14): that difference IS the sense
             // of having weight, and of not being able to change your mind
             // mid-jump.
-            const float k = 1.0f - expf(-(onGround ? 14.0f : 3.2f) * dt);
+            // ...AND HEAVIER THE LONGER YOU HAVE BEEN FALLING (user 2026-09-18:
+            // "add momentum to falling"). The flat 3.2 meant a two-second drop
+            // steered exactly like the first instant of a hop: release the key
+            // and horizontal speed was 96% gone inside a second, so you fell
+            // straight down out of a full sprint. That is the opposite of
+            // momentum.
+            //
+            // The rate now DECAYS with fallT_, which is already tracked for the
+            // gravity ramp and is zero on the ground and during a rise. So a
+            // jump is untouched -- at t=0 this is still 3.2, to the bit -- and
+            // only a sustained fall commits you. By half a second it is 1.4,
+            // by a second 0.6, and it floors at airGripMin so you never lose
+            // steering entirely and cannot be stranded mid-air.
+            const float airK =
+                maxf(airGripMin, airGrip * expf(-fallT_ / airGripFallT));
+            const float k = 1.0f - expf(-(onGround ? groundGrip : airK) * dt);
             hvx_ += (move.x * spd - hvx_) * k;
             hvz_ += (move.z * spd - hvz_) * k;
 

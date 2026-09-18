@@ -603,6 +603,12 @@ class ChunkMesher {
     // mean from 0.602 to 0.659, so the density only has to make up the rest.
     // The measured total is +25.0%.
     float treeDensity = 0.3666f;  // was 0.55, less a quarter three times, then +25% of wood
+
+    // The closest two trunks may ever stand, whatever the stand table asks for.
+    // It was the floor of the old canopy rule and keeps that job; what it no
+    // longer shares is the job of spacing an OPEN wood, which the canopy term
+    // beside it does on its own. See the clash test.
+    float kTrunkKeepM = 1.5f;
     float treeStride = 2.4f;
 
     // ---- the birch wood ----------------------------------------------------
@@ -1120,8 +1126,24 @@ class ChunkMesher {
                                                : isOak  ? oakDensity
                                                         : treeDensity;
 
+                        // -- AND HOW FULL THE STAND TABLE WANTS THIS LATTICE --
+                        //
+                        // stemFill is this elevation's own demand as a multiple
+                        // of what the pipeline delivers -- see
+                        // VoxelTerrain::stemFill. It used to be a separate
+                        // rejection further up (treeRejectedByDensity), which
+                        // could only ever THIN. Folded into the acceptance it
+                        // fills as well, which is what true scale needs: the
+                        // stand table asks for 1,750 stems a hectare at 2,900 m
+                        // and the old rule had no way to ask for more than the
+                        // 146 this scatter happened to deliver.
+                        //
+                        // A PRODUCT OVER 1.0 SATURATES ON ITS OWN, because no
+                        // hash in [0,1) is ever greater than it. No second
+                        // clamp to keep in step with the first.
+                        const float fill = terrain_.stemFill(x, z, terrain_.heightVox(ci, cj, memo));
                         const float dens = terrain_.standDensity(x, z, memo.stand);
-                        if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity)
+                        if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity * fill)
                             continue;
 
                         // The model comes from that species' own range.
@@ -1135,7 +1157,30 @@ class ChunkMesher {
                         const Footprint &f = pineFoot[size_t(k)];
                         const float footX = float((yaw & 1) ? f.sz : f.sx) * VOXEL_M;
                         const float footZ = float((yaw & 1) ? f.sx : f.sz) * VOXEL_M;
-                        const float keep = maxf(1.5f, 0.30f * maxf(footX, footZ));
+                        // -- A CLOSED STAND HAS INTERLOCKING CANOPIES -----
+                        //
+                        // The spacing was a share of the model's own FOOTPRINT,
+                        // which is the canopy -- and a canopy is the wrong thing
+                        // to hold apart in a thick wood. Real lodgepole at the
+                        // 1,450 stems a hectare the stand table asks for at
+                        // 2,900 m is trunks about 2.6 m apart with the crowns
+                        // growing through one another; spacing by the crown caps
+                        // the wood at a couple of hundred, and it did -- with the
+                        // lattice offering 1,500 sites a hectare this test was
+                        // throwing away nine of every ten.
+                        //
+                        // SO IT RELAXES WITH THE DEMAND. `fill` is precisely how
+                        // closed the stand table says this ground should be, so
+                        // it is the right thing to divide by: an open savanna at
+                        // fill well under one keeps the full crown spacing and
+                        // reads as parkland, and a closed stand at fill three or
+                        // four falls to the floor and packs.
+                        //
+                        // THE FLOOR IS THE TRUNK, and it is not negotiable --
+                        // two boles cannot stand in the same ground however
+                        // thick the wood is.
+                        const float canopy = 0.30f * maxf(footX, footZ);
+                        const float keep = maxf(kTrunkKeepM, canopy / maxf(1.0f, fill));
 
                         bool clash = false;
                         for (const Placed &q : placed) {
@@ -1567,8 +1612,24 @@ class ChunkMesher {
                             const float tDensity = isBirch  ? birchDensity
                                                    : isOak  ? oakDensity
                                                             : treeDensity;
+                            // -- AND HOW FULL THE STAND TABLE WANTS THIS LATTICE --
+                            //
+                            // stemFill is this elevation's own demand as a multiple
+                            // of what the pipeline delivers -- see
+                            // VoxelTerrain::stemFill. It used to be a separate
+                            // rejection further up (treeRejectedByDensity), which
+                            // could only ever THIN. Folded into the acceptance it
+                            // fills as well, which is what true scale needs: the
+                            // stand table asks for 1,750 stems a hectare at 2,900 m
+                            // and the old rule had no way to ask for more than the
+                            // 146 this scatter happened to deliver.
+                            //
+                            // A PRODUCT OVER 1.0 SATURATES ON ITS OWN, because no
+                            // hash in [0,1) is ever greater than it. No second
+                            // clamp to keep in step with the first.
+                            const float fill = terrain_.stemFill(x, z, terrain_.heightVox(ci, cj, memo));
                             const float dens = terrain_.standDensity(x, z, memo.stand);
-                            if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity)
+                            if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity * fill)
                                 continue;
                             const int lo = isBirch ? birchBase : isOak ? oakBase : 0;
                             const int hi = isBirch  ? oakBase
@@ -2332,6 +2393,12 @@ class ChunkMesher {
                     // than fighting it, and the rocks that survive keep the positions and
                     // models they already had.
                     if (!refuse && k < kRockBigMidEnd && hashUnit(seed + 0x5B19u, cell) < 0.5f)
+                        refuse = true;
+                    // AND THE BIGGEST ONES AGAIN (user 2026-09-18: "reduce the frequency of
+                    // big rocks in half"). kRockBigEnd is one past Big_5, so this catches
+                    // only the true boulders and leaves the Mid_ range to the pass above.
+                    // Compounded deliberately: a Big rock now has to survive both rolls.
+                    if (!refuse && k < kRockBigEnd && hashUnit(seed + 0x6C2Du, cell) < 0.5f)
                         refuse = true;
                     if (!refuse && k < kRockBigMidEnd &&
                         terrain_.oakMix(px) > hashUnit(seed + 0x0A4Bu, cell))

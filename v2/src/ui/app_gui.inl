@@ -92,8 +92,8 @@
             // argument for not naming a binding in a label at all.
             ww.text("WATER");
             ww.separator();
-            static const char *kWaterRows[9] = {
-                "sun glint",        // kWFGlint
+            static const char *kWaterRows[10] = {
+                "sun sparkle",      // kWFGlint -- the PIXELATED one
                 "caustics",         // kWFCaustic
                 "world reflection", // kWFReflect
                 "absorption",       // kWFAbsorb
@@ -102,16 +102,29 @@
                 "voxel swell",      // kWFSwell
                 "surface ripple",   // kWFRipple
                 "shore foam",       // kWFFoam
+                "sun glare",        // kWFSunGlare -- the smooth one
             };
             uint32_t wf = 0;
-            for (int b = 0; b < 9; ++b) {
+            for (int b = 0; b < 10; ++b) {
                 ww.checkbox(kWaterRows[b], waterTerm_[b]);
                 if (waterTerm_[b]) wf |= (1u << b);
             }
             tracer_.waterFlags = wf;
             ww.separator();
+            // ---------------------------------------- THE WAVE HEIGHT, LIVE
+            // The nine above are on/off; this one is the amount, and it is the
+            // term that has actually been argued about. "Water mounds" twice
+            // and "you turned off the waves" once is one number being set from
+            // two rooms away, so it belongs on the panel with the rest of the
+            // water and not in a command-line flag nobody has open.
+            //
+            // 0 is a mirror, 1.0 is the full authored table (0.256 m of
+            // displacement over a 5.2 m wavelength -- a sea state), and the
+            // default sits under half of that.
+            ww.slider("wave height", tracer_.waterWaveGain, 0.0f, 1.0f);
+            ww.separator();
             if (ww.button("all on")) {
-                for (int b = 0; b < 9; ++b) waterTerm_[b] = true;
+                for (int b = 0; b < 10; ++b) waterTerm_[b] = true;
             }
             const ImVec2 wsz = ImGui::GetWindowSize();
             ImGui::SetWindowPos(ImVec2(maxf(0.0f, fbW - wsz.x - 12.0f), 12.0f));
@@ -308,9 +321,14 @@
             Gui::Window sw(pGui, "stack##v2", {0, 0}, {0, 0}, kBare);
             px3Font face(px3_);
             ImGui::SetWindowFontScale(style.scale);
-            sw.text("STACK COUNT");
-            sw.separator();
             const int sel = held_.ready() ? held_.selected() : -1;
+            // THE CARD IS NAMED AFTER WHAT IT IS PLACING. The gun's badge is a
+            // magazine and not a stack -- see setStackBadge -- and a card
+            // headed STACK COUNT while you tune the ammo counter is the kind
+            // of small lie that costs somebody ten minutes looking for the
+            // other panel.
+            sw.text(sel >= 0 && sel == rifleTool_ ? "AMMO COUNT" : "STACK COUNT");
+            sw.separator();
             sw.text(sel >= 0 ? held_.tool(sel).name : "nothing in hand");
             sw.checkbox("show a count while this is open", stackPanelForce_);
             sw.separator();
@@ -723,8 +741,35 @@
             ImGui::SameLine();
             ImGui::SetNextItemWidth(-1.0f);
             bool submitted = false;
+            // ------------------------------------------ TAB COMPLETES THE WORD
+            // ImGui fires CallbackCompletion on Tab, which is also the only way
+            // to get Tab at all -- the key otherwise moves focus between widgets
+            // and never reaches the box.
+            //
+            // It commits to the COMMON PREFIX of the matches, not to the first
+            // one: with `l` typed and lake1/lake2/longs all matching, Tab gives
+            // `l` back and the ghost shows what the first match would be. A
+            // completion that guesses is worse than one that waits.
+            auto completeCb = [](ImGuiInputTextCallbackData *d) -> int {
+                auto *self = static_cast<ForestApp *>(d->UserData);
+                const std::string line(d->Buf, d->Buf + d->BufTextLen);
+                const std::vector<std::string> hits = self->completions(line);
+                if (hits.empty()) return 0;
+                const std::string pre = commonPrefix(hits);
+                const size_t cut = line.find_last_of(' ');
+                const size_t tokStart = (cut == std::string::npos) ? 0 : cut + 1;
+                if (pre.size() <= line.size() - tokStart) return 0;   // nothing to add
+                d->DeleteChars(int(tokStart), int(line.size() - tokStart));
+                d->InsertChars(int(tokStart), pre.c_str());
+                // One match and it is complete: add the space so the next token
+                // can be typed straight away.
+                if (hits.size() == 1) d->InsertChars(d->CursorPos, " ");
+                return 0;
+            };
             if (ImGui::InputText("##cmd", consoleBuf_, sizeof(consoleBuf_),
-                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                                 ImGuiInputTextFlags_EnterReturnsTrue |
+                                     ImGuiInputTextFlags_CallbackCompletion,
+                                 completeCb, this)) {
                 consoleMsg_ = runCommand(std::string(consoleBuf_));
                 consoleBuf_[0] = 0;
                 // CLOSES ON ENTER. A command is meant to be one keystroke to
@@ -734,6 +779,42 @@
                 // draws in exactly this corner for a few seconds afterwards.
                 consoleMsgUntil_ = nowSeconds() + kConsoleMsgHold;
                 submitted = true;
+            }
+            // ------------------------------------------------ THE GHOST
+            // The rest of the best match, drawn dimmed at exactly the caret's
+            // x so it reads as the word completing itself rather than as a
+            // separate hint. Drawn AFTER InputText so it lands on top, and only
+            // while the box holds something -- an empty line would otherwise
+            // show "/locate" as though it had been typed.
+            {
+                const std::string line(consoleBuf_);
+                if (!line.empty()) {
+                    const std::vector<std::string> hits = completions(line);
+                    if (!hits.empty()) {
+                        const size_t cut = line.find_last_of(' ');
+                        const size_t tokStart = (cut == std::string::npos) ? 0 : cut + 1;
+                        const std::string rest = hits[0].substr(
+                            std::min(hits[0].size(), line.size() - tokStart));
+                        if (!rest.empty()) {
+                            const ImVec2 rmin = ImGui::GetItemRectMin();
+                            const ImVec2 pad = ImGui::GetStyle().FramePadding;
+                            const float tw = ImGui::CalcTextSize(line.c_str()).x;
+                            ImGui::GetWindowDrawList()->AddText(
+                                ImVec2(rmin.x + pad.x + tw, rmin.y + pad.y),
+                                IM_COL32(150, 150, 150, 160), rest.c_str());
+                            if (hits.size() > 1) {
+                                char tb[96];
+                                std::snprintf(tb, sizeof tb, "  (%d matches, Tab)",
+                                              int(hits.size()));
+                                ImGui::GetWindowDrawList()->AddText(
+                                    ImVec2(rmin.x + pad.x + tw +
+                                               ImGui::CalcTextSize(rest.c_str()).x,
+                                           rmin.y + pad.y),
+                                    IM_COL32(120, 120, 120, 130), tb);
+                            }
+                        }
+                    }
+                }
             }
 
             // ---- ESC CLOSES IT, AND IT HAS TO BE ASKED HERE ----------------

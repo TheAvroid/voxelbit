@@ -315,6 +315,28 @@ inline constexpr float kLbugRateMul = 2.0f;
 inline constexpr float kLbugNearM = 5.0f;   // inside this it is at full double rate
 inline constexpr float kLbugFarM = 10.0f;   // ...and beyond this it is its ordinary self
 
+// -- ...AND CLOSER STILL, IT LEAVES ----------------------------------------
+//
+// (user 2026-09-18: "make ladybugs scare away from the player if the player
+// gets too close. it should go from landing still to flying away at 2x speed.
+// it was supposed to have this mechanic already.")
+//
+// AND IT HALF DID, WHICH IS WHY IT LOOKED BROKEN. The double rate above was
+// already here and already working -- but it only scales the dt of whatever the
+// insect is DOING, and what a landed one is doing is sitting. Walking up to a
+// ladybug ran its sit clock at double speed and left it sitting there. The
+// missing piece is not a speed, it is a state change.
+//
+// INSIDE kLbugNearM, so it is at the full double rate on the frame it bolts --
+// "flying away at 2x speed" is one behaviour, and a scare radius outside the
+// rate band would have it leave at ordinary pace and then speed up, which is
+// the wrong way round. 3 m is about two paces: close enough to be crowding it,
+// far enough that they do not all leave as you cross a clearing.
+//
+// A DESCENT IS ABORTED TOO. A bug committed to a column you have since walked
+// into would otherwise land at your feet and only then take fright.
+inline constexpr float kLbugScareM = 3.0f;
+
 // -- AND THEY ALL HAVE TO FIT IN THE BAND ---------------------------------
 //
 // THIS IS THE CHECK THAT WAS MISSING, and its absence cost the frog its entire
@@ -598,14 +620,27 @@ class Critters {
     }
     static int lbugCount() { return kLbugCount; }
 
+    // -- `sand` IS THE BEACH GATE, AND Bunnies HAS TAKEN ONE ALL ALONG ----
+    //
+    // (user 2026-09-18: "keep life off the beaches/sand near water unless
+    // otherwise said so".)
+    //
+    // The predicate already existed -- ForestApp::sandAt, the surface material
+    // asked exactly the way the mesher asks it -- and Bunnies has been refusing
+    // sand with it since the marchers landed. Critters never took one, which is
+    // why the ants, the flies and the ladybugs were the population still on the
+    // shore. Same callback, same signature, same source; nothing new is being
+    // decided, it is being asked in one more place.
     void update(float dt, const Vec3 &player, const GroundF &ground, const WetF &wet,
                 const BirchF &birch, const std::vector<Vec3> &banks,
                 const std::vector<Solid> &solids, bool night = false,
-                const Vec3 &look = Vec3(0.0f, 0.0f, 0.0f), const GroundF &water = GroundF()) {
+                const Vec3 &look = Vec3(0.0f, 0.0f, 0.0f), const GroundF &water = GroundF(),
+                WetF sand = nullptr) {
         if (!ready_) return;
         ground_ = ground;
         water_ = water;
         wet_ = wet;
+        sand_ = std::move(sand);
         birch_ = birch;
         // BORROWED, NOT COPIED, and only for this call -- the same list the
         // perched birds and the marchers are handed. See Bunnies::update.
@@ -1039,6 +1074,10 @@ class Critters {
                 // has already passed this same gate, so every follower it
                 // gathers in that moment passes it too.
                 if (!birth_.mayAt(L.x - player.x, L.z - player.z)) continue;
+                // ...and not on a beach. Asked at the LEADER for the reason the
+                // note above gives: that is where this ant appears, and every
+                // follower it gathers has passed the same gate.
+                if (sand_ && sand_(L.x, L.z)) continue;
                 a = Ant{};
                 a.live = true;
                 a.lead = leader;
@@ -1405,6 +1444,29 @@ class Critters {
                 // start looking for the next landing.
                 if (b.t <= 0.0f) { b.ph = kCruise; b.t = kLbugFlySec; }
             }
+            // -- ...AND IT DOES NOT WAIT FOR THAT CLOCK IF YOU ARE ON TOP OF IT
+            //
+            // See kLbugScareM. Anything not already cruising drops what it is
+            // doing and goes, heading straight away from the player -- a bug
+            // that took off on its old bearing would half the time fly at you,
+            // which does not read as being scared off.
+            //
+            // IT OWES THE AIR THE FULL kLbugFlySec, the same debt an ordinary
+            // take-off carries, so it cannot bounce: land, flee, re-land beside
+            // your other foot. Reusing that constant rather than inventing a
+            // flee time is deliberate -- there is one answer in this file to
+            // "how long before it may look for the ground again".
+            if (b.ph != kCruise) {
+                if (ld < kLbugScareM) {
+                    // ldx/ldz are BUG MINUS PLAYER, so away from the player
+                    // is straight down them and no sign flip is wanted here.
+                    const float n = maxf(1e-4f, ld);
+                    b.vx = ldx / n;
+                    b.vz = ldz / n;
+                    b.ph = kCruise;
+                    b.t = kLbugFlySec;
+                }
+            }
             if (b.vx * b.vx + b.vz * b.vz > 1e-6f) b.th = atan2f(b.vx, b.vz) + 3.14159265f;
             // -- FRAME 0 IS THE ONE THAT LANDS (user 2026-09-14) -----------
             //
@@ -1637,6 +1699,11 @@ class Critters {
                 if (!birth_.mayAt(ex, ez)) continue;
                 if (woods != kWoodAll && birch_ && !(birch_(sx) & woods)) continue;
                 if (wet_ && wet_(sx, sz)) continue;   // never IN the water
+                // ...NOR ON THE BEACH BESIDE IT. See the note over update().
+                // The frog is deliberately exempt -- it is a bank animal and is
+                // placed from its own shoreline list below, which never comes
+                // through here.
+                if (sand_ && sand_(sx, sz)) continue;
                 // ...NOR INSIDE A TREE OR A ROCK. A site is a point on a
                 // lattice and nothing about the lattice avoids the wood, so one
                 // site in the body of a boulder is a creature that spends its
@@ -2084,6 +2151,8 @@ class Critters {
     GroundF water_;
     GroundF ground_;
     WetF wet_;
+    // See the note over update(): the beach gate, nullptr if none was passed.
+    WetF sand_;
     BirchF birch_;
     BirthGate birth_;
     float clock_ = 0.0f;

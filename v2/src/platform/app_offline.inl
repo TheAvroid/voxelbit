@@ -169,7 +169,8 @@
                                          Vec3(0.0f, 0.0f, 0.0f),
                                          [this](float x, float z) {
                                              return waterTopAt(x, z);
-                                         });
+                                         },
+                                         [this](float x, float z) { return sandAt(x, z); });
                     critters_.publish(world_, kCritterSlot0);
                     float gap = 0.0f, worst = 0.0f;
                     const int pairs = critters_.antSpacing(&gap, &worst);

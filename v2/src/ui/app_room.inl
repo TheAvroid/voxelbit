@@ -13,6 +13,52 @@
             {"seeds", {0.0110f, 0.100f, 0.205f, 0.000f}},
             {"wheat", {0.0110f, -0.145f, 0.313f, 0.000f}},
             {"steak", {0.0110f, 0.056f, 0.260f, 0.000f}},
+            // -- THE AMMO COUNT, WHICH IS THIS TABLE'S FIRST NON-STACK ------
+            //
+            // (user 2026-09-18: "make sure to let me adjust the position of the
+            // ammo text.")
+            //
+            // AND THE ANSWER TO THAT ASK IS THIS ROW PLUS THE [K] CARD that was
+            // already there: the gun's badge is drawn by setStackBadge like
+            // every other, so the four sliders on that card are its four
+            // numbers, and "bake" copies the line to paste back in here. There
+            // was nothing to build.
+            //
+            // IT CANNOT TAKE THE DEFAULTS. Everything else in this table is
+            // held near the middle of the view; the rifle's anchor is 72 cm to
+            // the RIGHT of the eye and 91 cm in front of it, which at this
+            // engine's field of view is most of the way to the edge of the
+            // frame already. StackCfg's own `across` of +0.100 puts the number
+            // past it -- a badge nobody can see, which reads as a badge that is
+            // not being drawn.
+            //
+            // So it goes back the other way -- LEFT, along the view, and only
+            // a little up. Bigger than a stack count too: this one is read
+            // while something is shooting back.
+            //
+            // THE TWO WRONG ANSWERS, BOTH RENDERED, because the trade here is
+            // not obvious and the second one looks like the fix for the first:
+            //
+            //   across -0.450, up 0.250 -- reads perfectly at rest and the
+            //     RECEIVER EATS IT under automatic fire. The gun is thrown 9 cm
+            //     up and 22 cm back a round (kRecoilUpVox, kRecoilBackVox), and
+            //     coming 22 cm nearer the eye is what does it: the badge is at
+            //     the gun MID-DEPTH, so the model swells around it.
+            //   across -0.500, up 0.400 -- clears the gun in every pose, by
+            //     lifting the number off the grass and ONTO THE SKY, where
+            //     white ink at kStackNits is a ghost. The room labels already
+            //     carry this measurement: "the same ink that beat a wall lost
+            //     to a cloud". A badge you cannot read is not a badge.
+            //
+            // LEFT rather than UP is what satisfies both. At -0.650 the number
+            // is left of the gun s far end -- which is its leftmost edge on
+            // screen, and the only part of it that reaches this far in -- and
+            // stays over the grass, where the ink wins.
+            // THE USER'S BAKE (2026-09-18), off the [K] card. It is back on the
+            // RIGHT of the hand -- across is positive again -- and higher than
+            // either of the two cuts above; the sky note still applies to
+            // anything much taller than this.
+            {"assault rifle", {0.0150f, 0.145f, 0.338f, 0.000f}},
         };
         return t;
     }
@@ -57,9 +103,32 @@
         const int sel = held_.selected();
         if (sel < 0) return;
         const Tool &t = held_.tool(sel);
+        // -- THE GUN COUNTS ROUNDS, NOT COPIES OF ITSELF --------------------
+        //
+        // (user 2026-09-18: "put a number next to the assault rifle just like
+        // the stacked number on hand held items. this is to count the guns
+        // ammo.")
+        //
+        // THE SAME BADGE, A DIFFERENT NUMBER -- and "the same badge" is the
+        // whole of the ask. It is drawn by the same call, in the same glyphs,
+        // out of the same per-tool row of four numbers, so the [K] card that
+        // places a stack count places this too and there is nothing new to
+        // tune, bake or keep in step. What differs is three lines: where the
+        // number comes from, that it has no "x" in front of it, and that it is
+        // shown at one and at zero.
+        //
+        // AN AMMO COUNT IS NOT A STACK COUNT and the two rules it does not
+        // share say why. A stack hides below two, because "x1" beside an axe is
+        // noise -- but a gun with ONE round left is the most worth saying. And
+        // a stack turns gold at its cap; a full magazine is the ordinary state
+        // of a gun and colouring it would make twenty the thing that catches
+        // the eye rather than two.
+        const bool gun = (sel == rifleTool_);
         // FORCED WHILE THE PANEL IS OPEN, so there is something to aim the
-        // sliders at -- almost everything in the kit sits at one.
-        const int n = (stackPanelOpen_ && stackPanelForce_) ? maxi(2, t.stack) : t.stack;
+        // sliders at -- almost everything in the kit sits at one. The gun needs
+        // no such help: its number is always up.
+        const int n = gun ? rifleAmmo_
+                          : ((stackPanelOpen_ && stackPanelForce_) ? maxi(2, t.stack) : t.stack);
         // -- THE POP IS ARMED ABOVE THE BADGE'S OWN CUT-OFF -----------------
         //
         // (user 2026-09-15: "have the stack 'pop up' as well. a smooth pop up
@@ -75,15 +144,38 @@
         // already carrying is not a change to it, and popping there made every
         // scroll of the kit twitch. So the tool has to match as well as the
         // count having moved.
+        // -- ...AND THE GUN ONLY POPS ON THE WAY UP -------------------------
+        //
+        // A stack pops on any change, because every change to one is an event:
+        // you picked something up, or ate it. A magazine changes five times a
+        // second while the trigger is down, and a badge that swells on every
+        // round is a badge that is never still -- the flourish stops reading as
+        // "look at this" and starts reading as a rendering fault.
+        //
+        // SO IT POPS WHEN THE ROUNDS COME BACK, which is the one moment worth
+        // announcing and the moment the player is waiting on: 0 -> 20 at the
+        // end of the reload, and nothing on the way down.
         if (n != stackPopN_ || sel != stackPopTool_) {
-            if (n != stackPopN_ && sel == stackPopTool_) stackPopT0_ = simMs_;
+            if (n != stackPopN_ && sel == stackPopTool_ && (!gun || n > stackPopN_))
+                stackPopT0_ = simMs_;
             stackPopN_ = n;
             stackPopTool_ = sel;
         }
-        if (!t.carried || n < 2) return;
+        if (!t.carried) return;
+        // SHOWN AT ONE AND AT ZERO FOR A GUN -- see the block above. An empty
+        // magazine reading "0" for the length of the reload is the animation's
+        // own caption, and it is how a player knows the gun is busy rather than
+        // broken.
+        if (!gun && n < 2) return;
 
         char word[8];
-        std::snprintf(word, sizeof(word), "x%d", n);
+        // TWO CALLS RATHER THAN ONE WITH A CHOSEN FORMAT: a format string that
+        // is not a literal is a /W4 warning in this build, and this tree
+        // compiles warnings as errors.
+        if (gun)
+            std::snprintf(word, sizeof(word), "%d", n);
+        else
+            std::snprintf(word, sizeof(word), "x%d", n);
         // THE HAND'S OWN WORLD POINT -- the same three terms the Q drop uses.
         const Vec3 rt = camRight(), up = camUp(), fw = forward();
         const Vec3 hand =
@@ -140,10 +232,21 @@
         //
         // The same warm gold the sparks settled on, at the label's own
         // brightness: this is a colour, not a second light.
-        const bool full = n >= HeldItem::kStackMax;
-        const float3 tint = full ? float3(kStackNits * 1.00f, kStackNits * 0.78f,
-                                          kStackNits * 0.22f)
-                                 : float3(kStackNits, kStackNits, kStackNits);
+        // A FULL MAGAZINE IS NOT A CAPPED STACK. The gold says "this will not
+        // go any higher", which is news about a stack and is the normal state
+        // of a gun -- see the block above.
+        const bool full = !gun && n >= HeldItem::kStackMax;
+        // -- AND THE GUN S NUMBER IS BRIGHTER --------------------------------
+        //
+        // kStackNits is 3.0, which was settled for a number that hangs beside
+        // the hand over the ground. An ammo count follows the gun wherever it
+        // is pointed -- up a wall, into a doorway, at the SKY -- and the room
+        // labels have already measured what happens to white ink up there:
+        // "the same ink that beat a wall lost to a cloud". kLabelNits is 4.0
+        // for exactly that reason and is the right lamp for this one too.
+        const float nits = gun ? kLabelNits : kStackNits;
+        const float3 tint = full ? float3(nits * 1.00f, nits * 0.78f, nits * 0.22f)
+                                 : float3(nits, nits, nits);
         holoSetWord(h, word, float3(at.x, at.y, at.z), float3(rt2.x, rt2.y, rt2.z),
                     float3(up2.x, up2.y, up2.z), cellM, tint);
     }
@@ -361,7 +464,29 @@
         if (rifleTool_ >= 0) {
             held_.give(rifleTool_);
             held_.select(rifleTool_);
+            // -- AND IT ARRIVES LOADED -------------------------------------
+            //
+            // (user 2026-09-18: "have it start with 20 bullets".)
+            //
+            // AT THE DOOR, NOT AT START-UP. A magazine set once when the kit is
+            // built is a magazine that is however empty you left it the last
+            // time you were here -- walk out of nuketown on your last round and
+            // walk back in with one round. The gun is handed over here and
+            // nowhere else, so this is the moment it is a fresh gun.
+            rifleAmmo_ = kRifleMag;
+            held_.cancelReload();
         }
+        // -- ...AND THE PISTOL IS IN THE WHEEL BESIDE IT -------------------
+        //
+        // (user 2026-09-18: "put it in the inventory, when the player scrolls
+        // up it selects it".)
+        //
+        // GIVEN, NOT SELECTED. The rifle is what the map hands you and the
+        // pistol is what scrolling up finds -- which is the whole of the ask,
+        // and it is `give` without `select` that says it. See the kit block for
+        // why the slot order is what makes "scroll up" mean this one.
+        if (pistolTool_ >= 0) held_.give(pistolTool_);
+
         // -- AND THE LAMP IS NOT (user 2026-09-17: "remove the lightbulb from
         // the hand on the fps map").
         //
@@ -394,7 +519,15 @@
         // takes the slot out of the wheel. It does not move the selection, so
         // the hand is pointed back at something that is actually carried here.
         if (rifleTool_ >= 0) held_.stow(rifleTool_);
+        // ...AND THE PISTOL GOES BACK THROUGH THE SAME DOOR.
+        if (pistolTool_ >= 0) held_.stow(pistolTool_);
         if (bulbTool_ >= 0) held_.stow(bulbTool_);
+        // A CYCLE HALF PLAYED DOES NOT WALK HOME WITH YOU. stow() takes the
+        // gun out of the wheel but not out of the clock -- leaving through
+        // the door mid-reload would finish it in the wood, on whatever is in
+        // your hand there. cycle() already does this when you scroll off the
+        // gun; the door is the other way out. See HeldItem::cancelReload.
+        held_.cancelReload();
         // ...AND THE WOOD'S OWN KIT COMES BACK, stacks and all. restoreKit
         // steps the hand off the rifle on its own if that is what was selected,
         // so there is no cycle() to get wrong here.

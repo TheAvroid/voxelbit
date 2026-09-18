@@ -541,6 +541,7 @@
             // The console had never been listed here at all, which is most of
             // why /locate needed telling about twice.
             "  K                     the stack count beside the hand -- size, place, tilt\n"
+            "                        (it is the AMMO count with the rifle up)\n"
             "  T                     CONSOLE -- /locate <animal|biome|water> takes\n"
             "                        you to the nearest one, /where says where you\n"
             "                        are, /help lists them. ENTER runs, ESC cancels\n"
@@ -550,7 +551,9 @@
             "                        pit filled in, every tilled bed turned back,\n"
             "                        the life re-scattered. Not a rebuild -- a\n"
             "                        changed constant still wants one of those\n"
-            "  R                     RECORD -- press again to stop and save\n"
+            "  R                     RECORD -- press again to stop and save. With the\n"
+            "                        ASSAULT RIFLE in hand it RELOADS instead;\n"
+            "                        ctrl+R is always the recorder\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
             "  P                     screenshot            F1   this help\n"

@@ -364,16 +364,26 @@
     // bearing back toward the player and widening it alternately each way
     // makes the accepted spot the nearest acceptable one to where you were.
     //
-    // 1.5 m STEPS, 400 m OUT. Finer than nearestWater's 6 m because this one
-    // is placing a body rather than finding a lake, and the cap is a lake's
-    // half-width: past that there is no shore to reach and the caller is
+    // 1.5 m STEPS, AND THE REACH IS THE CALLER'S. Finer than nearestWater's 6 m
+    // because this one is placing a body rather than finding a lake. The reach
+    // defaults to 400 m, which is a lake's half-width as seen from an animal
+    // swimming in it -- past that there is no shore to reach and the caller is
     // better off being told.
+    //
+    // IT IS A PARAMETER BECAUSE /locate <lake> BROKE IT. That one starts from
+    // the middle of the whole water body rather than from a fish somewhere in
+    // it, and this window holds a five-kilometre reservoir: every bearing was
+    // still water at 400 m, the sweep failed, and the fallback stood the player
+    // at the centre -- where placeOnGround does exactly what it says and puts
+    // them on the BED, underwater, in the dark. A cap that is right for one
+    // caller is not a constant.
     // -----------------------------------------------------------------------
-    bool standNear(float tx, float tz, float stand, float *outX, float *outZ) const {
+    bool standNear(float tx, float tz, float stand, float *outX, float *outZ,
+                   float reach = 400.0f) const {
         const VoxelTerrain &t = world_.terrain;
         TerrainMemo memo;
         const float a0 = atan2f(pos_.x - tx, pos_.z - tz);
-        for (float r = maxf(1.5f, stand); r <= 400.0f; r += 1.5f) {
+        for (float r = maxf(1.5f, stand); r <= reach; r += 1.5f) {
             const int steps = maxi(8, int(2.0f * PI * r / 1.5f));
             for (int k = 0; k < steps; ++k) {
                 // 0, +1, -1, +2, -2 ... out from the player's bearing.
@@ -427,9 +437,11 @@
     // What /locate knows, for the empty line and for a name it does not have.
     // Three lines, because one would be a hundred and forty characters.
     std::string locateMenu(const std::string &lead) const {
+        // The places come first: they are the ones that move you kilometres.
         std::string m = lead + "\n  places  water";
         for (size_t i = 0; i < biomeNames().size(); ++i)
             m += "  " + std::string(biomeNames()[i].name);
+        m += poi_.menu();
         return m + "\n  life\n" + lifeList("    ", 7);
     }
 

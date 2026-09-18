@@ -114,24 +114,26 @@
             setMenuOpen(!menuOpen_);
             return true;
         }
-        // -- THE WATER PANEL HAS NO KEY ANY MORE (user 2026-09-14: "you remove
-        // -- the water panel from l") ---------------------------------------
+        // -- [L] -- THE WATER PANEL, BACK ON THE KEY IT WAS TAKEN OFF -------
         //
-        // It had three in two days. It was built on [I] on 2026-09-13; I was
-        // rebound to ESC that same day so it took O; O was asked for by name
-        // the next day for the building level, so it took L; and L is now gone
-        // too. A key that keeps moving is worse than no key -- every note that
-        // names one goes stale the moment it moves, and this one had already
-        // outlived two.
+        // (user 2026-09-18: "also give me all the water settings again on the
+        // l key.")
         //
-        // IT IS NOT DELETED. `--water-ui` opens it at start-up and everything
-        // below setWaterPanelOpen is untouched, so the eight live terms are
-        // still there for the session you actually want to tune water in. What
-        // has gone is the press that could open it by accident mid-walk.
+        // Its fourth binding in five days -- [I], then [O], then [L], then
+        // none, now [L] again -- so the rule this file adopted the last time
+        // still stands and is worth restating: A KEY IS NAMED IN ONE PLACE,
+        // HERE. Not in the panel title, not in a comment somewhere else. The
+        // title said "[I]" for a day after the panel had moved to [O], and
+        // that is what a second copy of a binding is always eventually doing.
         //
-        // If it ever wants a key back, this is the spot -- and J, M and Z are
-        // what is free. See World::levelOn for what took O.
+        // It was removed on the grounds that a press could open it by accident
+        // mid-walk. That is still true and it is the user's call to make, not
+        // mine; `--water-ui` remains for opening it at start-up.
         // -----------------------------------------------------------------
+        if (e.key == Input::Key::L && !consoleOpen_) {
+            setWaterPanelOpen(!waterPanelOpen_);
+            return true;
+        }
         // [O] -- THE BUILDING LEVEL, AND O AGAIN TO COME BACK.
         //
         // The asset deck's door, with the deck's own reasoning ("A different
@@ -324,6 +326,30 @@
             held_.shown = !held_.shown;
             std::printf("v2: hand %s\n", held_.shown ? held_.name() : "empty");
             std::fflush(stdout);
+        }
+        // -- [R] RELOADS THE GUN, AND R IS ALREADY THE RECORDER --------------
+        //
+        // (user 2026-09-18: "reload with r.")
+        //
+        // THE KEY WAS TAKEN and the ask is explicit, so the tool in the hand
+        // decides which R this is: with the rifle up it is a reload, and it is
+        // the recorder every other moment of the game -- which is every moment
+        // outside nuketown, because the gun exists nowhere else.
+        //
+        // CTRL+R IS ALWAYS THE RECORDER, so the one case the split would
+        // otherwise cost -- recording a firefight -- is still one keypress.
+        // Said here rather than in a help line nobody reads: a key that
+        // silently changed meaning is the complaint this is trying not to
+        // cause.
+        if (e.key == Input::Key::R && !consoleOpen_ && !menuOpen_ &&
+            !e.hasModifier(Input::Modifier::Ctrl) && rifleInHand()) {
+            const bool started = reloadRifle();
+            std::printf("v2: reload%s\n",
+                        started ? "ing"
+                                : (held_.reloading() ? " -- already reloading"
+                                                     : " -- the magazine is full"));
+            std::fflush(stdout);
+            return true;
         }
         if (e.key == Input::Key::R) toggleRecording();
         // [K] -- THE STACK BADGE'S FOUR NUMBERS. Free at the time of writing

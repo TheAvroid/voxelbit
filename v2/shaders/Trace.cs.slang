@@ -673,7 +673,7 @@ float waterHeight(float2 p, float t)
     {
         const float k  = 6.2831853f / kWave[i].z;
         const float om = 0.21f * sqrt(9.8f * k);
-        h += kWave[i].w * cos(k * (kWave[i].x * p.x + kWave[i].y * p.y) - om * t + kWavePH[i]);
+        h += gParams.waterWaveGain * kWave[i].w * cos(k * (kWave[i].x * p.x + kWave[i].y * p.y) - om * t + kWavePH[i]);
     }
     return h;
 }
@@ -909,9 +909,9 @@ float3 waterNormal(float2 p, float t)
         const float om = 0.21f * sqrt(9.8f * k);
         const float ph = k * (kWave[i].x * p.x + kWave[i].y * p.y) - om * t + kWavePH[i];
         const float sn = sin(ph);
-        nx += kWave[i].x * k * kWave[i].w * sn;
-        nz += kWave[i].y * k * kWave[i].w * sn;
-        ny -= kWaveQ[i]  * k * kWave[i].w * cos(ph);
+        nx += gParams.waterWaveGain * kWave[i].x * k * kWave[i].w * sn;
+        nz += gParams.waterWaveGain * kWave[i].y * k * kWave[i].w * sn;
+        ny -= gParams.waterWaveGain * kWaveQ[i]  * k * kWave[i].w * cos(ph);
     }
     // max(ny, 0.3) is v1's: a steep enough sum can drive the vertical component
     // negative, and a surface normal pointing INTO the water refracts inside out.
@@ -2535,7 +2535,83 @@ void main(uint3 tid: SV_DispatchThreadID)
             const float3 wTr = exp(waterSigma * -wDist);
             const float wSun = saturate(0.25f + gParams.sky.sunDir.y * 2.0f);
             if (waterOn(kWFScatter))
-                L += beta * float3(0.018f, 0.070f, 0.092f) * wSun * (float3(1.0f) - wTr);
+            {
+                // -------------------------------------------------------------
+                // GOD RAYS -- THE IN-SCATTER IS MARCHED, NOT INTEGRATED.
+                //
+                // (user 2026-09-18: "can you add god rays to underwater like v1
+                // had.")
+                //
+                // WHY THE CLOSED FORM COULD NEVER HAVE SHOWN THEM. What was
+                // here was scatC * (1 - wTr): the exact analytic integral of
+                // in-scatter through a HOMOGENEOUS medium. It is the right
+                // answer to the question it asks, and that question has no
+                // position in it -- every point along the segment contributes
+                // the same thing, so the water can only ever come out as an
+                // even wash. A shaft is the opposite: it is the in-scatter
+                // being BRIGHTER in some places than others.
+                //
+                // WHAT MAKES THE SHAFTS is the same thing that makes the webs on
+                // the bed. Sunlight is focused by the surface before it ever
+                // reaches the water below, so the volume is lit through the very
+                // same caustic pattern -- v1 projects each sample UP the sun
+                // direction onto the surface and reads the caustic there, which
+                // is exactly where that sample's light came through. The webs on
+                // the bed and the shafts in the water are one phenomenon seen
+                // two ways, and they line up because they share waterCaustic.
+                //
+                // IT IS THE SAME BRIGHTNESS IT WAS. The step weight is
+                // waterSigma * dt * exp(-waterSigma * t), which sums to exactly
+                // (1 - wTr) over the segment -- so with the caustic flat this is
+                // the old term to floating-point noise. v1's modulation is
+                // 0.45 + 1.75 * caust, whose mean is 1.0 for the same reason:
+                // this adds structure without moving the exposure.
+                //
+                // FOUR STEPS, JITTERED. v1 uses four and says why -- the
+                // estimator is unbiased, so the accumulator and Ray
+                // Reconstruction converge on the same image a finer march would
+                // give, and only the per-frame noise rises. Unjittered, four
+                // steps would band into four visible shells.
+                const int kWSteps = 4;
+                const float dtW = wDist / float(kWSteps);
+                const float3 scatC = float3(0.018f, 0.070f, 0.092f);
+                // Floored for the same reason the bed's slant path is: a sun on
+                // the horizon would otherwise divide the downward path to
+                // infinity and black the whole column out in one frame.
+                const float sinEl = max(gParams.sky.sunDir.y, 0.08f);
+                const bool shafts = waterOn(kWFCaustic) && gParams.sky.sunDir.y > 0.0f;
+                float tw = dtW * rng.nextFloat();
+                float3 acc = float3(0.0f);
+                [unroll] for (int ws = 0; ws < kWSteps; ++ws)
+                {
+                    const float3 p = o + d * tw;
+                    // HOW DEEP THIS SAMPLE IS, measured from the surface the
+                    // path actually came in through. waterEntryY rather than
+                    // gParams.waterY for the reason the bed's note gives: the
+                    // global is the CAMERA band's line and this segment may be
+                    // under a pond in another one.
+                    const float dBelow = max(0.0f, waterEntryY - p.y);
+                    // The sun's own loss on the way down to here. This is what
+                    // makes a shaft fade with depth rather than running to the
+                    // bed at full strength.
+                    const float3 lightT = exp(waterSigma * -(dBelow / sinEl));
+                    float caW = 1.0f;
+                    if (shafts)
+                    {
+                        // Up the sun to the surface: that is where this sample's
+                        // light came through, so that is where to read the web.
+                        const float2 up = float2(p.x, p.z) +
+                                          float2(gParams.sky.sunDir.x, gParams.sky.sunDir.z) *
+                                              (dBelow / sinEl);
+                        caW = 0.45f + 1.75f * waterCaustic(up, gParams.waterTime,
+                                                           1.11f / featureSizeM(tw, 1.11f));
+                    }
+                    acc += scatC * wSun * caW * lightT * exp(waterSigma * -tw) *
+                           (waterSigma * dtW);
+                    tw += dtW;
+                }
+                L += beta * acc;
+            }
             if (waterOn(kWFAbsorb)) beta *= wTr;
 
             // -----------------------------------------------------------------
@@ -3017,7 +3093,44 @@ void main(uint3 tid: SV_DispatchThreadID)
                 // is the same constant the absorption below uses. Upward
                 // reflections still get real sky.
                 const float3 rs = normalize(float3(rdir.x, max(rdir.y, 0.02f), rdir.z));
-                const float3 skyR = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, rs);
+                float3 skyR = skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, rs);
+                // -- THE GLARE ON THE WATER -- see kWFSunGlare ----------------
+                //
+                // (user 2026-09-18: "turn off the suns glare ... its mixed in
+                // with the pixel glint on the water. I need you to seperate
+                // it", then "the sun glare checkmark does nothing".)
+                //
+                // AND IT DID NOTHING, BECAUSE THE FIRST ATTEMPT GUESSED. That
+                // one withheld the sun's DISC from a ray that reached the sky by
+                // a specular bounce off water -- and water in this engine never
+                // makes such a ray. The branch below REFRACTS deterministically
+                // (`refract(d, nF, eta)`, with the mirror direction kept only
+                // for total internal reflection), so a ray meeting a lake from
+                // above goes DOWN into it and the sky-miss code never sees it.
+                // The flag was unreachable; the A/B rendered byte-identical
+                // images with it on and off, which is what proved it.
+                //
+                // THE WASH IS THIS LINE. The surface's reflected radiance is the
+                // sky sampled in the MIRROR direction, weighted by Fresnel --
+                // and skyDome excludes the sun's disc but not the blazing
+                // circumsolar sky around it. Aimed near the sun and multiplied
+                // by a grazing Fresnel, that aureole is the broad hazy sheen.
+                // It is not a sparkle and it is not the disc: it is the bright
+                // part of the sky, in a mirror.
+                //
+                // OFF means the reflection is held to the ambient dome's
+                // brightness -- the sky straight up, which has no aureole in it
+                // -- so the water still reflects a sky of the right colour and
+                // simply stops carrying the hot spot. Scaled rather than
+                // replaced, so the directional tint survives. One extra dome
+                // sample, and only when the flag is off.
+                if (!waterOn(kWFSunGlare))
+                {
+                    const float3 amb =
+                        skyDome(gParams.sky, gAtmoSkyView, gAtmoSamp, float3(0.0f, 1.0f, 0.0f));
+                    const float lr = luminance(skyR), la = luminance(amb);
+                    if (lr > la && lr > 1e-6f) skyR *= la / lr;
+                }
                 const float wSunR = saturate(0.25f + gParams.sky.sunDir.y * 2.0f);
                 const float3 selfR = float3(0.018f, 0.070f, 0.092f) * wSunR;
                 float3 reflR = lerp(selfR, skyR, saturate(rdir.y * 4.0f));

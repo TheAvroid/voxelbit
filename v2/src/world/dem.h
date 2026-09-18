@@ -140,6 +140,12 @@ public:
     float aslToWorld(float aslM) const {
         return (aslM - minM_) * (exag_ / shrink_) + baseM_;
     }
+    // The inverse of aslToWorld. A column knows its world height; the stand
+    // tables are written in metres above sea level, so something has to undo
+    // the datum and the scale.
+    float worldToAsl(float worldY) const {
+        return (worldY - baseM_) * (shrink_ / exag_) + minM_;
+    }
     float shrink() const { return shrink_; }
     float exag() const { return exag_; }
 

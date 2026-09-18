@@ -607,7 +607,8 @@
                                  [this](float x, float z) { return wetColumnAt(x, z); },
                                  [this](float x) { return world_.terrain.woodBit(x); },
                                  banksNear_, perches_, isNight(), forward(),
-                                 [this](float x, float z) { return waterTopAt(x, z); });
+                                 [this](float x, float z) { return waterTopAt(x, z); },
+                                 [this](float x, float z) { return sandAt(x, z); });
                 simMs_ += double(dt) * 1000.0;
                 if (!critters_.lbugProbe(0, &live, &cruising, &at, &fr) || !live || !cruising) {
                     had = false;

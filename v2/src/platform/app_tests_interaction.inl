@@ -1269,6 +1269,292 @@
         std::fflush(stdout);
     }
 
+    // -----------------------------------------------------------------------
+    // --pole-test: BREAK EVERY POST IN THE MAP AND WATCH IT COME DOWN.
+    //
+    // (user 2026-09-18: "on the nuketown map, the light pole is not being\n    //  subject to gravity when cut from the static terrain".)
+    //
+    // THE COMPANION TO --rip-test, AND THE TWO ARE A PAIR. That one says a
+    // round leaves a chip rather than tearing a strip out of a wall; this one
+    // says a post that is genuinely cut through comes away. Tightening either
+    // guard until the other fails is exactly the loop this fault has been in,
+    // so neither is allowed to be the only test that is run.
+    //
+    // A SINGLE ROUND DOES NOT SEVER A POST -- a bullet bite is 7 voxels and a
+    // light pole is 5 across -- so this cuts with a radius that goes through.
+    // Anything less tests whether the pole was hit, not whether it falls.
+    // -----------------------------------------------------------------------
+    void runPoleTest() {
+        std::printf("\n=== POLE TEST ===\n");
+        if (!world_.levelOn()) {
+            std::printf("  the level is not open -- pass --level\n");
+            return;
+        }
+        std::vector<Vec3> posts;
+        world_.findLevelPosts(20, &posts);
+        std::printf("  %zu free-standing posts at least 2.0 m tall\n", posts.size());
+        if (posts.empty()) {
+            std::printf("\n  FAIL -- found no posts to cut, so this proves nothing.\n");
+            std::fflush(stdout);
+            return;
+        }
+        // Wide enough to go through a 5-voxel shaft; see the note above.
+        const int kCutVox = 3;
+        // -- THE VERDICT IS WHAT IS LEFT HANGING, NOT WHAT CAME DOWN -------
+        //
+        // The first cut of this test asked "did the sweep drop something" and
+        // reported 214 of 223 posts as failures -- because most columns the
+        // finder calls a post are WALLS, a 0.3 m bite does not sever a wall,
+        // and dropping nothing is the correct answer there. It was measuring
+        // the finder, not the sweep.
+        //
+        // levelHangingAbove asks the rule's own question instead: after the
+        // cut, is anything above it still in the grid and unable to reach the
+        // foundation? A post that fell answers 0 because it is gone; a wall
+        // answers 0 because it still stands on the ground. Only a hanger
+        // answers non-zero, which is exactly the thing the rule forbids.
+        int severed = 0, hanging = 0, untouched = 0, worst = 0;
+        // What the simulation phase below counts. See the note there.
+        int settled = 0, stillFalling = 0, sunk = 0, fellThrough = 0, lost = 0;
+        // Only pieces this big are followed -- a speck in a bullet hole
+        // says nothing about a pole.
+        const int kBigPieceVox = 100;
+        // Four seconds at 60 Hz: a 3.4 m post has 0.2 m to fall and is long
+        // since still, and what is not still by then is not going to be.
+        const int kSettleFrames = 240;
+        // Slower than this is resting contact, not a fall.
+        const float kStillM = 0.25f;
+        double worstAt[3] = {0, 0, 0};
+
+        // =================================================================
+        // ARM ZERO: THE SAME CUT, WITH THE BODY POOL FULL.
+        //
+        // (user 2026-09-18: "on nuketown, the pole just deleted itself,
+        //  instead of being subject to physics.")
+        //
+        // EVERY OTHER ARM OF EVERY OTHER TEST DRAINS THE POOL, and that is
+        // exactly what hid this. runRipTest says why in as many words -- "the
+        // pool has to be drained or the later shots cannot spawn and the test
+        // measures kDebrisInstances" -- and the sweep below does the same
+        // between posts. It is the right call for measuring the SWEEP, and it
+        // means neither test can ever see the state the game is actually in:
+        // a firefight does not drain anything. Every round leaves a chip that
+        // nobody collects and that lives kLevelChipLifeMs, so sixty-four rounds
+        // -- thirteen seconds of trigger at kBulletIntervalMs -- and the pool
+        // is full for the next minute and a half.
+        //
+        // WHAT THAT USED TO DO: the sweep cut the pole out of the grid, asked
+        // spawnDebris for a slot, was told no, and the pole ceased to exist.
+        //
+        // THE PROOF IS THE PAIR OF NUMBERS. The free count is read immediately
+        // before the cut and it is ZERO -- spawnPiece takes the first slot that
+        // is not live, so with none free there is no body it could have
+        // returned by accident. A body existing after that means room was MADE
+        // for it. See World::makeRoomForBodies.
+        int poolFree = -1, poolVox = 0, poolBody = 0;
+        bool poolTried = false;
+        {
+            std::printf("\n  -- arm 0: the same cut with the pool full, which is what a "
+                        "firefight leaves --\n");
+            world_.clearDebris(physics_);
+            const Vec3 org = World::levelOrigin();
+            int fired = 0;
+            for (int gz = 2; gz < 96 && fired < 4 * kDebrisInstances; gz += 1)
+                for (int gx = 2; gx < 48 && fired < 4 * kDebrisInstances; gx += 1)
+                    for (int gy = 1; gy <= 3; ++gy) {
+                        const Vec3 at{org.x + float(gx) * 1.0f, org.y + float(gy) * 1.0f,
+                                      org.z + float(gz) * 1.0f};
+                        if (!world_.levelSolidAtM(at)) continue;
+                        ++fired;
+                        world_.carveLevelToBody(physics_, at, kBulletChipVox, simMs_,
+                                                kArrowAbsorbM);
+                    }
+            std::printf("     %d rounds into the map -- %d of %d body slots free\n", fired,
+                        world_.debrisFree(), kDebrisInstances);
+            // AND THOSE ROUNDS ARE REAL DAMAGE. The lattice walks the whole map
+            // at chest height, so a few of them land on a post and cut it
+            // before the sweep below ever reaches it -- which is why this run
+            // reports a handful more "the bite never severed" than a run
+            // without this arm. That is the arm being faithful, not the sweep
+            // regressing: the posts it does sever are the same ones, at the
+            // same sizes.
+            // The first post this bite actually severs. Most of what the finder
+            // calls a post is a wall, and a wall the bite does not cut through
+            // proves nothing either way -- which is the same reason the sweep
+            // below counts `untouched` separately.
+            for (const Vec3 &foot : posts) {
+                if (poolTried) break;
+                const Vec3 at{foot.x, foot.y + 0.2f, foot.z};
+                const int freeBefore = world_.debrisFree();
+                world_.clearHangReport();
+                world_.carveLevelToBody(physics_, at, kCutVox, simMs_, kArrowAbsorbM);
+                const int dropped = world_.lastHangVox();
+                if (dropped < kBigPieceVox) continue;
+                poolTried = true;
+                poolFree = freeBefore;
+                poolVox = dropped;
+                for (int i = 0; i < kDebrisInstances; ++i) {
+                    Vec3 p{0, 0, 0};
+                    if (!world_.debrisPose(i, &p, nullptr)) continue;
+                    const float dx = p.x - at.x, dz = p.z - at.z;
+                    if (dx * dx + dz * dz > 25.0f) continue;
+                    const int v = world_.debrisVoxels(i);
+                    if (v >= kBigPieceVox && v > poolBody) poolBody = v;
+                }
+                std::printf("     (%8.1f,%7.1f,%8.1f)  %4d voxels cut loose with %d slots "
+                            "free -- %s\n",
+                            double(at.x), double(at.y), double(at.z), dropped, freeBefore,
+                            poolBody ? "a body took" : "CUT BUT NO BODY -- THE VOXELS VANISHED");
+            }
+            if (!poolTried)
+                std::printf("     no post was severed, so this arm proves nothing\n");
+            world_.clearDebris(physics_);
+        }
+
+        for (const Vec3 &foot : posts) {
+            // 20 cm above the foot, which is where a swing or a burst lands
+            // and is clear of the ground run under it.
+            const Vec3 at{foot.x, foot.y + 0.2f, foot.z};
+            world_.clearHangReport();
+            int nOut = 0;
+            Vec3 spoilAt{0, 0, 0};
+            world_.carveLevelToBody(physics_, at, kCutVox, simMs_, kArrowAbsorbM, &nOut, &spoilAt);
+            const int dropped = world_.lastHangVox();
+            const int left = world_.levelHangingAbove(Vec3{at.x, at.y + 0.3f, at.z}, 20000);
+            if (left > 0) {
+                ++hanging;
+                if (left > worst) {
+                    worst = left;
+                    worstAt[0] = double(at.x);
+                    worstAt[1] = double(at.y);
+                    worstAt[2] = double(at.z);
+                }
+                std::printf("  (%8.1f,%7.1f,%8.1f)  %5d voxels LEFT HANGING\n", double(at.x),
+                            double(at.y), double(at.z), left);
+            } else if (dropped > 0) {
+                ++severed;
+                // -- ...AND THEN WATCH IT LAND -----------------------------
+                //
+                // (user 2026-09-18: "when things become rigid bodies on
+                //  nuketown, they fall endlessly and glitch out on the floor".)
+                //
+                // FREEING THE POST IS HALF THE RULE. "Nothing floats" is not
+                // satisfied by a body that leaves the grid and then falls
+                // through the map for ever -- that is the same voxel in a
+                // different wrong place. Only the posts big enough to be worth
+                // simulating are followed, because a one-voxel speck resting in
+                // a bullet hole tells nothing about a 3.4 m pole.
+                if (dropped >= kBigPieceVox) {
+                    // The body the sweep just made: the fattest live slot near
+                    // the cut. carveLevelToBody returns the CHIP's slot, not
+                    // the hanger's, so it has to be found rather than asked for.
+                    int slot = -1, best = 0;
+                    for (int i = 0; i < kDebrisInstances; ++i) {
+                        Vec3 p{0, 0, 0};
+                        if (!world_.debrisPose(i, &p, nullptr)) continue;
+                        const float dx = p.x - at.x, dz = p.z - at.z;
+                        if (dx * dx + dz * dz > 25.0f) continue;
+                        const int v = world_.debrisVoxels(i);
+                        if (v > best) { best = v; slot = i; }
+                    }
+                    // NO SLOT IS NOT "NOTHING TO MEASURE" -- it is the
+                    // failure. The voxels have already left the grid by the
+                    // time this runs, so a piece with no body is a piece that
+                    // was deleted, which is the one thing the RULE over
+                    // kMinBodyVoxels forbids. This used to fall through the
+                    // `if` below in silence and the test printed PASS.
+                    if (slot < 0) {
+                        ++lost;
+                        std::printf("  (%8.1f,%7.1f,%8.1f)  %4d vox  CUT BUT NO BODY -- THE"
+                                    " VOXELS JUST VANISHED\n",
+                                    double(at.x), double(at.y), double(at.z), dropped);
+                    }
+                    if (slot >= 0) {
+                        Vec3 p0{0, 0, 0};
+                        world_.debrisPose(slot, &p0, nullptr);
+                        const float dt2 = 1.0f / 60.0f;
+                        for (int f = 0; f < kSettleFrames; ++f) {
+                            physics_.step(dt2);
+                            simMs_ += double(dt2) * 1000.0;
+                            world_.updateDebris(physics_, player_.eyePosition(), simMs_,
+                                                [&](float x, float z) {
+                                                    return player_.surfaceAt(walkWorld(), x, z);
+                                                });
+                        }
+                        Vec3 p1{0, 0, 0};
+                        const bool alive = world_.debrisPose(slot, &p1, nullptr);
+                        Vec3 lin{0, 0, 0}, ang{0, 0, 0};
+                        physics_.velocityOf(world_.debrisBody(slot), &lin, &ang);
+                        // -- MEASURED AT THE BODY'S FEET, NOT ITS ORIGIN --
+                        //
+                        // The first version of this compared the ORIGIN to the
+                        // floor and reported every upright post as resting
+                        // "+2.2 m over floor", which is true and says nothing:
+                        // a 3.4 m post standing on its end has its origin 1.7 m
+                        // up, and one lying down has it at 0.25 m. An origin
+                        // height cannot tell those apart, and "did it land" is
+                        // exactly the question it has to answer.
+                        //
+                        // The BOUNDS bottom is the same number whatever the
+                        // post is doing: on the floor it is the floor.
+                        Vec3 bl{0, 0, 0}, bh{0, 0, 0};
+                        const bool haveB = physics_.boundsOf(world_.debrisBody(slot), &bl, &bh);
+                        const float floorY = world_.levelFloorBelowM(p1.x, p0.y, p1.z);
+                        const float above = (haveB ? bl.y : p1.y) - floorY;
+                        const char *verdict = "settled";
+                        if (!alive) { verdict = "GONE"; ++lost; }
+                        else if (p1.y < World::levelOrigin().y - 5.0f) {
+                            verdict = "FELL OUT OF THE MAP"; ++fellThrough;
+                        } else if (lin.y < -kStillM) {
+                            verdict = "STILL FALLING"; ++stillFalling;
+                        } else if (above < -0.25f) {
+                            verdict = "SUNK INTO THE FLOOR"; ++sunk;
+                        } else {
+                            ++settled;
+                        }
+                        std::printf("  (%8.1f,%7.1f,%8.1f)  %4d vox  y %7.2f -> %8.2f  "
+                                    "vy %7.2f  feet %+.2f m vs floor  %s\n",
+                                    double(at.x), double(at.y), double(at.z), dropped,
+                                    double(p0.y), double(p1.y), double(lin.y), double(above),
+                                    verdict);
+                    }
+                }
+            } else {
+                ++untouched;
+            }
+            // The pool has to be drained or the later posts cannot spawn and
+            // the test measures kDebrisInstances -- same trap as runRipTest.
+            world_.clearDebris(physics_);
+        }
+        // HOW MANY WERE REAL SEVERS IS PART OF THE RESULT. A run where the bite
+        // never cut anything through would report zero hangers and mean
+        // nothing; saying so is what makes the pass readable.
+        std::printf("\n  %d posts cut: %d came down, %d left hanging, %d the bite never severed\n",
+                    severed + hanging + untouched, severed, hanging, untouched);
+        std::printf("  of the big ones: %d settled, %d STILL FALLING, %d SUNK, %d FELL OUT,"
+                    " %d vanished\n", settled, stillFalling, sunk, fellThrough, lost);
+        if (poolTried)
+            std::printf("  with the pool full: %d voxels cut loose with %d slots free, "
+                        "biggest body near it %d voxels  %s\n",
+                        poolVox, poolFree, poolBody,
+                        poolBody ? "-- it came down" : "-- IT VANISHED");
+        if (hanging)
+            std::printf("  worst: %d voxels at (%.1f, %.1f, %.1f)\n", worst, worstAt[0], worstAt[1],
+                        worstAt[2]);
+        if (!severed && !hanging)
+            std::printf("\n  FAIL -- the bite severed nothing at all, so nothing was tested.\n");
+        else
+            std::printf("\n  %s\n",
+                        hanging != 0
+                            ? "FAIL -- a cut post is still hanging in the sky."
+                            : (lost || (poolTried && !poolBody))
+                                  ? "FAIL -- a post was cut out of the map and no body took."
+                                  : (stillFalling || sunk || fellThrough)
+                                  ? "FAIL -- a post came down and then fell through the map."
+                                  : "PASS -- every post cut through came down and landed on it.");
+        std::fflush(stdout);
+    }
+
     void runFloatAudit() {
         std::printf("\n=== LEVEL FLOAT AUDIT ===\n");
         if (!world_.levelOn()) {
@@ -1833,7 +2119,8 @@
                              [this](float x, float z) { return wetColumnAt(x, z); },
                              [this](float x) { return world_.terrain.woodBit(x); }, banksNear_,
                              perches_, isNight(), Vec3(0.0f, 0.0f, 0.0f),
-                             [this](float x, float z) { return waterTopAt(x, z); });
+                             [this](float x, float z) { return waterTopAt(x, z); },
+                             [this](float x, float z) { return sandAt(x, z); });
 
             who.clear();
             critters_.livePoints(&who);
@@ -2047,6 +2334,22 @@
         std::printf("\n  -- the woods --\n");
         {
             const Vec3 was = pos_;
+            // A PINNED WORLD HAS ONE WOOD AND THAT IS NOT A FAILURE. --pine,
+            // --birch, --oak and every DEM world set `forced`, and /locate
+            // answers such a world by saying so rather than walking to a band
+            // that is not there. This test predates the DEM terrain being the
+            // default, so it read that correct refusal as three wrong arrivals
+            // and printed FAIL on a run with nothing wrong in it -- which is
+            // the failure mode that makes a test stop being read.
+            if (world_.terrain.forced) {
+                const std::string reply = runCommand("/locate birch");
+                const bool says = reply.find("pinned") != std::string::npos;
+                std::printf("  the world is pinned to the %s wood -- /locate %s\n",
+                            world_.terrain.woodName(pos_.x),
+                            says ? "says so, which is the right answer"
+                                 : "DOES NOT SAY SO -- WRONG");
+                if (!says) ++wrong;
+            } else
             for (const BiomeName &bn : biomeNames()) {
                 const std::string reply = runCommand(std::string("/locate ") + bn.name);
                 const char *landed = world_.terrain.woodName(pos_.x);
@@ -2068,6 +2371,99 @@
                 }
             }
             teleportTo(was.x, was.z);
+        }
+
+        // ---- THE PLACES, AND WHETHER /locate CAN REACH THEM ----------------
+        //
+        // The summits and lakes come out of the loaded .vbdem/.vbcov, so there
+        // is no table to check them against -- poi_test does that offline,
+        // against the data. What only the engine can answer is the part the
+        // player actually meets: does every name the menu prints resolve, does
+        // Tab complete it, and does the arrival put you somewhere you can
+        // stand. A lake's entry is a point ON the water, so that last one is
+        // not rhetorical: before this, /locate granby stood the player on the
+        // bed of a five-kilometre reservoir.
+        {
+            std::printf("\n  -- the places in the data --\n");
+            if (!poi_.ok()) {
+                std::printf("  none -- this world has no elevation data loaded\n");
+            } else {
+                int unreachable = 0;
+                for (const PoiIndex::Poi &pl : poi_.all())
+                    if (!poi_.find(pl.name)) {
+                        std::printf("  '%s' is printed but cannot be reached -- WRONG\n",
+                                    pl.name.c_str());
+                        ++unreachable;
+                    }
+                wrong += unreachable;
+                std::printf("  %d places, %d named, %d unreachable\n",
+                            int(poi_.all().size()), poi_.namedCount(), unreachable);
+
+                // TAB, WITHOUT A KEYBOARD. completions() is what the callback
+                // calls, so exercising it here covers everything about the
+                // feature except ImGui delivering the keystroke.
+                struct Probe { const char *typed; bool wantHit; };
+                const Probe kProbe[] = {
+                    {"/loc", true}, {"loc", true}, {"/LOC", true},
+                    {"/locate ", true}, {"/locate wat", true}, {"/locate zzz", false},
+                };
+                for (const Probe &pr : kProbe) {
+                    const std::vector<std::string> hits = completions(pr.typed);
+                    const bool got = !hits.empty();
+                    std::printf("  tab after \"%-12s\" -> %2d match%s%s%s\n", pr.typed,
+                                int(hits.size()), hits.size() == 1 ? "" : "es",
+                                got ? ", best '" : "", got ? (hits[0] + "'").c_str() : "");
+                    if (got != pr.wantHit) {
+                        std::printf("      ^ WRONG -- expected %s\n",
+                                    pr.wantHit ? "a match" : "nothing");
+                        ++wrong;
+                    }
+                }
+                // The first place's name must be offered once its stem is typed.
+                {
+                    const std::string nm = poi_.all()[0].name;
+                    const std::vector<std::string> hits =
+                        completions("/locate " + nm.substr(0, 2));
+                    bool offered = false;
+                    for (const std::string &hnm : hits) offered |= (hnm == nm);
+                    std::printf("  tab after \"/locate %s\" offers '%s': %s\n",
+                                nm.substr(0, 2).c_str(), nm.c_str(),
+                                offered ? "yes" : "NO -- WRONG");
+                    if (!offered) ++wrong;
+                }
+
+                // THE ARRIVAL, on the two that are hardest to get right: the
+                // biggest lake, whose shore is further than standNear's old
+                // 400 m reach, and the highest summit.
+                const PoiIndex::Poi *big = nullptr, *high = nullptr;
+                for (const PoiIndex::Poi &pl : poi_.all()) {
+                    if (pl.lake && (!big || pl.size > big->size)) big = &pl;
+                    if (!pl.lake && (!high || pl.m > high->m)) high = &pl;
+                }
+                const Vec3 wasAt = pos_;
+                for (int k = 0; k < 2; ++k) {
+                    const PoiIndex::Poi *pl = k ? high : big;
+                    if (!pl) continue;
+                    const float tx = pl->x, tz = pl->z;
+                    const std::string nm = pl->name;
+                    const std::string reply = runCommand("/locate " + nm);
+                    // Streamed before it is asked about, for runLocateTest's
+                    // own reason: collidersNear only sees RESIDENT chunks.
+                    for (int i = 0; i < 200; ++i) {
+                        world_.update(player_.pos);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    }
+                    const bool wet = wetColumnAt(pos_.x, pos_.z);
+                    const float off = std::hypot(tx - pos_.x, tz - pos_.z);
+                    std::printf("  /locate %-10s -> \"%s\"\n", nm.c_str(), reply.c_str());
+                    std::printf("      stood (%.0f, %.0f, %.0f)  %.0f m from the "
+                                "%s  in water: %s\n",
+                                pos_.x, pos_.y, pos_.z, off, k ? "summit" : "lake's centre",
+                                wet ? "YES -- FAIL" : "no");
+                    if (wet) ++wrong;
+                }
+                teleportTo(wasAt.x, wasAt.z);
+            }
         }
 
         // ---- and where it puts you -----------------------------------------
@@ -2176,9 +2572,19 @@
                 warmLife(pos_, 20);
                 Vec3 at{0, 0, 0};
                 const bool got = nearestLife(Life::Frog, &at);
+                // ...UNLESS THE WOOD IT NEEDS DOES NOT EXIST HERE. The frog
+                // is gated to birch and oak, and a world pinned to pine -- which
+                // every DEM world is -- has neither, so /locate cannot travel to
+                // one and no amount of waiting will produce a frog. That is the
+                // world being what it was asked to be, not a defect, and
+                // counting it as one made this whole run print FAIL.
+                const bool canExist = !world_.terrain.forced || birchThere;
                 std::printf("  frogs after 20 s  %s\n",
-                            got ? "yes -- and that is the whole point" : "NONE -- WRONG");
-                if (!got || !birchThere || best > 20.0f) ++wrong;
+                            got ? "yes -- and that is the whole point"
+                                : canExist ? "NONE, AND THERE SHOULD BE -- WRONG"
+                                           : "none -- this world is pinned to a wood "
+                                             "the frog does not live in");
+                if (canExist && (!got || !birchThere || best > 20.0f)) ++wrong;
             }
         }
 

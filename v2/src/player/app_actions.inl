@@ -219,7 +219,98 @@
     // that is actually on screen this frame, recoil included. If the hand
     // cannot answer (no camera yet, tool hidden) the round leaves from the eye,
     // which is invisible rather than wrong.
-    void fireRifle() {
+    // -----------------------------------------------------------------------
+    // IS THE GUN THE THING IN THE HAND RIGHT NOW.
+    //
+    // Four conditions and every one of them is load-bearing: the art loaded,
+    // the kit is built, the wheel is pointed at it, and it has not been stowed
+    // at the level's door. Written once here because three callers want it --
+    // the trigger, the swing it suppresses, and [R] -- and three copies of a
+    // four-term condition is how one of them ends up a term short.
+    // -----------------------------------------------------------------------
+    bool rifleInHand() const {
+        return rifleTool_ >= 0 && held_.ready() && held_.selected() == rifleTool_ &&
+               held_.carrying();
+    }
+
+    // -----------------------------------------------------------------------
+    // IS THERE A GUN IN THE HAND AT ALL -- either of them.
+    //
+    // (user 2026-09-18: "import the pistol asset into the fps mode. put it in
+    // the inventory".)
+    //
+    // NOT THE SAME QUESTION AS rifleInHand, AND CONFLATING THEM WOULD FIRE THE
+    // WRONG WEAPON. What the rifle's slot decides is what the TRIGGER does --
+    // it spends the rifle's magazine, kicks the rifle's recoil and draws the
+    // rifle's ammo count. What THIS decides is only what the left button must
+    // NOT do, which is swing.
+    //
+    // A GUN DOES NOT SWING, and that is the whole of why this exists. Every
+    // other tool in the kit spends the left button on the swing curve and the
+    // bite HeldItem::update times off it, so a pistol that was not named here
+    // would be swung at the map like an axe and would carve nuketown with its
+    // grip. The rifle has had that exclusion since it learned to fire; the
+    // pistol needs it from the moment it is holdable, which is now.
+    // -----------------------------------------------------------------------
+    bool pistolInHand() const {
+        return pistolTool_ >= 0 && held_.ready() && held_.selected() == pistolTool_ &&
+               held_.carrying();
+    }
+    bool holdingGun() const { return rifleInHand() || pistolInHand(); }
+
+    // -----------------------------------------------------------------------
+    // PUT A FRESH MAGAZINE IN. Returns true if a cycle actually started.
+    //
+    // (user 2026-09-18: "so also implement a reload function while you are at
+    // it. reload with r.")
+    //
+    // THE ROUNDS ARRIVE AT THE END, NOT HERE -- see the reloadDone() poll in
+    // onFrameRender. A magazine that filled the moment the key was pressed
+    // would let a player tap [R] between two shots and never run dry, which is
+    // the animation being decorative rather than being the cost.
+    //
+    // A FULL GUN DOES NOTHING. Not a no-op for tidiness: without it, [R] on a
+    // full magazine is 1800 ms of standing there with the gun unable to fire,
+    // and the player's own keypress is the last thing they would suspect.
+    // -----------------------------------------------------------------------
+    bool reloadRifle() {
+        if (rifleAmmo_ >= kRifleMag || held_.reloading()) return false;
+        if (!held_.startReload()) return false;
+        if (opt_.swingLog) {
+            std::printf("v2: reload started -- %d of %d rounds left\n", rifleAmmo_, kRifleMag);
+            std::fflush(stdout);
+        }
+        return true;
+    }
+
+    // Returns true if a round actually left the barrel -- false on an empty or
+    // busy gun, which is what the trigger and the scripted burst both need to
+    // know before they report a shot that never happened.
+    bool fireRifle() {
+        // -- NOTHING COMES OUT OF A GUN THAT IS BEING RELOADED ---------------
+        //
+        // FIRST, BEFORE THE AMMO TEST, because the magazine is still empty for
+        // the whole of the cycle -- the rounds arrive at the end. Test the
+        // count first and an empty gun re-arms its own reload on every trigger
+        // frame, restarting the animation five times a second and never
+        // finishing it. (startReload refuses a second one, so the visible
+        // symptom would have been a gun that simply never reloaded.)
+        if (held_.reloading()) return false;
+        // -- ...AND AN EMPTY ONE RELOADS INSTEAD OF FIRING ------------------
+        //
+        // (user 2026-09-18: "the number goes down until 0, where the gun then
+        // reloads".)
+        //
+        // TWO ROADS TO THE SAME CALL, and they are not the same moment. This is
+        // the trigger being pulled on an empty gun; the one at the bottom of
+        // this function is the shot that EMPTIED it, which starts the cycle
+        // straight away rather than making the player pull once more to
+        // discover there is nothing left.
+        if (rifleAmmo_ <= 0) {
+            reloadRifle();
+            return false;
+        }
+        --rifleAmmo_;
         const Vec3 aim = forward();
         Vec3 from = pos_;
         // The same camera the frame is about to be drawn with, built the way
@@ -260,9 +351,10 @@
         // or two, so this is the only way to see that the muzzle is where it
         // should be without photographing it.
         if (opt_.swingLog) {
-            std::printf("v2: round from (%.2f %.2f %.2f) eye (%.2f %.2f %.2f) %s\n", from.x,
-                        from.y, from.z, pos_.x, pos_.y, pos_.z,
-                        gotTip ? "MUZZLE" : "NO MUZZLE -- fell back to the eye");
+            std::printf("v2: round from (%.2f %.2f %.2f) eye (%.2f %.2f %.2f) %s  %d/%d left\n",
+                        from.x, from.y, from.z, pos_.x, pos_.y, pos_.z,
+                        gotTip ? "MUZZLE" : "NO MUZZLE -- fell back to the eye", rifleAmmo_,
+                        kRifleMag);
             std::fflush(stdout);
         }
         // -- ...AND THE VIEW CLIMBS A LITTLE --------------------------------
@@ -275,6 +367,16 @@
         // in a game. Clamped through the same limiter the mouse goes through so
         // sustained fire cannot flip the camera over backwards.
         pitch_ = clampf(pitch_ + kRifleClimbDeg, -89.0f, 89.0f);
+        // -- ...AND THE ROUND THAT EMPTIED IT STARTS THE NEXT MAGAZINE ------
+        //
+        // (user 2026-09-18: "the number goes down until 0, where the gun then
+        // reloads".)
+        //
+        // AT THE BOTTOM, AFTER THE SHOT HAS BEEN FIRED AND REPORTED. The last
+        // round is a round like any other -- it leaves the barrel, chips what
+        // it hits and climbs the view -- and only then is the gun empty.
+        if (rifleAmmo_ <= 0) reloadRifle();
+        return true;
     }
 
     // `chipVox` is the bite's radius in voxels. It is a PARAMETER and not
@@ -565,6 +667,28 @@
         // the impact point was found on, so the ray starts outside the surface
         // whatever angle the shaft came in at; and swingRay's reach is metres,
         // so a target 40 cm ahead is never out of range.
+        // -- NOTHING IS CHIPPED OUT FROM UNDER WATER ------------------------
+        //
+        // (user 2026-09-18: "shooting an arrow at the water caused a black
+        // square to appear in the water.")
+        //
+        // WATER IS NOT SOLID TO A SHAFT. insideWorld tests walkTopVox, which is
+        // the walkable top and deliberately ignores water, so an arrow loosed
+        // at a lake flies straight through the surface and reports its impact
+        // on the BED. Everything below then treats that exactly like a hit on
+        // dry ground: swingRay classifies it, `dig` cuts a chip-sized hole, and
+        // the edit layer's AIR wins over the water the mesher would otherwise
+        // fill the column with. The result is a cubic void inside the lake,
+        // which is the black square -- not a shading bug at all, a hole.
+        //
+        // THE GUARD IS ON THE IMPACT POINT, NOT ON THE CLASSIFIER, because by
+        // the time swingRay has answered "ground" the fact that there were five
+        // metres of water over it has already been thrown away.
+        //
+        // IT STILL LANDS AND IT STILL SPARKS -- the caller has already done
+        // both. What it does not do is excavate. A splash belongs here
+        // eventually; a hole never did.
+        if (wetColumnAt(at.x, at.z) && at.y < waterTopAt(at.x, at.z)) return;
         const Vec3 from = at - dir * 0.4f;
         const Swing sw = swingRay(wideWalkWorld(kArrowSolidsM), from, dir);
         if (!sw.hit) return;
@@ -587,6 +711,31 @@
         } else {
             yaw = 0.0f;   // terrain is not turned
             dug = world_.dig(sw.point, chipVox, &vol, &n, &spoilAt);
+        }
+        // -- ...AND IF THAT CUT IT THROUGH, THE TREE COMES DOWN -------------
+        //
+        // (user 2026-09-18: "an arrow should be able to fell trees but its not.
+        // im splitting a tree in half with an arrow and the tree is not
+        // falling.")
+        //
+        // THE SWING HAS ALWAYS ASKED AND THE SHAFT NEVER DID. app_capture.inl
+        // calls World::fellTree after every carve on a Trunk or a Rock, and
+        // dropUndermined after one on Ground. arrowChip carved through exactly
+        // the same three doors and then asked nothing -- so a shaft could take
+        // the last voxel of a trunk out and leave the tree standing on the
+        // air where its stem used to be. The rifle inherits the fix, because
+        // its rounds come through this same function.
+        //
+        // BEFORE THE `n <= 0` RETURN, deliberately. fellTree is about what is
+        // still CONNECTED, not about what came off: a blow that severs a trunk
+        // while producing no loose spoil is precisely the blow that fells, and
+        // returning early on an empty chip would skip the one case that
+        // matters. The swing guards on `dug` alone for the same reason.
+        if (dug && physics_.available()) {
+            if (sw.kind == Swing::Trunk || sw.kind == Swing::Rock)
+                felled_ = world_.fellTree(physics_, sw.solid, sw.dir, simMs_);
+            else if (sw.kind == Swing::Ground)
+                world_.dropUndermined(physics_, sw.point, simMs_);
         }
         if (!dug || n <= 0) return;
 

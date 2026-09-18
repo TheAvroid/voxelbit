@@ -194,6 +194,8 @@
 
   private:
     Options opt_;
+    // Summits and lakes found in whatever window is loaded -- see world/poi.h.
+    PoiIndex poi_;
     World world_;
     Tracer tracer_;
     Dlss dlss_;
@@ -343,7 +345,7 @@
     // every one of them from opt_.waterFlags, so this initialiser and that
     // default cannot drift apart in practice; it is written out here so reading
     // the member says the same thing.
-    bool waterTerm_[9] = {true, true, true, true, true, true, true, true, true};
+    bool waterTerm_[10] = {true, true, true, true, true, true, true, true, true, true};
     // ---- the console (T) ---------------------------------------------------
     // A command line, the way the browser engine has one. It exists for
     // /locate: the biomes are bands now (see birchWeight in
@@ -474,6 +476,10 @@
     // one of the three above: those are paid out by the world and this is paid
     // out by the door on [O]. See the kit block, standInLevel and leaveLevel.
     int rifleTool_ = -1;
+    // ...AND THE PISTOL, ONE SLOT ABOVE IT IN THE WHEEL (user 2026-09-18:
+    // "when the player scrolls up it selects it"). Handed over and taken back
+    // by the same door, for the same reason -- see standInLevel.
+    int pistolTool_ = -1;
     // The lamp you place them with -- see the kit block. Immediately after the
     // rifle in the wheel, which is the whole of "scroll up from the rifle".
     int bulbTool_ = -1;
@@ -487,6 +493,25 @@
     // WHEN THE LAST ROUND WENT OFF, on the sim clock -- the shot clock under
     // --shot-walk, so a scripted burst paces identically to a live one.
     double lastShotMs_ = -1.0e9;
+    // -- WHAT IS IN THE MAGAZINE -------------------------------------------
+    //
+    // (user 2026-09-18: "put a number next to the assault rifle just like the
+    // stacked number on hand held items. this is to count the guns ammo. have
+    // it start with 20 bullets.")
+    //
+    // TWENTY, AND IT IS THE USER'S NUMBER -- not a real magazine's 30. Said
+    // here as a constant because three places need it and none of them should
+    // own it: fireRifle spends it, the reload refills to it, and the badge asks
+    // whether it is full.
+    //
+    // NOT A Tool FIELD, WHICH IS WHERE IT NEARLY WENT. HeldItem::Tool carries
+    // `stack`, and an ammo count looks exactly like one more of those -- but
+    // `stack` is how many of a thing you are carrying and is saved and restored
+    // by snapshotKit as part of the wheel. Rounds in a gun are not a count of
+    // guns. Keeping it here also keeps HeldItem free of the idea: that file
+    // owns the reload's CLOCK and knows nothing about what it is reloading.
+    static constexpr int kRifleMag = 20;
+    int rifleAmmo_ = kRifleMag;
     // The wheel as the wood left it -- see standInLevel. Empty while in the
     // wood, which is also what says "there is nothing to put back".
     std::vector<std::pair<bool, int>> woodKit_;

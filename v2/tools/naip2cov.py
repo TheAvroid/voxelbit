@@ -91,13 +91,31 @@ def classify(r, g_, b, nir):
     """One pixel -> a cover class. Thresholds are for 8-bit NAIP."""
     vis = (r + g_ + b) / 3.0
     ndvi = (nir - r) / float(nir + r + 1)
+    # NDWI -- the standard water index. Water absorbs near infrared, so green
+    # exceeds NIR over it; land does the opposite.
+    ndwi = (g_ - nir) / float(g_ + nir + 1)
     # Water first: NIR is absorbed almost completely, so it is the one class
     # that is unambiguous. Snow next, before vegetation, because bright snow
     # over trees would otherwise score as meadow.
-    # DARK AND INFRARED-DEAD IS NOT ENOUGH TO CALL WATER. Open water, shade
-    # under a spruce, and shade on a granite face are the same three numbers.
-    # They are marked SHADOW here and resolved below from their surroundings,
-    # because the thing that actually distinguishes them is not in the pixel.
+    # ------------------------------------------------- WATER, BY NDWI FIRST
+    # The old test was `nir < 35 and vis < 72` -- DARK water only. Colorado's
+    # alpine lakes are bright blue and turquoise, sailed straight past it, and
+    # landed in ROCK: Grand Lake, the largest natural lake in the state, came
+    # out as rock, and then took a blue-grey entry off the ground ramp. That is
+    # the "blue terrain that should be water".
+    #
+    # NDWI catches water at any brightness because it keys on the one thing
+    # water always does -- absorb near infrared. Measured over Grand Lake's
+    # centre: median NDWI +0.14, 61% of pixels above +0.05.
+    #
+    # Capped at vis 170 so sun glint stays with the snow test below, and gated
+    # on ndvi so a wet meadow does not become a pond. Still returns SHADOW, not
+    # WATER: the flatness check downstream is what separates a lake from a wet
+    # rock face, and that check has already earned its place twice.
+    if ndwi > 0.05 and vis < 170 and ndvi < 0.20:
+        return SHADOW
+    # Dark and infrared-dead: deep or shadowed water, and shade under a spruce,
+    # which are the same three numbers. Also resolved downstream.
     if nir < 35 and vis < 72 and ndvi < 0.06:
         return SHADOW
     if vis > 175 and ndvi < 0.12:
@@ -273,14 +291,67 @@ def main():
         else:
             cov[k] = c << 4
 
+    # ---------------------------------------------- DISTANCE TO SHORE, BAKED
+    # The engine used to measure this at runtime, inside heightM, by ringing
+    # outward until it left the water: about 950 lookups PER COLUMN in the
+    # hottest function there is. That was the hitching. It was also the jagged
+    # lake bed, because a ring search returns a QUANTISED distance and the
+    # engine's cover sampler jitters, so the depth stepped and wobbled.
+    #
+    # A two-pass chamfer transform does the whole grid in O(n) once, here, and
+    # the engine reads one byte and interpolates it. Distances are in REAL
+    # metres, clamped to 255, so the engine keeps its own depth curve.
+    print("baking the distance to shore...")
+    INF = 1 << 30
+    dist = array.array("i", [0]) * 0
+    dist = array.array("i", bytes(4 * w * h))
+    for k in range(w * h):
+        dist[k] = 0 if (cov[k] >> 4) != WATER else INF
+    D1, D2 = 10, 14                      # chamfer 3x4 weights, /10
+    for j in range(h):
+        row = j * w
+        for i in range(w):
+            k = row + i
+            if dist[k] == 0: continue
+            best = dist[k]
+            if i: best = min(best, dist[k-1] + D1)
+            if j:
+                best = min(best, dist[k-w] + D1)
+                if i:     best = min(best, dist[k-w-1] + D2)
+                if i<w-1: best = min(best, dist[k-w+1] + D2)
+            dist[k] = best
+    for j in range(h - 1, -1, -1):
+        row = j * w
+        for i in range(w - 1, -1, -1):
+            k = row + i
+            if dist[k] == 0: continue
+            best = dist[k]
+            if i<w-1: best = min(best, dist[k+1] + D1)
+            if j<h-1:
+                best = min(best, dist[k+w] + D1)
+                if i:     best = min(best, dist[k+w-1] + D2)
+                if i<w-1: best = min(best, dist[k+w+1] + D2)
+            dist[k] = best
+    shore = bytearray(w * h)
+    deepest = 0
+    for k in range(w * h):
+        d = dist[k]
+        if d >= INF: d = 255 * 10
+        m = int(d * mx / 10.0)           # chamfer units -> real metres
+        if m > 255: m = 255
+        shore[k] = m
+        if m > deepest: deepest = m
+    print("   farthest any water is from a shore: %d m" % deepest)
+
     flat = []
     for c in ramp:
         flat.extend(c)
-    hdr = struct.pack("<8s2i6d i %dB 28i" % (RAMP_N * 3), b"VBCOV02", w, h,
+    hdr = struct.pack("<8s2i6d i %dB 28i" % (RAMP_N * 3), b"VBCOV03", w, h,
                       olon, olat, slon, slat, mx, my, RAMP_N, *(flat + [0] * 28))
     with open(out_path, "wb") as f:
         f.write(hdr)
         f.write(bytes(cov))
+        f.write(bytes(shore))   # second plane: distance to shore, real metres
 
     tot = float(w * h)
     print("\nclass mix:")
@@ -288,7 +359,7 @@ def main():
         n = sum(1 for v in cov if (v >> 4) == k)
         if n:
             print("  %-8s %10d  %5.1f%%" % (name, n, 100.0 * n / tot))
-    print("wrote   %s  (%.1f MB)" % (out_path, (len(hdr) + len(cov)) / 1048576.0))
+    print("wrote   %s  (%.1f MB)" % (out_path, (len(hdr) + len(cov) + len(shore)) / 1048576.0))
     return 0
 
 

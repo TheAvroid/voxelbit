@@ -342,7 +342,25 @@ constexpr uint8_t SEED_COUNT = 3;   // 59..61
 // the twenty-three spare entries is the honest price.
 constexpr uint8_t GROUND_0 = 62;
 constexpr uint8_t GROUND_COUNT = 10;   // 62..71
-constexpr uint8_t TREE_BASE = 72;  // model palette entries are allocated from here up
+// ------------------------------------------------------------------- SNOW
+// (user 2026-09-18: "I want you to add snow to the tall mountain peaks.")
+//
+// THREE SHADES, FOR THE REASON THE GROUND RAMP GIVES ABOVE. One value over a
+// whole summit reads as a painted plane because the eye finds the repeat
+// instantly, and snow is the worst case for that -- it is the brightest thing
+// in the world and it covers the largest unbroken surfaces.
+//
+// NEW SLOTS, NOT RECLAIMED ONES, and the note over GROUND_0 is why: a dead
+// range is not a free range while a predicate still claims it. Three of the
+// thirteen entries that were still spare, taking the table from 242 to 245.
+//
+// THEY SIT BETWEEN THE GROUND RAMP AND TREE_BASE so the one invariant this
+// file has about ids still holds -- everything the terrain paints is below
+// TREE_BASE, which is where the model palette starts allocating. The
+// static_asserts in world.h check both links of that chain.
+constexpr uint8_t SNOW_0 = 72;
+constexpr uint8_t SNOW_COUNT = 3;   // 72..74
+constexpr uint8_t TREE_BASE = 75;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -1472,6 +1490,27 @@ class Palette {
         set(mat::SEED_0 + 1, 0.156f, 1.000f, 0.089f, 0.92f);
         set(mat::SEED_0 + 2, 0.087f, 1.000f, 0.191f, 0.92f);
         set(mat::SILT, 0.22f, 0.20f, 0.16f, 0.95f);
+        // -- SNOW ---------------------------------------------------------
+        // Near white, and NOT pure white: snow lit by a blue sky carries that
+        // blue in its shadowed facets, and 1.0 across all three channels is the
+        // one value that cannot show a shadow at all. The three shades are a
+        // couple of percent apart, which is invisible as a colour difference
+        // and is exactly enough to stop a summit reading as one flat plane.
+        //
+        // ROUGH -- the last argument is the roughness, and old snow is matte.
+        // A specular highlight on a mountainside would read as ice.
+        // THREE PERCENT APART, NOT NINE. The first cut of these ran 0.86 to
+        // 0.94 -- which is what "a couple of percent" above was meant to mean
+        // and is not what it was -- and on a snowfield that is not a subtle
+        // variation, it is confetti. The per-column hash puts a different shade
+        // on neighbouring columns, and on the one-voxel risers between terraces
+        // the darker one faces you square on, so an 8% step reads as blue flecks
+        // scattered over the whole mountain. White ground is the least
+        // forgiving surface there is for this: there is no texture to hide a
+        // step in and nothing darker nearby to judge it against.
+        set(mat::SNOW_0 + 0, 0.930f, 0.945f, 0.970f, 0.95f);
+        set(mat::SNOW_0 + 1, 0.945f, 0.955f, 0.975f, 0.95f);
+        set(mat::SNOW_0 + 2, 0.915f, 0.935f, 0.965f, 0.95f);
         // WATER, AS A PLACEHOLDER TONE AND NOTHING MORE. A lake is a dielectric
         // and wants the delta lobe and the Beer-Lambert depth term that v1 and
         // v4 both carry in the tracer; none of that is here yet. This entry is
@@ -1558,6 +1597,7 @@ inline bool isSand(uint8_t m) {
     return m == mat::SAND || (m >= mat::SAND_0 && m < mat::SAND_0 + mat::SAND_COUNT);
 }
 inline bool isSoil(uint8_t m) { return m >= mat::SOIL_0 && m < mat::SOIL_0 + mat::SOIL_COUNT; }
+inline bool isSnow(uint8_t m) { return m >= mat::SNOW_0 && m < mat::SNOW_0 + mat::SNOW_COUNT; }
 inline bool isLitter(uint8_t m) {
     return m >= mat::LITTER_0 && m < mat::LITTER_0 + mat::LITTER_COUNT;
 }
@@ -2845,7 +2885,10 @@ class VoxelTerrain {
     static constexpr float kTimberlineFadeAslM = 180.0f;  // in REAL metres
     float timberlineFadeM = kTimberlineFadeAslM;  // in world metres, set on load
     // Peak-to-peak roughness added over measured ground, in world metres.
-    float demDetailM = 0.45f;
+    float demDetailM = 0.0f;   // 0 = the measurement and nothing added; see heightM
+    // How deep a mapped lake gets at its middle, world metres. 5 world m is
+    // 30 real m at shrink 6, which is about Cheesman.
+    float kLakeDepthM = 5.0f;
 
     bool aboveTimberlineVox(int hVox) const {
         return timberlineWorldM >= 0.0f && hVox * VOXEL_M >= timberlineWorldM;
@@ -2855,6 +2898,140 @@ class VoxelTerrain {
     // a bug. Trees thin out through the band below the line instead, on a hash
     // of the column so the answer is stable -- the same column must refuse a
     // tree every time it is asked or the wood flickers as chunks reload.
+    // -----------------------------------------------------------------------
+    // SNOW ON THE HIGH GROUND, AND IT IS THE SAME SHAPE AS THE TIMBERLINE.
+    //
+    // (user 2026-09-18: "I want you to add snow to the tall mountain peaks.")
+    //
+    // A DITHERED LINE, NOT A CONTOUR. Switching at an elevation draws a level
+    // ring right round every peak -- the one shape a mountain never has -- so
+    // the same per-column hash the timberline uses fades snow in across a band,
+    // and the edge comes out ragged and follows the ground instead of cutting
+    // across it.
+    //
+    // 3,650 m IS CHOSEN FROM THE PARK, not from a preference. Rocky Mountain's
+    // summer snow sits in the couloirs and on the north faces above roughly
+    // that, and it is far enough over the 3,505 m timberline that snow and the
+    // last trees do not fight over the same ground. In this window it puts
+    // snow on Longs (4,344), Meeker, Ypsilon, Chiefs Head, Hagues, Otis,
+    // Hallett and Specimen, and on nothing in the valleys.
+    //
+    // THE IMAGERY CAN PUT IT LOWER BUT NEVER HIGHER. Where the classifier
+    // actually saw snow, it is snow whatever the altitude says -- that is a
+    // measurement and this is a rule of thumb. The reverse is not allowed: NAIP
+    // is flown in summer, so "no snow in the photograph" is not evidence of
+    // bare rock in the way "snow in the photograph" is evidence of snow.
+    static constexpr float kSnowlineAslM = 3770.0f;
+    static constexpr float kSnowFadeAslM = 220.0f;   // in REAL metres
+    // How deep it lies where it lies at all, in WORLD metres. Eight voxels: a
+    // layer you can see the edge of from across a cirque, and thin enough that
+    // it follows the rock underneath instead of burying it into a dome.
+    static constexpr float kSnowDeepM = 0.8f;
+    // The grades snow holds on and slides off. Nothing under the first keeps a
+    // full load; nothing over the second keeps any.
+    static constexpr float kSnowHoldGrade = 0.35f;
+    static constexpr float kSnowShedGrade = 0.80f;
+
+    // ------------------------------------------- SMOOTH VALUE NOISE, NO MEMO
+    // The fbm the terrain uses carries an FbmMemo, and this is asked from
+    // materialAt, which has no memo to hand and is called per voxel. Two
+    // lattice reads and a smoothstep is enough for drifts.
+    static float snowNoise(float x, float z) {
+        const float xi = floorf(x), zi = floorf(z);
+        const float fx = x - xi, fz = z - zi;
+        const float ux = fx * fx * (3.0f - 2.0f * fx);
+        const float uz = fz * fz * (3.0f - 2.0f * fz);
+        auto H = [](float a, float b) {
+            uint32_t h = uint32_t(int(a)) * 374761393u ^ uint32_t(int(b)) * 668265263u;
+            h ^= h >> 13; h *= 1274126177u; h ^= h >> 16;
+            return float(h & 0xFFFFu) * (1.0f / 65535.0f);
+        };
+        const float a = H(xi, zi), b = H(xi + 1.0f, zi);
+        const float c = H(xi, zi + 1.0f), d = H(xi + 1.0f, zi + 1.0f);
+        const float lo = a + (b - a) * ux, hi = c + (d - c) * ux;
+        return lo + (hi - lo) * uz;
+    }
+
+    // -----------------------------------------------------------------------
+    // HOW DEEP THE SNOW LIES HERE, IN WORLD METRES. 0 is bare ground.
+    //
+    // (user 2026-09-18: "make the snow on peaks ON the terrain as well as the
+    // terrain itself. theres also square patches of snow, this is wrong, it
+    // needs to look natural" + "you have snow at all elevations instead of just
+    // the peaks".)
+    //
+    // THREE THINGS WERE WRONG WITH THE FIRST CUT AND ONE LINE CAUSED TWO OF
+    // THEM. It read the cover's Snow class and set the fade straight to full:
+    //
+    //     if (cover_.atPoint(...) == CoverField::Snow) t = 1.0f;
+    //
+    // That IGNORED ALTITUDE, so anywhere the classifier said snow got snow --
+    // and NAIP is flown in SUMMER, where its snow class is mostly bright bare
+    // rock and pale sand scattered at every elevation. Hence snow in the
+    // valleys. And it read atPoint, the unjittered cell, so each patch came out
+    // as a hard 10.29 m square. The reasoning written over it -- "snow in the
+    // photograph is evidence of snow" -- is exactly backwards for summer
+    // imagery, and the DEM was the reliable signal all along. The cover is not
+    // consulted at all now.
+    //
+    // THE THIRD WAS THE EDGE. A per-column hash against the fade gives white
+    // noise: single columns of snow speckled over bare rock, which is not what
+    // a snowline looks like from any distance. What follows is a FIELD instead,
+    // and every term in it is something snow actually does:
+    //
+    //   ALTITUDE   it gets deeper the higher you go, over a 220 m fade.
+    //   SLOPE      it slides off steep ground. This is the term that makes it
+    //              look natural rather than painted: snow fills the couloirs
+    //              and benches and leaves the buttresses bare, so the pattern
+    //              follows the shape of the mountain instead of cutting across
+    //              it. Nothing else here can do that.
+    //   DRIFTS     a smooth noise, tens of metres across, so two neighbouring
+    //              gullies are not identically full.
+    //
+    // The edge comes out of the depth reaching zero, which is continuous by
+    // construction -- there is no threshold to be ragged or square.
+    //
+    // IT TAKES THE BARE HEIGHT AS AN ARGUMENT so heightM, which has already
+    // computed it, does not pay for it twice -- and so that this stays a pure
+    // function of (x, z). materialAt has to agree with heightM about the
+    // thickness of the layer to the voxel, and the only way to guarantee that
+    // is for both to ask the same function about the same point.
+    // -----------------------------------------------------------------------
+    float snowDepthAt(float x, float z, float bareY) const {
+        if (!dem_.ok()) return 0.0f;
+        const float asl = dem_.worldToAsl(bareY);
+        float t = (asl - (kSnowlineAslM - kSnowFadeAslM)) / kSnowFadeAslM;
+        if (t <= 0.0f) return 0.0f;      // the valleys, and this is the whole world
+        t = minf(1.0f, t);
+        // ...it slides off anything steep. Measured over 8 real metres, which is
+        // the scale a slab actually fails on.
+        const float sh = dem_.shrink();
+        const float d = 4.0f / sh;
+        const float rise = maxf(fabsf(dem_.heightM(x + d, z) - dem_.heightM(x - d, z)),
+                                fabsf(dem_.heightM(x, z + d) - dem_.heightM(x, z - d)));
+        const float grade = rise * sh / 8.0f;
+        t *= clampf((kSnowShedGrade - grade) / (kSnowShedGrade - kSnowHoldGrade), 0.0f, 1.0f);
+        if (t <= 0.0f) return 0.0f;
+        // ...and it drifts. 0.35 + 0.65 keeps a floor under it, so a snowfield
+        // is uneven rather than moth-eaten.
+        t *= 0.35f + 0.65f * snowNoise(x * 0.09f + 11.3f, z * 0.09f + 4.7f);
+        return t * kSnowDeepM;
+    }
+    float snowDepthM(float x, float z) const {
+        if (!dem_.ok()) return 0.0f;
+        return snowDepthAt(x, z, dem_.heightM(x, z));
+    }
+    // Half a voxel of lying snow is the thinnest that can be drawn at all.
+    bool snowAt(int i, int j) const {
+        return snowDepthM(wx(i), wx(j)) >= 0.5f * VOXEL_M;
+    }
+
+    uint8_t snowShade(int i, int j) const {
+        uint32_t h = uint32_t(i) * 374761393u ^ uint32_t(j) * 1274126177u;
+        h ^= h >> 15; h *= 2654435761u; h ^= h >> 13;
+        return uint8_t(mat::SNOW_0 + int(h % uint32_t(mat::SNOW_COUNT)));
+    }
+
     bool treeRejectedByAltitude(int i, int j, int hVox) const {
         if (timberlineWorldM < 0.0f) return false;
         const float t = (hVox * VOXEL_M - (timberlineWorldM - timberlineFadeM)) /
@@ -2884,6 +3061,113 @@ class VoxelTerrain {
     bool coverAllowsTree(float x, float z) const {
         if (!cover_.ok()) return true;
         return cover_.at(x, z) == CoverField::Forest;
+    }
+
+    // ------------------------------------------- THIN ONLY THE THICKEST STANDS
+    // (user 2026-09-18: "decrease the density by 50%, but only where the trees
+    // are very very dense -- leave the sparse areas alone".)
+    //
+    // The knob that already existed, grassDensity's sibling, is GLOBAL: turning
+    // it down takes the same fraction out of a closed canopy and out of the
+    // half-dozen pines on an open bench, and the open ground is where losing
+    // trees shows. So the rate is driven by how closed the stand actually is,
+    // measured from the imagery -- the one thing that knows the difference.
+    //
+    // RAMPED, NOT SWITCHED. Nothing happens below kCrowdT; from there the
+    // rejection rises smoothly to kCrowdMax at a fully closed canopy. A hard
+    // threshold would draw a visible line around every thicket, which is the
+    // same mistake the hard cover edges made before they were jittered.
+    //
+    // Hashed on the column so a site answers the same way every time it is
+    // asked, or the wood thins and refills as chunks reload.
+    // ------------------------------------------- REAL FRONT RANGE STAND DENSITY
+    // Replaces the crowding hack entirely. That thinned by how closed the
+    // canopy looked; this asks what actually grows at this altitude and puts
+    // that many stems there.
+    //
+    // Stems per REAL hectare, by zone. These are field numbers for the
+    // Colorado Front Range, not a curve that looked nice:
+    //
+    //     ponderosa savanna   2000-2600 m     100 -  250
+    //     Douglas-fir/mixed   2400-2900 m     400 -  700
+    //     lodgepole           2700-3200 m    1000 - 2500   (dense, even-aged)
+    //     spruce-fir          3000-3500 m     400 -  900
+    //     krummholz           3400 m+          50 -  200
+    //
+    // Interpolated between zone midpoints so a hillside changes forest type
+    // gradually, the way one does.
+    static float realStemsPerHa(float aslM) {
+        struct P { float m, stems; };
+        static const P k[] = {{1800.f, 120.f}, {2300.f, 175.f}, {2650.f, 550.f},
+                              {2950.f, 1750.f}, {3250.f, 1200.f}, {3450.f, 650.f},
+                              {3600.f, 120.f}, {3800.f, 20.f}, {4400.f, 0.f}};
+        const int n = int(sizeof k / sizeof k[0]);
+        if (aslM <= k[0].m) return k[0].stems;
+        for (int i = 1; i < n; ++i)
+            if (aslM <= k[i].m) {
+                const float t = (aslM - k[i-1].m) / (k[i].m - k[i-1].m);
+                return k[i-1].stems + (k[i].stems - k[i-1].stems) * t;
+            }
+        return k[n-1].stems;
+    }
+
+    // WHAT THE SCATTER ACTUALLY PRODUCES, measured: 145 trees per world
+    // hectare of forested ground at the lake and 148 on the peak flank before
+    // any thinning. Near enough uniform, which is why one number works as the
+    // divisor for an acceptance rate.
+    static constexpr float kScatterStemsPerWorldHa = 146.0f;
+
+    // THE DIVISOR, AND WHY IT IS NOT shrink SQUARED BY DEFAULT.
+    //
+    // Strictly, a world hectare COVERS shrink^2 = 36 real hectares, so "one
+    // tree in the world for one tree in Colorado" divides real stems/ha by 36.
+    // That is the honest count -- and it was rendered, and it is a BARE
+    // MOUNTAIN: one pine in a 300 m view of ground the imagery calls forest.
+    // Correct, and useless.
+    //
+    // Dividing by the shrink itself keeps the real SHAPE of the stand tables
+    // -- dense lodgepole at 2,900 m, thin krummholz at 3,600, savanna down at
+    // the lake -- at a density you can walk through. That is the default.
+    // `--stem-div 36` is the literal one-for-one; `--stem-div 1` is real
+    // density at real scale.
+    float stemDiv = 0.0f;   // 0 = derive it from the shrink
+
+    float stemTargetPerWorldHa(float aslM) const {
+        const float sh = dem_.ok() ? dem_.shrink() : 1.0f;
+        const float div = (stemDiv > 0.0f) ? stemDiv : sh;
+        return realStemsPerHa(aslM) / maxf(1.0f, div);
+    }
+
+    // Hashed on the column so a site answers the same way every time, or the
+    // wood thins and refills as chunks reload.
+    // -----------------------------------------------------------------------
+    // HOW FULL THE LATTICE HAS TO BE HERE -- ONE RULE, BOTH DIRECTIONS.
+    //
+    // This replaces treeRejectedByDensity, which could only ever THIN: it
+    // computed target/delivered and threw candidates away when that was under
+    // one, and did nothing at all when it was over. That was a fair description
+    // of the problem at shrink 6, where the table asks for more than the
+    // scatter can offer only in the two densest bands -- and it is the wrong
+    // shape entirely at 1:1, where the table asks for 1,750 stems a hectare and
+    // the wood was delivering 146. Twelve times too sparse, silently, because
+    // the only lever pointed downwards.
+    //
+    // IT IS A MULTIPLIER ON THE ACCEPTANCE now, so over one fills the lattice
+    // and under one empties it, and the saturation is free: the scatter tests
+    // `hash > standGate * density * fill`, and a product over 1.0 is simply
+    // never rejected. There is no second clamp to keep in step with the first.
+    //
+    // WHAT IT CANNOT DO is exceed the lattice. The pine grid is 2.4 m and the
+    // clash test refuses anything within a trunk's width of a tree already
+    // placed, so there is a ceiling no acceptance rate can pass -- see
+    // kScatterStemsPerWorldHa for what the pipeline actually delivers. Asking
+    // for more than that is not an error, it just stops helping.
+    // -----------------------------------------------------------------------
+    float stemFill(float x, float z, int hVox) const {
+        (void)x; (void)z;
+        if (!dem_.ok()) return 1.0f;
+        const float asl = dem_.worldToAsl(float(hVox) * VOXEL_M);
+        return clampf(stemTargetPerWorldHa(asl) / kScatterStemsPerWorldHa, 0.0f, 16.0f);
     }
 
     // ---------------------------------------------------------------------
@@ -4236,6 +4520,31 @@ class VoxelTerrain {
     // sinking only replaces the kNoWater case, which is the one that cut.
     // -----------------------------------------------------------------------
     float waterAt(float x) const {
+        // -- A MEASURED WORLD HAS NO INVENTED SEA --------------------------
+        //
+        // (user 2026-09-18: "I would rather have larger terrain formations then
+        // little small segments" + "getting these perfect lines in the terrain
+        // generation", with photographs of a flat sheet of water standing over
+        // real ground.)
+        //
+        // THIS IS A BAND CONSTANT AND IT DOES NOT KNOW WHAT A DEM IS. pineWater
+        // is 36 world metres -- one number for a whole invented wood, which is
+        // exactly right when the landform was invented to sit around it. Under a
+        // DEM the datum puts the lowest measured ground at 20 m, so that same
+        // constant is a sea covering everything under about 2,048 m above sea
+        // level, and a good part of this window is under that.
+        //
+        // WHAT IT LOOKS LIKE IS BOTH COMPLAINTS AT ONCE. A level plane laid over
+        // real relief cuts the valley floor into a scatter of small islands
+        // wherever the ground crosses it -- the "little segments" -- and where
+        // the DEM's own contours happen to run parallel it leaves long dead
+        // straight waterlines, which is the "perfect lines". Neither is a bug in
+        // the terrain: they are the shoreline of a sea that should not be there.
+        //
+        // THE MAPPED LAKES ARE THE WATER NOW. They come from the imagery, they
+        // sit at the DEM's own level, and they are the whole of it -- see
+        // mappedWater and lakeLineAt, which is asked before this is.
+        if (dem_.ok()) return kNoWater;
         if (forced)
             return (biome == Biome::Birch) ? birchWater
                    : (biome == Biome::Oak) ? oakWater
@@ -4273,6 +4582,22 @@ class VoxelTerrain {
         const float inPine = -bandDist(x);   // metres into the pine, negative in birch
         return sstep(saturate((inPine - waterSeamEdgeM) / waterSeamFadeM));
     }
+    // ------------------------------------ THE WATER SURFACE AT A *POINT*
+    // waterAt(x) is the per-BAND procedural line -- one number for a whole
+    // stripe of the world, and kNoWater entirely on the DEM path. Anything
+    // that asks it about a mapped lake gets told there is no water there:
+    // the camera never switched to its underwater look, and butterflies
+    // happily cruised over the middle of Cheesman, because both asked
+    // waterAt() and both were told the lake did not exist.
+    //
+    // This answers for a POINT, prefers the lake the imagery found, and falls
+    // back to the band line everywhere else. See [[v2-waterY-is-a-global-lie]].
+    float waterSurfaceAt(float x, float z) const {
+        if (cover_.ok() && cover_.at(x, z) == CoverField::Water)
+            return dem_.heightM(x, z);
+        return waterAt(x);
+    }
+
     int waterVoxAt(float x) const {
         const float w = waterAt(x);
         return (w == kNoWater) ? kNoWaterVox : int(w / VOXEL_M);
@@ -4548,9 +4873,73 @@ class VoxelTerrain {
             // calling it measurement. A couple of decimetres is under the
             // error bar, invisible on a profile, and the difference between
             // ground that looks poured and ground that looks walked on.
+            const float g = dem_.heightM(x, z);
+            // ----------------------------------------------- A LAKE IS FLAT
+            // AND THE NOISE MUST NOT TOUCH IT. 3DEP maps still water as a level
+            // plane, so the DEM arrives perfectly flat here -- and then `fine`
+            // (+-0.6 m) and the detail octave (+-0.22 m) were added on top of
+            // it like any other ground, which is exactly the "water mounds"
+            // that should not exist. Roughness belongs on ground, not on a
+            // surface whose defining property is that it is level.
+            //
+            // THE BED IS CARVED, not painted. Returning mat::WATER as the top
+            // material gave a water-coloured skin with earth immediately under
+            // it -- water with no depth. The lake bottom drops away from the
+            // shore instead, and lakeLineAt puts the surface back at the DEM's
+            // own level, so the mesher fills bed-to-line with real water the
+            // same way it does for the invented lakes.
+            // waterHere, NOT at(). The class sampler jitters by up to a cell
+            // for the renderer's sake, so a column in the middle of a lake
+            // could take the dry branch and stand up out of the water --
+            // measured at 2.42% of all mapped water before this, 94% of it
+            // this sampler. See CoverField::waterHere; lakeLineAt and
+            // topMaterial ask the same question through the same door, because
+            // three functions disagreeing about one edge is what a wall in a
+            // lake is made of.
+            if (mappedWater(x, z)) {
+                // shoreDistance is REAL metres off a baked, interpolated plane,
+                // so this is smooth and costs one lookup. Converted to world
+                // metres before it shapes the bed, or the lake is six times
+                // deeper than it should be.
+                const float toShoreW = cover_.shoreDistance(x, z) / dem_.shrink();
+                const float depth = minf(kLakeDepthM, 0.45f * toShoreW);
+                return g - maxf(0.20f, depth);
+            }
+            // -- AND THE MEASURED GROUND IS SMOOTH -------------------------
+            //
+            // (user 2026-09-18: "can you work on noisy banks: make the banks
+            // smooth. actually remove that noise from all terrain. we're
+            // looking for smooth terrain without noise.")
+            //
+            // BOTH OCTAVES GO, AND THEY WERE THE WHOLE OF IT. `fine` is
+            // +-0.6 world m -- six voxels of swell -- and `det` another +-0.22,
+            // two more. On a slope they read as texture, which is what the
+            // notes above were arguing for; on the flat sand of a bank they
+            // read as exactly what was reported, a speckle of single voxels
+            // standing proud of ground that the data says is level.
+            //
+            // THE ARGUMENT FOR KEEPING THEM WAS TERRACING, and at this scale it
+            // does not hold. It was written for the invented landform, whose
+            // samples are tens of metres apart; the DEM's postings are 10.29
+            // real metres, which at shrink 6 is 1.7 world metres -- seventeen
+            // voxels -- so the bilinear ramp between two samples is seventeen
+            // voxels long, not a hundred. That is a slope, not a plateau.
+            //
+            // demDetailM SCALES BOTH so none of this is deleted: --dem-detail
+            // 0.45 is the old ground exactly, and 0 -- the default now -- is
+            // the measurement and nothing else.
+            // -- AND THE SNOW LIES ON TOP OF ALL OF IT ---------------------
+            // (user 2026-09-18: "make the snow on peaks ON the terrain as well
+            // as the terrain itself".) It was a PAINT before -- topMaterial
+            // returned a white id for the surface voxel and the ground was
+            // exactly where it had always been. Snow that is on something has
+            // to raise it, so the column grows by the depth and materialAt
+            // fills what it grew by. Passing `g` keeps it one DEM lookup.
+            const float snow = snowDepthAt(x, z, g);
+            if (demDetailM <= 0.0f) return g + snow;
             const float det =
                 (fbm(memo.detail, x * 0.90f + 17.3f, z * 0.90f + 41.7f, 4) - 0.5f) * demDetailM;
-            return dem_.heightM(x, z) + fine + det;
+            return g + snow + fine * (demDetailM * (1.0f / 0.45f)) + det;
         }
         // -------------------------------------------------------------------
 
@@ -5164,6 +5553,10 @@ class VoxelTerrain {
     // code, which asks about a few thousand scattered columns rather than every
     // column in a chunk and has no grid to read from.
     uint8_t topMaterial(int i, int j, int h, int slope, TerrainMemo &memo) const {
+        // THE HIGH GROUND IS WHITE WITH OR WITHOUT A PHOTOGRAPH. snowAt needs
+        // only the DEM; the cover can pull the line down where it saw snow, and
+        // has nothing to say where it was not loaded.
+        if (!cover_.ok() && snowAt(i, j)) return snowShade(i, j);
         // ------------------------------------------- THE PHOTOGRAPH FIRST
         // BEFORE THE SHORE BAND, AND THAT ORDER IS THE WHOLE FIX. This used to
         // sit below the sand branches, so every column near the waterline was
@@ -5178,12 +5571,56 @@ class VoxelTerrain {
         // material laid on top of it.
         if (cover_.ok()) {
             const float wxm = wx(i), wzm = wx(j);
+            // Water is NOT returned here any more -- see heightM. This is the
+            // lake BED now, and the mesher fills the column above it from
+            // lakeLineAt. Painting mat::WATER on the top voxel is what made the
+            // lake a skin with no depth.
+            //
+            // THE BED IS ASKED THROUGH waterHere, the same predicate that
+            // carved it, so the silt cannot end one cell short of the water or
+            // one cell into the bank.
+            if (mappedWater(wxm, wzm)) return mat::SILT;
+            // -- AND ABOVE EVERYTHING ELSE, THE SNOW ----------------------
+            // After the water and before the ground, which is the only order
+            // that works: a lake does not freeze over because it is high, and
+            // bare rock at 4,000 m is under snow whatever colour the imagery
+            // sampled off it. See snowAt.
+            if (snowAt(i, j)) return snowShade(i, j);
             const uint8_t cc = cover_.at(wxm, wzm);
-            if (cc == CoverField::Water) return mat::WATER;
-            if (cc == CoverField::Rock || cc == CoverField::Snow)
-                return uint8_t(mat::GROUND_0 +
-                               mini(int(mat::GROUND_COUNT) - 1,
-                                    cover_.colourIndex(wxm, wzm)));
+            if (cc == CoverField::Rock || cc == CoverField::Snow || cc == CoverField::Water) {
+                const int ci = mini(int(mat::GROUND_COUNT) - 1, cover_.colourIndex(wxm, wzm));
+                // ------------------------- A WATER COLOUR IS NOT A GROUND ONE
+                // ("can you investigate this blue terrain near water... could
+                // you instead turn it into a sandy color which already exists."
+                // user 2026-09-18, with a photograph of it.)
+                //
+                // The ramp is spread by luminance percentile over the window's
+                // own pixels and nobody kept water out of that population, so
+                // rmnp50's darkest entry is #384848 -- a teal off the lake --
+                // and it painted every flat beside the water blue-grey.
+                //
+                // SAND IS THE RIGHT ANSWER AND NOT JUST A NICER ONE. What is
+                // actually under those pixels is wet shore: the strip the water
+                // has been over recently, which the photograph sees dark and
+                // blue for exactly that reason. mat::SAND is already what this
+                // engine calls that, already in the palette, and already what
+                // the bank a few metres up is wearing.
+                //
+                // Ramp entries are fixed at load, so this is a comparison
+                // against a small table and not a colour decision per column.
+                // ...BUT ONLY WHERE A WET SHORE IS POSSIBLE. Above the
+                // timberline there is no beach: a water-coloured pixel up there
+                // is shadowed rock or old snow in a north-facing couloir, and
+                // painting it beach sand put 50,125 columns of it on the alpine
+                // ridges. The next entry up the ramp is the darkest one that is
+                // actually ground, which is what that rock is.
+                if (cover_.rampIsWater(ci)) {
+                    const float asl = dem_.worldToAsl(float(h) * VOXEL_M);
+                    if (asl < kTimberlineAslM) return mat::SAND;
+                    return uint8_t(mat::GROUND_0 + mini(int(mat::GROUND_COUNT) - 1, ci + 1));
+                }
+                return uint8_t(mat::GROUND_0 + ci);
+            }
         }
         // ------------------------------------------------------------- birch
         // ONE GREEN, EVERYWHERE. No sand, no silt, no soil, no needle litter,
@@ -5455,7 +5892,148 @@ class VoxelTerrain {
     // column it is working on, and re-deriving it there is the single most
     // expensive thing in the gather. A caller with a height finishes the job
     // with one comparison; one without it calls lakeColumn below.
+    // -----------------------------------------------------------------------
+    // IS THERE A LAKE HERE? THE ONE DOOR, AND EVERY CALLER USES IT.
+    //
+    // heightM carves the bed, lakeLineAt puts the surface back over it, and
+    // topMaterial lays the silt. Three functions, one edge -- and when they
+    // each asked the cover separately through the JITTERED sampler they got
+    // three different answers, so a column could have a bed and no water, or
+    // water and no bed. Measured before this: 35,495 columns of mapped water
+    // that were dry land, 20,489 of them standing above the surface, worst
+    // 22.7 m up. It reads like a wall in the middle of a lake, because that is
+    // what it is.
+    //
+    // TWO TESTS, AND THE SECOND IS THE DEFINITION OF A LAKE.
+    //
+    //   1. The imagery says water -- through CoverField::waterHere, which is
+    //      the baked shore plane rather than the class, so the edge is a smooth
+    //      contour instead of a jittered fringe or a square staircase.
+    //
+    //   2. THE GROUND UNDER IT IS LEVEL. The classifier reads deep shadow and
+    //      wet rock as water, and where it does, this used to carve a flat lake
+    //      into a mountainside: 5.78% of all the water in rmnp50 stood on
+    //      ground steeper than 10%, and the worst of it on a 212% grade a
+    //      kilometre from Longs Peak. Water finds its level -- ground that does
+    //      not have one is not holding any.
+    //
+    // IT MEASURES THE WATER, NOT THE BANK, and the first version did not. A
+    // grade taken across the column's four neighbours straddles the shoreline
+    // on every edge cell and comes back with the BANK's slope, which on a
+    // reservoir is near vertical -- so it refused a three-metre rim right round
+    // every real lake and left a bathtub ring of dry ground at the waterline.
+    // 1.98% of Granby went that way. Only neighbours that are themselves water
+    // are measured, so a lake with a cliff on one side still reads level, which
+    // is correct: the cliff is not the water.
+    //
+    // A cell with NO water beside it is refused outright. That is a single
+    // stray classification, and one cell of lake is not a lake.
+    //
+    // 20% IS MEASURED, NOT PICKED. Over the whole window 71% of water sits on
+    // under a 2% grade, which is what a lake surface reads as; the tail above
+    // 20% was 2.23%, and it was shadow and wet rock on mountainsides.
+    //
+    // THE COST IS FOUR SHORE READS AND UP TO FOUR DEM READS, on a water column
+    // and nowhere else. Both are bilinear reads of arrays in memory, and the
+    // land branch this replaces spends two fbm octave stacks. Water is under
+    // 2% of the window's columns.
+    // -----------------------------------------------------------------------
+    static constexpr float kLakeGradeMax = 0.20f;
+    // How far inside the water a column has to be before the grade test stops
+    // being asked, in REAL metres. See the note in mappedWater.
+    // 6 m, AND THIS ONE NUMBER IS A TRADE THAT CANNOT BE WON HERE.
+    //
+    // The grade test is a poor witness near a bank -- the bed is sloping up to
+    // meet the shore by definition -- and the imagery's water mask includes the
+    // wet shore, so "water neighbours" there are bank, not surface. Measured on
+    // Granby, every setting trades one defect for the other:
+    //
+    //     interior 25 m, probe 20 m   5,643 sand columns in the lakes
+    //                                     22 water samples over a 30% grade
+    //     interior  6 m, probe  8 m     192 sand columns in the lakes
+    //                                  1,257 water samples over a 30% grade
+    //
+    // 6 m is taken because the sand slabs are the reported defect and they are
+    // in the middle of a lake where anyone can see them, while the steep water
+    // is on mountainsides above the timberline. It is a choice, not a fix.
+    //
+    // THE REAL FIX IS IN THE BAKE, and it is the test world/poi.h already
+    // passes: flood the water mask, take each body's MEDIAN elevation, and drop
+    // the cells that do not sit on it. That is exact, it is a connected
+    // component away, and naip2cov.py can afford it because it runs once.
+    // Nothing per-column at runtime can see a whole water body, which is why
+    // every threshold here is a proxy for the thing that actually decides it.
+    static constexpr float kLakeInteriorM = 6.0f;
+    bool mappedWater(float x, float z) const {
+        if (!cover_.ok()) return false;
+        const float sd = cover_.shoreDistance(x, z);
+        if (sd <= CoverField::kShoreEdgeM) return false;
+        if (sd >= kLakeInteriorM) return true;   // unambiguously open water
+
+        // -- THE SHORE BAND, AND WHY IT WAS A COMB -------------------------
+        //
+        // (user 2026-09-18: "clean this up", with a photograph of the waterline
+        // broken into rectangular teeth.)
+        //
+        // The grade test used to be a separate BOOLEAN applied per column in
+        // this band, and a boolean over a noisy measurement is a coin toss at
+        // the margin: neighbouring columns a decimetre apart landed on either
+        // side of the 20% line and the waterline came apart into fingers. The
+        // measurement is noisy here for a structural reason -- within a few
+        // metres of a bank there is barely any water left to measure the water
+        // surface across, so it is mostly reading the beach.
+        //
+        // SO IT IS NO LONGER A SEPARATE TEST. The grade now moves the shore
+        // distance a column must have before it counts as water:
+        //
+        //     flat lake surface   ->  1 m, which is the waterline as drawn
+        //     steep ground        ->  25 m, which no small smear ever has
+        //
+        // Both fields are continuous, so the waterline is the contour of a
+        // continuous function and cannot be ragged. It cannot be square either:
+        // the shore plane is bilinear and the grade is a difference of bilinear
+        // samples. The same evidence decides the same cases as before -- a
+        // hillside smear still has nowhere near 25 m of shore distance -- but it
+        // decides them by degree instead of by a knife edge.
+        const float sh = dem_.shrink();
+        const float d = 8.0f / sh;
+        const float h0 = dem_.heightM(x, z);
+        const float q = d * 0.7071f;
+        const float ox[8] = {d, -d, 0, 0, q, -q, q, -q};
+        const float oz[8] = {0, 0, d, -d, q, q, -q, -q};
+        float rise = 0.0f;
+        int n = 0;
+        for (int k = 0; k < 8; ++k) {
+            const float sx = x + ox[k], sz = z + oz[k];
+            if (cover_.shoreDistance(sx, sz) <= CoverField::kShoreEdgeM) continue;
+            ++n;
+            rise = maxf(rise, fabsf(dem_.heightM(sx, sz) - h0));
+        }
+        // No water beside it at 8 m is a channel or a stray -- see the note that
+        // was here before; the shore distance tells those apart on its own.
+        if (n == 0) return sd >= 6.0f;
+        const float grade = rise * sh / 8.0f;
+        const float t = clampf((grade - kLakeGradeMax * 0.25f) / (kLakeGradeMax * 0.75f),
+                               0.0f, 1.0f);
+        return sd > CoverField::kShoreEdgeM + t * (kLakeInteriorM - CoverField::kShoreEdgeM);
+    }
+
     int lakeLineAt(float x, float z, TerrainMemo &memo) const {
+        // ------------------------------------- THE MAPPED LAKE'S OWN SURFACE
+        // Where the imagery says water, the line is the DEM's level at that
+        // point and nothing else: no band line, no basin gate, no noise. That
+        // is what makes it FLAT. heightM has already dropped the bed below it,
+        // so the mesher has a real column of water to fill.
+        //
+        // This runs before waterVoxAt, which asks the per-BAND procedural line
+        // (see the waterY note) and knows nothing about a lake the photograph
+        // found.
+        // THE SAME DOOR heightM CARVES THROUGH. It was cover_.at() here too,
+        // and the two sample the jitter independently -- so a column could have
+        // its bed carved and no line over it, or a line and no bed. That
+        // disagreement is a wall standing in open water.
+        if (mappedWater(x, z))
+            return int(dem_.heightM(x, z) / VOXEL_M);
         const int wl = waterVoxAt(x);
         if (wl == kNoWaterVox) return kNoWaterVox;
         // THERE IS NO BASIN GATE ON THE WATER. THE LINE IS THE LINE.
@@ -5919,6 +6497,15 @@ class VoxelTerrain {
     uint8_t materialAt(int i, int j, int y, int h, uint8_t top) const {
         if (y > h) return mat::AIR;
         if (y == h) return top;
+        // -- THE LYING SNOW, WHICH IS A LAYER AND NOT A SKIN ----------------
+        // Gated on the surface already being snow, so no column below the
+        // snowline pays for this at all -- and above it, it is one DEM lookup
+        // and a noise sample for the handful of voxels the layer is deep. What
+        // is under the snow is whatever the mountain is, unchanged: the bands
+        // below carry on from the bare height.
+        if (isSnow(top)) {
+            if (float(h - y) * VOXEL_M < snowDepthM(wx(i), wx(j))) return snowShade(i, j);
+        }
         if (h - y >= kBedrockVox) return mat::BEDROCK;
         if (top == mat::ROCK) return mat::ROCK;
         return (h - y <= crustVox(i, j)) ? mat::SOIL_0 : mat::ROCK;

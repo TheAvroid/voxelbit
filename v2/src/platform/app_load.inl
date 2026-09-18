@@ -8,6 +8,29 @@
 // Contents: onLoad: the whole world/device/asset bring-up
 // -----------------------------------------------------------------------------
     // -----------------------------------------------------------------------
+    // EVERY MODEL THE PALETTE MUST RESERVE FOR BEFORE THE WOOD IS SCATTERED.
+    //
+    // A function rather than the braced list it used to be, and the pistol is
+    // why: its colours are not all in one file. See the note at the call site
+    // for which paths are here and on what argument, and HeldItem::prewarmColors
+    // for what the reservation is worth.
+    //
+    // THE PISTOL'S RELOAD FRAMES ARE IN IT, which no other entry needs. Frames
+    // 04 to 07 are the magazine out of the grip and they carry two shades --
+    // the follower and the base plate -- that the gun at rest does not have
+    // anywhere on it, and a colour first asked for at kit-build time is asked
+    // for after the whole world has had its turn at a 255-entry table. The
+    // rifle has no such problem: its nine reload frames are strict subsets of
+    // the rest pose, measured at "worst colour shift 0/255" on all ten models.
+    // See [[v2-palette-is-full]].
+    std::vector<std::string> kitPrewarm() const {
+        std::vector<std::string> out = {opt_.axe,   opt_.pick,  opt_.shovel, opt_.arrow,
+                                        opt_.steak, opt_.seeds, opt_.rifle,  opt_.pistol};
+        for (const std::string &p : HeldItem::stripFiles(opt_.pistolReload)) out.push_back(p);
+        return out;
+    }
+
+    // -----------------------------------------------------------------------
     void onLoad(Falcor::RenderContext *ctx) override {
         // Before anything slow, so the window is where it belongs while the
         // wood is still loading rather than jumping there afterwards.
@@ -30,7 +53,23 @@
         world_.treeDensity = clampf(opt_.treeDensity, 0.0f, 1.0f);
         world_.pineDir = opt_.pines;
         world_.decorDir = opt_.decor;
-        world_.viewChunks = mini(15, maxi(1, opt_.view));
+        // THE CEILING IS A MEMORY CEILING, NOT A DESIGN ONE. It was 15,
+        // inherited from v7 with no note saying why, and it made `--view 24`
+        // silently mean 15 -- so raising the view distance appeared to cost
+        // nothing because nothing had changed.
+        //
+        // What it costs, per `rering`'s disc and the TriPool sizing in build():
+        //
+        //   R   radius    chunks   TriPool
+        //   12  307 m     441      310 MB
+        //   15  384 m     709      477 MB
+        //   24  614 m     1793     1191 MB
+        //
+        // The pool is allocated whole at build() and the BLAS memory that
+        // scales beside it is the larger term, so this is the one setting that
+        // can exhaust a 12 GB card on its own. The spill is silent and reads
+        // as LOWER local VRAM, not higher -- see the memory note.
+        world_.viewChunks = mini(24, maxi(1, opt_.view));
         world_.terrain.grassMinRows = maxi(1, opt_.grassMin);
         world_.terrain.grassMaxRows = maxi(opt_.grassMin, opt_.grassMax);
         // A stream of its own, so re-seeding the wood does not also reshuffle
@@ -45,6 +84,7 @@
             if (world_.terrain.loadDem(opt_.demPath, opt_.demBaseM,
                                        opt_.demScale, opt_.demExag)) {
                 world_.terrain.demDetailM = opt_.demDetail;
+                world_.terrain.stemDiv = opt_.stemDiv;
                 const DemField &d = world_.terrain.dem();
                 printf("[dem] %s  %dx%d  %.1f..%.1f m asl  relief %.1f m\n"
                        "      1 world m = %.1f real m, vert x%.2f  ->  %.2f x %.2f km world, %.0f m of relief\n",
@@ -86,6 +126,19 @@
                                world_.terrain.cover().err());
                     }
                 }
+                // ------------------------------------ AFTER BOTH, NOT AFTER ONE
+                // This has now been in the wrong place twice. It started in
+                // the DEM block, which runs BEFORE the cover loads: the lake
+                // pass saw no water and the index came out as twelve summits
+                // and nothing else. Moving it into the cover block fixed the
+                // lakes and broke the peaks -- a window loaded with no
+                // --cover then got no places at all, when a summit needs only
+                // the heights. It belongs after BOTH, taking whatever each
+                // one has. Same ordering trap as the cover load itself: that
+                // one needs the shrink, this one needs the water.
+                poi_.build(world_.terrain.dem(), world_.terrain.cover());
+                printf("[poi] %d places in the data (%d named)\n",
+                       int(poi_.all().size()), poi_.namedCount());
             } else {
                 printf("[dem] FAILED to load %s: %s\n", opt_.demPath.c_str(),
                        world_.terrain.dem().err());
@@ -119,7 +172,7 @@
         // SOMEWHERE NEW EACH TIME, but only in the viewer. --out renders one
         // frame from a named camera and the whole point of it is that the same
         // flags give the same picture, so it keeps the camera it was given.
-        if (!opt_.outGiven && !opt_.camGiven) chooseSpawn();
+        if ((!opt_.outGiven || opt_.spawnPick) && !opt_.camGiven) chooseSpawn();
         if (opt_.groundStats) { groundStats(); skyStats(); shutdown(0); return; }
 
         // BEFORE THE MODELS LOAD, because the load is the only moment their
@@ -182,8 +235,9 @@
         std::printf("           the %s wood at %.0f, %.0f%s\n",
                     world_.terrain.woodName(opt_.camX), opt_.camX,
                     opt_.camZ, world_.terrain.forced ? " (pinned)" : " -- T, /locate");
-        std::printf("           %.0f ms of that was structure building, %.0f MB of tri pool\n",
-                    world_.buildMs(), double(world_.poolBytes()) / (1024.0 * 1024.0));
+        std::printf("           %.0f ms of that was structure building, %.0f of %.0f MB of tri pool used\n",
+                    world_.buildMs(), double(world_.poolUsedBytes()) / (1024.0 * 1024.0),
+                    double(world_.poolBytes()) / (1024.0 * 1024.0));
 
         // -- Streamline: Frame Generation and Reflex -------------------------
         //
@@ -580,8 +634,15 @@
                 // colour the wood already owns, and all eleven mint or all
                 // eleven go without. A gun that loads minutes after start-up
                 // on [O] would be asking last; this is what stops that.
-                {opt_.axe, opt_.pick, opt_.shovel, opt_.arrow, opt_.steak, opt_.seeds,
-                 opt_.rifle},
+                // ...AND THE PISTOL, ON THE SEEDS' ARGUMENT AGAIN -- ten of its
+                // thirteen shades are new, a seven-step grey ramp and three
+                // browns that nothing in a pine forest is near, so they are
+                // minted early or they are not minted at all. THE RELOAD
+                // FRAMES ARE IN THE LIST TOO, which no other entry needs: four
+                // of them carry two shades the rest pose does not have, and a
+                // colour first asked for by frame 04 is a colour asked for
+                // after the whole world has had its turn.
+                kitPrewarm(),
                 opt_.bow);
             std::printf("  held     reserved %d palette entries for the kit, %d of %d now used\n",
                         took, world_.palette.used(), int(mat::COUNT));
@@ -795,8 +856,26 @@
         //
         // The panel is seeded from the same number so --water-flags and the
         // checkboxes cannot disagree about what is on.
-        for (int b = 0; b < 9; ++b) waterTerm_[b] = (opt_.waterFlags >> b) & 1u;
+        for (int b = 0; b < 10; ++b) waterTerm_[b] = (opt_.waterFlags >> b) & 1u;
         tracer_.waterFlags = opt_.waterFlags;
+        // -- AND THE WAVE HEIGHT, WHICH ONLY THE OFFLINE PATH WAS SETTING ----
+        //
+        // (user 2026-09-18: "you turned off the waves. turn them back on.")
+        //
+        // `tracer_.waterWaveGain = opt_.waves` existed, twenty lines down,
+        // inside the `if (opt_.outGiven)` block -- so --waves reached the
+        // --out renders and NOTHING ELSE. An interactive session never
+        // assigned it at all and ran on tracer.h's initialiser, which is 0.
+        // The water in the game has been flat since the term was added, and no
+        // value of --waves could have changed that.
+        //
+        // This is the third thing to be caught by exactly the note above it:
+        // anything the command line sets for the RENDERER belongs above the
+        // offline return, or it only ever reaches half the program. ONCE, not
+        // per frame -- the [L] panel's slider writes the same field, and a
+        // per-frame assignment would overwrite it between the drag and the
+        // next draw, which looks like a slider that does not work.
+        tracer_.waterWaveGain = opt_.waves;
 
         if (opt_.outGiven) {
             tracer_.setDemodulate(opt_.demodulate);
@@ -806,7 +885,7 @@
             // and waterTime at zero: a submerged camera got no absorption and
             // the waves stood still. Every verification render taken before
             // this was quietly lying about both.
-            tracer_.waterY = world_.terrain.waterAt(pos_.x);
+            tracer_.waterY = world_.terrain.waterSurfaceAt(pos_.x, pos_.z);
             tracer_.waterTime = 0.0f;
             renderOffline(ctx);
             shutdown(0);
@@ -1265,20 +1344,83 @@
             // about level with the eye and the barrel just under the crosshair,
             // which is where a sight picture sits.
             // THE USER'S BAKE (2026-09-17), read off the [K] sights card.
-            static const HeldPose kRifleAds{0.000f, -2.600f, 8.000f,
+            // -- BOTH POSES SIT ONE VOXEL LOWER THAN THE BAKE DID ----------
+            //
+            // The user's two bakes are y = -3.500 (hip) and y = -2.600
+            // (sights), read off the [K] cards on 2026-09-17, and what is
+            // written below is each of them MINUS ONE.
+            //
+            // THE MODEL GREW A MAGAZINE WELL UNDER IT. The rifle is now a
+            // strip -- the rest pose plus the nine reload frames -- and a
+            // strip's frames share one box (HeldItem::addGun). The tallest
+            // frame is 6 voxels where the rest pose is 4, so the shared box is
+            // two rows deeper than the gun, and those rows go UNDERNEATH it
+            // because that is where the frames line up (see HeldItem::fitStrip,
+            // which measures it rather than assuming it).
+            //
+            // A pose names the CENTRE of the box and the corner is derived from
+            // it -- centre less half the box down each axis -- so a box two
+            // rows taller puts its centre one row lower relative to the gun,
+            // and the gun would ride one voxel (10 cm at scale 1) UP the screen
+            // for nothing. Subtracting one from y is exactly that, cancelled.
+            //
+            // So these are still the user's numbers. If the strip is ever
+            // re-authored so the tallest frame is not 6, this arithmetic moves
+            // with it -- the rest pose alone cannot tell you what the box is.
+            static const HeldPose kRifleAds{0.000f, -3.600f, 8.000f,
                                             0.000f, -1.571f, 0.000f, 1.000f};
             rifleTool_ = held_.count();
-            if (!held_.add(world_, "assault rifle", opt_.rifle,
-                           HeldPose{7.248f, -3.500f, 9.135f, 0.000f, -1.571f, 0.000f, 1.000f},
-                           Takes::Nothing, HeldItem::kGunMergeTol, &kRifleAds))
+            if (!held_.addGun(world_, "assault rifle", opt_.rifle, opt_.rifleReload,
+                              HeldPose{7.248f, -4.500f, 9.135f, 0.000f, -1.571f, 0.000f, 1.000f},
+                              HeldItem::kGunMergeTol, &kRifleAds))
                 rifleTool_ = -1;
+            // -- THE PISTOL, ONE SLOT ABOVE THE RIFLE -----------------------
+            //
+            // (user 2026-09-18: "import the pistol asset into the fps mode. put
+            // it in the inventory, when the player scrolls up it selects it.")
+            //
+            // ORDER IS THE ASK, AGAIN. The wheel is cycle(+1) on scroll up, so
+            // "scroll up and it selects the pistol" means the very next slot
+            // after the rifle and nothing else will do. That sentence used to
+            // belong to the bulb below, which has not been handed to the player
+            // in the level since "remove the lightbulb from the hand on the fps
+            // map" -- so nothing is between these two that is ever in the wheel
+            // at the same time as the gun.
+            //
+            // THE POSE IS A FIRST BAKE AND IT IS DERIVED, not eye-tuned: the
+            // rifle's own bake, moved by the difference between the two models.
+            // The pistol's shared box is 5 x 5 x 8 against the rifle's 3 x 6 x
+            // 11, and the three terms follow from that --
+            //
+            //   x  the gun body sits at the HIGH-x end of its box (the magazine
+            //      comes in from the low side during the reload -- see
+            //      fitStrip), so the box centre is a voxel left of the body:
+            //      7.248 - 1 = 6.25.
+            //   y  the rifle's body sits at the TOP of its box, one voxel above
+            //      its centre; the pistol fills its box, so it needs that voxel
+            //      back: -4.5 + 1 = -3.5.
+            //   z  a 0.8 m pistol rather than a 1.1 m rifle. Held so its near
+            //      end is where the rifle's is (0.36 m from the eye), which is
+            //      a centre at 7.6.
+            //
+            // Tune it live on [K] and use the copy-pose row, exactly as the
+            // rifle's and the hoe's were baked.
+            static const HeldPose kPistolAds{0.000f, -2.600f, 6.500f,
+                                             0.000f, -1.571f, 0.000f, 1.000f};
+            pistolTool_ = held_.count();
+            if (!held_.addGun(world_, "pistol", opt_.pistol, opt_.pistolReload,
+                              HeldPose{6.250f, -3.500f, 7.600f, 0.000f, -1.571f, 0.000f, 1.000f},
+                              HeldItem::kGunMergeTol, &kPistolAds))
+                pistolTool_ = -1;
             // -- THE BULB, RIGHT AFTER THE RIFLE ---------------------------
             //
-            // ORDER IS THE ASK. "put a bulb in my hand when I scroll up from
-            // the assault rifle" -- the wheel is cycle(+1) on scroll up, so
-            // "one above the rifle" means the very next slot and nothing else
-            // will do. If anything is ever inserted between these two, that
-            // sentence stops being true.
+            // ORDER WAS THE ASK HERE TOO, AND IT HAS BEEN SUPERSEDED. "put a
+            // bulb in my hand when I scroll up from the assault rifle" made
+            // this the very next slot after the gun; the lamp was then taken
+            // out of the wheel in the level altogether ("remove the lightbulb
+            // from the hand on the fps map"), and the slot above the rifle is
+            // the PISTOL now. The two never share a wheel, so neither sentence
+            // is broken by the other.
             //
             // A LEVEL TOOL, like the rifle: stowed at start-up, handed over by
             // the door, taken back on the way out. It edits nothing in the wood
@@ -1301,6 +1443,9 @@
             // pickup for it and no recipe -- so the only route to `carried` is
             // the level door.
             if (rifleTool_ >= 0) held_.stow(rifleTool_);
+            // ...AND THE PISTOL WITH IT, for the same reason and by the same
+            // door: it is the level's, and nothing in the wood can hand it over.
+            if (pistolTool_ >= 0) held_.stow(pistolTool_);
             if (bulbTool_ >= 0) held_.stow(bulbTool_);
 
             held_.addEmpty("empty hand");
@@ -1377,6 +1522,26 @@
             woodFly_ = player_.fly;
             if (world_.setLevel(true)) standInLevel();
             else std::fprintf(stderr, "v2: --level: no nuketown.vox to travel to\n");
+            // -- ...AND THEN TURN THE WHEEL, IF ASKED ----------------------
+            //
+            // (user 2026-09-18: "when the player scrolls up it selects it".)
+            //
+            // THE ONLY WAY TO PHOTOGRAPH A SCROLL. The wheel is driven by a
+            // mouse event, so what is in the hand after one turn of it cannot
+            // be reached from the command line at all -- and "one above the
+            // rifle" is a claim about slot ORDER that a picture is the only
+            // honest test of. --tool cannot do this: it is applied when the kit
+            // is built and standInLevel selects the rifle after it.
+            //
+            // THROUGH cycle() ITSELF, not through select(), which is the point:
+            // cycle skips whatever is not being carried, and that skipping is
+            // exactly what makes the pistol rather than the stowed lamp the
+            // thing one turn up from the gun.
+            for (int s = 0; s < opt_.scroll; ++s) held_.cycle(1);
+            if (opt_.scroll > 0) {
+                std::printf("v2: scrolled up %d -- holding %s\n", opt_.scroll, held_.name());
+                std::fflush(stdout);
+            }
         }
 
         // -- AND THE WHEAT CHECK, WHICH RUNS DOWN HERE AND NOT UP THERE ----
@@ -1443,6 +1608,11 @@
         }
         if (opt_.ripTest) {
             runRipTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.poleTest) {
+            runPoleTest();
             shutdown(0);
             return;
         }

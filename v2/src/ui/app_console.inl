@@ -9,6 +9,68 @@
 // -----------------------------------------------------------------------------
     // Returns the reply to show. Never throws; an unknown command is a message,
     // not a failure.
+    // ------------------------------------------------ WHAT COULD BE TYPED NEXT
+    // Candidates for the token under the caret. The FIRST token is a verb; any
+    // later one is an argument to /locate, which is the only verb that takes
+    // one. Everything here is generated from the same tables the command itself
+    // reads, so a suggestion can never offer something that would then fail.
+    std::vector<std::string> completions(const std::string &line) const {
+        // Split off the token being typed. A trailing space means a NEW token,
+        // which is why this cannot just take the text after the last space.
+        size_t cut = line.find_last_of(' ');
+        const bool firstTok = (cut == std::string::npos);
+        const std::string tok = firstTok ? line : line.substr(cut + 1);
+        std::vector<std::string> pool;
+        if (firstTok) {
+            // THE SLASH IS OPTIONAL, BECAUSE runCommand MAKES IT OPTIONAL -- it
+            // strips any leading '/' before it looks at the verb, so `locate
+            // longs` works and used to complete to nothing. A suggester that
+            // does not accept what the parser accepts trains the user out of a
+            // form that works.
+            const bool slashed = tok.empty() || tok[0] == '/';
+            for (const char *v : {"locate", "where", "help"})
+                pool.push_back(slashed ? std::string("/") + v : std::string(v));
+        } else {
+            std::string verb = line.substr(0, line.find(' '));
+            if (!verb.empty() && verb[0] == '/') verb.erase(verb.begin());
+            for (char &c : verb) c = char(tolower((unsigned char)c));
+            if (verb != "locate") return {};
+            pool.push_back("water");
+            for (const BiomeName &bn : biomeNames()) pool.push_back(bn.name);
+            for (const PoiIndex::Poi &p : poi_.all()) pool.push_back(p.name);
+            for (const LifeName &ln : lifeNames()) pool.push_back(ln.name);
+        }
+        // CASE-INSENSITIVE, for the same reason: runCommand lowercases both the
+        // verb and the argument, so LOCATE is a real command, and matching
+        // case-sensitively made the ghost vanish the moment caps lock was on.
+        // What gets COMMITTED is still the candidate's own spelling.
+        std::string key = tok;
+        for (char &c : key) c = char(tolower((unsigned char)c));
+        std::vector<std::string> hit;
+        for (const std::string &c : pool) {
+            if (c.size() < key.size()) continue;
+            bool same = true;
+            for (size_t i = 0; i < key.size(); ++i)
+                if (char(tolower((unsigned char)c[i])) != key[i]) { same = false; break; }
+            if (same) hit.push_back(c);
+        }
+        return hit;
+    }
+
+    // The longest prefix every candidate shares -- what Tab should commit to.
+    // Completing to the FIRST match instead would be a guess, and a guess that
+    // types itself is worse than no completion at all.
+    static std::string commonPrefix(const std::vector<std::string> &v) {
+        if (v.empty()) return std::string();
+        std::string p = v[0];
+        for (size_t i = 1; i < v.size(); ++i) {
+            size_t k = 0;
+            while (k < p.size() && k < v[i].size() && p[k] == v[i][k]) ++k;
+            p.resize(k);
+        }
+        return p;
+    }
+
     std::string runCommand(std::string line) {
         while (!line.empty() && (line.front() == ' ' || line.front() == '/')) line.erase(line.begin());
         while (!line.empty() && line.back() == ' ') line.pop_back();
@@ -45,6 +107,41 @@
                 std::snprintf(buf, sizeof(buf), "the shore -- %.0f, %.0f", wx, wz);
                 return std::string(buf);
             }
+            // ------------------------------------------- A PLACE IN THE WINDOW
+            // Summits and lakes found in the loaded elevation data (world/poi.h),
+            // so this works in any window and cannot be wrong about where a
+            // thing is -- which recalled coordinates were, three times.
+            if (const PoiIndex::Poi *p = poi_.find(arg)) {
+                float sx = p->x, sz = p->z;
+                bool shore = false;
+                if (p->lake) {
+                    // ---------------------------------- THE SHORE, NOT THE BED
+                    // A lake entry's coordinate is a point ON the water, and
+                    // teleportTo puts you on the ground under wherever it is
+                    // handed -- which for a lake is the bed. So the arrival
+                    // walks out to dry land first, exactly as /locate <fish>
+                    // does, and the reach is this lake's own size: the default
+                    // 400 m never leaves a reservoir four kilometres wide.
+                    const float sh = maxf(1.0f, world_.terrain.dem().shrink());
+                    shore = standNear(p->x, p->z, 2.0f, &sx, &sz,
+                                      p->radiusM / sh * 1.6f + 60.0f);
+                    if (!shore) { sx = p->x; sz = p->z; }
+                }
+                teleportTo(sx, sz);
+                // Set down beside a lake facing away from it is not being taken
+                // to the lake.
+                if (shore) lookAt(Vec3(p->x, pos_.y, p->z));
+                char buf[220];
+                if (p->lake)
+                    std::snprintf(buf, sizeof(buf),
+                                  "%s -- a lake %.1f km across at %.0f m above sea level%s",
+                                  p->name.c_str(), p->radiusM * 2.0f / 1000.0f, p->m,
+                                  shore ? ", you are on its shore" : "");
+                else
+                    std::snprintf(buf, sizeof(buf), "%s -- a summit at %.0f m above sea level",
+                                  p->name.c_str(), p->m);
+                return std::string(buf);
+            }
             for (const BiomeName &bn : biomeNames()) {
                 if (arg != bn.name && arg != bn.alias) continue;
                 // --birch and --pine pin the world to one wood, so there is no
@@ -74,7 +171,7 @@
             return std::string(buf);
         }
         if (verb == "help")
-            return std::string("/locate <biome|water>   /where   "
+            return std::string("/locate <place|biome|water>   /where   "
                                "ENTER runs and closes   ESC cancels\n"
                                "/locate <animal> takes you to the nearest one:\n") +
                    lifeList("  ", 7);

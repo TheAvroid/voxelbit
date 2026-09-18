@@ -379,8 +379,12 @@
             // one thing that must not happen is BOTH -- a gun that also lands
             // an axe blow at 250 ms would carve whatever it is pointed at
             // twice, once from the swing and once from the round.
-            const bool gunInHand = rifleTool_ >= 0 && held_.ready() &&
-                                   held_.selected() == rifleTool_ && held_.carrying();
+            // ONE DEFINITION, in app_actions.inl -- [R] asks the same question
+            // and a second copy of it is a copy that drifts.
+            //
+            // EITHER GUN SUPPRESSES THE SWING; only the rifle pulls a trigger
+            // below. See holdingGun for why those are two questions.
+            const bool gunInHand = holdingGun();
             // -- THE LAMP IN HAND EDITS THE MAP, IT DOES NOT SWING ----------
             //
             // (user 2026-09-17: "left click to remove the bulb and right click
@@ -436,10 +440,19 @@
             // flag means "the left button is down" for every other tool in the
             // kit, and it is the only way to photograph a thing that happens
             // while a mouse button is held. See its note beside opt_.swingHold.
-            if (gunInHand && lmb && (looking_ || opt_.swingHold) && !menuOpen_ &&
+            // THE RIFLE, NOT `gunInHand`. The pistol suppresses the swing (see
+            // above) and has no trigger of its own yet: its magazine, its fire
+            // rate and its recoil are all the rifle's if this is widened, and
+            // pulling a rifle round out of a pistol is worse than a gun that
+            // does not fire. It is the asset, the slot and the wheel today.
+            if (rifleInHand() && lmb && (looking_ || opt_.swingHold) && !menuOpen_ &&
                 simMs_ - lastShotMs_ >= double(kBulletIntervalMs)) {
-                lastShotMs_ = simMs_;
-                fireRifle();
+                // THE CLOCK IS STAMPED BY A ROUND LEAVING, not by the trigger
+                // being pulled. fireRifle refuses while the gun is reloading,
+                // and stamping anyway would hold the first shot of the fresh
+                // magazine back by another whole interval -- for no reason the
+                // player could see, on the one press that has been waited for.
+                if (fireRifle()) lastShotMs_ = simMs_;
             }
             // THE RIGHT BUTTON DRAWS, and only while the pointer is ours --
             // the same gate the swing has, and the JS engine's `locked`.
@@ -477,6 +490,27 @@
             }
             float draw = 0.0f;
             const bool released = held_.update(dt, swinging, player_.bobAmp, drawing, &draw);
+            // -- THE MAGAZINE ARRIVES WHEN THE ANIMATION DOES -------------
+            //
+            // (user 2026-09-18: "the gun then reloads. there are animations for
+            // the reload cycle.")
+            //
+            // IMMEDIATELY AFTER held_.update, which is the frame the clock this
+            // asks about has just been advanced on. reloadDone() is an EDGE and
+            // it consumes itself -- see its note -- so this refills once and
+            // the badge pops once.
+            //
+            // NOT GATED ON THE GUN BEING IN HAND. It cannot be running unless
+            // it was: scrolling off the rifle cancels the cycle outright
+            // (HeldItem::cancelReload), which is the one thing that has to be
+            // true for this line to be safe.
+            if (held_.reloadDone()) {
+                rifleAmmo_ = kRifleMag;
+                if (opt_.swingLog) {
+                    std::printf("v2: reloaded -- %d rounds\n", rifleAmmo_);
+                    std::fflush(stdout);
+                }
+            }
             // THE STRING STARTS CREAKING WITH THE PULL, and is cut the instant
             // it is let go -- whether or not a shaft left, so a half-draw never
             // rings on over the release. The JS engine's playBowStretch and

@@ -386,6 +386,8 @@ class Tracer {
     // Beside skyTime because it is the same kind of thing: a per-frame value the
     // app pushes in, not a setting anybody tunes.
     float waterY = -1.0e4f;
+    // 0 = flat water. v1 ships waves off and the mapped lakes want them off.
+    float waterWaveGain = 0.0f;
 
     // -- THE CRT POWER-OFF, 0 TO 1, AND 0 IS OFF ----------------------------
     //
@@ -485,7 +487,7 @@ class Tracer {
     }
     // WHICH WATER TERMS ARE ON -- one bit each, see kWF* in Shared.slang. All
     // of them by default; the [I] panel is the only thing that clears any.
-    uint32_t waterFlags = 0x1FFu;  // kWFDefault: every water term on
+    uint32_t waterFlags = 0x3DFu;  // every water term except kWFSunPath -- see app.h
     float waterTime = 0.0f;
 
     // Auto-exposure and bloom live in their own module because they share a
@@ -716,6 +718,7 @@ class Tracer {
         V6Params p{};
         p.cam = cam;
         p.waterY = waterY;
+        p.waterWaveGain = waterWaveGain;
         p.bulbPos = float3(bulbPos.x, bulbPos.y, bulbPos.z);
         p.bulbRadius = bulbRadius;
         p.bulbRadiance =

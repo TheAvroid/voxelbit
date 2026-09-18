@@ -521,7 +521,45 @@ class Drops {
             // arrival per frame could be reported and the rest would be
             // absorbed into nothing. See arrivedThisTick.
             if (d.age > kPickupArmSec) {
-                const Vec3 o = d.pos - player;
+                // -- THE REACH IS THE WHOLE BODY, NOT THE SOLES OF THE FEET --
+                //
+                // (user 2026-09-18: "I cant pick up steak when its floating in
+                // the water and im swimming.")
+                //
+                // AND IT WAS ARITHMETIC, NOT A GATE. `player` is the feet, and
+                // measuring a 1.6 m sphere from there is fine for a drop lying
+                // on the ground beside them. A swimmer is a body hanging from
+                // the surface, and the one thing that is NOT near the surface
+                // is their feet:
+                //
+                //   the steak floats at   surface + kDropHoverM  = +0.90 m
+                //   a treading swimmer's eye rides at
+                //                         surface + swimRise +- swimBob
+                //   ...so the feet sit at surface - 0.90 -+ 0.65
+                //
+                // which puts 1.15 m to 2.45 m between the feet and the meat
+                // depending on where in the bob you happen to be. Against
+                // kPickupM = 1.6 that is reachable only near the top of the
+                // cycle, and only if you are within 1.11 m horizontally --
+                // at the bottom of the bob it is out of reach at any distance.
+                // It reads as "you cannot pick it up", because mostly you
+                // cannot, and the times you can look like luck.
+                //
+                // A CAPSULE, WHICH IS WHAT A BODY IS. The nearest point on the
+                // segment from the feet to the eye, so an item beside ANY part
+                // of you is in reach. On land this can only help -- the feet
+                // are still one end of it -- and it is the more honest model
+                // anyway: a drop hovering at 0.9 m used to be measured from the
+                // soles, costing 0.9 m of the 1.6 m budget before any
+                // horizontal distance was counted at all.
+                //
+                // TO THE EYE AND NOT TO THE CHEST, even though the chest is
+                // where the item flies to. Reaching for a thing and pulling it
+                // to your chest are different distances; a swimmer's chest bobs
+                // to 0.75 m under the surface, which still leaves 1.65 m to a
+                // steak floating on it -- the same bug, one decimetre smaller.
+                const float loY = minf(player.y, eye.y), hiY = maxf(player.y, eye.y);
+                const Vec3 o = d.pos - Vec3(player.x, minf(hiY, maxf(loY, d.pos.y)), player.z);
                 if (lengthSq(o) < kPickupM * kPickupM) {
                     d.taken = true;
                     d.fly = 0.0f;

@@ -76,6 +76,7 @@
 #include "render/clusters.h"
 #include "player/physics.h"
 #include "render/tracer.h"
+#include "world/poi.h"
 #include "world/world.h"
 #include "platform/audio.h"
 #include "render/camera.h"
@@ -311,7 +312,17 @@ struct Options {
     // Everything but the world reflection -- see kWFDefault in Shared.slang,
     // which is where this number is explained. Kept as a literal because
     // app.h does not include the shader header.
-    uint32_t waterFlags = 0x1FFu;  // see kWF* in Shared.slang
+    // 0x1DF -- EVERYTHING EXCEPT kWFSunPath (user 2026-09-18: "turn off sunlight
+    // to bed on default"). That term is the other half of Beer-Lambert: it
+    // darkens the BED's albedo by the sun's own slant path down through the
+    // water, so a deep lake stops wearing its shallows' brightness. Off, the
+    // sun reaches the bed at full strength and the water reads clearer. See
+    // kWF* in Shared.slang; [L] toggles it back.
+    // 0x3DF -- the ten water terms, less kWFSunPath. Bit 9 (kWFSunGlare) is
+    // ON by default because it is what a lake actually does; it has a switch
+    // now because it is also the brightest thing in the frame and it used to be
+    // impossible to turn off without losing the sparkle with it.
+    uint32_t waterFlags = 0x3DFu;
     bool groundStats = false;
 
     // -- the built-in recorder, on R -------------------------------------
@@ -418,8 +429,16 @@ struct Options {
     // frame looks the same whatever the camera is doing.
     bool constantGrain = true;
 
-    int view = 12;
-    float treeDensity = 0.3210f;
+    // 15, not 12: measured 2026-09-18, 384 m instead of 307 m at the SAME
+    // ~68 fps and 7.6 GB of a 12 GB card. 18 is where the card fills and
+    // the driver starts spilling to host memory, so this is the last rung
+    // that is free rather than the last one that runs.
+    int view = 15;
+    // HALVED (user 2026-09-18: "can you reduce the pine tree density by 50%").
+    // 0.3210 -> 0.1605. This is the knob app_load pushes into World::treeDensity
+    // and the one the scatter multiplies by stemFill, so halving it halves the
+    // offered sites everywhere the stand table is not already saturating.
+    float treeDensity = 0.1605f;
     float grass = 0.105f, flowers = 0.45f, rocks = 0.010f;
     int grassMin = 3, grassMax = 6;
     std::string pines = "C:/voxelbit/game/assets/foilage/pine9";
@@ -524,19 +543,63 @@ struct Options {
     std::string birdDir = "C:/voxelbit/game/assets/life";
     // A .vbdem written by tools/dem2raw.cpp. Empty means the invented
     // landform; set it and the ground becomes measured elevation.
-    std::string demPath = "C:/voxelbit/v2/assets/dem/front60.vbdem";
+    std::string demPath = "C:/voxelbit/v2/assets/dem/rmnp50.vbdem";
     float demBaseM = 20.0f;
     // HOW MANY REAL METRES IN ONE WORLD METRE. Colorado at true scale puts
     // only ~29 DEM postings across the 300 m view disc, so a 10 km mountain
     // arrives as one smooth ramp with no shape in it. Six packs 175 postings
     // into the same disc. demExag puts vertical back after the shrink.
+    // ------------------------------------ SIX REAL METRES TO THE WORLD METRE
+    // Taken to 1.0 on 2026-09-18 and REVERTED the same day at the user's word
+    // ("revert the pine forest scale changes"). True scale worked -- it built
+    // and rendered at 55-120 Mpaths/s, and nothing structural objected, because
+    // chunks are indexed in X and Z only and the GRADE is identical either way.
+    // What it costs is the view: the chunk ring is a 300 m disc, so at 1:1 a
+    // mountain is only visible once you are standing on it, and the 50 km
+    // window is mostly somewhere you will never walk.
+    //
+    // `--dem-scale 1` still does all of it, and everything it needed is still
+    // here: stemDiv derives from this, the cover's jitter is capped in world
+    // metres (CoverField::raw) and the timberline fade converts on load.
     float demScale = 6.0f;
     float demExag = 1.0f;
-    float demDetail = 0.45f;   // sub-metre roughness over the measured ground
+    // 0: THE MEASURED GROUND AND NOTHING ADDED TO IT (user 2026-09-18: "we're
+    // looking for smooth terrain without noise"). This scales BOTH noise
+    // octaves on the DEM path -- see VoxelTerrain::heightM -- so --dem-detail
+    // 0.45 restores the old roughness exactly and anything between fades it in.
+    float demDetail = 0.0f;   // sub-metre roughness over the measured ground
+    // Force chooseSpawn() to run even on the --out path, which normally skips
+    // it. Without this the only spawn reachable headlessly is the pinned one,
+    // so the code the game actually opens with cannot be tested at all.
+    bool spawnPick = false;
+    bool yawGiven = false;   // --yaw was passed; do not aim the spawn
+    // Wave amplitude as a gain on the shader's kWave table. 0 = flat water,
+    // which is what v1 ships and what a mapped lake wants.
+    // ------------------------------------------------- THE WAVES ARE ON
+    // (user 2026-09-18: "you turned off the waves. turn them back on.")
+    //
+    // This was 0 because the Gerstner field WAS the "water mounds" reported
+    // twice -- the four components sum to 0.256 m of displacement over a 5.2 m
+    // longest wavelength, which is a sea state, and on a still alpine lake it
+    // reads as rolling humps rather than as water moving.
+    //
+    // ZEROING IT WAS THE WRONG SHAPE OF FIX. "No waves" and "the wrong waves"
+    // are not the only two options, and the amplitude was never the thing
+    // anyone asked to lose. 0.45 is a bit under half the authored sea state:
+    // 0.115 m of displacement, which is chop you can watch without a hump you
+    // can stand on. 1.0 is the full table and it is one slider away on [L].
+    // 1.000 -- THE FULL AUTHORED TABLE (user 2026-09-18: "make the default wave
+    // height 1.000"). 0.256 m of displacement over a 5.2 m longest wavelength.
+    // 0.45 was a hedge against the "water mounds" this term caused when it had
+    // no slider; it has one on [L] now, so the default can be the real thing.
+    float waves = 1.0f;
+    // Real hectares per world hectare for stand density. 0 = shrink^2 (36 at
+    // shrink 6, one world tree per real tree). 6 gives a fuller wood.
+    float stemDiv = 0.0f;
     // Aerial-imagery land cover on the same grid as the DEM. Decides where
     // trees stand and where the ground is bare, from a photograph rather
     // than from a threshold. Empty or missing = the old behaviour.
-    std::string coverPath = "C:/voxelbit/v2/assets/dem/front60.vbcov";
+    std::string coverPath = "C:/voxelbit/v2/assets/dem/rmnp50.vbcov";
     // TWELVE, HALVED FROM 24 (user 2026-09-14: "reduce the butterflies in
     // half"). The band still reserves 64 -- a reservation is not a population,
     // and shrinking it would cost a structure rebuild to change your mind. This
@@ -581,6 +644,10 @@ struct Options {
     // --rip-test: shoot the level's walls headlessly and measure the SHAPE of
     // whatever the hanger sweep cuts loose. See runRipTest.
     bool ripTest = false;
+    // --pole-test: cut every free-standing post in the level and check it
+    // comes down. The companion to --rip-test; see runPoleTest for why
+    // neither may be the only one run.
+    bool poleTest = false;
     int refreshFrame = -1;   // --refresh-frame N: press G on frame N
     bool hoeTest = false;
     bool shaftTest = false;
@@ -637,6 +704,38 @@ struct Options {
     // keypress is asking last, when the table is full. See
     // HeldItem::prewarmColors.
     std::string rifle = "C:/voxelbit/game/assets/guns/assault_rifle/fire/00.vox";
+    // -- ...AND THE NINE FRAMES OF ITS RELOAD ------------------------------
+    //
+    // (user 2026-09-18: "there are animations for the reload cycle. look in
+    // the assault file.")
+    //
+    // A DIRECTORY, NOT A LIST OF FILES. HeldItem::addGun takes every .vox in
+    // it in numeric order, so re-timing the cycle is a matter of adding or
+    // removing frames on disk -- see stripFiles for why a list in the source
+    // would be a frame that silently never plays.
+    //
+    // NOT DERIVED FROM `rifle` ABOVE, though it sits beside it. A path built
+    // by string surgery on another path is a path that breaks the day somebody
+    // points --rifle at a gun whose rest pose is called base.vox, which is what
+    // every OTHER gun in the folder has.
+    std::string rifleReload = "C:/voxelbit/game/assets/guns/assault_rifle/reload";
+    // -- THE PISTOL, WHICH IS THE LEVEL'S SECOND GUN -----------------------
+    //
+    // (user 2026-09-18: "import the pistol asset into the fps mode. put it in
+    // the inventory, when the player scrolls up it selects it.")
+    //
+    // SAME SHAPE AS THE RIFLE ABOVE: a rest pose and a reload strip beside it,
+    // loaded through HeldItem::addGun. This one's rest pose lives under
+    // `shoot/` rather than `fire/` and there is no base.vox here either -- the
+    // folder is v1's sheet, cut up, and every gun in it is numbered frames and
+    // nothing else.
+    //
+    // 22 VOXELS IN 13 SHADES over the whole strip, three of which the rifle
+    // already owns. See the palette note beside the prewarm list: the ten it
+    // mints are the reason that list has to know about the reload frames too --
+    // four of them carry two shades the rest pose does not.
+    std::string pistol = "C:/voxelbit/game/assets/guns/pistol/shoot/00.vox";
+    std::string pistolReload = "C:/voxelbit/game/assets/guns/pistol/reload";
     // -- ...AND THE LAMP YOU PLACE THEM WITH -------------------------------
     //
     // (user 2026-09-17: "put a bulb in my hand when I scroll up from the
@@ -671,6 +770,17 @@ struct Options {
     // and reports what came out of the wall six frames later, by which
     // time a 120 m/s round has certainly landed.
     int fireFrame = -1;
+    // ...AND A SCRIPTED RELOAD, for the same reason as --fire-frame and on the
+    // same clock. Nine drawn frames that only ever play while a magazine is
+    // empty cannot be looked at, measured or regression tested by hand: the
+    // whole cycle is 1800 ms and it starts on a keypress nobody can time.
+    // --level --reload-frame 40 --shot-frame 70 photographs the middle of it,
+    // and the pair of them is the only way to see that the gun does not jump
+    // when the box grows two rows to hold the magazine. See kReloadMs.
+    int reloadFrame = -1;
+    // TURNS OF THE WHEEL AFTER ARRIVING IN THE LEVEL, so what one scroll up
+    // puts in the hand can be photographed. See the --level dispatch.
+    int scroll = 0;
     // -- THE SPARK'S EMISSION, ON THE COMMAND LINE -----------------------
     //
     // A COLOUR THAT HAS TO SURVIVE A TONE CURVE CANNOT BE CHOSEN ON PAPER.
@@ -797,24 +907,15 @@ struct Options {
     // a forested bench 534 m BELOW the treeline at a 20% grade, with the
     // ground still rising 256 m within the view disc so there is a
     // mountain to look at. --cam-x/--cam-z still override.
-    // ON THE SHORE OF CHEESMAN LAKE, Pike-San Isabel National Forest. Quoted in
-    // REAL metres from the window centre (see app_load.inl -- it divides by the
-    // shrink), so it names a place rather than a coordinate. Measured off the
-    // data, not guessed: 147 m from open water, 8.4 m above a surface that sits
-    // at 2114 m, on a 16% bank rather than a cliff.
-    // ON THE EAST FLANK OF PIKES PEAK, in the trees at 3,399 m. REAL metres
-    // from the window centre (app_load.inl divides by the shrink), so it names
-    // a place, not a coordinate.
+    // ON A LAKE SHORE IN ROCKY MOUNTAIN NATIONAL PARK, 2,554 m. REAL metres
+    // from the window centre (app_load.inl divides by the shrink).
     //
-    // CHOSEN SO THE MOUNTAIN IS ACTUALLY IN THE VIEW. The summit is 894 m above
-    // this spot and 1,732 real metres away -- which at shrink 6 is 289 world
-    // metres, just inside the ~300 m view disc. That last number is the whole
-    // reason this window exists: Cheesman and Pikes Peak are 44.8 km apart, and
-    // there is NO scale at which one is visible from the other through a 300 m
-    // disc. You get one or the other in frame, and you walk between them.
-    //
-    // --lake puts you back on Cheesman's shore, 40 km north-west.
-    float camX = 10316.0f, camZ = 18445.0f;
+    // Found by scoring every water body in the window on size AND on how much
+    // the ground rises within one view disc of it: this one is 18,240 water
+    // samples with 409 m of rise inside 1.8 km, which is water in front and
+    // mountain behind. The park's biggest lake scored worse -- 91,886 samples
+    // but only 81 m of relief, which is a pond on a flat.
+    float camX = -12173.0f, camZ = 8026.0f;
     // Whether the two above were ASKED for. A named camera is a named camera:
     // it pins the offline render, it pins a scripted capture, and it turns the
     // random spawn off. Without this the flags would be silently overwritten by

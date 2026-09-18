@@ -349,6 +349,45 @@
                         pos_.x, pos_.y, pos_.z);
             std::fflush(stdout);
         }
+
+        // -- A SCRIPTED RELOAD, AND THE ONLY WAY TO PHOTOGRAPH ONE -----------
+        //
+        // (user 2026-09-18: "there are animations for the reload cycle".)
+        //
+        // NINE DRAWN FRAMES THAT ONLY PLAY ON AN EMPTY GUN. Every other way to
+        // see them needs a hand on a mouse for twenty rounds and then a
+        // screenshot timed to a 1800 ms window -- which is not a thing anybody
+        // does twice, and is certainly not a thing a regression is caught by.
+        //
+        // IT EMPTIES THE MAGAZINE RATHER THAN CALLING THE ANIMATION. A full gun
+        // refuses to reload, deliberately (see reloadRifle), so a test that
+        // reached past that would be testing a path the game does not have.
+        // This is the real empty-gun road: rounds at zero, and the same call
+        // the trigger makes.
+        //
+        //     v2.exe --background --level --reload-frame 40 --shot-frame 70 \
+        //            --shot out.png          # the middle of the cycle
+        //
+        // THE REPORT IS 150 FRAMES LATER, which is 2.5 s at this engine's dt
+        // and comfortably past the 1.8 s cycle -- so --shot-frame has to be
+        // past that to see it. It prints what the badge would be showing, which
+        // is the whole of what a reload is for.
+        if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame) {
+            rifleAmmo_ = 0;
+            const bool started = reloadRifle();
+            std::printf("v2: reload test -- magazine emptied, cycle %s (%d reload frames)\n",
+                        started ? "STARTED" : "REFUSED -- WRONG",
+                        rifleTool_ >= 0 ? held_.tool(rifleTool_).reloadFrames : -1);
+            std::fflush(stdout);
+        }
+        if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame + 150) {
+            std::printf("v2: reload test -- %d/%d rounds, %s  %s\n", rifleAmmo_, kRifleMag,
+                        held_.reloading() ? "STILL RELOADING" : "done",
+                        (rifleAmmo_ == kRifleMag && !held_.reloading())
+                            ? "-- the magazine came back"
+                            : "-- NOTHING CAME BACK, WRONG");
+            std::fflush(stdout);
+        }
         // -- ...AND THE SAME SHOT FROM ARM'S LENGTH ------------------------
         //
         // (user 2026-09-17: "the chunking mechanic from the bullet doesnt work
@@ -569,7 +608,7 @@
             // hands back kNoWater for the birch band. The shader needs it to
             // know whether a lit point is submerged (caustics) and whether the
             // eye itself began the frame under the surface.
-            tracer_.waterY = world_.terrain.waterAt(pos_.x);
+            tracer_.waterY = world_.terrain.waterSurfaceAt(pos_.x, pos_.z);
             // ...and a WALL clock for the waves. Not the day clock: X plus
             // scroll runs that at up to forty times speed and backwards, and a
             // lake that reverses its chop when you scrub the sun is a bug.
@@ -974,7 +1013,8 @@
                              isNight(), forward(),
                              // ...AND THE LAKE'S OWN TOP, which the ground
                              // query cannot give -- see waterTopAt.
-                             [this](float x, float z) { return waterTopAt(x, z); });
+                             [this](float x, float z) { return waterTopAt(x, z); },
+                             [this](float x, float z) { return sandAt(x, z); });
             critters_.publish(world_, kCritterSlot0);
             // The sparks are on the same clock as everything else in the band.
             // update() only retires what has run out -- a particle's position

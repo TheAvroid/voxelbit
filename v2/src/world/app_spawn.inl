@@ -146,9 +146,21 @@
         for (uint32_t i = 0; i < 512; ++i) {
             // A disc, sampled with a square root so the points are spread over
             // the AREA rather than piled up near the middle.
-            const float r = 200.0f + 2800.0f * sqrtf(hashUnit(seed + 1u, i));
+            // ------------------------------------ SEARCH AROUND THE SPAWN
+            // This ring used to be centred on the WORLD ORIGIN, which on an
+            // invented landform is as good a place as any -- every direction
+            // looks the same. On measured ground it is a specific spot in
+            // Colorado that nobody chose, and it threw the search kilometres
+            // away from the lakeside point opt_.camX/camZ names. The radius
+            // shrinks with it: 3 km of wander is how you leave the shore.
+            const bool anchored = t.usingDem();
+            const float rMin = anchored ? 30.0f : 200.0f;
+            const float rMax = anchored ? 400.0f : 3000.0f;
+            const float cx = anchored ? opt_.camX : 0.0f;
+            const float cz = anchored ? opt_.camZ : 0.0f;
+            const float r = rMin + (rMax - rMin) * sqrtf(hashUnit(seed + 1u, i));
             const float a = hashUnit(seed + 2u, i) * 6.2831853f;
-            const float x = r * cosf(a), z = r * sinf(a);
+            const float x = cx + r * cosf(a), z = cz + r * sinf(a);
 
             const float h = t.heightM(x, z);
             // WELL CLEAR OF THE SHORE, not merely out of the water. topMaterial
@@ -165,7 +177,28 @@
                                    absi(t.heightVox(ci, cj + 1) - t.heightVox(ci, cj - 1)));
             if (slope >= VoxelTerrain::kTreeSlope) continue;  // scree, not ground
 
-            const float score = openness(x, z);
+            // WATER IS PART OF THE SCORE NOW, not a hope. openness() alone
+            // picks a sunlit clearing and does not care whether it can see a
+            // lake -- which is why "spawn near water" produced a spawn nowhere
+            // near water even with the coordinates measured off the shore.
+            // Lower is better here, so distance is a penalty; beyond kWantM it
+            // stops mattering and openness decides again.
+            float score = openness(x, z);
+            if (t.usingCover()) {
+                // A SHORE, NOT A SWIM. Penalising distance alone drove every
+                // seed to distance ZERO -- standing in Cheesman. The depth
+                // guard above could not catch it either: it asks waterAt(),
+                // which is the PROCEDURAL waterline and is unset on the DEM
+                // path, so a lake the imagery knows about is invisible to it.
+                //
+                // Anything inside kWantM is equally good, so the openness term
+                // still chooses between shoreline sites rather than being
+                // overridden by a metre of distance.
+                const float kWantM = 40.0f;
+                const float d = t.cover().waterDistance(x, z, kWantM * 3.0f);
+                if (d < 2.0f) continue;               // that is the lake itself
+                score += 0.9f * minf(1.0f, maxf(0.0f, d - kWantM) / kWantM);
+            }
             // Kept whatever happens, so a seed that finds nothing ideal still
             // spawns somewhere sensible rather than at the world origin.
             if (score < anyScore) {
@@ -197,6 +230,21 @@
                     bestX, bestZ, double(bestScore), found ? "" : " -- nothing better found",
                     unsigned(seed));
         std::fflush(stdout);
+        if (world_.terrain.usingCover()) {
+            const float d = world_.terrain.cover().waterDistance(opt_.camX, opt_.camZ, 400.0f);
+            printf("  spawn    water is %.0f world m away\n", d);
+            // AND LOOK AT IT. Spawning 24 m from a lake while facing a
+            // boulder is indistinguishable from not spawning near a lake at
+            // all -- the request was about what you SEE. yaw = atan2(dx, -dz)
+            // is this camera's convention: direction() is
+            // (sin y, ., -cos y), so -z is yaw 0.
+            float wx = 0.0f, wz = 0.0f;
+            if (!opt_.yawGiven &&
+                world_.terrain.cover().nearestWater(opt_.camX, opt_.camZ, 400.0f, &wx, &wz)) {
+                opt_.yaw = atan2f(wx, -wz) * 180.0f / PI;
+                printf("  spawn    facing it, yaw %.0f\n", opt_.yaw);
+            }
+        }
     }
 
     // A spawn inside a trunk is a spawn you cannot walk out of: a tree is a

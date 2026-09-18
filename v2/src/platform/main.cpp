@@ -102,6 +102,9 @@ void usage() {
         "  --bow PATH --arrow PATH   the bow's draw strip, and what it looses\n"
         "  --draw-hold               hold the draw, as --swing-hold holds the swing\n"
         "  --shot-loose N            ...and let go on frame N, so a shot can be filmed\n"
+        "  --reload-frame N          empty the rifle on frame N and reload it, which is\n"
+        "                            the only way to photograph the nine-frame cycle\n"
+        "  --rifle-reload DIR        where those frames live (numeric .vox order)\n"
         "  --walk F                  offline: advance F m/frame, film resets as it would\n"
         "                            when walking\n"
         "  --depth N                 max path length        (default 10)\n"
@@ -120,7 +123,7 @@ void usage() {
         "  --sensitivity F           mouse look, degrees of turn per pixel         (0.12)\n"
         "  --eye F                   eye height, metres -- 20 voxels               (2.00)\n"
         "  --seed N                  world seed            (default 20260904)\n"
-        "  --view N                  chunks of 25.6 m kept resident, radius          (12)\n"
+        "  --view N                  chunks of 25.6 m kept resident, radius, max 24  (15)\n"
         "  --density F               how thick the wood is, 0..1                 (0.3210)\n"
         "  --butterflies N           how many are in the air at once, 0 = none       (24)\n"
         "  --sfx F                   tool and weapon volume; 0 silences them        (1.0)\n"
@@ -285,6 +288,12 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     if (a == "--drop-frame") { argInt(argc, argv, i, &o->dropFrame); return true; }
     if (a == "--spark-frame") { argInt(argc, argv, i, &o->sparkFrame); return true; }
     if (a == "--fire-frame") { argInt(argc, argv, i, &o->fireFrame); return true; }
+    if (a == "--reload-frame") { argInt(argc, argv, i, &o->reloadFrame); return true; }
+    if (a == "--scroll") { argInt(argc, argv, i, &o->scroll); return true; }
+    if (a == "--rifle-reload") {
+        if (i + 1 < argc) o->rifleReload = argv[++i];
+        return true;
+    }
     if (a == "--hurt-frame") { argInt(argc, argv, i, &o->hurtFrame); return true; }
     if (a == "--hurt-dim") { o->hurtDim = true; return true; }
     if (a == "--spark-only") { o->sparkOnly = true; return true; }
@@ -322,10 +331,19 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     if (a == "--dem-scale") { argFloat(argc, argv, i, &o->demScale); return true; }
     if (a == "--dem-exag") { argFloat(argc, argv, i, &o->demExag); return true; }
     if (a == "--dem-detail") { argFloat(argc, argv, i, &o->demDetail); return true; }
+    if (a == "--spawn-pick") { o->spawnPick = true; return true; }
+    if (a == "--waves") { argFloat(argc, argv, i, &o->waves); return true; }
+    if (a == "--stem-div") { argFloat(argc, argv, i, &o->stemDiv); return true; }
     // The two places worth standing in this window, by name rather than by
     // coordinate. Both are REAL metres from the window centre.
-    if (a == "--lake") { o->camX = -9997.0f; o->camZ = -19937.0f; return true; }
+    // Places worth standing, by name. REAL metres from the window centre of
+    // whichever .vbdem is loaded -- so --lake/--peak only mean anything with
+    // the Front Range window (--dem .../front60.vbdem).
+    if (a == "--lake") { o->camX = -10717.0f; o->camZ = -19649.0f; return true; }
     if (a == "--peak") { o->camX = 10316.0f; o->camZ = 18445.0f; return true; }
+    if (a == "--front") { o->demPath = "C:/voxelbit/v2/assets/dem/front60.vbdem";
+                          o->coverPath = "C:/voxelbit/v2/assets/dem/front60.vbcov";
+                          o->camX = -10717.0f; o->camZ = -19649.0f; return true; }
     if (a == "--cover") { if (i + 1 < argc) o->coverPath = argv[++i]; return true; }
     if (a == "--no-cover") { o->coverPath.clear(); return true; }
     return false;
@@ -392,6 +410,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         if (a == "--float-audit") { o->floatAudit = true; continue; }
         if (a == "--float-sweep") { o->floatSweep = true; continue; }
         if (a == "--rip-test") { o->ripTest = true; continue; }
+        if (a == "--pole-test") { o->poleTest = true; continue; }
         if (a == "--refresh-frame") { argInt(argc, argv, i, &o->refreshFrame); continue; }
         if (a == "--hoe-test") { o->hoeTest = true; continue; }
         if (a == "--shaft-test") { o->shaftTest = true; continue; }
@@ -487,7 +506,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         else if (a == "--cam-x") { argFloat(argc, argv, i, &o->camX); o->camGiven = true; }
         else if (a == "--cam-z") { argFloat(argc, argv, i, &o->camZ); o->camGiven = true; }
         else if (a == "--spawn") argUint(argc, argv, i, &o->spawnSeed);
-        else if (a == "--yaw") argFloat(argc, argv, i, &o->yaw);
+        else if (a == "--yaw") { argFloat(argc, argv, i, &o->yaw); o->yawGiven = true; }
         else if (a == "--pitch") argFloat(argc, argv, i, &o->pitch);
         else if (a == "--eye") argFloat(argc, argv, i, &o->eye);
         else if (a == "--fov") argFloat(argc, argv, i, &o->fov);
@@ -681,7 +700,7 @@ int main(int argc, char **argv) {
     // covered by the minimise above.
     // -----------------------------------------------------------------------
     c.headless = o.outGiven || o.fellTest || o.floatTest || o.digTest || o.locateTest ||
-                 o.clipTest || o.wheatTest || o.hoeTest || o.foodTest || o.floatAudit || o.floatSweep || o.ripTest ||
+                 o.clipTest || o.wheatTest || o.hoeTest || o.foodTest || o.floatAudit || o.floatSweep || o.ripTest || o.poleTest ||
                  o.shaftTest || o.killTest || o.soilTest || o.duckTest || o.lbugTest;
 
     // Every device failure in this engine arrives as an exception carrying the

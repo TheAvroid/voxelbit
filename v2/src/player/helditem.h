@@ -79,8 +79,13 @@
 #include "world/voxelworld.h"
 #include "player/player.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <system_error>
 #include <string>
 #include <utility>
 #include <vector>
@@ -232,6 +237,17 @@ struct Tool {
     // single enum would invite a tool that is half of each. `ads` is the third
     // claimant on that button and is likewise exclusive.
     bool food = false;
+    // -- HOW MANY FRAMES OF RELOAD SIT BEHIND THE REST POSE ----------------
+    //
+    // A COUNT AND NOT A FLAG, and it is the fourth kind of strip in this file.
+    // `models[0]` is the gun at rest -- which is what every other tool's [0] is
+    // -- and `models[1 .. reloadFrames]` are the cycle. Zero means the tool has
+    // none, so `models[0]` is all there is and nothing downstream changes.
+    //
+    // THE ART DECIDES HOW MANY. addGun reads whatever .vox files are in the
+    // reload directory, so dropping two more frames in between 36 and 37 makes
+    // the cycle smoother and needs no code. That is why this is not a constant.
+    int reloadFrames = 0;
 };
 
 // -- the bow's own timing, from the JS engine's ui/audio.js -----------------
@@ -287,6 +303,27 @@ inline constexpr float kRecoilBackS = 0.200f;
 inline constexpr float kRecoilBackVox = 2.2f;
 inline constexpr float kRecoilUpVox = 0.9f;
 inline constexpr float kRecoilPitch = 0.11f;   // radians of nose-up
+
+// -- THE RELOAD, AND THE NINE FRAMES THAT WERE ALREADY ON DISK -------------
+//
+// (user 2026-09-18: "then the player fires with left click and the number goes
+// down until 0, where the gun then reloads. there are animations for the reload
+// cycle. look in the assault file.")
+//
+// guns/assault_rifle/reload/32..40.vox, which v1 INDEXES and never plays --
+// there is no gun code in that engine at all (vox-index.js lists the strip and
+// nothing reads it), so the timing below is v2's and there is no number to
+// carry over. The strip is the magazine coming out of the bottom of the box and
+// going back in: 32 is the gun at rest, 33-35 drop the magazine clear, 36 is
+// the gun with NO magazine at all -- 30 voxels rather than 32, which is the
+// tell -- and 37-40 seat a fresh one and come back to rest.
+//
+// 1800 ms IS THE WHOLE CYCLE. Nine frames at 200 ms each, which is exactly one
+// round of fire rate per frame (kBulletIntervalMs), so a reload costs nine
+// shots of time and is felt. The frames are STEPPED off that clock, like the
+// bow's draw: a frame is picked rather than tweened, so it reads as drawn art.
+// See HeldItem::model.
+inline constexpr float kReloadMs = 1800.0f;
 
 // -- AND IT OVERSHOOTS ON THE WAY UP (user 2026-09-07) ----------------------
 //
@@ -1163,6 +1200,280 @@ class HeldItem {
     }
 
     // -----------------------------------------------------------------------
+    // EVERY .vox IN A DIRECTORY, IN THE ORDER THE NUMBERS IN THEIR NAMES PUT
+    // THEM.
+    //
+    // THE ART DECIDES THE STRIP, not a list in here. The reload frames are
+    // named 32..40 -- numbers out of the browser engine's own sheet, where they
+    // are frames of one long animation that also holds the fire pair -- so a
+    // hard-coded list here would have to be edited to re-time the reload, and a
+    // list that disagrees with the folder is a frame that silently never plays.
+    // v1 keeps exactly such a list (vox-index.js) and never plays any of them.
+    //
+    // NUMERIC, NOT LEXICOGRAPHIC: a strip that ever reaches ten frames sorts
+    // "10" before "9" as text, which is one frame played in the wrong place and
+    // nothing to say so. A name that is not a number sorts last, which is where
+    // the other guns' "base" frame belongs.
+    // -----------------------------------------------------------------------
+    static std::vector<std::string> stripFiles(const std::string &dir) {
+        std::vector<std::pair<long long, std::string>> found;
+        std::error_code ec;
+        const std::filesystem::path root(dir);
+        for (const auto &e : std::filesystem::directory_iterator(root, ec)) {
+            if (ec) break;
+            if (!e.is_regular_file(ec)) continue;
+            std::string ext = e.path().extension().string();
+            for (char &c : ext) c = char(std::tolower(int(uint8_t(c))));
+            if (ext != ".vox") continue;
+            const std::string stem = e.path().stem().string();
+            const bool numeric =
+                !stem.empty() && stem.find_first_not_of("0123456789") == std::string::npos;
+            found.emplace_back(numeric ? std::atoll(stem.c_str()) : (1LL << 40),
+                               e.path().string());
+        }
+        std::sort(found.begin(), found.end());
+        std::vector<std::string> out;
+        out.reserve(found.size());
+        for (auto &f : found) out.push_back(f.second);
+        return out;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE WHOLE STRIP FOLDS AS ONE, OR ITS FRAMES DISAGREE ABOUT THE PALETTE.
+    //
+    // World::addHeldVox's self-merge walks the entries a MODEL uses and keeps
+    // the first of each cluster as its representative. Run it per frame and a
+    // frame that is missing a colour -- reload/36 is the gun with no magazine,
+    // 30 voxels where the others have 32 -- can elect a different
+    // representative and mint an entry nothing else asked for. The palette is
+    // at 242 of 255; a strip that quietly costs nine more of them is the bug in
+    // the palette note arriving by a new road.
+    //
+    // So the fold is done ONCE over the union of the strip and baked into the
+    // indices, and every frame then registers EXACTLY. At kGunMergeTol, which
+    // is 0 today, this is the identity and the registration is byte-for-byte
+    // what the single frame already got -- which is the point: it costs nothing
+    // now and cannot go wrong later.
+    // -----------------------------------------------------------------------
+    static void foldStrip(std::vector<VoxModel> &frames, int tol) {
+        if (tol <= 0 || frames.empty()) return;
+        std::vector<bool> used(256, false);
+        for (const VoxModel &f : frames)
+            for (uint8_t v : f.m) used[v] = true;
+        std::vector<int> repOf(256, 0), reps;
+        for (int e = 1; e <= 255; ++e) {
+            if (!used[size_t(e)]) continue;
+            const std::array<uint8_t, 4> &c = frames[0].pal[size_t(e) - 1];
+            int hit = 0;
+            for (int r : reps) {
+                const std::array<uint8_t, 4> &q = frames[0].pal[size_t(r) - 1];
+                const int dr = int(q[0]) - int(c[0]), dg = int(q[1]) - int(c[1]),
+                          db = int(q[2]) - int(c[2]);
+                if (dr * dr + dg * dg + db * db <= tol * tol) {
+                    hit = r;
+                    break;
+                }
+            }
+            if (hit) {
+                repOf[size_t(e)] = hit;
+            } else {
+                reps.push_back(e);
+                repOf[size_t(e)] = e;
+            }
+        }
+        for (VoxModel &f : frames)
+            for (uint8_t &v : f.m)
+                if (v) v = uint8_t(repOf[size_t(v)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // WHERE EACH FRAME OF A STRIP SITS INSIDE THE SHARED BOX, FOUND BY LOOKING.
+    //
+    // MagicaVoxel trims every frame to its own contents, so the files of one
+    // animation are different sizes and NOTHING IN THEM SAYS WHERE THEY LINE
+    // UP. Get that wrong and the gun itself jumps about the screen while the
+    // magazine changes, which reads as the whole model being broken rather than
+    // as a frame being one voxel out.
+    //
+    // THE FIRST CUT WAS A RULE AND THE RULE DID NOT GENERALISE. The rifle's
+    // frames grow downward -- its receiver row sits one below the top of the
+    // box in all eleven files -- so "pad underneath, align the tops" fitted it
+    // exactly. The pistol grows on THREE different sides: the magazine comes in
+    // from the low-x side, an extra row of depth appears at the high-y end, and
+    // the height never changes at all. A per-axis rule for that is a rule with
+    // a case for every gun in the folder.
+    //
+    // SO IT IS MEASURED INSTEAD: the shift that puts the most of a frame's own
+    // voxels on top of the rest pose's is the shift where the two are the same
+    // gun. That is a cross-correlation over a 22-to-32-voxel model and a shift
+    // range of a voxel or three -- microseconds, once, at load.
+    //
+    // IT REPRODUCES THE OLD RULE ON THE OLD ART, which is what makes it safe to
+    // swap in: the rifle's twenty-voxel body only overlaps at the top-aligned
+    // shift, so the shared box comes out 3 x 6 x 11 exactly as padUnder left
+    // it, and the pose bake that was written against that box does not move.
+    //
+    // TIES GO TO THE SMALLEST SHIFT, so a frame identical to the rest pose sits
+    // at zero rather than at whatever the scan happened to reach first.
+    // -----------------------------------------------------------------------
+    static int stripOverlap(const VoxModel &a, const VoxModel &b, int sx, int sy, int sz) {
+        int n = 0;
+        for (int z = 0; z < b.sz; ++z)
+            for (int y = 0; y < b.sy; ++y)
+                for (int x = 0; x < b.sx; ++x)
+                    if (b.at(x, y, z) && a.at(x + sx, y + sy, z + sz)) ++n;
+        return n;
+    }
+
+    // `b`'s origin in `a`'s coordinates. Returns the overlap it scored.
+    static int fitFrame(const VoxModel &a, const VoxModel &b, int *ox, int *oy, int *oz) {
+        int best = -1, bx = 0, by = 0, bz = 0, bestCost = 0;
+        for (int sz = -(b.sz - 1); sz <= a.sz - 1; ++sz)
+            for (int sy = -(b.sy - 1); sy <= a.sy - 1; ++sy)
+                for (int sx = -(b.sx - 1); sx <= a.sx - 1; ++sx) {
+                    const int n = stripOverlap(a, b, sx, sy, sz);
+                    if (n <= 0) continue;
+                    const int cost = abs(sx) + abs(sy) + abs(sz);
+                    if (n > best || (n == best && cost < bestCost)) {
+                        best = n;
+                        bestCost = cost;
+                        bx = sx;
+                        by = sy;
+                        bz = sz;
+                    }
+                }
+        *ox = bx;
+        *oy = by;
+        *oz = bz;
+        return best;
+    }
+
+    // The strip, fitted and padded into one grid. `frames[0]` is the rest pose
+    // and is the reference everything else is aligned to.
+    static void fitStrip(std::vector<VoxModel> *frames) {
+        if (!frames || frames->empty()) return;
+        std::vector<VoxModel> &f = *frames;
+        std::vector<int> ox(f.size(), 0), oy(f.size(), 0), oz(f.size(), 0);
+        for (size_t i = 1; i < f.size(); ++i)
+            fitFrame(f[0], f[i], &ox[i], &oy[i], &oz[i]);
+        int lo[3] = {0, 0, 0}, hi[3] = {f[0].sx, f[0].sy, f[0].sz};
+        for (size_t i = 0; i < f.size(); ++i) {
+            lo[0] = mini(lo[0], ox[i]);
+            lo[1] = mini(lo[1], oy[i]);
+            lo[2] = mini(lo[2], oz[i]);
+            hi[0] = maxi(hi[0], ox[i] + f[i].sx);
+            hi[1] = maxi(hi[1], oy[i] + f[i].sy);
+            hi[2] = maxi(hi[2], oz[i] + f[i].sz);
+        }
+        const int W = hi[0] - lo[0], H = hi[1] - lo[1], D = hi[2] - lo[2];
+        for (size_t i = 0; i < f.size(); ++i) {
+            VoxModel out;
+            out.sx = W;
+            out.sy = H;
+            out.sz = D;
+            out.pal = f[i].pal;
+            out.m.assign(size_t(W) * size_t(H) * size_t(D), 0);
+            const int px = ox[i] - lo[0], py = oy[i] - lo[1], pz = oz[i] - lo[2];
+            for (int z = 0; z < f[i].sz; ++z)
+                for (int y = 0; y < f[i].sy; ++y)
+                    for (int x = 0; x < f[i].sx; ++x)
+                        out.m[size_t(x + px) + size_t(y + py) * size_t(W) +
+                              size_t(z + pz) * size_t(W) * size_t(H)] = f[i].at(x, y, z);
+            f[i] = std::move(out);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // A GUN: ONE REST POSE WITH A RELOAD CYCLE BEHIND IT.
+    //
+    // (user 2026-09-18: "there are animations for the reload cycle. look in the
+    // assault file.")
+    //
+    // add()'s job plus a strip, and the strip is why this is its own function
+    // rather than an argument: the frames have to be padded into ONE SHARED BOX
+    // before any of them is registered. Every held pose is measured from the
+    // middle of that box -- see HeldItem::xform, and the toWorldWhole note in
+    // World::addHeldVox -- so frames of different sizes are frames that each
+    // move the gun.
+    //
+    // AND THE SHARED BOX IS TALLER THAN THE GUN, WHICH MOVES THE POSE. The rest
+    // frame is 4 voxels tall and the strip's tallest is 6, so the box grows two
+    // rows DOWNWARD and its centre drops one -- which lifts the gun one voxel
+    // (10 cm at scale 1) up the screen for free. The rifle's two baked poses
+    // are shifted by exactly that: see the y in app_load.inl's kRifleHip and
+    // kRifleAds, both one lower than the numbers the user baked off the panel,
+    // with the arithmetic written out there.
+    //
+    // A MISSING STRIP IS NOT AN ERROR. No reload directory, or files that will
+    // not load, leaves `reloadFrames` at 0: the gun still fires and still
+    // reloads, holding the rest pose for the whole cycle. A viewmodel that
+    // refuses to load is a worse bug than one that does not animate.
+    // -----------------------------------------------------------------------
+    bool addGun(World &world, const char *name, const std::string &voxPath,
+                const std::string &reloadDir, const HeldPose &pose, int selfMergeTol = 0,
+                const HeldPose *adsPose = nullptr) {
+        std::string err;
+        std::vector<VoxModel> frames(1);
+        if (!voxLoad(voxPath, &frames[0], &err)) {
+            std::fprintf(stderr, "v2: gun %s: %s -- skipped\n", voxPath.c_str(), err.c_str());
+            return false;
+        }
+        for (const std::string &p : stripFiles(reloadDir)) {
+            VoxModel m;
+            if (!voxLoad(p, &m, &err)) {
+                std::fprintf(stderr, "v2: gun reload frame %s: %s -- skipped\n", p.c_str(),
+                             err.c_str());
+                continue;
+            }
+            // IT HAS TO BE THE SAME GUN, and overlapping the rest pose at all is
+            // the test -- see fitStrip, which finds WHERE it overlaps. A frame
+            // that cannot be laid on the rest pose anywhere is not a frame of
+            // this animation, and padding it into the shared box would put a
+            // second gun in the hand for a tenth of a second.
+            int fx = 0, fy = 0, fz = 0;
+            if (fitFrame(frames[0], m, &fx, &fy, &fz) <= 0) {
+                std::fprintf(stderr,
+                             "v2: gun reload frame %s (%dx%dx%d) shares no voxel with the rest"
+                             " pose -- skipped\n",
+                             p.c_str(), m.sx, m.sy, m.sz);
+                continue;
+            }
+            frames.push_back(std::move(m));
+        }
+        foldStrip(frames, selfMergeTol);
+        // ONE GRID FOR THE WHOLE STRIP, with every frame laid where it lines up
+        // with the rest pose. After this they are all the same size, which is
+        // what the pose below is measured against.
+        fitStrip(&frames);
+
+        Tool t;
+        t.name = name;
+        t.takes = Takes::Nothing;
+        t.pose = pose;
+        if (adsPose) {
+            t.ads = true;
+            t.adsPose = *adsPose;
+        }
+        t.path = voxPath;
+        for (size_t f = 0; f < frames.size(); ++f) {
+            // EXACTLY, because foldStrip has already done the merging -- see
+            // its note. Passing the tolerance on here would fold every frame a
+            // second time, against itself.
+            const int i = world.addHeldVox(frames[f],
+                                           f ? (voxPath + " (reload)") : voxPath, &t.sx, &t.sy,
+                                           &t.sz, 0);
+            if (i < 0) return false;
+            t.models.push_back(i);
+        }
+        t.reloadFrames = int(frames.size()) - 1;
+        tools_.push_back(t);
+        std::printf("v2: gun %s  %d reload frames, %dx%dx%d\n", voxPath.c_str(), t.reloadFrames,
+                    t.sx, t.sy, t.sz);
+        std::fflush(stdout);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
     // PUT DOWN WHAT IS IN THE HAND. Returns which tool left, or -1.
     //
     // The tool stays loaded and keeps its pose; only `carried` moves. The hand
@@ -1448,12 +1759,14 @@ class HeldItem {
         // half-eaten apple to an orange with the button still down would
         // otherwise finish the apple's clock on the orange -- see eating_.
         cancelEat();
+        cancelReload();   // ...and neither does a reload -- see cancelReload
     }
     void select(int i) {
         if (i < 0 || i >= int(tools_.size()) || i == sel_) return;
         sel_ = i;
         swapT0_ = nowMs_;
         cancelEat();   // see cycle
+        cancelReload();
     }
 
     // -----------------------------------------------------------------------
@@ -1468,6 +1781,47 @@ class HeldItem {
     // shape at any frame rate and cannot drift. Re-arming it mid-recoil simply
     // restarts the curve, which is what automatic fire should look like.
     void kick() { recoilT0_ = nowMs_; }
+
+    // -----------------------------------------------------------------------
+    // THE RELOAD CYCLE -- ARM IT, ASK ABOUT IT, AND CATCH ITS END.
+    //
+    // (user 2026-09-18: "the number goes down until 0, where the gun then
+    // reloads ... so also implement a reload function while you are at it.")
+    //
+    // THE CLOCK IS HERE AND THE MAGAZINE IS NOT. What is in the gun is the
+    // App's number -- it is spent by fireRifle, refilled by the door into the
+    // level, and drawn beside the hand -- and this file owns only how long the
+    // gun is busy and which frame that puts on screen. Two clocks would be one
+    // clock too many: nowMs_ is the same one the swing, the swap, the recoil
+    // and the bite are all timed off, so the animation cannot drift from the
+    // moment the rounds come back.
+    //
+    // reloadDone() IS AN EDGE AND IT CONSUMES ITSELF. The App polls it once a
+    // frame and refills on the one frame it answers true -- the same shape as
+    // update()'s impact return, and for the same reason: "is it finished" asked
+    // every frame of a flag that stays set would refill the magazine for ever.
+    // -----------------------------------------------------------------------
+    bool startReload() {
+        if (reloading_ || !ready()) return false;
+        reloading_ = true;
+        reloadT0_ = nowMs_;
+        return true;
+    }
+    bool reloading() const { return reloading_; }
+    float reloadAmount() const {
+        return reloading_ ? clampf(float((nowMs_ - reloadT0_) / double(kReloadMs)), 0.0f, 1.0f)
+                          : 0.0f;
+    }
+    bool reloadDone() {
+        if (!reloading_ || nowMs_ - reloadT0_ < double(kReloadMs)) return false;
+        reloading_ = false;
+        return true;
+    }
+    // THE HAND CHANGING CANCELS IT, exactly as it cancels a bite -- see
+    // cancelEat. A reload half played on a gun you have scrolled away from
+    // would finish on whatever is in your hand now, and refill a magazine that
+    // is not on screen.
+    void cancelReload() { reloading_ = false; }
 
     // -----------------------------------------------------------------------
     // TAKE THE WHOLE WHEEL AWAY, AND GIVE IT BACK EXACTLY.
@@ -1561,6 +1915,25 @@ class HeldItem {
                                     : 0.0f;
             const size_t f = size_t(mini(kEatFrames - 1, int(k * float(kEatFrames - 1) + 0.5f)));
             return t.models[f < t.models.size() ? f : 0];
+        }
+        // -- A GUN SHOWS THE MAGAZINE COMING OUT AND GOING BACK IN ---------
+        //
+        // STEPPED OFF THE CYCLE'S OWN CLOCK, exactly as the bow's draw is: the
+        // frame is PICKED, never tweened, so nine drawn frames read as nine
+        // drawn frames. `reloading_` is the whole gate -- at rest, and for any
+        // tool with no strip, this falls through to models[0] like everything
+        // else in the kit.
+        //
+        // int(k * n) RATHER THAN A ROUND, so each of the n frames owns an equal
+        // slice of the cycle and the last one is on screen until the magazine
+        // is actually full. Rounding would give the first and last frames half
+        // a slice each, which is a reload that starts and ends on a flicker.
+        if (reloading_ && t.reloadFrames > 0) {
+            const float k =
+                clampf(float((nowMs_ - reloadT0_) / double(kReloadMs)), 0.0f, 1.0f);
+            const size_t f =
+                size_t(mini(t.reloadFrames - 1, int(k * float(t.reloadFrames))));
+            return t.models[1 + f < t.models.size() ? 1 + f : 0];
         }
         if (!t.bow || bowFrames_ <= 0) return t.models[0];
 
@@ -1984,6 +2357,13 @@ class HeldItem {
     // WHEN THE LAST ROUND WENT OFF. Far enough in the past that nothing is
     // recoiling on the first frame. See kick() and the recoil block in xform().
     double recoilT0_ = -1.0e9;
+    // THE RELOAD, and unlike every other clock in this file it has a FLAG
+    // beside it. The swing, the swap and the recoil all run once off a
+    // timestamp and are over when their curve is; the reload has to be
+    // cancellable mid-cycle -- scrolling off the gun ends it -- and "cancelled"
+    // and "finished long ago" are the same timestamp. See startReload.
+    bool reloading_ = false;
+    double reloadT0_ = -1.0e9;
     // ...and how far up to the eye an aimable tool has travelled -- 0 at the
     // hip, 1 down the sights. Eased in update(); see Tool::ads.
     float ads_ = 0.0f;

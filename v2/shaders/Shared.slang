@@ -962,7 +962,17 @@ struct V6Params
     // kWF* below. It takes HALF THE PAD that was already here, so V6Params is
     // the same size it was and nothing that asserts on that changes.
     uint waterFlags;
-    float waterPad;
+    // WAVE AMPLITUDE, AS A GAIN ON kWave. 0 is dead flat.
+    //
+    // IT TAKES waterPad rather than growing the record, so V6Params stays on
+    // whole 16-byte rows -- adding a float outright trips the static_assert
+    // below, which is exactly what it is there for.
+    //
+    // The wave field lived entirely in the shader as a static const table, so
+    // "make the water flat" had no knob at all, and flattening the HEIGHTFIELD
+    // did nothing: these displace the surface after the fact, so a mapped lake
+    // still carried a 5.2 m swell. v1 ships its waves off; so does this.
+    float waterWaveGain;
 
     // -----------------------------------------------------------------------
     // THE BULB. The only emitter in this engine that is not the sky.
@@ -1086,6 +1096,32 @@ static const uint kWFSunPath = 1u << 5;  // Beer-Lambert on the way DOWN to the 
 static const uint kWFSwell   = 1u << 6;  // the voxel wave march
 static const uint kWFRipple  = 1u << 7;  // the analytic normal where the march ends
 static const uint kWFFoam    = 1u << 8;  // the white churn round the shore
+// -- AND THE OTHER GLINT, WHICH IS NOT kWFGlint -----------------------------
+//
+// (user 2026-09-18: "can you give me a setting ... to turn off the suns glare
+// ... its mixed in with the pixel glint on the water. I need you to seperate
+// it" + "one is pixelated and one is not".)
+//
+// THERE ARE TWO AND THEY SHARE NOTHING BUT THE SUN. kWFGlint above is v1's
+// pixelGlisten: an AUTHORED sparkle, added as emission, quantised to voxel
+// cells by featureSizeM with about half of them alight at any moment. It is
+// pixelated on purpose -- that discreteness is what makes it read as voxel
+// water, and it is the one the checkbox has always controlled.
+//
+// THIS one is not authored at all. Water is MAT_DIELECTRIC with roughness 0 --
+// a perfect mirror -- so it cannot be light-sampled, and nothing in NEE ever
+// touches it. What happens instead is that the path bounces specularly off the
+// wave normal, leaves the world, and finds the SUN DISK in the sky. Because
+// every pixel's wave normal is a little different, the mirror direction
+// scatters, and the disk lands across a broad region as a glitter path -- which
+// the accumulator and DLSS then average into the hazy sheen. It is physically
+// what a lake does, it is the brightest thing in the frame, and until now it
+// had no switch of its own.
+//
+// OFF here means: a ray that reached the sky by a specular bounce OFF WATER
+// does not collect the disk. The sky it reflects is untouched, every other
+// surface's reflection of the sun is untouched, and kWFGlint is untouched.
+static const uint kWFSunGlare = 1u << 9;  // the sun DISK mirrored off the waves
 static const uint kWFAll     = 0x1FFu;
 
 // EVERYTHING ON. The world reflection was taken out of the default on
