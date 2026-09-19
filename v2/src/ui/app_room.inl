@@ -13,6 +13,12 @@
             {"seeds", {0.0110f, 0.100f, 0.205f, 0.000f}},
             {"wheat", {0.0110f, -0.145f, 0.313f, 0.000f}},
             {"steak", {0.0110f, 0.056f, 0.260f, 0.000f}},
+            // THE TWO FRUIT, OFF THE [K] CARD, and one line serves both for the
+            // same reason one HeldPose does: they are the same shape at the
+            // same scale, so a badge placed against one is placed against the
+            // other. See the apple/orange registration in app_load.inl.
+            {"apple", {0.0110f, 0.111f, 0.258f, 0.000f}},
+            {"orange", {0.0110f, 0.111f, 0.258f, 0.000f}},
             // -- THE AMMO COUNT, WHICH IS THIS TABLE'S FIRST NON-STACK ------
             //
             // (user 2026-09-18: "make sure to let me adjust the position of the

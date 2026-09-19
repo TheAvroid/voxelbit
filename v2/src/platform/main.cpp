@@ -508,6 +508,8 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     if (a == "--dem-scale") { argFloat(argc, argv, i, &o->demScale); return true; }
     if (a == "--dem-exag") { argFloat(argc, argv, i, &o->demExag); return true; }
     if (a == "--dem-detail") { argFloat(argc, argv, i, &o->demDetail); return true; }
+    if (a == "--dem-rough") { argFloat(argc, argv, i, &o->demRough); return true; }
+    if (a == "--oak-density") { argFloat(argc, argv, i, &o->oakDensity); return true; }
     if (a == "--spawn-pick") { o->spawnPick = true; return true; }
     if (a == "--waves") { argFloat(argc, argv, i, &o->waves); return true; }
     if (a == "--stem-div") { argFloat(argc, argv, i, &o->stemDiv); return true; }

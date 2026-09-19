@@ -257,17 +257,46 @@ class ChunkMesher {
     // entirely on candidates that are then thrown away for standing in each
     // other. Sparse and large is what an oak wood is.
     //
-    // 0.42 -> 0.21 (user 2026-09-17: "reduce the oak trees in half"). This is
-    // the share of lattice cells that OFFER a candidate; the spacing rejection
-    // below then culls from that, so halving it does not halve the headcount
-    // exactly. MEASURED over one wood at --spawn 7:
+    // HALVED BY HEADCOUNT, NOT BY KNOB (user 2026-09-19: "cut the oak tree
+    // density by 50%", then "actually cut it in half").
     //
-    //     3079 trees -> 1355   (44%, so slightly MORE than half removed)
+    // 0.21 -> 0.0975. THE TWO ARE NOT THE SAME THING and that is the whole
+    // reason this number looks arbitrary. This knob is the share of lattice
+    // cells that OFFER a candidate; the spacing rejection then culls from that,
+    // so the headcount does not track it one for one. Measured over --ouachita,
+    // which is all oak, so the printed tree count IS the oak count:
     //
-    // Slightly more rather than slightly less, and the rebaked oaks are why:
-    // they are half again as wide as the set this number was first tuned for,
-    // so each one that does stand keeps more ground clear of the next.
-    float oakDensity = 0.21f;
+    //     density   trees    of baseline
+    //     0.21      1305     100%     <- baseline
+    //     0.117      758      58.1%
+    //     0.105      688      52.7%   <- "half the knob" is NOT half the wood
+    //     0.0993     661      50.6%
+    //     0.0975     652      49.96%  <- half of 1305 is 652.5
+    //
+    // That is count ~ density^0.93, i.e. SUBLINEAR: halving the knob removes
+    // slightly LESS than half the trees, because the ground freed by each tree
+    // that goes is partly re-offered to its neighbours. The note this replaces
+    // recorded the opposite (0.42 -> 0.21 giving 44%, an exponent of 1.18) and
+    // it is not wrong -- the oaks were rebaked half again as wide since, and a
+    // wider tree spends more of the knob on candidates that are then rejected
+    // for standing in each other. So the exponent is a property of the CURRENT
+    // models and must be re-measured whenever they change. Do not carry it.
+    //
+    // The count is spawn-independent here -- --spawn 7 and --spawn 42 both give
+    // 1305 and 661 -- because --ouachita scores its own spawn and this total is
+    // the whole world's decor rather than a view ring. That makes it a better
+    // measurement than the per-spawn one the old note used.
+    //
+    // To re-measure:
+    //   v2.exe --background --ouachita --oak-density <d> --out x.png | grep trees
+    //
+    // WAS 0.42 -> 0.21 (user 2026-09-17: "reduce the oak trees in half"), whose
+    // measurement over one wood at --spawn 7 was 3079 trees -> 1355 (44%).
+    //
+    // THIS DEFAULT IS NOW OVERWRITTEN by World::oakDensity, which app_load
+    // pushes from Options (--oak-density). It stays as the value a mesher built
+    // without a World would use.
+    float oakDensity = 0.0975f;
     // The subset of those wide enough to hang a beehive from -- empty in the
     // pine wood, which is one of the two things that turns the hive pass off.
     std::vector<std::vector<Perch>> pineHivePerch;

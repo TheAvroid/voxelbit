@@ -1163,6 +1163,41 @@
             return true;
         }
         selectOnArrive_ = slot;
+        // -- AND THE PRESS THAT PICKED IS NOT ALSO A BITE -----------------
+        //
+        // (user: "if Im holding an apple/orange in hand, then right click to
+        //  pick up another one from a tree, it eats the fruit.")
+        //
+        // BOTH CLAIMS LIVE ON THE RIGHT BUTTON and they are read in two
+        // different places: the pick is an EVENT (this function, off
+        // ButtonDown) and the bite is POLLED in processInput a moment later in
+        // the same frame. So one press reached both -- it picked the fruit off
+        // the tree AND started a 900 ms bite on the one already in the hand.
+        //
+        // spendEatPress is exactly the primitive for it: wantEat opens a bite
+        // on the RISING EDGE only, so marking the edge as already spent means
+        // this press cannot open one. Release and press again to eat, which is
+        // the behaviour a fruit in the hand should have had all along.
+        //
+        // -- AND IT HAS TO BE SPENT *HERE*, NOT ON ARRIVAL -----------------
+        //
+        // The arrival path in app_frame.inl already calls spendEatPress, and
+        // that is why this was thought fixed on 2026-09-17. It is not the same
+        // moment: grabFrom starts a 360 ms FLIGHT, so arrival is a third of a
+        // second after the button went down. Poll-time is now.
+        //
+        // With an EMPTY hand that gap is harmless -- there is no food to bite,
+        // wantEat falls out on holdingFood() and the press is spent by the time
+        // the fruit lands. With a fruit ALREADY IN HAND there is something to
+        // bite on the press frame, so the bite opens immediately and the
+        // arrival's spend lands 360 ms into a 900 ms mouthful it cannot stop.
+        // That is the whole difference between the two reports, and it is why
+        // the earlier fix looked complete.
+        //
+        // THE FALLBACK BRANCH ABOVE ALREADY DID THIS -- the instant hand-over
+        // taken when the drop band is full -- which is why this only showed
+        // with a drop slot free, i.e. very nearly always.
+        held_.spendEatPress();
         std::printf("v2: %s picked at (%.1f, %.1f, %.1f) -- in hand\n", t.name, at.x, at.y, at.z);
         std::fflush(stdout);
         return true;

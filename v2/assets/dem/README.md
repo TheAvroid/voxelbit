@@ -102,24 +102,116 @@ the tread stays flat and its edge frays. Every column still lands within half a
 voxel of the measured surface, which is strictly closer than the terracing it
 replaces.
 
-## Could the data be better? Yes, and here is the number
+## Could the data be better? Yes -- and the projection blocker is now gone
 
-3DEP publishes **1 m lidar** over both windows -- Acadia is 4 tiles of
-`ME_MidCoast_2021_B21`, the Colorado window is 103 tiles at roughly 255 MB
-each. At `--dem-scale 6` a 10.29 m posting is 1.7 world metres, or seventeen
-voxels, so everything between postings is interpolation; at 1 m it would be
-1.7 voxels and essentially every column would be measured.
+3DEP publishes **1 m lidar-derived bare earth** over both windows. At
+`--dem-scale 6` a 10.29 m posting is 1.7 world metres, or seventeen voxels, so
+everything between postings is interpolation; at **`--dem-scale 1`, which is
+what Acadia and Ouachita both run, it is 103 voxels**. That is the number worth
+keeping in mind: the two newest worlds are the most interpolated ones there are.
 
-What stops it being a drop-in:
+    posting     voxel columns invented between two measurements, at scale 1
+    10.29 m     103
+     1 m         10
+     0.35 m       3.5   (QL1 lidar's own point spacing -- not a raster)
+     0.1 m        1     (nothing with coverage reaches this)
 
-* **Size.** The 50 km window at 1 m is 50,000^2 floats = **10 GB**. At 3 m it
-  is 1.1 GB. Neither fits the current "load the whole grid" `DemField`.
-* **Projection.** The 1 m tiles are UTM, not lon/lat, so `tools/dem2raw.cpp`
-  would need a reprojection step it does not have today.
+**`tools/dem2raw.cpp` now reads the 1 m product.** Two things had to change and
+both are done:
 
-The shape that would work is a **high-resolution inset**: keep the 50 km window
-at 10 m for the distance, and load a second `.vbdem` of 5 km at 1 m -- 100 MB --
-around wherever the player actually is. Not implemented.
+* **Projection.** The 1 m tiles are UTM in metres; the 1/3" tiles are geographic
+  in degrees. A tile now carries its own CRS, read from the GeoTIFF key
+  directory, and every lookup converts lon/lat into that tile's space first.
+  Geographic and UTM are handled; anything else is refused by name.
+* **Naming.** 1 m tiles are named for the project that flew them
+  (`USGS_one_meter_x46y382_AR_Ouachita_B5_2016.tif`), not on a clean degree
+  grid, so the directory is INDEXED BY WHAT EACH FILE SAYS IT COVERS rather
+  than by a name. `--index` forces that; it is also chosen automatically when
+  the name-derived tile for the window centre does not exist.
+
+**`--step-m` sets the output posting.** Without it the tool is byte-for-byte
+what it was -- verified by rebuilding `ouachita12.vbdem` and comparing.
+
+    tools/dem2raw.exe --dir C:/geo/dem/ouachita/1m \
+                      --center -93.3000 34.6600 --km 12 --step-m 1 \
+                      --out assets/dem/ouachita12_1m.vbdem
+
+### It was checked against the product it replaces, not just run
+
+A wrong zone, a transposed tie point or a datum muddle all produce a `.vbdem`
+that opens cleanly, has the right extent in its header, and is full of
+plausible elevations. Nothing downstream can tell. Two checks:
+
+* `tools/dem2raw.exe --utm-test` -- the easting on a central meridian is exactly
+  500000 by construction, a round trip over CONUS zones 10-19 is under a
+  millimetre, and Mount Elbert lands on its published grid reference.
+* `python tools/demcmp.py a.vbdem b.vbdem` -- asks a SECOND, independently
+  georeferenced product what the ground is doing at the same place. Over a 2 km
+  window at Ouachita, 10.29 m against 1 m:
+
+      mean   +0.00 m     <- no datum or tie-point offset
+      rms     0.23 m     <- resolution, which is what it should be
+      worst  +-2.2 m     <- on the steepest ground, where a 10 m cell averages
+
+  A mean over a couple of metres means the datum. An rms in the tens of metres
+  means the projection, not the resolution.
+
+### Two ways a 1 m window looks empty when the data is right there
+
+Both cost a rebuild here, and both present identically: a clean band of holes
+and a bare total like `holes 52522508 samples with no data`. **`dem2raw` now
+prints a per-tile sample count and the window's own lon/lat bounds**, which
+turns each of these into something you can read off in one line.
+
+**1. A TILE IS NAMED FOR ITS NORTH-WEST CORNER** -- the same convention as the
+1/3" tiles, and easy to assume otherwise because the name looks like a grid
+index:
+
+    x46y385  ->  easting  459994..470006    (x names the WEST edge)
+                 northing 3839994..3850006  (y names the NORTH edge)
+
+Read `y` as the south edge and you fetch a row of tiles one step too far south.
+The window loses its whole top -- 36.5% of it, and the relief comes out 116 m
+instead of 339 m, which reads as a flat world rather than a missing one. The
+give-away in the new report is a tile with **0 samples**:
+
+    1m\USGS_one_meter_x46y382_AR_Ouachita_B5_2016.tif         0 samples
+    1m\USGS_one_meter_x47y384_AR_Ouachita_B5_2016.tif  85213709 samples
+
+**2. A TILE THAT COVERS A POINT IS NOT A TILE THAT HAS IT.** The 1 m product is
+published per ACQUISITION LOT, and a lot's tiles are full rectangles with
+nodata wherever that lot did not fly. So two lots publish tiles at the SAME
+grid reference, each holding part of the ground: `AR_Ouachita_B5_2016` and
+`_B6_2016` both have `x47y384`, B5's footprint stopping around northing
+3837000 and B6's carrying on north. Fetch only B5 and a 2.7 km band across the
+middle of the window is empty -- 25% of it.
+
+`Mosaic::sample` therefore **falls through nodata to the next covering tile**,
+so overlapping lots merge with no ordering rule and no preference, and only a
+point that *every* covering tile calls nodata is a hole.
+
+**Pick one campaign if you can.** `AR_Eastern_D23` also publishes `y385` over
+this window and was not used: mixing acquisitions puts a point-density and date
+seam through the middle of the world, which is the one cost of 1 m data that
+the seamless 1/3" product does not have.
+
+### What it costs
+
+    window        posting    samples      .vbdem
+    12 km         10.29 m    1166^2         5 MB
+    12 km          1 m      12000^2       576 MB
+    50 km          1 m      50000^2        10 GB   <- does not fit DemField
+
+**The scale-1 worlds are the small ones, which is the whole reason this is
+practical.** Acadia at 10 km and Ouachita at 12 km are 400 MB and 576 MB, which
+v2 can hold beside its usual 6-9 GB. rmnp50 at 1 m is 10 GB and also needs it
+least, since at shrink 6 its posting is already seventeen voxels. The
+high-resolution inset idea in the note this section replaces is still the answer
+for a 50 km window; it is not needed for a 12 km one.
+
+**The cover does NOT have to match.** `CoverField` indexes by world position
+through its own header, so a 1 m `.vbdem` pairs with the existing 10.29 m
+`.vbcov`. They are built on the same grid by default and nothing requires it.
 
 ## THE WATERLINE IS A SIGNED CONTOUR, NOT A RASTER EDGE
 
@@ -251,6 +343,44 @@ rock. This window is 3.6% rock, and the forest fraction going up the ridges is
 77.0%, 98.4%, 99.4%, 99.5% -- the classifier has not smeared rock over the high
 ground, so there is nothing to protect the terrain from.
 
+### The same window at 1 m -- `ouachita12_1m.vbdem`
+
+    bash C:/geo/dem/ouachita/1m/fetch.sh          # 8 tiles, ~2.9 GB
+    tools/dem2raw.exe --dir C:/geo/dem/ouachita/1m \
+                      --center -93.3000 34.6600 --km 12 --step-m 1 \
+                      --out assets/dem/ouachita12_1m.vbdem
+
+    12000 x 12000 samples, 549 MB, 173.6..513.0 m, relief 339.4 m, ZERO holes
+
+Against the 10.29 m product over the whole window (`tools/demcmp.py`), 338,724
+samples compared:
+
+    mean   +0.00 m    rms 0.15 m    p05/p95 -0.20/+0.22    worst +-2.9 m
+
+which is resolution and nothing else -- no datum offset, no projection error.
+It is AR_Ouachita_B5_2016 and _B6_2016 merged; read the coverage traps above
+before refetching.
+
+**It is not what `--ouachita` loads.** That flag still points at the 10.29 m
+`.vbdem`, because switching it would take the world from 5 MB of terrain to
+549 MB without anyone asking. To stand in it:
+
+    v2.exe --ouachita --dem assets/dem/ouachita12_1m.vbdem
+
+The existing 10.29 m `ouachita12.vbcov` pairs with it unchanged -- `CoverField`
+indexes by world position through its own header, so the two grids do not have
+to match.
+
+**And the roughness follows it down on its own.** `--dem-rough 1` measured over
+the same window, as relief added in world metres:
+
+    posting    rock     forest   meadow
+    10.29 m    0.1488   0.0769   0.0251
+     1 m       0.0263   0.0134   0.0044     <- 17.7% of the above
+
+The design factor is `(1/10.29)^0.75` = 17.4%. Nothing was retuned to get that;
+it is what the measurement leaving less unknown looks like.
+
 ### Why not the Ozarks, which is the purer oak
 
 The first cut was the upper Buffalo River in the Boston Mountains -- 12 km on
@@ -290,3 +420,102 @@ large part real -- the lake has about two hundred of them.
 
 rmnp50 passes the same test at 5.32% and Acadia fails it at 28.17%, so read
 this number as a shoreline-convolution measure, not a verdict.
+
+## Imagery from a directory instead of the service -- `--imagery-dir`
+
+`naip2cov.py` can read a directory of georeferenced tiles and skip the whole
+block/fade path above:
+
+    python tools/naip2cov.py <in.vbdem> <out.vbcov> --imagery-dir <dir>
+
+**Everything the fade machinery exists to hide is absent by construction.**
+There is no join, because nothing was requested in pieces; no exposure drift,
+because nothing was resampled; and no 2048 px cap, so the resolution is the
+supplier's. The seam essay above stays because the service path stays.
+
+**The supersample is deliberately 2x2 and not the whole cell.** At 15 cm imagery
+and a 1 m posting there are 44 source pixels inside one cell. Averaging all 44
+would BLUR exactly the boundaries this tool exists to find -- a shoreline is by
+definition where neighbouring pixels disagree -- so four samples at the quarter
+points is the compromise: a real use of the resolution, still four reads.
+
+**Where 15 cm imagery comes from, free:**
+
+    Maine       MEGIS GeoLibrary wide-area ortho, statewide 15 cm
+    Arkansas    ADOP 6-inch statewide, 4-band RGB+NIR; 3-inch in some counties
+
+**NOT VERIFIED AGAINST A LIVE BULK ENDPOINT.** The Arkansas bucket named in
+public write-ups (`geostor-imagery`) returns NoSuchBucket, and the state's
+download page now redirects to `geodata.gis.arkansas.gov`. The reader and its
+test are done; the fetch for a given supplier is not, and the tiles must be
+8-bit and either geographic or UTM. **State Plane is common in supplier
+deliveries and is refused by name** rather than guessed at -- reproject first.
+
+`tools/geoimg.py` is the reader; `tools/geoimg_test.py` proves it puts pixels in
+the right place, by painting tiles whose content is a known function of POSITION
+(a water band on a known easting, forest north of a known northing), reading
+them back at independently computed lon/lat, and checking the right ground came
+out. It covers raw, deflate and deflate+predictor, 3-band and 4-band, and checks
+that JPEG-in-TIFF and State Plane are refused with a message that names the
+problem.
+
+## Roughness that knows what it is standing on -- `--dem-rough`
+
+    v2.exe --ouachita --dem-rough 1
+
+**THE PROBLEM IT SOLVES IS NOT TERRACING.** `terraceBreakM` deals with that. A
+posting is the distance between two things that were MEASURED, and at scale 1
+that leaves 103 voxel columns per measurement as a curve somebody chose. No
+source with coverage reaches 0.1 m -- the best lidar in the country is ~0.35 m
+between returns -- so the bottom of the scale is either synthesised or it is a
+smooth ramp. It is currently a smooth ramp.
+
+**AND IT IS NOT THE NOISE THAT WAS REMOVED.** `--dem-detail` is one amplitude
+over the whole world and is off because of "remove that noise from all terrain":
+the same speckle on a talus slope and on a flat sand bank. Three rules make this
+a different thing rather than a quieter version of the same one:
+
+1. **Per class.** Rock is rough, meadow is nearly flat, **water is exactly
+   zero**, and the amplitude fades to nothing within 8 m of a waterline --
+   the beach is where the complaint came from.
+2. **It shrinks as the data improves.** Relief below wavelength L goes as L^H
+   with H about 0.75, so the table is quoted at the 10.29 m posting and scaled
+   by `(posting/10.29)^0.75`. **A 1 m source invents 17% of what a 10.29 m one
+   does, with no constant retuned.**
+3. **Real metres, divided by the shrink**, so `--dem-scale` changes what it
+   means on the ground and not how big it looks.
+
+Measured over Ouachita at scale 1, `--dem-rough 1`, as relief added in world
+metres (`build/dem_rough_test.exe`):
+
+    rock     0.1488 rms     forest  0.0769     meadow 0.0251
+    snow     0.0160         water   0.0000  (exactly)
+
+    distance from the waterline   0-2 m  0.0015   <- 2.9% of the plateau
+                                  2-4 m  0.0084
+                                  4-8 m  0.0357
+                                 8-16 m  0.0556
+                                16-64 m  0.0508   <- the plateau
+
+**IT IS OFF BY DEFAULT** (`--dem-rough 0`), because every world so far was tuned
+without it and none of them should move under anyone. The test's first claim is
+that off is off, over 176,400 columns, bit-identical.
+
+### The bug this test caught on its first run
+
+`CoverField::shoreDistance` is **signed** -- negative on land, positive in
+water, zero at the line. Read as a distance it makes every land column -127,
+and through a `t*t` fade that is a gain of **252**, not a fade to nothing:
+35.96 m rms on rock against an expected 0.15, and 100 m of invented relief on a
+hillside. A screenshot would have shown "the terrain looks wrong" with no way to
+say why. Anything reading that field wants its MAGNITUDE.
+
+### What would make the table honest
+
+The amplitudes are terrain intuition, not a fit -- there is no high-resolution
+exemplar in the tree to fit against. The honest version is one patch of real
+3-5 cm ground per class (UAV SfM, from OpenTopography's community datasets) with
+its roughness spectrum measured and the table set from it. That is the one job
+UAV photogrammetry is actually right for here: as a statistical exemplar, not as
+coverage -- it cannot see through a canopy and it fails on water, and every
+world here is forest and lake.

@@ -1686,6 +1686,11 @@ class World {
         return n;
     }
     float treeDensity = 0.3210f;
+    // The oak's own share of the lattice, kept separate because an oak_7 is
+    // seventeen metres across and the spacing rejection throws away far more of
+    // what this offers than the pine's does. app_load pushes Options::oakDensity
+    // in here; ChunkMesher::oakDensity is the default if nothing does.
+    float oakDensity = 0.0975f;
     float rockDensity = 0.010f;
     float flowerDensity = 0.45f;
     float mushroomDensity = 0.015f;
@@ -9644,6 +9649,7 @@ class World {
 
         mesher_.seed = seed;
         mesher_.treeDensity = treeDensity;
+        mesher_.oakDensity = oakDensity;
         mesher_.rockDensity = rockDensity;
         mesher_.flowerDensity = flowerDensity;
         mesher_.mushroomDensity = mushroomDensity;

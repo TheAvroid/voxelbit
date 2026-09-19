@@ -51,6 +51,7 @@
         world_.rockDensity = clampf(opt_.rocks, 0.0f, 1.0f);
         world_.pineconesPerTree = maxi(0, opt_.pineconesPerTree);
         world_.treeDensity = clampf(opt_.treeDensity, 0.0f, 1.0f);
+        world_.oakDensity = clampf(opt_.oakDensity, 0.0f, 1.0f);
         world_.pineDir = opt_.pines;
         world_.decorDir = opt_.decor;
         // THE CEILING IS A MEMORY CEILING, NOT A DESIGN ONE. It was 15,
@@ -84,6 +85,7 @@
             if (world_.terrain.loadDem(opt_.demPath, opt_.demBaseM,
                                        opt_.demScale, opt_.demExag)) {
                 world_.terrain.demDetailM = opt_.demDetail;
+                world_.terrain.demRoughM = opt_.demRough;
                 world_.terrain.stemDiv = opt_.stemDiv;
                 const DemField &d = world_.terrain.dem();
                 printf("[dem] %s  %dx%d  %.1f..%.1f m asl  relief %.1f m\n"
@@ -1270,13 +1272,20 @@
                            HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f},
                            Takes::Nothing))
                 arrowTool_ = -1;
+            // THE USER'S BAKE, off the [K] card. It drops the fruit 67 cm in
+            // the hand's own units from the seeds' starting pose -- the note
+            // above called that pose "a starting point for a bake, said as
+            // one", and this is the bake. ONE POSE FOR BOTH: an apple and an
+            // orange are 4x3x5 and 3x3x5 of the same kit scale, so a pose that
+            // sits one correctly sits the other (user: "apply these new
+            // positions for the apple as well since they are the same shape").
             appleTool_ = held_.count();
             if (!held_.addFood(world_, "apple", opt_.apple,
-                               HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
+                               HeldPose{8.799f, -1.577f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
                 appleTool_ = -1;
             orangeTool_ = held_.count();
             if (!held_.addFood(world_, "orange", opt_.orange,
-                               HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
+                               HeldPose{8.799f, -1.577f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
                 orangeTool_ = -1;
             // -- THE ASSAULT RIFLE, ON THE WHEAT'S TERMS AND FOR A NEW REASON -
             //

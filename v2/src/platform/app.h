@@ -449,6 +449,13 @@ struct Options {
     // and the one the scatter multiplies by stemFill, so halving it halves the
     // offered sites everywhere the stand table is not already saturating.
     float treeDensity = 0.1605f;
+    // THE OAK'S SHARE, AND IT IS NOT treeDensity. Halving the number is not
+    // halving the wood: this is the share of lattice cells that OFFER a
+    // candidate, and the spacing rejection culls from that, so the headcount
+    // moves by LESS than the knob does -- count ~ density^0.93 on the current
+    // models. 0.0975 is the value that actually halves the wood, measured;
+    // the ladder is over ChunkMesher::oakDensity.
+    float oakDensity = 0.0975f;
     float grass = 0.105f, flowers = 0.45f, rocks = 0.010f;
     int grassMin = 3, grassMax = 6;
     std::string pines = "C:/voxelbit/game/assets/foilage/pine9";
@@ -578,6 +585,11 @@ struct Options {
     // octaves on the DEM path -- see VoxelTerrain::heightM -- so --dem-detail
     // 0.45 restores the old roughness exactly and anything between fades it in.
     float demDetail = 0.0f;   // sub-metre roughness over the measured ground
+    // --dem-rough: the SAME argument answered per cover class instead of
+    // globally. 0 is off and is the default; 1 is the table in
+    // VoxelTerrain::roughFor. It scales itself down as the source posting
+    // improves, so a 1 m .vbdem invents 18% of what a 10.29 m one does.
+    float demRough = 0.0f;
     // Force chooseSpawn() to run even on the --out path, which normally skips
     // it. Without this the only spawn reachable headlessly is the pinned one,
     // so the code the game actually opens with cannot be tested at all.

@@ -2407,6 +2407,7 @@ inline int floorMod(int a, int b) { const int m = a % b; return m < 0 ? m + b : 
 struct TerrainMemo {
     FbmMemo warpX, warpZ, roll, swell, basin, fine;  // heightM, the pine's own
     FbmMemo detail;  // the sub-metre roughness laid over measured ground
+    FbmMemo rough;   // ...and the PER-CLASS roughness, which is not the same thing
     // THE BIRCH'S ROLL AND SWELL ARE ITS OWN NOW, and only a column inside
     // the seam ever asks for them alongside the pine's -- see heightM. They
     // replace the ridge memo rather than adding to the struct, the ridged
@@ -2903,6 +2904,24 @@ class VoxelTerrain {
     float timberlineFadeM = kTimberlineFadeAslM;  // in world metres, set on load
     // Peak-to-peak roughness added over measured ground, in world metres.
     float demDetailM = 0.0f;   // 0 = the measurement and nothing added; see heightM
+    // -- AND THE OTHER KIND OF ROUGHNESS, WHICH IS NOT A GLOBAL AMPLITUDE ---
+    //
+    // demDetailM above is one noise at one amplitude over the whole world, and
+    // it is off because that is what "remove that noise from all terrain" was
+    // about: the same speckle on a talus slope and on a flat sand bank, where
+    // only one of them has any business being rough.
+    //
+    // demRoughM is a MULTIPLIER on a per-class table instead (see
+    // demRoughnessM). Water gets nothing, ever. Sand within a few metres of a
+    // waterline gets nothing. A meadow gets almost nothing. Rock gets the lot.
+    // So the thing that was complained about cannot come back on: it is not a
+    // smaller version of the same noise, it is noise that is absent from the
+    // places the complaint was about.
+    //
+    // 0 = off, and that is the DEFAULT, for the same reason demDetailM is off:
+    // every world built so far was tuned without it and must not change under
+    // anyone. 1 = the table as measured.
+    float demRoughM = 0.0f;
     // How deep a mapped lake gets at its middle, world metres. 5 world m is
     // 30 real m at shrink 6, which is about Cheesman.
     float kLakeDepthM = 5.0f;
@@ -3048,6 +3067,107 @@ class VoxelTerrain {
             out += (n - 0.5f) * (kWarpVox * VOXEL_M) * w;
         }
         return out;
+    }
+
+    // -----------------------------------------------------------------------
+    // ROUGHNESS THAT KNOWS WHAT IT IS STANDING ON.
+    //
+    // WHAT THIS IS FOR, and it is not terracing -- terraceBreakM above deals
+    // with that. A posting is the distance between two things that were
+    // MEASURED; everything between them is a curve somebody chose. At a 10.29 m
+    // posting and --dem-scale 1 that is 103 voxel columns of invented ground
+    // per measurement, and at a 1 m posting it is ten. No source that covers a
+    // 12 km window reaches 0.1 m -- the best lidar in the country is ~0.35 m
+    // between returns -- so the bottom of the scale is synthesis or it is a
+    // smooth ramp. It is currently a smooth ramp.
+    //
+    // THREE RULES KEEP THIS FROM BEING THE NOISE THAT WAS TAKEN OUT:
+    //
+    //  1. IT IS PER CLASS. Rock is rough because talus and bedding planes are
+    //     rough. A meadow is nearly flat because a meadow is nearly flat.
+    //     Water is EXACTLY zero. The complaint that retired the old octaves
+    //     was a speckle of single voxels on level sand, and sand near a
+    //     waterline is the one place this is hardest off.
+    //
+    //  2. IT SHRINKS AS THE DATA IMPROVES. Natural terrain is roughly fractal,
+    //     so the relief held in wavelengths below L goes as L^H with H about
+    //     0.75. The table is quoted at the 10.29 m posting every world was
+    //     built on, and scaled by (posting/10.29)^0.75 -- so feeding the same
+    //     world a 1 m source cuts the invented part to 18% of itself WITHOUT
+    //     anyone retuning a constant. Synthesis fills the band the measurement
+    //     does not reach, and no more than that.
+    //
+    //  3. IT IS IN REAL METRES, divided by the shrink, so --dem-scale changes
+    //     what it means on the ground and not how big it looks.
+    // -----------------------------------------------------------------------
+    struct RoughClass { float ampM, cellM; };   // REAL metres, peak to peak
+
+    // Measured-terrain intuition, not fitted -- there is no high-resolution
+    // exemplar in the tree to fit against yet, and the honest way to get one is
+    // a patch of real 1 m or lidar ground per class. See assets/dem/README.md.
+    static RoughClass roughFor(uint8_t cc) {
+        switch (cc) {
+            case CoverField::Rock:   return {1.20f, 3.0f};  // talus, blocks, bedding
+            case CoverField::Forest: return {0.55f, 5.0f};  // root throw, litter, stumps
+            case CoverField::Meadow: return {0.18f, 7.0f};  // grazed and soil-creeping
+            case CoverField::Snow:   return {0.10f, 9.0f};  // wind-packed, smooth
+            case CoverField::Water:  return {0.00f, 1.0f};  // never
+            default:                 return {0.30f, 5.0f};  // no cover loaded
+        }
+    }
+
+    // How much of the scale the measurement does NOT reach, as a factor on the
+    // table above. postingM is the source's own spacing in REAL metres.
+    float roughPostingFactor(float postingM) const {
+        if (postingM <= 0.0f) return 1.0f;
+        return std::pow(postingM * (1.0f / 10.29f), 0.75f);
+    }
+
+    float demRoughnessM(float x, float z, TerrainMemo &memo, float grade) const {
+        if (demRoughM <= 0.0f) return 0.0f;
+        const uint8_t cc = cover_.ok() ? cover_.at(x, z) : uint8_t(CoverField::Unknown);
+        RoughClass rc = roughFor(cc);
+        if (rc.ampM <= 0.0f) return 0.0f;
+        // A SHORE IS FLAT AND IT IS WHERE THE OLD NOISE WAS REPORTED. Fade the
+        // whole thing out within a few metres of a waterline, whatever the
+        // class says, because a beach is the one surface whose smoothness is
+        // the thing you notice.
+        //
+        // shoreDistance IS SIGNED -- negative on land, positive in water, zero
+        // at the line (CoverField::buildShoreField runs the chamfer both ways
+        // and stores the difference biased by 128). The distance FROM the
+        // waterline is therefore its MAGNITUDE, and reading the raw value as a
+        // distance makes every land column -127, which through a t*t fade is a
+        // gain of 252 rather than a fade to nothing.
+        //
+        // That is not a subtle failure: it put 100 m of invented relief on a
+        // hillside, and it is exactly the kind of thing a screenshot would have
+        // shown as "the terrain looks wrong" with no way to say why.
+        // dem_rough_test caught it on its first run, at 35.96 m rms on rock
+        // against an expected 0.2.
+        if (cover_.ok()) {
+            const float nearM = std::fabs(cover_.shoreDistance(x, z));
+            if (nearM < 8.0f) {
+                const float t = clampf(nearM * (1.0f / 8.0f), 0.0f, 1.0f);
+                rc.ampM *= t * t;
+            }
+        }
+        if (rc.ampM <= 0.0f) return 0.0f;
+        const float shrink = dem_.ok() ? dem_.shrink() : 1.0f;
+        const float posting = dem_.ok() ? float(dem_.metresPerSampleX()) : 10.29f;
+        // World metres: the table is real metres, the world is shrink times
+        // smaller, and only the unmeasured part of the spectrum is invented.
+        const float amp = rc.ampM * roughPostingFactor(posting) / maxf(0.01f, shrink)
+                          * demRoughM;
+        const float cell = maxf(0.25f, rc.cellM / maxf(0.01f, shrink));
+        // STEEP ROCK IS ROUGHER THAN FLAT ROCK, and that is the one slope term
+        // here: a bench holds fines, a face sheds them. Bounded so it can never
+        // become the grade-driven speckle the old dither was gated against.
+        const float slopeK = (cc == CoverField::Rock)
+                                 ? (0.65f + minf(1.0f, grade * 2.5f) * 0.70f) : 1.0f;
+        const float n = fbm(memo.rough, x * (1.0f / cell) + 131.7f,
+                            z * (1.0f / cell) + 57.1f, 3);
+        return (n - 0.5f) * amp * slopeK;
     }
 
     bool aboveTimberlineVox(int hVox) const {
@@ -5215,10 +5335,15 @@ class VoxelTerrain {
             // columns is the speckle "remove that noise from all terrain" was
             // about. A smooth field half a voxel deep displaces the contour
             // instead, by amplitude/grade, and cannot speckle at any grade.
-            if (demDetailM <= 0.0f) return g + snow + terraceBreakM(x, z, grade);
+            // The two are independent and compose: terraceBreakM moves a
+            // contour that quantising made straight, demRoughnessM adds the
+            // relief the posting is too coarse to have measured. Only the
+            // second one knows what the ground is made of.
+            const float rough = demRoughnessM(x, z, memo, grade);
+            if (demDetailM <= 0.0f) return g + snow + terraceBreakM(x, z, grade) + rough;
             const float det =
                 (fbm(memo.detail, x * 0.90f + 17.3f, z * 0.90f + 41.7f, 4) - 0.5f) * demDetailM;
-            return g + snow + fine * (demDetailM * (1.0f / 0.45f)) + det;
+            return g + snow + fine * (demDetailM * (1.0f / 0.45f)) + det + rough;
         }
         // -------------------------------------------------------------------
 

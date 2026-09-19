@@ -20,6 +20,9 @@ and at 4,000 m a sunlit granite slope and a dry meadow look alike in RGB.
 """
 import array, io, json, math, os, struct, subprocess, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import geoimg
+
 SERVICE = ("https://imagery.nationalmap.gov/arcgis/rest/services/"
            "USGSNAIPPlus/ImageServer/exportImage")
 
@@ -154,6 +157,9 @@ def main():
     block = 2048
     if "--px" in sys.argv:
         block = int(sys.argv[sys.argv.index("--px") + 1])
+    imagery_dir = None
+    if "--imagery-dir" in sys.argv:
+        imagery_dir = sys.argv[sys.argv.index("--imagery-dir") + 1]
 
     HFMT = "<8s2i6d2f8i"
     hb = io.open(dem_path, "rb").read(struct.calcsize(HFMT))
@@ -171,145 +177,203 @@ def main():
     tmp = os.path.join(os.environ.get("TEMP", "."), "_naip_block.tif")
 
     # -----------------------------------------------------------------------
-    # FULL RESOLUTION, AND NO SEAM: OVERLAPPING BLOCKS, CROSS-FADED.
+    # EITHER THE SUPPLIER'S OWN PIXELS, OR THE SERVICE'S RESAMPLED ONES.
     #
-    # (user 2026-09-18, in order: "odd generation formations like this straight
-    # line", then "the data appears as squares that are visible. can we get more
-    # detail?")
+    # --imagery-dir reads a directory of georeferenced tiles and skips the
+    # entire block/fade path below. There is nothing to fade, because nothing
+    # was resampled and there is no join: the pixels are the ones that were
+    # flown. See tools/geoimg.py for why that matters and what it costs.
     #
-    # THE TWO COMPLAINTS ARE THE SAME TRADE AND THIS IS THE WAY OUT OF IT.
-    # exportImage caps a request at 2048 px, so a 4,859-sample window is either
-    # ONE coarse request -- 24.4 m a sample, which at shrink 6 is four world
-    # metres of flat colour, the "squares" -- or several full-resolution ones
-    # with a JOIN, and the join is where the straight line came from.
-    #
-    # WHAT THE JOIN ACTUALLY IS, measured rather than assumed. Fetching the same
-    # 512 m of ground as two requests and as one:
-    #
-    #     separate requests, across the join   39.5% of pixels change class
-    #     ONE request, across the same join    22.5%   <- the natural variation
-    #     a +2 DN shift on r, g, b              4.0%
-    #
-    # So the difference in the PIXELS is about two levels out of 255 -- the
-    # service resamples per request and that is all it costs -- and the
-    # classifier turns those two levels into seventeen points of class change,
-    # correlated along the whole row. Correlated is what the eye sees. An
-    # exposure match alone was tried and measured: it moves 4% and leaves the
-    # line.
-    #
-    # SO THE BLOCKS OVERLAP AND FADE INTO EACH OTHER. Each request is 2048 wide
-    # but they step by kStride, so every join has kOverlap of ground that both
-    # blocks saw; across that band the pixels are mixed linearly, which turns a
-    # straight discontinuity into a gradient a kilometre wide. The classifier
-    # still flips whatever it flips, but it flips it RAGGEDLY and over ground
-    # that already varies by 22% row to row.
-    #
-    # AND THE EXPOSURE IS MATCHED FIRST, cheaply: one reference request covers
-    # the whole window in a single exposure, and each block is mapped onto it
-    # with ONE 256-entry table -- bytes.translate, a C-speed pass -- built from
-    # the mean and spread of all four channels together. Per-channel tables
-    # would be a per-pixel Python loop over 37 M pixels; the channels differ by
-    # less than a level here (x0.95/0.94/0.93/0.92), so one table takes almost
-    # all of it.
+    # SUPERSAMPLED 2x2, WHICH IS THE POINT OF THE RESOLUTION. At 15 cm imagery
+    # and a 1 m posting there are 44 source pixels inside one cell; the mean of
+    # four of them, at the quarter points, is a real use of that and still only
+    # four reads. Averaging all 44 would BLUR the class boundaries this whole
+    # tool exists to find -- a shoreline is exactly where neighbouring pixels
+    # disagree -- so the supersample is deliberately small.
     # -----------------------------------------------------------------------
-    MAXPX = 2048
-    kOverlap = 192
-    kStride = MAXPX - kOverlap
-    rw, rh = min(w, MAXPX), min(h, MAXPX)
-    west, east = olon, olon + slon * w
-    north, south = olat, olat - slat * h
-    print("exposure  one reference request of %dx%d over the whole window" % (rw, rh))
-    ref_tmp = os.path.join(os.environ.get("TEMP", "."), "_naip_ref.tif")
-    if not fetch((west, south, east, north), (rw, rh), ref_tmp):
-        print("    FAILED -- the cover would be empty, so nothing is written")
-        return 1
-    rtw, rth, rspp, rpx = read_tiff_rgbn(ref_tmp)
-
-    def stats(buf, spp_, x0, y0, bw, bh, stride, step):
-        """mean and spread over all channels of a rectangle, every `step` px."""
-        n = 0
-        s = 0.0
-        q = 0.0
-        for yy in range(y0, y0 + bh, step):
-            base = yy * stride * spp_
-            for xx in range(x0, x0 + bw, step):
-                o = base + xx * spp_
-                for c in range(min(4, spp_)):
-                    v = buf[o + c]
-                    s += v
-                    q += v * v
-                n += min(4, spp_)
-        if n == 0:
-            return 128.0, 1.0
-        mean = s / n
-        return mean, max(1.0, (q / n - mean * mean) ** 0.5)
-
-    nbx = max(1, (w - kOverlap + kStride - 1) // kStride)
-    nby = max(1, (h - kOverlap + kStride - 1) // kStride)
-    print("tiles   %dx%d requests of %dpx stepping %d (%.2f m a sample, %d px of overlap)"
-          % (nbx, nby, MAXPX, kStride, mx, kOverlap))
-
-    for by in range(nby):
-        for bx in range(nbx):
-            x0, y0 = bx * kStride, by * kStride
-            bw, bh = min(MAXPX, w - x0), min(MAXPX, h - y0)
-            if bw <= 0 or bh <= 0:
-                continue
-            bwest, beast = olon + slon * x0, olon + slon * (x0 + bw)
-            bnorth, bsouth = olat - slat * y0, olat - slat * (y0 + bh)
-            print("  block %d,%d  %dx%d at %d,%d" % (bx, by, bw, bh, x0, y0))
-            if not fetch((bwest, bsouth, beast, bnorth), (bw, bh), tmp):
-                print("    FAILED -- left as unknown")
-                continue
-            tw, th, spp, px = read_tiff_rgbn(tmp)
-            if tw != bw or th != bh:
-                print("    got %dx%d, wanted %dx%d" % (tw, th, bw, bh))
-            bm, bs = stats(px, spp, 0, 0, min(tw, bw), min(th, bh), tw, 16)
-            rx0, ry0 = x0 * rtw // w, y0 * rth // h
-            rbw, rbh = max(1, bw * rtw // w), max(1, bh * rth // h)
-            rm, rs = stats(rpx, rspp, rx0, ry0, min(rbw, rtw - rx0), min(rbh, rth - ry0), rtw, 4)
-            gain = min(2.5, max(0.4, rs / bs))
-            print("    exposure x%.3f, shift %+.1f" % (gain, rm - bm))
-            lut = bytes(min(255, max(0, int((v - bm) * gain + rm + 0.5))) for v in range(256))
-            px = bytes(px).translate(lut)
-            # ---- write it in, fading across the overlap ---------------------
-            for r in range(min(th, bh)):
-                gy = y0 + r
-                ty = 1.0 if (by == 0 or r >= kOverlap) else (r + 0.5) / kOverlap
-                srow = r * tw * spp
-                drow = gy * w
-                if ty >= 1.0 and bx == 0:
-                    # Nothing to fade against on this row: one memcpy.
-                    n = min(tw, bw)
-                    pix[drow * 4:(drow + n) * 4] = px[srow:srow + n * 4]
-                    for i in range(n):
-                        seen[drow + i] = 1
+    if imagery_dir:
+        print("imagery local tiles from %s" % imagery_dir)
+        src = geoimg.LocalImagery(imagery_dir)
+        print("        %.3f m/px over lon %.5f..%.5f lat %.5f..%.5f%s"
+              % (src.metres, src.lo0, src.lo1, src.la0, src.la1,
+                 "" if src.has_nir else "   NO NIR BAND -- NDVI/NDWI are dead"))
+        if not src.has_nir:
+            print("        3-band imagery cannot separate water from shadow or")
+            print("        rock from dry meadow; the classifier needs band 4.")
+        qx, qy = slon * 0.25, slat * 0.25
+        miss = 0
+        for j in range(h):
+            lat = olat - (j + 0.5) * slat
+            row = j * w
+            for i in range(w):
+                lon = olon + (i + 0.5) * slon
+                acc = [0, 0, 0, 0]
+                got = 0
+                for dx, dy in ((-qx, -qy), (qx, -qy), (-qx, qy), (qx, qy)):
+                    v = src.at(lon + dx, lat + dy)
+                    if v is None:
+                        continue
+                    acc[0] += v[0]; acc[1] += v[1]; acc[2] += v[2]; acc[3] += v[3]
+                    got += 1
+                k = row + i
+                if not got:
+                    miss += 1
                     continue
-                for c in range(min(tw, bw)):
-                    gx = x0 + c
-                    tx = 1.0 if (bx == 0 or c >= kOverlap) else (c + 0.5) / kOverlap
-                    t = tx * ty
-                    o = srow + c * spp
-                    k = drow + gx            # the CELL, not the block-local one
-                    d = k * 4
-                    if not seen[k] or t >= 1.0:
-                        pix[d] = px[o]
-                        pix[d+1] = px[o+1]
-                        pix[d+2] = px[o+2]
-                        pix[d+3] = px[o+3] if spp > 3 else px[o]
-                        seen[k] = 1
-                    else:
-                        u = 1.0 - t
-                        pix[d] = int(pix[d] * u + px[o] * t)
-                        pix[d+1] = int(pix[d+1] * u + px[o+1] * t)
-                        pix[d+2] = int(pix[d+2] * u + px[o+2] * t)
-                        nv = px[o+3] if spp > 3 else px[o]
-                        pix[d+3] = int(pix[d+3] * u + nv * t)
-    try:
-        os.remove(tmp)
-        os.remove(ref_tmp)
-    except OSError:
-        pass
+                d = k * 4
+                pix[d] = acc[0] // got
+                pix[d + 1] = acc[1] // got
+                pix[d + 2] = acc[2] // got
+                pix[d + 3] = acc[3] // got
+                seen[k] = 1
+            if (j & 255) == 0:
+                print("\r  row %d/%d" % (j, h), end="")
+        print("\r  %d rows done            " % h)
+        if miss:
+            # NOT silent: a window that reaches past the tiles leaves cover
+            # holes, and a hole reads downstream as unknown ground.
+            print("        %d samples (%.2f%%) had no imagery under them"
+                  % (miss, 100.0 * miss / (w * h)))
+    else:
+        # -----------------------------------------------------------------------
+        # FULL RESOLUTION, AND NO SEAM: OVERLAPPING BLOCKS, CROSS-FADED.
+        #
+        # (user 2026-09-18, in order: "odd generation formations like this straight
+        # line", then "the data appears as squares that are visible. can we get more
+        # detail?")
+        #
+        # THE TWO COMPLAINTS ARE THE SAME TRADE AND THIS IS THE WAY OUT OF IT.
+        # exportImage caps a request at 2048 px, so a 4,859-sample window is either
+        # ONE coarse request -- 24.4 m a sample, which at shrink 6 is four world
+        # metres of flat colour, the "squares" -- or several full-resolution ones
+        # with a JOIN, and the join is where the straight line came from.
+        #
+        # WHAT THE JOIN ACTUALLY IS, measured rather than assumed. Fetching the same
+        # 512 m of ground as two requests and as one:
+        #
+        #     separate requests, across the join   39.5% of pixels change class
+        #     ONE request, across the same join    22.5%   <- the natural variation
+        #     a +2 DN shift on r, g, b              4.0%
+        #
+        # So the difference in the PIXELS is about two levels out of 255 -- the
+        # service resamples per request and that is all it costs -- and the
+        # classifier turns those two levels into seventeen points of class change,
+        # correlated along the whole row. Correlated is what the eye sees. An
+        # exposure match alone was tried and measured: it moves 4% and leaves the
+        # line.
+        #
+        # SO THE BLOCKS OVERLAP AND FADE INTO EACH OTHER. Each request is 2048 wide
+        # but they step by kStride, so every join has kOverlap of ground that both
+        # blocks saw; across that band the pixels are mixed linearly, which turns a
+        # straight discontinuity into a gradient a kilometre wide. The classifier
+        # still flips whatever it flips, but it flips it RAGGEDLY and over ground
+        # that already varies by 22% row to row.
+        #
+        # AND THE EXPOSURE IS MATCHED FIRST, cheaply: one reference request covers
+        # the whole window in a single exposure, and each block is mapped onto it
+        # with ONE 256-entry table -- bytes.translate, a C-speed pass -- built from
+        # the mean and spread of all four channels together. Per-channel tables
+        # would be a per-pixel Python loop over 37 M pixels; the channels differ by
+        # less than a level here (x0.95/0.94/0.93/0.92), so one table takes almost
+        # all of it.
+        # -----------------------------------------------------------------------
+        MAXPX = 2048
+        kOverlap = 192
+        kStride = MAXPX - kOverlap
+        rw, rh = min(w, MAXPX), min(h, MAXPX)
+        west, east = olon, olon + slon * w
+        north, south = olat, olat - slat * h
+        print("exposure  one reference request of %dx%d over the whole window" % (rw, rh))
+        ref_tmp = os.path.join(os.environ.get("TEMP", "."), "_naip_ref.tif")
+        if not fetch((west, south, east, north), (rw, rh), ref_tmp):
+            print("    FAILED -- the cover would be empty, so nothing is written")
+            return 1
+        rtw, rth, rspp, rpx = read_tiff_rgbn(ref_tmp)
+
+        def stats(buf, spp_, x0, y0, bw, bh, stride, step):
+            """mean and spread over all channels of a rectangle, every `step` px."""
+            n = 0
+            s = 0.0
+            q = 0.0
+            for yy in range(y0, y0 + bh, step):
+                base = yy * stride * spp_
+                for xx in range(x0, x0 + bw, step):
+                    o = base + xx * spp_
+                    for c in range(min(4, spp_)):
+                        v = buf[o + c]
+                        s += v
+                        q += v * v
+                    n += min(4, spp_)
+            if n == 0:
+                return 128.0, 1.0
+            mean = s / n
+            return mean, max(1.0, (q / n - mean * mean) ** 0.5)
+
+        nbx = max(1, (w - kOverlap + kStride - 1) // kStride)
+        nby = max(1, (h - kOverlap + kStride - 1) // kStride)
+        print("tiles   %dx%d requests of %dpx stepping %d (%.2f m a sample, %d px of overlap)"
+              % (nbx, nby, MAXPX, kStride, mx, kOverlap))
+
+        for by in range(nby):
+            for bx in range(nbx):
+                x0, y0 = bx * kStride, by * kStride
+                bw, bh = min(MAXPX, w - x0), min(MAXPX, h - y0)
+                if bw <= 0 or bh <= 0:
+                    continue
+                bwest, beast = olon + slon * x0, olon + slon * (x0 + bw)
+                bnorth, bsouth = olat - slat * y0, olat - slat * (y0 + bh)
+                print("  block %d,%d  %dx%d at %d,%d" % (bx, by, bw, bh, x0, y0))
+                if not fetch((bwest, bsouth, beast, bnorth), (bw, bh), tmp):
+                    print("    FAILED -- left as unknown")
+                    continue
+                tw, th, spp, px = read_tiff_rgbn(tmp)
+                if tw != bw or th != bh:
+                    print("    got %dx%d, wanted %dx%d" % (tw, th, bw, bh))
+                bm, bs = stats(px, spp, 0, 0, min(tw, bw), min(th, bh), tw, 16)
+                rx0, ry0 = x0 * rtw // w, y0 * rth // h
+                rbw, rbh = max(1, bw * rtw // w), max(1, bh * rth // h)
+                rm, rs = stats(rpx, rspp, rx0, ry0, min(rbw, rtw - rx0), min(rbh, rth - ry0), rtw, 4)
+                gain = min(2.5, max(0.4, rs / bs))
+                print("    exposure x%.3f, shift %+.1f" % (gain, rm - bm))
+                lut = bytes(min(255, max(0, int((v - bm) * gain + rm + 0.5))) for v in range(256))
+                px = bytes(px).translate(lut)
+                # ---- write it in, fading across the overlap ---------------------
+                for r in range(min(th, bh)):
+                    gy = y0 + r
+                    ty = 1.0 if (by == 0 or r >= kOverlap) else (r + 0.5) / kOverlap
+                    srow = r * tw * spp
+                    drow = gy * w
+                    if ty >= 1.0 and bx == 0:
+                        # Nothing to fade against on this row: one memcpy.
+                        n = min(tw, bw)
+                        pix[drow * 4:(drow + n) * 4] = px[srow:srow + n * 4]
+                        for i in range(n):
+                            seen[drow + i] = 1
+                        continue
+                    for c in range(min(tw, bw)):
+                        gx = x0 + c
+                        tx = 1.0 if (bx == 0 or c >= kOverlap) else (c + 0.5) / kOverlap
+                        t = tx * ty
+                        o = srow + c * spp
+                        k = drow + gx            # the CELL, not the block-local one
+                        d = k * 4
+                        if not seen[k] or t >= 1.0:
+                            pix[d] = px[o]
+                            pix[d+1] = px[o+1]
+                            pix[d+2] = px[o+2]
+                            pix[d+3] = px[o+3] if spp > 3 else px[o]
+                            seen[k] = 1
+                        else:
+                            u = 1.0 - t
+                            pix[d] = int(pix[d] * u + px[o] * t)
+                            pix[d+1] = int(pix[d+1] * u + px[o+1] * t)
+                            pix[d+2] = int(pix[d+2] * u + px[o+2] * t)
+                            nv = px[o+3] if spp > 3 else px[o]
+                            pix[d+3] = int(pix[d+3] * u + nv * t)
+        try:
+            os.remove(tmp)
+            os.remove(ref_tmp)
+        except OSError:
+            pass
 
     # ---- and now classify the whole window from one consistent image --------
     print("classifying %d samples..." % (w * h))

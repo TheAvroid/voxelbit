@@ -1717,8 +1717,55 @@
                     "stack %d -> %d, chew %s\n", m0, mMid,
                     ate ? "yes" : "NO", stack0, stack1, bit ? "cued" : "NOT CUED");
 
-        const bool pass =
-            took && !again && shot && ate && bit && mMid != m0 && mMid >= 0 && stack1 < stack0;
+        // ---- 5. PICKING WITH A FRUIT ALREADY IN HAND DOES NOT EAT IT -------
+        //
+        // (user: "if Im holding an apple/orange in hand, then right click to
+        //  pick up another one from a tree, it eats the fruit.")
+        //
+        // WHY THIS NEEDS ITS OWN ARM RATHER THAN A CHECK BOLTED ONTO ARM 1.
+        // Arm 1 picks with an EMPTY hand, and an empty hand cannot reproduce
+        // this: wantEat falls straight out on holdingFood(), so the press does
+        // no harm and the arrival spends it 360 ms later. The bug needs food in
+        // the hand ON THE PRESS FRAME. Arm 1 also drives the drops to arrival
+        // first, and the arrival path spends the press itself -- so anything
+        // measured after that loop passes whatever pickFruit did.
+        //
+        // SO: food in hand, pick, and poll the bite in the SAME step with the
+        // button still down -- which is the order the game runs them in, the
+        // event handler and then processInput. No drops_.update between them.
+        held_.give(appleTool_);
+        held_.select(appleTool_);      // select cancels any bite -- a clean start
+        const bool hadFood = held_.holdingFood();
+        Vec3 f3{0.0f, 0.0f, 0.0f};
+        bool armed = false, noBiteOnPick = false, tookSecond = false;
+        if (hadFood && world_.lowestFruitNear(player_.pos, 90.0f, &f3)) {
+            // STAND UNDER THIS ONE TOO. Arm 1 took the lowest fruit and arm 3
+            // shot another down, so the next one up can easily be past
+            // kFruitReachM from where arm 1 left the feet -- and an arm that
+            // quietly does not run is the thing this whole test exists to
+            // avoid. Same placeOnGround the first pick uses.
+            player_.placeOnGround(walkWorld(), f3.x, f3.z);
+            pos_ = player_.eyePosition();
+            const Vec3 d3{f3.x - pos_.x, f3.y - pos_.y, f3.z - pos_.z};
+            const float dl3 = sqrtf(d3.x * d3.x + d3.y * d3.y + d3.z * d3.z);
+            yaw_ = atan2f(d3.x, -d3.z) * 180.0f / PI;
+            pitch_ = asinf(clampf(d3.y / maxf(dl3, 1e-4f), -1.0f, 1.0f)) * 180.0f / PI;
+            armed = dl3 <= kFruitReachM;
+            if (armed) {
+                tookSecond = pickFruit();          // the ButtonDown half
+                held_.wantEat(true, simMs_);       // ...and processInput, same frame
+                noBiteOnPick = !held_.eating();
+                held_.bitNow();                    // swallow the cue either way
+            }
+        }
+        std::printf("  second pick with food in hand: %s, bite %s\n",
+                    !armed ? "NO FRUIT IN REACH -- not exercised"
+                           : tookSecond ? "took one" : "NOTHING PICKED",
+                    !armed ? "n/a" : noBiteOnPick ? "not opened -- correct"
+                                                  : "OPENED -- it ate the one in hand");
+
+        const bool pass = took && !again && shot && ate && bit && mMid != m0 && mMid >= 0 &&
+                          stack1 < stack0 && (!armed || (tookSecond && noBiteOnPick));
         std::printf("\n  %s\n", pass ? "PASS" : "FAIL");
         std::fflush(stdout);
     }
