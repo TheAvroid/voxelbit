@@ -969,6 +969,15 @@ class Palette {
         levelNext_ = int(levelLook_.size()) - 1;
         levelMinted_ = 0;
         levelOverflow_ = 0;
+        // -- WHICH ENTRIES ARE ACTUALLY THE LEVEL'S -- and it is NOT "all of
+        // them". levelLook_ starts as a COPY of the wood's table, so most of it
+        // is the wood's colours frozen at this instant, and a frozen copy is
+        // wrong for anything registered later that is drawn in BOTH places --
+        // the held kit above all. World::uploadMaterials reads this mask and
+        // takes the wood's LIVE entry wherever the level never minted one, so
+        // the only thing that differs between the two tables is what the level
+        // itself put there.
+        levelOwn_.assign(256, 0);
         haveLevel_ = true;
     }
 
@@ -997,6 +1006,7 @@ class Palette {
         m.specular = 0.020f;
         m.translucency = 0.0f;
         levelIndex_.emplace(key, id);
+        levelOwn_[id] = 1;
         ++levelMinted_;
         return id;
     }
@@ -1005,6 +1015,12 @@ class Palette {
     // glass, which is the tracer's emitter test and has to be one known id.
     const std::vector<MaterialLook> &levelTable() const { return levelLook_; }
     bool hasLevelTable() const { return haveLevel_; }
+    // Did the LEVEL mint this entry, as against inheriting it from the wood?
+    // See beginLevelTable, and World::uploadMaterials, which is the only
+    // caller and the reason this exists.
+    bool levelOwns(uint8_t id) const {
+        return haveLevel_ && id < levelOwn_.size() && levelOwn_[id] != 0;
+    }
     int levelMinted() const { return levelMinted_; }
     int levelOverflowed() const { return levelOverflow_; }
     // How many entries the level could still take. Printed at start-up so the
@@ -1553,6 +1569,7 @@ class Palette {
     // levelNext_ walks toward TREE_BASE rather than away from it.
     std::vector<MaterialLook> levelLook_;
     std::vector<uint8_t> levelReserved_;
+    std::vector<uint8_t> levelOwn_;
     std::map<uint32_t, uint8_t> levelIndex_;
     int levelNext_ = 255;
     int levelMinted_ = 0;
@@ -2889,6 +2906,149 @@ class VoxelTerrain {
     // How deep a mapped lake gets at its middle, world metres. 5 world m is
     // 30 real m at shrink 6, which is about Cheesman.
     float kLakeDepthM = 5.0f;
+    // -- AND HOW A SEA CARRIES ON PAST THAT ---------------------------------
+    //
+    // kLakeDepthM is where the shore ramp levels off; beyond it the bed falls
+    // away at this much per world metre of extra distance from shore, down to
+    // kSeaDepthM. See the carve in heightM for why a hard stop there was the
+    // whole of the "missing terrain on the ocean floor" report.
+    //
+    // THE GRADE IS TINY AND THAT IS THE POINT: 1.5 cm per metre is a 0.9
+    // degree slope, far too gentle to read as a hillside underwater, but over
+    // the few hundred metres of open water in a window it is the difference
+    // between a bed with form and one flat plane.
+    //
+    // kSeaDepthM IS A VISIBILITY BUDGET, not a guess at real bathymetry -- the
+    // DEM has none, because 3DEP maps still water as a level plane and the bed
+    // here is invented either way. Trace.cs.slang's waterSigma leaves 10% of
+    // blue at 5 m and 4% at 8 m over the round trip down and back, so past
+    // about eight metres a bed is academic: it is there, and nothing can see
+    // it. Deepening this further makes the sea darker, not more interesting.
+    float kSeaGradeW = 0.015f;
+    float kSeaDepthM = 8.0f;
+
+    // -----------------------------------------------------------------------
+    // THE CONTOUR IS WARPED, WHICH IS NOT THE SAME AS DITHERING THE HEIGHT.
+    //
+    // (user 2026-09-19: "there are also straight lines forming in the terrain",
+    // and the same thing on the lake bed in every underwater shot.)
+    //
+    // WHAT A TERRACE IS: quantising ANY smooth ramp onto 0.1 m voxels steps the
+    // column height a whole voxel at a time, so a constant grade gives treads of
+    // constant width and every tread edge lies exactly along a contour. Nothing
+    // in the data or the interpolation causes it; see dem.h for the smoothstep
+    // that was built, shipped and made no difference.
+    //
+    // WHAT WAS HERE was half a voxel of WHITE noise per column, and its
+    // geometry is worth stating because it is why it was not enough. A dither
+    // of amplitude A frays the tread edge over a band A/grade wide, and the
+    // tread itself is VOXEL_M/grade wide -- so the fray is the same FRACTION of
+    // a tread at every grade, and the dither is no weaker on gentle ground. It
+    // is only more OBVIOUS there, because that fraction of a 25 m tread is nine
+    // metres of randomly flipped columns, which reads as exactly the speckle
+    // "remove that noise from all terrain" was about. That is what the old
+    // grade gate was really protecting against, and it bought the protection by
+    // switching the fix off over the widest treads in the world -- the ones
+    // that show most. Measured over Ouachita: treads wider than 12.5 m got a
+    // mean weight of 0.06, i.e. nothing.
+    //
+    // SO THE NOISE IS SMOOTH INSTEAD OF WHITE, and that single change removes
+    // the trade. A value-noise field a few metres across, half a voxel peak to
+    // peak, displaces the CONTOUR sideways by amplitude/grade -- eleven metres
+    // on a 25 m tread, two and a half on the 5.5 m treads of the snowfield the
+    // rings were photographed on -- so the line stops being a line. And because
+    // the field is smooth, two neighbouring columns differ by the noise's own
+    // gradient (under 2 mm at this wavelength) rather than by a whole voxel, so
+    // it CANNOT speckle, on any grade, including none.
+    //
+    // It still cannot move a column further than the rounding already does, so
+    // the standing "no noise on terrain" rule holds for the same reason it did
+    // before: every column still lands within half a voxel of the measurement,
+    // which is strictly closer than a terrace, and half a voxel is two orders
+    // of magnitude under 3DEP's own vertical error.
+    // -----------------------------------------------------------------------
+    float kDitherFlat = 0.004f;    // under this the dither is speckle, not a fray
+    float kDitherSteep = 0.30f;    // over this a tread is already a voxel wide
+    float kDitherVox = 0.55f;      // peak to peak, voxels -- measured by eye
+    float kWarpFlat = 0.0012f;     // under this there is no step in view at all
+    float kWarpFull = 0.0036f;     // ...and by this the warp is at full strength
+    float kWarpVox = 0.90f;        // peak to peak, voxels
+    float kWarpCellM = 5.0f;       // wavelength, world metres
+
+    // -- THE DITHER, AND THE GATE THAT WAS ALREADY MEASURED BY EYE ----------
+    //
+    // 0.55 AND NOT 1.0, on the snowfield at (1050, 1275). At a full voxel every
+    // column can flip, so the whole slope becomes speckle and the terraces go
+    // with the smooth ground between them. At 0.55 only a column already near a
+    // voxel boundary moves: the TREAD stays flat and its EDGE frays. Unchanged.
+    float terraceDitherWeight(float grade) const {
+        if (grade <= kDitherFlat || grade >= kDitherSteep) return 0.0f;
+        const float up = minf(1.0f, (grade - kDitherFlat) / (4.0f * kDitherFlat));
+        const float dn = minf(1.0f, (kDitherSteep - grade) / (0.5f * kDitherSteep));
+        const float w = minf(up, dn);
+        return w * w * (3.0f - 2.0f * w);
+    }
+
+    // -- ...AND THE WARP, WHICH REACHES FURTHER DOWN THE GRADE ---------------
+    float terraceWarpWeight(float grade) const {
+        if (grade <= kWarpFlat || grade >= kDitherSteep) return 0.0f;
+        const float up = minf(1.0f, (grade - kWarpFlat) / (kWarpFull - kWarpFlat));
+        const float dn = minf(1.0f, (kDitherSteep - grade) / (0.5f * kDitherSteep));
+        const float w = minf(up, dn);
+        return w * w * (3.0f - 2.0f * w);
+    }
+
+    // -----------------------------------------------------------------------
+    // WHAT A COLUMN GETS ADDED TO BREAK ITS TERRACE, in world metres.
+    //
+    // TWO MECHANISMS THAT HAND OVER, AND THE HAND-OVER IS THE POINT. This was
+    // the dither alone, and an A/B rendered on the snowfield says that is the
+    // right tool where it is switched on and the wrong one where it is off:
+    //
+    //   dither  frays the tread EDGE into dashes. On the 5.5 m treads at
+    //           (1050, 1275) the fray is 3 m wide and the ring stops being a
+    //           line. Rendered both ways, the dashes beat anything smooth,
+    //           because a broken line is not a line.
+    //   warp    a smooth value-noise field, half a voxel deep and a few metres
+    //           across, that moves the CONTOUR sideways by amplitude/grade
+    //           instead of moving the column. It leaves the line CONTINUOUS --
+    //           measurably worse at 5.5 m, where it only makes the ring wavy --
+    //           but it cannot speckle at any grade, because two neighbours
+    //           differ by the field's own gradient rather than a whole voxel.
+    //
+    // So the dither keeps every grade it already had, and the warp is weighted
+    // by (1 - dither) so it appears only as the dither fades out. That fade is
+    // the whole complaint: the dither's fray is the same FRACTION of a tread at
+    // every grade, so on gentle ground it is not weaker, it is physically wider
+    // -- nine metres of randomly flipped columns on a 25 m tread, which is the
+    // speckle "remove that noise from all terrain" was about, and is why the
+    // gate is there. Measured over Ouachita, treads wider than 12.5 m were
+    // getting a mean dither weight of 0.06, i.e. nothing, and those are the
+    // widest and most visible bands in the world. (user 2026-09-19: "there are
+    // also straight lines forming in the terrain".)
+    //
+    // Neither can move a column further than the rounding already does, so the
+    // standing "no noise on terrain" rule holds: every column still lands
+    // within half a voxel of the measurement, which is strictly closer than a
+    // terrace -- a tread is a whole voxel of error held in a straight line.
+    // -----------------------------------------------------------------------
+    float terraceBreakM(float x, float z, float grade) const {
+        float out = 0.0f;
+        const float d = terraceDitherWeight(grade);
+        if (d > 0.0f) {
+            const int ci = int(std::floor(x / VOXEL_M));
+            const int cj = int(std::floor(z / VOXEL_M));
+            const float n = hashUnit(uint32_t(ci) * 2654435761u, uint32_t(cj) * 40503u);
+            out += (n - 0.5f) * (kDitherVox * VOXEL_M) * d;
+        }
+        const float w = terraceWarpWeight(grade) * (1.0f - d);
+        if (w > 0.0f) {
+            const float n =
+                vnoise(x * (1.0f / kWarpCellM) + 71.3f, z * (1.0f / kWarpCellM) + 19.7f);
+            out += (n - 0.5f) * (kWarpVox * VOXEL_M) * w;
+        }
+        return out;
+    }
 
     bool aboveTimberlineVox(int hVox) const {
         return timberlineWorldM >= 0.0f && hVox * VOXEL_M >= timberlineWorldM;
@@ -3060,8 +3220,35 @@ class VoxelTerrain {
     // true everywhere, which is the old behaviour exactly.
     bool coverAllowsTree(float x, float z) const {
         if (!cover_.ok()) return true;
+        // NOTHING GROWS IN THE LAKE, WHATEVER ELSE IS DOUBTED. The water
+        // class is trusted under --cover-water -- it is the half of the
+        // imagery that is right -- so it has to be asked BEFORE the gate
+        // opens, or every pond and the whole sea comes up planted with birch.
+        // Rendered: a flooded wood standing in blue, which is what this line
+        // being below the next one looks like.
+        if (cover_.at(x, z) == CoverField::Water) return false;
+        if (!coverGround) return true;
         return cover_.at(x, z) == CoverField::Forest;
     }
+
+    // -- TRUST THE PICTURE FOR THE WATER AND NOT FOR THE GROUND -----------
+    //
+    // (user 2026-09-18: "import the acadia national park dataset, and use our
+    // birch trees ontop of the terrain".)
+    //
+    // A .vbcov CARRIES TWO DIFFERENT CLAIMS and they are not equally good
+    // outside Colorado. Over Mount Desert Island the classifier gets the WATER
+    // right -- 13.0% of the window, half of it under 3 m, the rest clustered
+    // at 83 m where Eagle Lake and Jordan Pond actually are, mean grade 5% --
+    // and the ground badly wrong: 41.9% bare ROCK at a median of 64 m, on an
+    // island whose granite is all above 250 m. Rendered, that is a lavender
+    // waste with 2,867 trees on it against 8,018 with the imagery ignored.
+    //
+    // So this switch says WHICH HALF to believe. False keeps mappedWater,
+    // lakeLineAt and the shore distance -- the sea, the ponds and their banks
+    // -- and hands the trees, the ground colour and the timberline back to the
+    // engine. Without it Acadia has to choose between a forest and a coast.
+    bool coverGround = true;
 
     // ------------------------------------------- THIN ONLY THE THICKEST STANDS
     // (user 2026-09-18: "decrease the density by 50%, but only where the trees
@@ -4873,7 +5060,8 @@ class VoxelTerrain {
             // calling it measurement. A couple of decimetres is under the
             // error bar, invisible on a profile, and the difference between
             // ground that looks poured and ground that looks walked on.
-            const float g = dem_.heightM(x, z);
+            float grade = 0.0f;
+            const float g = dem_.heightAndGrade(x, z, &grade);
             // ----------------------------------------------- A LAKE IS FLAT
             // AND THE NOISE MUST NOT TOUCH IT. 3DEP maps still water as a level
             // plane, so the DEM arrives perfectly flat here -- and then `fine`
@@ -4901,9 +5089,70 @@ class VoxelTerrain {
                 // so this is smooth and costs one lookup. Converted to world
                 // metres before it shapes the bed, or the lake is six times
                 // deeper than it should be.
-                const float toShoreW = cover_.shoreDistance(x, z) / dem_.shrink();
-                const float depth = minf(kLakeDepthM, 0.45f * toShoreW);
-                return g - maxf(0.20f, depth);
+                // THE PRECISE FIELD WHILE IT LASTS, THEN THE WIDE ONE. shore_
+                // saturates at 127 real metres (see CoverField::buildDeepField)
+                // and 55% of an ocean is past that, so the shallow ramp keeps
+                // its one-metre precision and the open water gets a distance
+                // that actually varies.
+                const float nearM = cover_.shoreDistance(x, z);
+                const float shoreM =
+                    nearM < 120.0f ? nearM : maxf(nearM, cover_.shoreDistanceFar(x, z));
+                const float toShoreW = shoreM / dem_.shrink();
+                // -- THE BED KEEPS GOING DOWN, IT DOES NOT STOP DEAD --------
+                //
+                // (user 2026-09-18: "the water has missing terrain on the
+                // ocean floor".) IT WAS NOT MISSING. It was
+                // `minf(kLakeDepthM, 0.45f * toShoreW)` -- a shore ramp and
+                // then a HARD CLAMP -- so every column more than about eleven
+                // world metres from any shore had exactly the same depth.
+                // Measured on acadia: 68% of all wet columns sat at 5.00 m,
+                // the bed was one dead-level plane across the whole bay, and
+                // the water's own extinction leaves 10% of blue at that depth.
+                // A featureless plane rendered at a tenth brightness is
+                // indistinguishable from nothing being there, which is exactly
+                // what it was reported as.
+                //
+                // That clamp is right for a LAKE, which is what it was written
+                // for -- a pond has a middle and the middle is as deep as it
+                // gets. An OCEAN has no middle inside the window, so the clamp
+                // is the entire sea.
+                //
+                // So the ramp continues past it at a gentler grade, and the
+                // shape comes from shoreDistance, which already knows where
+                // the bays and the headlands are: a cove stays shallow, open
+                // water falls away. SMOOTH, and deliberately no noise -- "we're
+                // looking for smooth terrain without noise" (user, same day) is
+                // about all terrain, and a sea bed is terrain.
+                const float knee = kLakeDepthM / 0.45f;   // where the ramp used to stop
+                const float depth =
+                    toShoreW <= knee
+                        ? 0.45f * toShoreW
+                        : minf(kSeaDepthM, kLakeDepthM + kSeaGradeW * (toShoreW - knee));
+                // -- AND THE BED TERRACES LIKE ANY OTHER SMOOTH RAMP --------
+                //
+                // This branch RETURNED here, so the anti-terracing below never
+                // ran on a single wet column and every lake bed in the engine
+                // kept its contour lines -- which is what an underwater shot is
+                // mostly made of. The open-water grade is kSeaGradeW, 1.5 cm a
+                // metre, so the treads are 6.7 m wide and lie in perfect rings
+                // round the shore distance field.
+                //
+                // THE GRADE IS THE CARVE'S AND IS HANDED IN, and the FADE
+                // comes off the depth. A carve's slope is CONSTANT within each
+                // half of the ramp -- 0.45 inshore, kSeaGradeW out -- so a
+                // weight derived from it would jump at the knee and again where
+                // the depth clamps, and a jump in the break-up is itself a line
+                // along a contour. Depth is smooth everywhere, so fading on it
+                // cannot draw one: in over the first metre past the knee, out
+                // over the last metre before the bed goes flat.
+                //
+                // The shallows are left alone deliberately. Inside the knee the
+                // bed falls at 0.45, so the treads are 22 cm and there is
+                // nothing to break; that strip is also where the sand band and
+                // the foam are measured from.
+                const float bedW = clampf(depth - kLakeDepthM, 0.0f, 1.0f) *
+                                   clampf(kSeaDepthM - depth, 0.0f, 1.0f);
+                return g - maxf(0.20f, depth) + bedW * terraceBreakM(x, z, kSeaGradeW);
             }
             // -- AND THE MEASURED GROUND IS SMOOTH -------------------------
             //
@@ -4936,7 +5185,37 @@ class VoxelTerrain {
             // to raise it, so the column grows by the depth and materialAt
             // fills what it grew by. Passing `g` keeps it one DEM lookup.
             const float snow = snowDepthAt(x, z, g);
-            if (demDetailM <= 0.0f) return g + snow;
+            // ---------------------------- THE STEPS ARE WARPED, NOT SMOOTHED
+            //
+            // (user 2026-09-18, with a picture of stepped ground: "can you
+            // build an ai to clean up abnormalities in the terrain like this:
+            // it should be able to detect and fix the terrain artifacts".)
+            //
+            // THE TERRACES ARE NOT IN THE DATA AND NOT IN THE INTERPOLATION.
+            // They are what happens when ANY smooth ramp is quantised onto a
+            // 0.1 m voxel grid: a column's height changes a whole voxel at a
+            // time, so a constant grade gives treads of constant width, every
+            // one of them lying along a contour. Measured on the snowfield at
+            // world (1050, 1275): a 1.83% grade, which is a step every 5.5
+            // world metres -- and photographed there as a set of concentric
+            // rings, because above the treeline nothing grows to break them.
+            //
+            // SMOOTHING THE INTERPOLANT DOES NOTHING, and that was not reasoned
+            // but built: a smoothstep DemField::heightM shipped, the ground was
+            // rendered through it, and the rings were unchanged. See the note
+            // in dem.h. Any curve between the postings is quantised just the
+            // same at the end.
+            //
+            // SO MOVE THE CONTOUR, DO NOT DITHER THE COLUMN. The argument, the
+            // measurement that retired the white-noise dither that used to be
+            // here, and the constants are all over terraceBreakM. The short
+            // version: a dither's fray is the same fraction of a tread at every
+            // grade, so it was never weaker on gentle ground -- it was only
+            // switched OFF there, because nine metres of randomly flipped
+            // columns is the speckle "remove that noise from all terrain" was
+            // about. A smooth field half a voxel deep displaces the contour
+            // instead, by amplitude/grade, and cannot speckle at any grade.
+            if (demDetailM <= 0.0f) return g + snow + terraceBreakM(x, z, grade);
             const float det =
                 (fbm(memo.detail, x * 0.90f + 17.3f, z * 0.90f + 41.7f, 4) - 0.5f) * demDetailM;
             return g + snow + fine * (demDetailM * (1.0f / 0.45f)) + det;
@@ -5586,7 +5865,11 @@ class VoxelTerrain {
             // bare rock at 4,000 m is under snow whatever colour the imagery
             // sampled off it. See snowAt.
             if (snowAt(i, j)) return snowShade(i, j);
-            const uint8_t cc = cover_.at(wxm, wzm);
+            // ...AND THE GROUND ITSELF IS ONLY THE PICTURE'S WHERE THE PICTURE
+            // IS TRUSTED FOR IT -- see coverGround. The water above this line
+            // is believed either way; what is gated here is the imagery's
+            // opinion that a column is bare.
+            const uint8_t cc = coverGround ? cover_.at(wxm, wzm) : uint8_t(CoverField::Forest);
             if (cc == CoverField::Rock || cc == CoverField::Snow || cc == CoverField::Water) {
                 const int ci = mini(int(mat::GROUND_COUNT) - 1, cover_.colourIndex(wxm, wzm));
                 // ------------------------- A WATER COLOUR IS NOT A GROUND ONE
@@ -5698,7 +5981,8 @@ class VoxelTerrain {
         if (h <= wl + sandRiseVoxAt(wx(i))) return mat::SAND;  // the shore band
 
         if (slope >= kRockSlope) return mat::ROCK;  // too steep to hold soil
-        if (aboveTimberlineVox(h) && !cover_.ok()) return mat::ROCK;  // alpine, no imagery
+        // alpine, and no imagery this trusts for the ground -- see coverGround
+        if (aboveTimberlineVox(h) && (!cover_.ok() || !coverGround)) return mat::ROCK;
 
         const float x = wx(i), z = wx(j);
 
@@ -5990,11 +6274,26 @@ class VoxelTerrain {
         //     steep ground        ->  25 m, which no small smear ever has
         //
         // Both fields are continuous, so the waterline is the contour of a
-        // continuous function and cannot be ragged. It cannot be square either:
-        // the shore plane is bilinear and the grade is a difference of bilinear
-        // samples. The same evidence decides the same cases as before -- a
-        // hillside smear still has nowhere near 25 m of shore distance -- but it
-        // decides them by degree instead of by a knife edge.
+        // continuous function and cannot be ragged. The same evidence decides
+        // the same cases as before -- a hillside smear still has nowhere near
+        // 25 m of shore distance -- but it decides them by degree instead of by
+        // a knife edge.
+        //
+        // -- AND IT WAS STILL SQUARE, WHICH THIS NOTE USED TO DENY ----------
+        //
+        // What stood here was "it cannot be square either: the shore plane is
+        // bilinear". That is true of the plane and false of the CONTOUR, and
+        // the difference cost a second report (user, later the same day: "make
+        // them smoother, not rounded squares"). The plane naip2cov baked was
+        // ONE-SIDED -- flat zero on every land cell, then 35 to 90 m one cell
+        // later -- so asking for the kShoreEdgeM contour of it picked a level
+        // one part in fifty up a cliff, and the waterline was pinned to the
+        // raster edge: a staircase with 17-voxel treads. Interpolating a field
+        // says nothing about where its contours land.
+        //
+        // CoverField::buildShoreField makes the plane signed, so the contour is
+        // a real crossing between two cells. Measured on Granby's south shore,
+        // the longest straight run of waterline went from 17.6 m to 3.0 m.
         const float sh = dem_.shrink();
         const float d = 8.0f / sh;
         const float h0 = dem_.heightM(x, z);

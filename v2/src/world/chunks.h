@@ -682,11 +682,31 @@ class ChunkMesher {
     // there is a great deal now -- at 1.0 every cell the stand-density field
     // admits would take a tree and the clumping would flatten out into an even
     // field, which is the thing that gate exists to prevent.
+    // -- HALVED, AND HALVED MEANS THE TREES, NOT THE KNOB ----------------
+    //
+    // (user 2026-09-18: "can you reduce the frequency of the birch forest
+    // trees by 50%".)
+    //
+    // 0.3317 -> 0.1467, which is a 56% cut to the number and a 50.07% cut to
+    // the wood. Those differ because this is a probability per CANDIDATE and
+    // the spacing test below rejects fewer of the survivors as the stand
+    // thins, so offering half as many sites never gives half as many trees --
+    // the quarter-cut above measured 17% for exactly this reason.
+    //
+    // MEASURED with the engine's own ring count at (400, 0), --birch pinned:
+    //
+    //     0.3317   12054 trees     the wood as it was
+    //     0.1400    5792 trees     -51.95%, overshot
+    //     0.1467    6019 trees     -50.07%
+    //
+    // The two trials fit trees proportional to density^0.85 to four figures,
+    // which is what picked 0.1467 rather than a third bisection step.
+    //
     // 0.3317: 0.363 x 0.914, which is 1 / 1.0945 -- the factor by which
     // squaring standGate raised its own mean. The birch wood was not asked to
     // change, and it shares the gate, so its density is scaled back to hold
     // its tree count where it was.
-    float birchDensity = 0.3317f;
+    float birchDensity = 0.1467f;
 
     // TWICE AS MANY BIRCHES, AS AN EXTRA SWEEP RATHER THAN A BIGGER NUMBER.
     //
@@ -1057,6 +1077,33 @@ class ChunkMesher {
 
                         const int h = terrain_.heightVox(ci, cj, memo);
                         if (h <= wl + 8) continue;
+                        // -- AND THE LAKES THE PHOTOGRAPH FOUND ------------
+                        //
+                        // (user 2026-09-18, looking down on a lake: "the water
+                        // is missing ... looks like the terrain under the water
+                        // is missing".)
+                        //
+                        // `wl` is the per-BAND procedural line, and on a DEM
+                        // world waterVoxAt returns kNoWaterVox -- so `h <= wl +
+                        // 8` falls through and there is NO WATER GATE AT ALL.
+                        // Trees, rocks and flowers were being scattered across
+                        // every mapped lake in the window, standing on the bed
+                        // with five metres of water over them, which from above
+                        // reads as a dark speckled pit where the lake should be.
+                        //
+                        // It was always wrong and it used to be nearly
+                        // invisible: the imagery only had a lake where it
+                        // happened to classify one. The DEM water pass in
+                        // naip2cov.py then added 136,367 samples of lake to this
+                        // window, and what had been a few boulders became the
+                        // report.
+                        //
+                        // mappedWater is the SAME DOOR heightM carves the bed
+                        // through and lakeLineAt puts the surface back through,
+                        // so a site this rejects is exactly a site that is under
+                        // water. It costs one bilinear read on dry land, which
+                        // is where all but 1.6% of these calls land.
+                        if (terrain_.mappedWater(x, z)) continue;
 
                         const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
                                                     terrain_.heightVox(ci - 1, cj, memo)),
@@ -1573,7 +1620,10 @@ class ChunkMesher {
                             if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
                                 continue;
                             const int h = terrain_.heightVox(ci, cj, memo);
+                            // The band line, then the mapped lakes -- see the
+                            // note in the first sweep.
                             if (h <= wl + 8) continue;
+                            if (terrain_.mappedWater(x, z)) continue;
                             const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
                                                         terrain_.heightVox(ci - 1, cj, memo)),
                                                    absi(terrain_.heightVox(ci, cj + 1, memo) -
@@ -2172,7 +2222,10 @@ class ChunkMesher {
                 const float px = float(ci) * VOXEL_M, pz = float(cj) * VOXEL_M;
 
                 const int h = terrain_.heightVox(ci, cj, memo);
+                // The band line, then the mapped lakes -- see the note in the
+                // tree sweep. Asked at px/pz, where the model actually lands.
                 if (h <= wl + 2) continue;
+                if (terrain_.mappedWater(px, pz)) continue;
                 const uint8_t top = terrain_.topMaterial(ci, cj, h, memo);
                 // ---------------------------------------------------------
                 // A FLOWER STANDS IN THE GRASS, so it asks whether there IS

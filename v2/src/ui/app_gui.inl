@@ -327,7 +327,7 @@
             // headed STACK COUNT while you tune the ammo counter is the kind
             // of small lie that costs somebody ten minutes looking for the
             // other panel.
-            sw.text(sel >= 0 && sel == rifleTool_ ? "AMMO COUNT" : "STACK COUNT");
+            sw.text(isGun(sel) ? "AMMO COUNT" : "STACK COUNT");
             sw.separator();
             sw.text(sel >= 0 ? held_.tool(sel).name : "nothing in hand");
             sw.checkbox("show a count while this is open", stackPanelForce_);

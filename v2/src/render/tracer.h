@@ -787,6 +787,12 @@ class Tracer {
         p.maxAccum = cfg.maxAccum;
         p.maxDepth = cfg.maxDepth;
         p.rrStart = cfg.rrStart;
+        // WHICH HALF OF gMaterials THIS FRAME READS -- 0 in the sandbox, 255
+        // in the arcade. Asked of the world every frame rather than latched at
+        // the door, so it cannot disagree with what is in the acceleration
+        // structure. See V6Params::matBase and World::uploadMaterials.
+        p.matBase = world_ ? world_->matBase() : 0u;
+        p.matPad0 = p.matPad1 = p.matPad2 = 0u;
         p.clampIndirect = cfg.clampIndirect;
         p.fogDensity = cfg.fogDensity;
         p.fogHeight = cfg.fogHeight;
@@ -1303,7 +1309,11 @@ class Tracer {
 
         if (!ddgi_->uploadConstants(ctx)) return;
 
-        const V6DdgiConsts dc = ddgi_->consts();
+        V6DdgiConsts dc = ddgi_->consts();
+        // ddgi.h has no world to ask, so the table offset is filled in here --
+        // the probe pass shades its own hits and has to read the same half the
+        // main trace does. See V6Params::matBase.
+        dc.matBase = world_ ? world_->matBase() : 0u;
 
         auto var = probeTrace_->getRootVar();
         var["gScene"].setAccelerationStructure(world_->tlasRef());

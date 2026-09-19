@@ -792,7 +792,15 @@
         for (const LifeName &ln : lifeNames()) {
             // THE HIVE AND THE LILY PAD ARE NOT ALIVE. One is decor in a crown
             // and the other is a leaf; neither answers the band's life table.
-            if (ln.life == Life::Hive || ln.life == Life::LilyPad) continue;
+            //
+            // AND NEITHER IS THE CROP, which is the third time this exception
+            // has had to be made and the first one that cannot be forgotten:
+            // the apple and the orange are flagged on the row rather than
+            // named here, so a fourth fruit joins the skip by existing. An
+            // apple is decor too -- it has no flyer slot, so shooting at it
+            // would report "not drawn" about something that was never in the
+            // band to begin with.
+            if (ln.life == Life::Hive || ln.life == Life::LilyPad || ln.fruit) continue;
             Vec3 at{0, 0, 0};
             // NOT SILENT. A species this world has none of is an ordinary
             // outcome -- the frog is birch-only, the armadillo pine-only -- but

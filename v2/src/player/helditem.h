@@ -248,6 +248,63 @@ struct Tool {
     // reload directory, so dropping two more frames in between 36 and 37 makes
     // the cycle smoother and needs no code. That is why this is not a constant.
     int reloadFrames = 0;
+    // -- HOW LONG ONE TURN OF THAT STRIP TAKES, AND WHAT IT LOADS ----------
+    //
+    // (user 2026-09-18: "the pistol animation is way too slow. increase it by
+    // 4x. also it needs to play multiple times depending on how many shots have
+    // been powered. its a standard revolver with 6 rounds.")
+    //
+    // A MAGAZINE AND A CYLINDER ARE NOT THE SAME ANIMATION, and this pair of
+    // fields is the whole difference. The rifle's strip is ONE magazine change:
+    // it plays once and the magazine is full, so `reloadRounds` is 0, which
+    // means "this cycle loads the whole thing". The pistol's is ONE ROUND going
+    // into a cylinder -- so it loads 1, and the gun plays it once per round it
+    // is short. Six empty chambers is the strip six times.
+    //
+    // WHICH ALSO SETTLES THE LENGTH. A cycle that fills a whole magazine can
+    // afford 1800 ms; the same 1800 for a single round is thirty seconds to
+    // fill a revolver. See kPistolReloadMs.
+    //
+    // ZERO MEANS kReloadMs, and it is written that way round because this
+    // struct is declared ABOVE that constant -- the timings sit with the
+    // recoil curve, where the rest of the animation numbers are. See
+    // HeldItem::reloadCycleMs, which is the one place the fallback lives.
+    float reloadMs = 0.0f;
+    int reloadRounds = 0;
+    // -- HOW MANY OF THOSE FRAMES ARE THE ACTION OPENING -------------------
+    //
+    // (user 2026-09-18: "the reload needs to stay open as it cycles through
+    // the bullets. it currently closes the chamber everytime it reloads 1
+    // bullet.")
+    //
+    // A CYLINDER IS SWUNG OUT ONCE AND CLOSED ONCE, however many rounds go
+    // into it -- so a strip that loads one round at a time is really three
+    // things and not one: `reloadLead` leading frames that are the gun
+    // OPENING, the rest of the strip which is one ROUND going in, and the lead
+    // played BACKWARDS to close. Replaying the whole strip per round replays
+    // the opening, and an opening starts from a CLOSED gun -- which is the
+    // chamber shutting itself between every round.
+    //
+    // MEASURED, NOT WRITTEN DOWN. addGun takes it as the frames before the
+    // first one with MORE voxels in it than the gun at rest: the round is
+    // matter the gun does not own, so the frame it appears in is the frame the
+    // loading starts, and everything before it is the action travelling. Art
+    // with a different number of swing frames needs no code. Zero means the
+    // strip was not split, and zero is exactly the behaviour this replaced:
+    // one phase, the whole strip, once per round.
+    int reloadLead = 0;
+    // -- WHERE THE BARREL ACTUALLY ENDS, in BOX voxels ---------------------
+    //
+    // (user 2026-09-18: "the bullets seem to come from 1 voxel underneath the
+    // tip of the guns point".)
+    //
+    // The centre of the first non-empty slice from each end of the depth axis,
+    // and the depth of that slice's outer face. See HeldItem::muzzle for why
+    // the box's own middle is the wrong point, and measureTips for how these
+    // are taken. Anything that is not a gun gets the box's middle, which is
+    // what the old code did for everything.
+    float tipLo[3] = {0.0f, 0.0f, 0.0f};
+    float tipHi[3] = {0.0f, 0.0f, 0.0f};
 };
 
 // -- the bow's own timing, from the JS engine's ui/audio.js -----------------
@@ -318,12 +375,32 @@ inline constexpr float kRecoilPitch = 0.11f;   // radians of nose-up
 // the gun with NO magazine at all -- 30 voxels rather than 32, which is the
 // tell -- and 37-40 seat a fresh one and come back to rest.
 //
-// 1800 ms IS THE WHOLE CYCLE. Nine frames at 200 ms each, which is exactly one
-// round of fire rate per frame (kBulletIntervalMs), so a reload costs nine
-// shots of time and is felt. The frames are STEPPED off that clock, like the
-// bow's draw: a frame is picked rather than tweened, so it reads as drawn art.
-// See HeldItem::model.
-inline constexpr float kReloadMs = 1800.0f;
+// 900 ms IS THE WHOLE CYCLE -- nine frames at 100 ms each. The frames are
+// STEPPED off that clock, like the bow's draw: a frame is picked rather than
+// tweened, so it reads as drawn art. See HeldItem::model.
+//
+// IT WAS 1800 (user 2026-09-18: "double the reload speed of the assault
+// rifle"). The old number was chosen so a frame lasted exactly one round of
+// fire rate (kBulletIntervalMs, 200 ms) and a reload cost nine shots of time.
+// That relationship is deliberately gone: half a fire-rate interval a frame
+// now, and a reload costs four and a half shots. Worth knowing because it is
+// the kind of tie that gets quietly restored by somebody tidying up.
+inline constexpr float kReloadMs = 900.0f;
+// -- ...AND THE REVOLVER'S, WHICH IS ITS OWN NUMBER ----------------------
+//
+// (user 2026-09-18: "the pistol animation is way too slow. increase it by 4x".)
+//
+// 450 ms, and it USED TO BE WRITTEN AS kReloadMs * 0.25f because that is the
+// arithmetic the ask was phrased in. It is spelled out now, because the two
+// guns were re-timed separately the moment the rifle was asked for on its own
+// -- derived, halving the rifle would have silently halved the pistol to
+// 225 ms as well, and nothing would have said so.
+//
+// IT IS PER ROUND, NOT PER RELOAD. See Tool::reloadRounds: the pistol loads one
+// chamber a turn and turns once per empty chamber, so a full six is 2.7 s of
+// animation -- which is why the cycle itself had to get short. At 1800 it would
+// have been eleven seconds.
+inline constexpr float kPistolReloadMs = 450.0f;
 
 // -- AND IT OVERSHOOTS ON THE WAY UP (user 2026-09-07) ----------------------
 //
@@ -799,6 +876,13 @@ class HeldItem {
         t.path = voxPath;
         const int m = world.addHeldModel(voxPath, &t.sx, &t.sy, &t.sz, selfMergeTol);
         if (m < 0) return false;
+        // THE BOX'S OWN MIDDLE, which is what muzzle() used to take for
+        // everything. Right for a model that fills its box, and nothing here
+        // is a strip -- a gun goes through addGun, which measures instead.
+        t.tipLo[0] = t.tipHi[0] = 0.5f * float(t.sx);
+        t.tipLo[1] = t.tipHi[1] = 0.5f * float(t.sy);
+        t.tipLo[2] = 0.0f;
+        t.tipHi[2] = float(t.sz);
         t.models.push_back(m);
         tools_.push_back(t);
         return true;
@@ -1018,7 +1102,20 @@ class HeldItem {
                 // conifer=false, exactly as addHeldVox does -- the two
                 // have to agree or the reservation stores a needle and
                 // the load asks for a seed.
-                world.palette.forModelColor(c, /*conifer=*/false, /*exact=*/true);
+                // -- AND THE ID IS RECORDED, WHICH IT WAS NOT ---------------
+                //
+                // heldMtl_ is the mask World::buildLevelPalette reserves out
+                // of the ARCADE's own table, because the kit walks through [O]
+                // with you and one id has to mean one thing in both places.
+                // It was only ever written by addHeldVox -- the LOAD -- and
+                // the load happens after the arcade has already minted, so the
+                // mask read empty and the arcade reserved nothing: measured at
+                // "reserved 0 held-kit entries". It survived on luck, because
+                // the arcade allocates top-down from 254 and the wood had only
+                // reached 183. Recorded HERE instead, where the ids are minted
+                // and before anything else asks for one.
+                world.noteHeldMtl(world.palette.forModelColor(c, /*conifer=*/false,
+                                                              /*exact=*/true));
             }
         };
         for (const std::string &p : toolPaths) {
@@ -1384,6 +1481,86 @@ class HeldItem {
     }
 
     // -----------------------------------------------------------------------
+    // HOW MANY LEADING FRAMES ARE THE ACTION OPENING rather than a round going
+    // in. See Tool::reloadLead for what it is for.
+    //
+    // THE ROUND IS THE MEASUREMENT. It is a piece of matter the gun does not
+    // own, so the first frame holding MORE voxels than the rest pose is the
+    // first frame of the loading, and everything between the rest pose and it
+    // is the action travelling. On the pistol's ten frames that is four: 00 is
+    // the gun closed, 01 and 02 have the cylinder half out, 03 has it out, and
+    // 04 is where the round first appears under the frame.
+    //
+    // RETURNS 0 IF NOTHING EVER GAINS A VOXEL, which is a strip this rule has
+    // no opinion about -- and 0 is the un-split cycle the code had before.
+    // Capped one short of the end so a split always leaves a loading phase.
+    // -----------------------------------------------------------------------
+    static int measureLead(const std::vector<VoxModel> &frames) {
+        if (frames.size() < 2) return 0;
+        const int rest = countVox(frames[0]);
+        for (size_t i = 1; i < frames.size(); ++i)
+            if (countVox(frames[i]) > rest) return mini(int(i) - 1, int(frames.size()) - 2);
+        return 0;
+    }
+    static int countVox(const VoxModel &m) {
+        int n = 0;
+        for (int z = 0; z < m.sz; ++z)
+            for (int y = 0; y < m.sy; ++y)
+                for (int x = 0; x < m.sx; ++x)
+                    if (m.at(x, y, z)) ++n;
+        return n;
+    }
+
+    // -----------------------------------------------------------------------
+    // WHERE THE TWO ENDS OF A MODEL ACTUALLY ARE, in the box's own voxels.
+    //
+    // (user 2026-09-18: "the bullets seem to come from 1 voxel underneath the
+    // tip of the guns point".)
+    //
+    // Walks in from each end of the DEPTH axis to the first slice with anything
+    // in it, and takes the centre of that slice's occupied cells across the
+    // other two. So for a gun: the middle of the barrel where the barrel stops,
+    // and the middle of the stock where the stock stops -- not the middle of
+    // whatever box the strip needed.
+    //
+    // THE DEPTH TERM IS THE OUTER FACE of that slice, which is why the two ends
+    // are not symmetric: the low end's face is at the slice, the high end's is
+    // one past it.
+    //
+    // A VoxModel IS Z-UP, so its y is the depth (Tool::sz) and its z is the
+    // height (Tool::sy) -- the same swap toWorldWhole makes. Getting that the
+    // other way round puts the muzzle out of the side of the gun.
+    // -----------------------------------------------------------------------
+    static void measureTips(const VoxModel &m, Tool *t) {
+        if (!t) return;
+        // The box's middle, which is what every non-gun keeps.
+        t->tipLo[0] = t->tipHi[0] = 0.5f * float(m.sx);
+        t->tipLo[1] = t->tipHi[1] = 0.5f * float(m.sz);
+        t->tipLo[2] = 0.0f;
+        t->tipHi[2] = float(m.sy);
+        for (int dir = 0; dir < 2; ++dir) {
+            for (int step = 0; step < m.sy; ++step) {
+                const int y = dir ? (m.sy - 1 - step) : step;
+                double ax = 0.0, az = 0.0;
+                int n = 0;
+                for (int z = 0; z < m.sz; ++z)
+                    for (int x = 0; x < m.sx; ++x)
+                        if (m.at(x, y, z)) {
+                            ax += double(x) + 0.5;
+                            az += double(z) + 0.5;
+                            ++n;
+                        }
+                if (!n) continue;
+                float *o = dir ? t->tipHi : t->tipLo;
+                o[0] = float(ax / double(n));
+                o[1] = float(az / double(n));
+                o[2] = dir ? float(y + 1) : float(y);
+                break;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // A GUN: ONE REST POSE WITH A RELOAD CYCLE BEHIND IT.
     //
     // (user 2026-09-18: "there are animations for the reload cycle. look in the
@@ -1411,7 +1588,8 @@ class HeldItem {
     // -----------------------------------------------------------------------
     bool addGun(World &world, const char *name, const std::string &voxPath,
                 const std::string &reloadDir, const HeldPose &pose, int selfMergeTol = 0,
-                const HeldPose *adsPose = nullptr) {
+                const HeldPose *adsPose = nullptr, float reloadMs = kReloadMs,
+                int reloadRounds = 0) {
         std::string err;
         std::vector<VoxModel> frames(1);
         if (!voxLoad(voxPath, &frames[0], &err)) {
@@ -1455,6 +1633,11 @@ class HeldItem {
             t.adsPose = *adsPose;
         }
         t.path = voxPath;
+        t.reloadMs = reloadMs;
+        t.reloadRounds = reloadRounds;
+        // AFTER fitStrip, so the numbers are in the SHARED box the pose is
+        // measured against -- see measureTips and HeldItem::muzzle.
+        measureTips(frames[0], &t);
         for (size_t f = 0; f < frames.size(); ++f) {
             // EXACTLY, because foldStrip has already done the merging -- see
             // its note. Passing the tolerance on here would fold every frame a
@@ -1466,9 +1649,13 @@ class HeldItem {
             t.models.push_back(i);
         }
         t.reloadFrames = int(frames.size()) - 1;
+        // WHERE THE OPENING STOPS AND THE ROUND STARTS -- see Tool::reloadLead
+        // for why this is measured off the art rather than written down, and
+        // why only a gun that loads round by round is split at all.
+        t.reloadLead = reloadRounds > 0 ? measureLead(frames) : 0;
         tools_.push_back(t);
-        std::printf("v2: gun %s  %d reload frames, %dx%dx%d\n", voxPath.c_str(), t.reloadFrames,
-                    t.sx, t.sy, t.sz);
+        std::printf("v2: gun %s  %d reload frames (%d opening), %dx%dx%d\n",
+                    voxPath.c_str(), t.reloadFrames, t.reloadLead, t.sx, t.sy, t.sz);
         std::fflush(stdout);
         return true;
     }
@@ -1801,21 +1988,149 @@ class HeldItem {
     // update()'s impact return, and for the same reason: "is it finished" asked
     // every frame of a flag that stays set would refill the magazine for ever.
     // -----------------------------------------------------------------------
-    bool startReload() {
+    // -- ...AND IT MAY TAKE SEVERAL TURNS OF THE STRIP -------------------
+    //
+    // (user 2026-09-18: "it needs to play multiple times depending on how many
+    // shots have been powered. its a standard revolver with 6 rounds.")
+    //
+    // `cycles` IS HOW MANY TIMES THE ANIMATION RUNS, and the caller works it
+    // out because the caller is the one holding the magazine -- see
+    // App::reloadGun, which asks for one turn per empty chamber. A gun with a
+    // magazine asks for one.
+    //
+    // reloadDone() THEN FIRES ONCE PER ROUND rather than once per reload, which
+    // is what makes a revolver a revolver: a round goes in, the count beside
+    // the hand steps up, and the loading frames start again. The clock is
+    // ADVANCED rather than reset -- reloadT0_ += ms -- so six rounds take
+    // exactly six passes however the frames fall.
+    //
+    // -- ...AND THE ACTION STAYS OPEN ACROSS ALL OF THEM ------------------
+    //
+    // (user 2026-09-18: "the reload needs to stay open as it cycles through
+    // the bullets. it currently closes the chamber everytime it reloads 1
+    // bullet.")
+    //
+    // WHICH IS WHY THE CYCLE HAS PHASES AND NOT JUST TURNS. The strip's
+    // leading frames are the cylinder swinging OUT (Tool::reloadLead), so
+    // restarting the strip per round restarts from the gun CLOSED -- the
+    // chamber slamming shut and flying open again between every round. The
+    // opening is played once, the loading frames are what repeats, and the
+    // opening backwards is the close. One swing out, one swing in, six rounds.
+    //
+    // A GUN WITH NO LEAD NEVER LEAVES Loading, and that phase is then the whole
+    // strip -- so a magazine change is one pass of everything, byte for byte
+    // the cycle this replaced.
+    bool startReload(int cycles = 1) {
         if (reloading_ || !ready()) return false;
         reloading_ = true;
         reloadT0_ = nowMs_;
+        reloadLeft_ = maxi(1, cycles);
+        reloadPhase_ = reloadLeadFrames() > 0 ? RPhase::Opening : RPhase::Loading;
         return true;
     }
     bool reloading() const { return reloading_; }
-    float reloadAmount() const {
-        return reloading_ ? clampf(float((nowMs_ - reloadT0_) / double(kReloadMs)), 0.0f, 1.0f)
-                          : 0.0f;
+    // How long ONE PASS OF THE WHOLE STRIP takes for whatever is in the hand.
+    // Still the tool's own `reloadMs`, unchanged: what the phases divide up is
+    // this number, so the drawn frames keep the pace they were authored at.
+    float reloadCycleMs() const {
+        if (!ready()) return kReloadMs;
+        const float ms = tools_[size_t(sel_)].reloadMs;
+        return ms > 1.0f ? ms : kReloadMs;
     }
+    // -- THE PHASES ARE MEASURED IN FRAMES, NOT IN FRACTIONS OF A CYCLE ----
+    //
+    // ONE FRAME TAKES THE SAME TIME IN ALL THREE, which is the whole of the
+    // pacing: 450 ms over ten frames is 45 ms each, so the pistol's opening is
+    // 4 x 45, each round is 6 x 45, and the close is 4 x 45 again. A full six
+    // is then 44 frames rather than 60 -- the animation stopped repeating the
+    // part that was wrong, and got shorter by exactly that part.
+    int reloadLeadFrames() const {
+        if (!ready()) return 0;
+        const Tool &t = tools_[size_t(sel_)];
+        return t.reloadFrames > 1 ? mini(maxi(t.reloadLead, 0), t.reloadFrames - 1) : 0;
+    }
+    float reloadFrameMs() const {
+        const int n = ready() ? tools_[size_t(sel_)].reloadFrames : 0;
+        return n > 0 ? reloadCycleMs() / float(n) : reloadCycleMs();
+    }
+    // How long the phase that is running now lasts.
+    float reloadPhaseMs() const {
+        const int lead = reloadLeadFrames();
+        const int n = ready() ? tools_[size_t(sel_)].reloadFrames : 0;
+        const int frames = reloadPhase_ == RPhase::Loading ? maxi(1, n - lead) : maxi(1, lead);
+        return float(frames) * reloadFrameMs();
+    }
+    // How far through THAT phase, 0..1.
+    float reloadAmount() const {
+        if (!reloading_) return 0.0f;
+        const double ms = double(reloadPhaseMs());
+        return ms > 0.0 ? clampf(float((nowMs_ - reloadT0_) / ms), 0.0f, 1.0f) : 1.0f;
+    }
+    // -- TRUE ON THE FRAME A ROUND ARRIVES, and on no other ----------------
+    //
+    // The opening and the close pass through here too and answer FALSE: they
+    // are the gun moving, not the magazine filling, and a caller that loaded on
+    // either would put a round in before the cylinder was out. The loop is for
+    // the phases that load nothing -- a hitch long enough to swallow the whole
+    // opening must still arrive at the first round, not sit on the boundary
+    // for a frame. Every branch either advances a phase or returns, so it ends.
     bool reloadDone() {
-        if (!reloading_ || nowMs_ - reloadT0_ < double(kReloadMs)) return false;
-        reloading_ = false;
-        return true;
+        if (!reloading_) return false;
+        for (;;) {
+            const double ms = double(reloadPhaseMs());
+            if (ms > 0.0 && nowMs_ - reloadT0_ < ms) return false;
+            reloadT0_ += ms;
+            if (reloadPhase_ == RPhase::Opening) {
+                reloadPhase_ = RPhase::Loading;
+                continue;
+            }
+            if (reloadPhase_ == RPhase::Closing) {
+                reloading_ = false;
+                return false;
+            }
+            // A ROUND IS IN. Stay in Loading while there are chambers left --
+            // that is the strip's loading frames playing again, from a gun that
+            // is already open.
+            if (--reloadLeft_ > 0) return true;
+            if (reloadLeadFrames() > 0) reloadPhase_ = RPhase::Closing;
+            else reloading_ = false;
+            return true;
+        }
+    }
+    // ...and how many rounds are still to come, so a caller can tell the last
+    // one from the rest without counting them itself. ZERO WHILE IT CLOSES,
+    // which is the difference between "the gun is busy" (reloading()) and
+    // "more rounds are coming" -- the badge has stopped moving by then.
+    int reloadLeft() const { return reloading_ ? reloadLeft_ : 0; }
+    // -- WHICH FRAME OF THE STRIP IS ON SCREEN, 0-BASED --------------------
+    //
+    // model() ASKS THIS RATHER THAN WORKING IT OUT, so a log and the hand hold
+    // the same gun -- a diagnostic that computes the frame a second time can
+    // agree with itself while disagreeing with the render, which is the one
+    // thing it exists not to do. -1 when nothing is reloading.
+    //
+    // THE CLOSE IS THE OPENING BACKWARDS, and that is the whole of it: the art
+    // has no closing frames because it needs none -- a cylinder coming in is
+    // one going out with the clock reversed. It ends on the strip's first
+    // frame, which is the gun shut, which is the rest pose model() falls back
+    // to a frame later.
+    int reloadStrip() const {
+        if (!reloading_ || !ready()) return -1;
+        const Tool &t = tools_[size_t(sel_)];
+        if (t.reloadFrames <= 0) return -1;
+        const int lead = reloadLeadFrames();
+        const int span = reloadPhase_ == RPhase::Loading ? maxi(1, t.reloadFrames - lead)
+                                                        : maxi(1, lead);
+        const int step = mini(span - 1, int(reloadAmount() * float(span)));
+        if (reloadPhase_ == RPhase::Opening) return step;
+        if (reloadPhase_ == RPhase::Closing) return maxi(0, lead - 1 - step);
+        return lead + step;
+    }
+    const char *reloadPhaseName() const {
+        if (!reloading_) return "rest";
+        return reloadPhase_ == RPhase::Opening   ? "opening"
+               : reloadPhase_ == RPhase::Closing ? "closing"
+                                                 : "loading";
     }
     // THE HAND CHANGING CANCELS IT, exactly as it cancels a bite -- see
     // cancelEat. A reload half played on a gun you have scrolled away from
@@ -1881,10 +2196,28 @@ class HeldItem {
         const Vec3 colX(hx.m[0], hx.m[3], hx.m[6]);
         const Vec3 colY(hx.m[1], hx.m[4], hx.m[7]);
         const Vec3 colZ(hx.m[2], hx.m[5], hx.m[8]);
-        const Vec3 mid = Vec3(hx.tx, hx.ty, hx.tz) + colX * (0.5f * float(t.sx)) +
-                         colY * (0.5f * float(t.sy));
-        const Vec3 a2 = mid;
-        const Vec3 b2 = mid + colZ * float(t.sz);
+        // -- THE BARREL, NOT THE MIDDLE OF THE BOX -------------------------
+        //
+        // (user 2026-09-18: "the bullets seem to come from 1 voxel underneath
+        // the tip of the guns point".)
+        //
+        // AND IT IS EXACTLY ONE VOXEL, WHICH IS THE PADDING. This used to take
+        // the box's own middle -- 0.5 * sx, 0.5 * sy -- which is the right
+        // point only for a model that fills its box. A gun does not: its frames
+        // share a box sized to the WHOLE STRIP (see fitStrip), and the rifle's
+        // is two rows deeper than the gun because the magazine drops out of the
+        // bottom during the reload. So the box's middle sits a voxel below the
+        // gun, and the round left from under the barrel.
+        //
+        // MEASURED OFF THE REST POSE INSTEAD, at load: `tipLo` and `tipHi` are
+        // the centre of the first non-empty SLICE from each end of the depth
+        // axis, in box voxels, with the depth of that slice's outer face. That
+        // is the barrel's own tip whatever the box around it is doing, and it
+        // is right for the pistol too, whose box is a row longer than the gun
+        // at one end because a reload frame reaches further.
+        const Vec3 base(hx.tx, hx.ty, hx.tz);
+        const Vec3 a2 = base + colX * t.tipLo[0] + colY * t.tipLo[1] + colZ * t.tipLo[2];
+        const Vec3 b2 = base + colX * t.tipHi[0] + colY * t.tipHi[1] + colZ * t.tipHi[2];
         const Vec3 eye(cam.pos.x, cam.pos.y, cam.pos.z);
         *out = lengthSq(a2 - eye) > lengthSq(b2 - eye) ? a2 : b2;
         return true;
@@ -1929,11 +2262,11 @@ class HeldItem {
         // is actually full. Rounding would give the first and last frames half
         // a slice each, which is a reload that starts and ends on a flicker.
         if (reloading_ && t.reloadFrames > 0) {
-            const float k =
-                clampf(float((nowMs_ - reloadT0_) / double(kReloadMs)), 0.0f, 1.0f);
-            const size_t f =
-                size_t(mini(t.reloadFrames - 1, int(k * float(t.reloadFrames))));
-            return t.models[1 + f < t.models.size() ? 1 + f : 0];
+            // THE PHASE'S OWN CLOCK, and reloadT0_ is the start of the phase
+            // that is running -- so this line never has to know how many rounds
+            // are left, only which third of the strip it is in.
+            const size_t i = size_t(1 + reloadStrip());
+            return t.models[i < t.models.size() ? i : 0];
         }
         if (!t.bow || bowFrames_ <= 0) return t.models[0];
 
@@ -2364,6 +2697,16 @@ class HeldItem {
     // and "finished long ago" are the same timestamp. See startReload.
     bool reloading_ = false;
     double reloadT0_ = -1.0e9;
+    // ROUNDS STILL TO GO IN. One turn for a magazine, one per empty chamber
+    // for a revolver -- see startReload.
+    int reloadLeft_ = 0;
+    // WHICH THIRD OF THE STRIP IS ON SCREEN. Opening runs once, Loading runs
+    // once per round, Closing runs the opening backwards -- see reloadPhase_'s
+    // own note in reloadDone, and Tool::reloadLead for why a strip is three
+    // things. A gun with no lead never leaves Loading, which is one phase for
+    // the whole cycle and is what a magazine change already was.
+    enum class RPhase { Opening, Loading, Closing };
+    RPhase reloadPhase_ = RPhase::Loading;
     // ...and how far up to the eye an aimable tool has travelled -- 0 at the
     // hip, 1 down the sights. Eased in update(); see Tool::ads.
     float ads_ = 0.0f;

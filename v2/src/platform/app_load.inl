@@ -109,6 +109,10 @@
                 // AFTER THE DEM, ALWAYS -- loadCover is handed the terrain's
                 // shrink, so a cover loaded first would be indexed at 1:1 and
                 // put every tree in the wrong place.
+                // BEFORE loadCover, because the ground ramp below is only
+                // published into the palette when the imagery is trusted for
+                // the ground -- see VoxelTerrain::coverGround.
+                world_.terrain.coverGround = opt_.coverGround;
                 if (!opt_.coverPath.empty()) {
                     if (world_.terrain.loadCover(opt_.coverPath)) {
                         const CoverField &cv = world_.terrain.cover();
@@ -116,7 +120,14 @@
                         // renders flat 170-grey until the table is uploaded
                         // again, and that failure looks like the ramp was never
                         // set at all.
-                        world_.palette.setGroundBand(cv.ramp(), CoverField::kRamp);
+                        // ...AND ONLY IF THE GROUND IS THE PICTURE'S. The ramp is
+                        // built from the window's bare-ground pixels, so under
+                        // --cover-water it would paint mat::GROUND_0..9 with
+                        // colours nothing is ever going to ask for -- and on a
+                        // window the classifier misreads, those ten entries are
+                        // the lavender the rock came out as.
+                        if (opt_.coverGround)
+                            world_.palette.setGroundBand(cv.ramp(), CoverField::kRamp);
                         printf("[cover] %s  %dx%d  ground ramp #%02x%02x%02x .. #%02x%02x%02x\n",
                                opt_.coverPath.c_str(), cv.w(), cv.h(),
                                cv.ramp()[0], cv.ramp()[1], cv.ramp()[2],
@@ -649,6 +660,7 @@
             std::fflush(stdout);
         }
 
+
         // -- and what is in the air (render/butterflies.h) -------------------
         //
         // AFTER the world, and it has to be: the models go into the same
@@ -740,6 +752,33 @@
             // Printed unconditionally, and on the OFFLINE path too. It used to
             // sit inside the held-model branch, which --out deliberately does
             // not take, so a headless render could not see the number at all.
+            // -- AND NOW THE ARCADE'S OWN TABLE, WHICH HAS TO BE LAST --------
+            //
+            // (user 2026-09-18: "cant you give me seperate tables? one palete
+            // table for the sandbox world and one for the arcade with the fps
+            // maps".)
+            //
+            // AFTER EVERY LOADER IN THE PROGRAM, and that is not tidiness. The
+            // arcade allocates its own 255 entries TOP-DOWN from 254, and the
+            // one thing it may not reuse is an id that carries BEHAVIOUR in
+            // the wood, because `h.mtl` is a raw uint8 and none of the tests
+            // that read it can be told which table is in force. Three sets
+            // qualify and all three are recorded through World::noteHeldMtl:
+            //
+            //   * the HELD KIT -- you carry it through [O] (prewarmColors).
+            //   * the PARTICLE materials -- spark, ember red and smoke are in
+            //     V6Params::emitters, and an arcade colour that lands on one
+            //     of those ids GLOWS. That is not a guess; see the note in
+            //     Particles::load for the cliff face it lit up.
+            //   * the firefly's glow, for the same reason.
+            //
+            // The first of those is known at line 631 and the other two are
+            // not known until here, which is what decides the position of this
+            // call. Being last costs the arcade nothing -- it is not competing
+            // with anybody for entries any more, which is the whole point of
+            // it having a table.
+            world_.prepareLevelPalette();
+
             {
                 const int used = world_.palette.used();
                 const int lost = world_.palette.overflowedColors();
@@ -1399,18 +1438,47 @@
             //   y  the rifle's body sits at the TOP of its box, one voxel above
             //      its centre; the pistol fills its box, so it needs that voxel
             //      back: -4.5 + 1 = -3.5.
-            //   z  a 0.8 m pistol rather than a 1.1 m rifle. Held so its near
-            //      end is where the rifle's is (0.36 m from the eye), which is
-            //      a centre at 7.6.
+            //   z  THE RIFLE'S OWN DEPTH, 9.135, AND THAT IS THE ANSWER TO "IS
+            //      IT THE SAME VOXEL SIZE" (user 2026-09-18: "can you make sure
+            //      the pistol is the same voxel size as the assault rifle").
+            //
+            //      IT ALWAYS WAS, in the only sense the pose can express it:
+            //      `scale` is 1.000 on both, and HeldItem::xform builds the
+            //      instance from `pose.scale * VOXEL_M`, so one model voxel is
+            //      one world voxel -- 10 cm -- for both guns and for every
+            //      other thing in the kit.
+            //
+            //      WHAT WAS DIFFERENT WAS THE DISTANCE, and on screen that is
+            //      indistinguishable from a scale. The first cut put the pistol
+            //      at 7.600 so its grip sat where the rifle's stock does; 15 cm
+            //      nearer the eye is 20% more angle per voxel, so the same-sized
+            //      voxels drew bigger. Held at the rifle's own depth they
+            //      measure the same, which is what was asked. The pistol is
+            //      SHORTER, so its muzzle now stops 30 cm short of where the
+            //      rifle's does -- that is the gun being a different gun rather
+            //      than a different size.
             //
             // Tune it live on [K] and use the copy-pose row, exactly as the
             // rifle's and the hoe's were baked.
-            static const HeldPose kPistolAds{0.000f, -2.600f, 6.500f,
+            // SHIPPED AT THE USER'S OWN BAKE (2026-09-18, off the [K] card):
+            // {-1.000f, -2.933f, 8.000f}. Both terms moved off the derived
+            // number -- the sight sits LEFT of the pistol's centreline where
+            // the rifle's is on it, and a third of a voxel lower.
+            static const HeldPose kPistolAds{-1.000f, -2.933f, 8.000f,
                                              0.000f, -1.571f, 0.000f, 1.000f};
             pistolTool_ = held_.count();
+            // -- ...AND IT LOADS LIKE A REVOLVER ---------------------------
+            //
+            // (user 2026-09-18: "its a standard revolver with 6 rounds".)
+            //
+            // The last two arguments are the whole of it: ONE TURN of the strip
+            // takes kPistolReloadMs and loads ONE round, so the gun plays it
+            // once per empty chamber. The rifle takes the defaults -- 1800 ms,
+            // and 0 meaning "this turn loads the magazine".
             if (!held_.addGun(world_, "pistol", opt_.pistol, opt_.pistolReload,
-                              HeldPose{6.250f, -3.500f, 7.600f, 0.000f, -1.571f, 0.000f, 1.000f},
-                              HeldItem::kGunMergeTol, &kPistolAds))
+                              HeldPose{6.250f, -3.500f, 9.135f, 0.000f, -1.571f, 0.000f, 1.000f},
+                              HeldItem::kGunMergeTol, &kPistolAds, kPistolReloadMs,
+                              /*reloadRounds=*/1))
                 pistolTool_ = -1;
             // -- THE BULB, RIGHT AFTER THE RIFLE ---------------------------
             //

@@ -36,6 +36,10 @@
             for (char &c : verb) c = char(tolower((unsigned char)c));
             if (verb != "locate") return {};
             pool.push_back("water");
+            // FIRST, matching the order runCommand resolves them in -- a
+            // completion list that ranks names differently from the parser is
+            // how you end up Tab-completing to something you cannot reach.
+            for (const World::LevelMap &m : world_.levelMaps()) pool.push_back(m.name);
             for (const BiomeName &bn : biomeNames()) pool.push_back(bn.name);
             for (const PoiIndex::Poi &p : poi_.all()) pool.push_back(p.name);
             for (const LifeName &ln : lifeNames()) pool.push_back(ln.name);
@@ -88,6 +92,32 @@
 
         if (verb == "locate") {
             if (arg.empty()) return locateMenu("locate what?");
+            // ------------------------------------------ A MAP IN THE ARCADE
+            //
+            // (user 2026-09-18: "I want to be able to type /locate (map name)
+            // for example.")
+            //
+            // FIRST, AND THAT ORDERING IS THE ONE JUDGEMENT HERE. A map name is
+            // authored in the voxelizer and a biome or an animal is not, so a
+            // map is the only kind of name a person can COLLIDE with by naming
+            // a map "oak" -- and if they do, they meant the map. Everything
+            // below this is unreachable only for a name somebody deliberately
+            // made ambiguous.
+            //
+            // IT ALSO WALKS YOU THROUGH THE DOOR. The maps are a separate world
+            // (see World::setLevel), so "take me to the canyon" from the wood
+            // has to do what [O] does first -- including saving where you were,
+            // or leaving by [O] later drops you at the origin, underground.
+            // That is app_input.inl's note and this is the same trap.
+            if (const World::LevelMap *m = world_.findLevelMap(arg)) {
+                if (!enterLevelAt(*m))
+                    return std::string("the arcade has no geometry built -- run "
+                                       "tools/voxelize_arcade.py");
+                char buf[160];
+                std::snprintf(buf, sizeof(buf), "%s -- %.0f x %.0f m", m->name.c_str(),
+                              float(m->x1 - m->x0) * VOXEL_M, float(m->z1 - m->z0) * VOXEL_M);
+                return std::string(buf);
+            }
             // WATER IS NOT A BIOME, so it is not a row in that table -- it is
             // a feature of the landform inside one. Handled before the band
             // loop, and it works in a pinned world too, unlike the bands.
@@ -144,18 +174,92 @@
             }
             for (const BiomeName &bn : biomeNames()) {
                 if (arg != bn.name && arg != bn.alias) continue;
-                // --birch and --pine pin the world to one wood, so there is no
-                // other band to travel to. Say so rather than teleporting to a
-                // place that is the same as this one.
-                if (world_.terrain.forced) {
-                    return std::string("the world is pinned to one wood "
-                                       "(--birch / --pine / --oak) -- restart without it to "
-                                       "walk between them");
+                // -- A PINNED WORLD STILL HAS THE WOOD IT IS PINNED TO -------
+                //
+                // (user 2026-09-18: "make sure /locate birch still works
+                // teleporting".)
+                //
+                // THE REFUSAL WAS RIGHT FOR THE OTHER TWO AND WRONG FOR THIS
+                // ONE, and the difference is which wood was asked for. --birch
+                // pins the world to birch, so "walk to the pine" genuinely has
+                // nowhere to go and saying so is the honest answer. "Walk to
+                // the birch" is then a request for a wood that is under your
+                // feet and everywhere else as well -- refusing it is refusing
+                // to do something trivially possible, and it is what --acadia
+                // would have broken: that world is pinned to birch as its
+                // ORDINARY state rather than as a debugging flag, and the
+                // player has ten kilometres of island to be taken across.
+                if (world_.terrain.forced && world_.terrain.biome != bn.biome) {
+                    // -- AND THE REPLY HAS TO NAME A FLAG THAT EXISTS --------
+                    //
+                    // (user 2026-09-18: "/locate birch does not work. make it
+                    // work.")
+                    //
+                    // THE DEFAULT WORLD IS PINNED AND NOBODY TYPED A FLAG TO
+                    // PIN IT. `pineOnly` is TRUE by default -- "pine is the
+                    // whole world now", 2026-09-17 -- so the old reply told the
+                    // player to "restart without it" when there was no `it` on
+                    // their command line to remove. Correct about the world and
+                    // useless as an instruction, which is indistinguishable
+                    // from the command being broken.
+                    //
+                    // WHAT ACTUALLY PUTS THAT WOOD IN REACH is one of three
+                    // flags, and the right one depends on what was asked for,
+                    // so the reply names them rather than describing the state.
+                    std::string m = std::string("no ") + bn.name + " in this world -- it is " +
+                                    world_.terrain.woodName(pos_.x) +
+                                    " everywhere. restart with --all-woods for the three "
+                                    "bands, or --" + bn.name + " for a world of it";
+                    // The birch has a whole island of its own now.
+                    if (bn.biome == Biome::Birch) m += ", or --acadia";
+                    return m;
                 }
-                const float tx = nearestBandX(bn.biome);
-                teleportTo(tx, pos_.z);
-                char buf[160];
-                std::snprintf(buf, sizeof(buf), "%s forest -- %.0f, %.0f", bn.name, tx, pos_.z);
+                // -- A PINNED WORLD GOES TO A STAND, NOT TO A BAND -----------
+                //
+                // (user 2026-09-18: "/locate birch does not work. make it
+                // work.")
+                //
+                // See nearestStand. The band centre is a real coordinate and in
+                // a pinned world it is a meaningless one -- every x is birch,
+                // so the jump lands in a wood identical to the one it left and
+                // the command reads as doing nothing. This takes the player to
+                // where the trees are THICK, at least kStandMinM away so the
+                // arrival is somewhere else, and says how far it was.
+                float tx = nearestBandX(bn.biome), tz = pos_.z;
+                bool stand = false;
+                if (world_.terrain.forced) stand = nearestStand(&tx, &tz);
+                // -- AND IT HAS TO LAND ON THE DATA --------------------------
+                //
+                // A band repeats every 2400 m and a DEM window is finite --
+                // Acadia is 10 km -- so the nearest band centre can sit outside
+                // it, where heightM holds the border sample and the ground is
+                // flat for ever. That is a legal teleport onto a featureless
+                // plain, and from inside the game it looks exactly like the
+                // terrain failing to load.
+                //
+                // 200 m of margin so the arrival still has a view disc of real
+                // ground around it rather than a horizon of held edge.
+                // (nearestStand already clamps its own candidates.)
+                if (world_.terrain.usingDem() && !stand) {
+                    const float half = maxf(0.0f, 0.5f * world_.terrain.dem().spanX() - 200.0f);
+                    tx = clampf(tx, -half, half);
+                }
+                const float was[2] = {pos_.x, pos_.z};
+                teleportTo(tx, tz);
+                char buf[200];
+                // THE REPLY SAYS HOW FAR IT WENT, and that is not decoration:
+                // in a world that is one wood from edge to edge, the distance
+                // is the only part of the answer the player cannot see out of
+                // the window.
+                const float moved = std::hypot(pos_.x - was[0], pos_.z - was[1]);
+                if (world_.terrain.forced)
+                    std::snprintf(buf, sizeof(buf), "%s forest -- %.0f, %.0f, %.0f m away%s",
+                                  bn.name, pos_.x, pos_.z, moved,
+                                  stand ? " (the thickest stand near you)"
+                                        : " (the whole world is this wood)");
+                else
+                    std::snprintf(buf, sizeof(buf), "%s forest -- %.0f, %.0f", bn.name, tx,
+                                  pos_.z);
                 return std::string(buf);
             }
             // ---- ...AND THE LIFE ------------------------------------------
@@ -170,11 +274,20 @@
                           world_.terrain.woodName(pos_.x));
             return std::string(buf);
         }
-        if (verb == "help")
+        if (verb == "help") {
+            std::string maps;
+            for (const World::LevelMap &m : world_.levelMaps())
+                maps += (maps.empty() ? "" : ", ") + m.name;
             return std::string("/locate <place|biome|water>   /where   "
-                               "ENTER runs and closes   ESC cancels\n"
-                               "/locate <animal> takes you to the nearest one:\n") +
-                   lifeList("  ", 7);
+                               "ENTER runs and closes   ESC cancels\n") +
+                   (maps.empty() ? std::string()
+                                 : "/locate <map> walks you into the arcade: " + maps + "\n") +
+                   "/locate <animal> takes you to the nearest one:\n" + lifeList("  ", 7) +
+                   // The crop is found the same way and is not an animal --
+                   // see lifeList's own note on why it is listed apart.
+                   "\n/locate <fruit> takes you to the nearest one hanging:\n" +
+                   lifeList("  ", 7, true);
+        }
         return std::string("unknown command '" + verb + "' -- try /help");
     }
 

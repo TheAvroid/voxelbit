@@ -56,6 +56,147 @@
         return wet * (closure < 0.0f ? 0.0f : (closure > 1.0f ? 1.0f : closure));
     }
 
+    // -----------------------------------------------------------------------
+    // IS THERE WATER HERE, AND HOW FAR.
+    //
+    // ONE QUESTION, TWO WORLDS. On the measured ground the imagery knows where
+    // the lakes are and `CoverField::waterDistance` rings out to find one; on
+    // the invented landform there is no imagery at all and a lake is whatever
+    // `lakeColumn` says it is. `usingCover()` is the only thing that tells
+    // them apart, and a spawn picker that asked the cover alone would silently
+    // accept anywhere at all on the `--no-dem` path -- every candidate would
+    // come back "no water to fail on".
+    //
+    // RINGS OUTWARD AND STOPS AT THE FIRST HIT, which is waterDistance's own
+    // shape: a shore costs a handful of lookups and open ground costs the
+    // sweep. The step is coarse (8 m) because this is a gate, not a
+    // measurement -- the exact distance only has to be good enough to rank.
+    // -----------------------------------------------------------------------
+    float waterWithin(float x, float z, float maxM) const {
+        const VoxelTerrain &t = world_.terrain;
+        if (t.usingCover()) return t.cover().waterDistance(x, z, maxM);
+        TerrainMemo memo;
+        auto wet = [&](float px, float pz) {
+            const int vi = int(floorf(px / VOXEL_M)), vj = int(floorf(pz / VOXEL_M));
+            int wy = 0;
+            return t.lakeColumn(vi, vj, memo, &wy);
+        };
+        if (wet(x, z)) return 0.0f;
+        for (float r = 8.0f; r <= maxM; r += 8.0f) {
+            const int n = maxi(8, int(6.2831853f * r / 8.0f));
+            for (int k = 0; k < n; ++k) {
+                const float a = float(k) * (6.2831853f / float(n));
+                if (wet(x + cosf(a) * r, z + sinf(a) * r)) return r;
+            }
+        }
+        return maxM;
+    }
+
+    // -----------------------------------------------------------------------
+    // STAGE ONE OF A SPAWN: A BIOME AT RANDOM, AND A SHORE INSIDE IT.
+    //
+    // (user 2026-09-19: "currently the player spawns in the same spot
+    // everytime. instead have the player spawn at different locations that
+    // have water. pick a biome at random.")
+    //
+    // WHY THERE ARE TWO STAGES AT ALL. The search below this was never random
+    // in the way it looked: it drew 512 points from a 30..400 m ring around
+    // opt_.camX/camZ and took the best, and 512 points in a 0.5 km2 disc is
+    // dense enough that the best one is the SAME clearing whatever the seed.
+    // Measured with tests/spawn_probe.cpp over twenty seeds: mean pairwise
+    // distance 212 m, closest pair 1 m, and all twenty in the birch. That is
+    // the report, exactly.
+    //
+    // FIRST HIT, NOT BEST. This stage samples the whole window and takes the
+    // first point that qualifies. Taking the best instead would be a search
+    // for one global optimum, and two seeds that both find it land in the same
+    // clearing -- measured, that first cut put two of twenty launches one
+    // metre apart. First-hit has no optimum to converge on: the same twenty
+    // seeds came out with the closest pair 645 m away.
+    //
+    // WATER IS A GATE HERE, not the soft penalty it is in the scoring below.
+    // That penalty only ever expressed a preference, so a seed whose disc held
+    // no water still spawned -- "spawn near water" producing a spawn nowhere
+    // near it is a bug this file already carries one note about.
+    //
+    // WHAT THE SECOND STAGE IS FOR is unchanged and is the reason this one
+    // stops at "somewhere in the right wood, beside water": openness, sunlight
+    // and not-on-scree are what make a spawn pleasant rather than merely
+    // legal, and none of that was ever the problem.
+    // -----------------------------------------------------------------------
+    static constexpr float kSpawnWaterM = 60.0f;
+
+    bool pickShoreAnchor(uint32_t seed, float *outX, float *outZ, uint8_t *outWood) const {
+        const VoxelTerrain &t = world_.terrain;
+
+        // -- WHICH WOOD ------------------------------------------------------
+        // A pinned world has one and rolling over three would spend most of
+        // its samples looking for bands that are not there.
+        uint8_t woods[3] = {kWoodPine, kWoodBirch, kWoodOak};
+        int nW = 3;
+        if (t.forced) {
+            woods[0] = (t.biome == Biome::Birch)  ? kWoodBirch
+                       : (t.biome == Biome::Oak) ? kWoodOak
+                                                 : kWoodPine;
+            nW = 1;
+        }
+        const uint8_t want = woods[int(hashUnit(seed + 7u, 0u) * float(nW)) % nW];
+        if (outWood) *outWood = want;
+
+        // THE DEM WINDOW, WITH THE 200 m OF MARGIN /locate ALREADY USES. A
+        // window is finite and heightM holds the border sample outside it, so
+        // a spawn past the edge is a spawn on a featureless plain that looks
+        // exactly like the terrain having failed to load.
+        const float halfX =
+            t.usingDem() ? maxf(0.0f, 0.5f * t.dem().spanX() - 200.0f) : 3000.0f;
+        const float halfZ =
+            t.usingDem() ? maxf(0.0f, 0.5f * t.dem().spanZ() - 200.0f) : 3000.0f;
+
+        // -- TWO PASSES, AND THE SECOND ONE DROPS THE WATER ------------------
+        //
+        // GIVING UP HERE IS WORSE THAN A DRY SPAWN, and it is not obvious
+        // until you follow what "false" costs. The caller falls back to
+        // opt_.camX/camZ, which on the DEM path is a lakeside coordinate in
+        // REAL metres divided by the shrink -- fine -- and on `--no-dem` is
+        // that same pair UNDIVIDED, (-12173, 8026), fourteen kilometres out on
+        // an invented landform that has no window at all. The old code never
+        // showed this because its non-DEM ring was centred on the ORIGIN and
+        // practically always found something to keep.
+        //
+        // So a window with no shore in the rolled wood gets a spawn in that
+        // wood anyway. Dry and in the right forest beats beside a lake in the
+        // wrong one, and both beat fourteen kilometres from anywhere.
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool wantWater = (pass == 0);
+            for (uint32_t i = 0; i < 4096; ++i) {
+                // A DIFFERENT STREAM PER PASS, or the second pass re-walks the
+                // first one's points in the same order and its first keeper is
+                // whatever the water gate rejected first -- which is a spot
+                // chosen by the gate it just stopped applying.
+                const float x = -halfX + 2.0f * halfX * hashUnit(seed + 11u + uint32_t(pass) * 4u, i);
+                const float z = -halfZ + 2.0f * halfZ * hashUnit(seed + 13u + uint32_t(pass) * 4u, i);
+                if (!(t.woodBit(x) & want)) continue;
+                // The same two hard gates the scoring loop opens with -- well
+                // clear of the shore rather than merely out of the water, and
+                // off the scree. Asked here so a doomed anchor is never handed
+                // on.
+                const float h = t.heightM(x, z);
+                if (h < t.waterAt(x) + 5.0f) continue;
+                const int ci = int(floorf(x / VOXEL_M)), cj = int(floorf(z / VOXEL_M));
+                const int slope = maxi(absi(t.heightVox(ci + 1, cj) - t.heightVox(ci - 1, cj)),
+                                       absi(t.heightVox(ci, cj + 1) - t.heightVox(ci, cj - 1)));
+                if (slope >= VoxelTerrain::kTreeSlope) continue;
+                const float d = waterWithin(x, z, kSpawnWaterM);
+                if (d < 2.0f) continue;   // that is the lake itself, either pass
+                if (wantWater && d >= kSpawnWaterM) continue;
+                *outX = x;
+                *outZ = z;
+                return true;
+            }
+        }
+        return false;
+    }
+
     void chooseSpawn() {
         uint32_t seed = opt_.spawnSeed;
         if (seed == 0) {
@@ -70,6 +211,40 @@
         const VoxelTerrain &t = world_.terrain;
         float bestX = opt_.camX, bestZ = opt_.camZ;
         bool found = false;
+
+        // -- STAGE ONE: WHERE TO LOOK ----------------------------------------
+        //
+        // A FLAG THAT NAMES A PLACE WINS. --acadia, --ouachita, --lake, --peak
+        // and --front each set camX/camZ to a spot scored over their own
+        // window and each of them means take me THERE; roaming would turn all
+        // five into "somewhere else" while still printing a happy spawn line.
+        // See Options::camPlace.
+        //
+        // AND A FAILED ROLL FALLS BACK TO THE OLD ANCHOR rather than to the
+        // world origin, which on measured ground is a specific spot in
+        // Colorado that nobody chose. A window with no shore in the rolled
+        // wood is not a crash, it is a window -- --no-cover on an invented
+        // landform can be exactly that -- and the spawn is still a spawn.
+        //
+        // -- AND A ROLL THAT LANDS ON BARE GROUND IS RE-ROLLED ---------------
+        //
+        // Stage one only promises a shore in the right wood; whether there is
+        // a GLADE within 400 m of it is the ring's question, and on rocky
+        // high ground the answer is no. Measured with tests/spawn_probe.cpp:
+        // two launches in twenty found nothing inside the openness band and
+        // fell back to the anchor -- which is a legal spawn on bare scree with
+        // a lake 41 m away, and reads as the picker having given up. One spot
+        // like that was rendered to check, and it is: no trees, no glade, the
+        // reply saying "nothing better found".
+        //
+        // THE ANCHOR IS THE CHEAP HALF, so re-rolling it is what to do about
+        // that -- three tries takes the 10% to about one launch in a thousand.
+        // Each attempt salts the seed so it draws a different anchor AND a
+        // different ring; re-running the same two streams would find the same
+        // nothing three times.
+        float anchorX = opt_.camX, anchorZ = opt_.camZ;
+        uint8_t rolled = 0;
+        bool roamed = false;
 
         // -- HOW OPEN IS IT, AND IS THE OPENING FACING THE SUN --------------
         //
@@ -141,83 +316,114 @@
         // in a wood as often as not: a band admits the thick end of itself just
         // as readily as the thin end.
         float bestScore = 1e9f;
+        // THE FALLBACK IS THE ANCHOR, which stage one already proved is
+        // standable, off the scree and beside water. It used to be
+        // opt_.camX/camZ -- fine when the ring was centred there and a
+        // coordinate from another world once it was not.
         float anyX = opt_.camX, anyZ = opt_.camZ, anyScore = 1e9f;
 
-        for (uint32_t i = 0; i < 512; ++i) {
-            // A disc, sampled with a square root so the points are spread over
-            // the AREA rather than piled up near the middle.
-            // ------------------------------------ SEARCH AROUND THE SPAWN
-            // This ring used to be centred on the WORLD ORIGIN, which on an
-            // invented landform is as good a place as any -- every direction
-            // looks the same. On measured ground it is a specific spot in
-            // Colorado that nobody chose, and it threw the search kilometres
-            // away from the lakeside point opt_.camX/camZ names. The radius
-            // shrinks with it: 3 km of wander is how you leave the shore.
-            const bool anchored = t.usingDem();
-            const float rMin = anchored ? 30.0f : 200.0f;
-            const float rMax = anchored ? 400.0f : 3000.0f;
-            const float cx = anchored ? opt_.camX : 0.0f;
-            const float cz = anchored ? opt_.camZ : 0.0f;
-            const float r = rMin + (rMax - rMin) * sqrtf(hashUnit(seed + 1u, i));
-            const float a = hashUnit(seed + 2u, i) * 6.2831853f;
-            const float x = cx + r * cosf(a), z = cz + r * sinf(a);
+        for (uint32_t attempt = 0; attempt < 3 && !found; ++attempt) {
+            const uint32_t sd = seed + attempt * 0x9E37u;
+            if (!opt_.camPlace) {
+                roamed = pickShoreAnchor(sd, &anchorX, &anchorZ, &rolled);
+                // A window with no shore in the rolled wood will not grow one on
+                // the next try, so there is nothing to re-roll for.
+                if (!roamed) break;
+            }
+            // THE FIRST ATTEMPT'S ANCHOR IS THE FALLBACK. Once the ring below
+            // has scored anything at all, anyScore is set and this stops
+            // firing -- so a run where no attempt finds a glade keeps the
+            // first anchor, which stage one already proved is standable and
+            // beside water.
+            if (anyScore > 1e8f) {
+                anyX = anchorX;
+                anyZ = anchorZ;
+            }
 
-            const float h = t.heightM(x, z);
-            // WELL CLEAR OF THE SHORE, not merely out of the water. topMaterial
-            // paints a sand band for the first 3.4 m above the waterline, so a
-            // spawn a metre up is a spawn on a beach -- which is the one part
-            // of this world with no trees in it and the last place to open a
-            // forest in.
-            // Asked per candidate rather than hoisted: the waterline is per
-            // band now, and a spawn search ranges far enough to cross one.
-            if (h < t.waterAt(x) + 5.0f) continue;
-
-            const int ci = int(floorf(x / VOXEL_M)), cj = int(floorf(z / VOXEL_M));
-            const int slope = maxi(absi(t.heightVox(ci + 1, cj) - t.heightVox(ci - 1, cj)),
-                                   absi(t.heightVox(ci, cj + 1) - t.heightVox(ci, cj - 1)));
-            if (slope >= VoxelTerrain::kTreeSlope) continue;  // scree, not ground
-
-            // WATER IS PART OF THE SCORE NOW, not a hope. openness() alone
-            // picks a sunlit clearing and does not care whether it can see a
-            // lake -- which is why "spawn near water" produced a spawn nowhere
-            // near water even with the coordinates measured off the shore.
-            // Lower is better here, so distance is a penalty; beyond kWantM it
-            // stops mattering and openness decides again.
-            float score = openness(x, z);
-            if (t.usingCover()) {
-                // A SHORE, NOT A SWIM. Penalising distance alone drove every
-                // seed to distance ZERO -- standing in Cheesman. The depth
-                // guard above could not catch it either: it asks waterAt(),
-                // which is the PROCEDURAL waterline and is unset on the DEM
-                // path, so a lake the imagery knows about is invisible to it.
+            for (uint32_t i = 0; i < 512; ++i) {
+                // A disc, sampled with a square root so the points are spread over
+                // the AREA rather than piled up near the middle.
+                // ------------------------------------ SEARCH AROUND THE ANCHOR
+                // This ring used to be centred on the WORLD ORIGIN, which on an
+                // invented landform is as good a place as any -- every direction
+                // looks the same. On measured ground it is a specific spot in
+                // Colorado that nobody chose, and it threw the search kilometres
+                // away from the lakeside point opt_.camX/camZ names. The radius
+                // shrinks with it: 3 km of wander is how you leave the shore.
                 //
-                // Anything inside kWantM is equally good, so the openness term
-                // still chooses between shoreline sites rather than being
-                // overridden by a metre of distance.
-                const float kWantM = 40.0f;
-                const float d = t.cover().waterDistance(x, z, kWantM * 3.0f);
-                if (d < 2.0f) continue;               // that is the lake itself
-                score += 0.9f * minf(1.0f, maxf(0.0f, d - kWantM) / kWantM);
+                // AND THE CENTRE IS STAGE ONE'S NOW, not opt_.camX/camZ. That is
+                // the whole of what made every launch land in one clearing: the
+                // ring was fine, it was only ever asked around ONE point. It stays
+                // TIGHT even when nothing anchored it -- the 200..3000 m arm is
+                // gone, because a shore anchor is a place worth staying near and
+                // three kilometres of wander is how you leave it.
+                const float r = 30.0f + 370.0f * sqrtf(hashUnit(sd + 1u, i));
+                const float a = hashUnit(sd + 2u, i) * 6.2831853f;
+                const float x = anchorX + r * cosf(a), z = anchorZ + r * sinf(a);
+                // AND IT STAYS IN THE WOOD THAT WAS ROLLED. A band is 800 m wide
+                // and this ring reaches 400, so an anchor near a band edge can
+                // hand back a glade in the NEXT wood -- which is harmless to stand
+                // in and makes "pick a biome at random" false. The anchor is
+                // itself in the band, so there is always something left to pick.
+                if (roamed && !(t.woodBit(x) & rolled)) continue;
+
+                const float h = t.heightM(x, z);
+                // WELL CLEAR OF THE SHORE, not merely out of the water. topMaterial
+                // paints a sand band for the first 3.4 m above the waterline, so a
+                // spawn a metre up is a spawn on a beach -- which is the one part
+                // of this world with no trees in it and the last place to open a
+                // forest in.
+                // Asked per candidate rather than hoisted: the waterline is per
+                // band now, and a spawn search ranges far enough to cross one.
+                if (h < t.waterAt(x) + 5.0f) continue;
+
+                const int ci = int(floorf(x / VOXEL_M)), cj = int(floorf(z / VOXEL_M));
+                const int slope = maxi(absi(t.heightVox(ci + 1, cj) - t.heightVox(ci - 1, cj)),
+                                       absi(t.heightVox(ci, cj + 1) - t.heightVox(ci, cj - 1)));
+                if (slope >= VoxelTerrain::kTreeSlope) continue;  // scree, not ground
+
+                // WATER IS PART OF THE SCORE NOW, not a hope. openness() alone
+                // picks a sunlit clearing and does not care whether it can see a
+                // lake -- which is why "spawn near water" produced a spawn nowhere
+                // near water even with the coordinates measured off the shore.
+                // Lower is better here, so distance is a penalty; beyond kWantM it
+                // stops mattering and openness decides again.
+                float score = openness(x, z);
+                if (t.usingCover()) {
+                    // A SHORE, NOT A SWIM. Penalising distance alone drove every
+                    // seed to distance ZERO -- standing in Cheesman. The depth
+                    // guard above could not catch it either: it asks waterAt(),
+                    // which is the PROCEDURAL waterline and is unset on the DEM
+                    // path, so a lake the imagery knows about is invisible to it.
+                    //
+                    // Anything inside kWantM is equally good, so the openness term
+                    // still chooses between shoreline sites rather than being
+                    // overridden by a metre of distance.
+                    const float kWantM = 40.0f;
+                    const float d = t.cover().waterDistance(x, z, kWantM * 3.0f);
+                    if (d < 2.0f) continue;               // that is the lake itself
+                    score += 0.9f * minf(1.0f, maxf(0.0f, d - kWantM) / kWantM);
+                }
+                // Kept whatever happens, so a seed that finds nothing ideal still
+                // spawns somewhere sensible rather than at the world origin.
+                if (score < anyScore) {
+                    anyScore = score;
+                    anyX = x;
+                    anyZ = z;
+                }
+                // TOO THICK is a wall of trunks to wake up in. TOO OPEN is a bald
+                // patch, which is not the wood this engine is for -- the point is
+                // to open in sunlight AMONG trees, not away from them.
+                if (score > 0.45f || score < 0.20f) continue;
+                if (score >= bestScore) continue;
+                // LAST, because it is the expensive one -- see the note over it.
+                if (!sunlit(x, z, h)) continue;
+                bestScore = score;
+                bestX = x;
+                bestZ = z;
+                found = true;
             }
-            // Kept whatever happens, so a seed that finds nothing ideal still
-            // spawns somewhere sensible rather than at the world origin.
-            if (score < anyScore) {
-                anyScore = score;
-                anyX = x;
-                anyZ = z;
-            }
-            // TOO THICK is a wall of trunks to wake up in. TOO OPEN is a bald
-            // patch, which is not the wood this engine is for -- the point is
-            // to open in sunlight AMONG trees, not away from them.
-            if (score > 0.45f || score < 0.20f) continue;
-            if (score >= bestScore) continue;
-            // LAST, because it is the expensive one -- see the note over it.
-            if (!sunlit(x, z, h)) continue;
-            bestScore = score;
-            bestX = x;
-            bestZ = z;
-            found = true;
-        }
+        }   // ...and try another anchor if this one had no glade near it
         if (!found) {
             bestX = anyX;
             bestZ = anyZ;
@@ -226,9 +432,21 @@
 
         opt_.camX = bestX;
         opt_.camZ = bestZ;
-        std::printf("  spawn    %.1f, %.1f  openness %.2f%s  (--spawn %u to come back here)\n",
-                    bestX, bestZ, double(bestScore), found ? "" : " -- nothing better found",
-                    unsigned(seed));
+        // -- AND THE LINE SAYS WHICH WOOD IT ROLLED --------------------------
+        //
+        // The one thing a spawn line could never answer was "why am I here
+        // again", and with a biome now being CHOSEN it is the first thing to
+        // check when a run looks wrong. It prints the wood UNDERFOOT rather
+        // than the bit that was rolled -- the loop keeps the two the same, so
+        // a line that disagrees with the roll is a report about the loop
+        // rather than a reassuring echo of the roll.
+        std::printf("  spawn    %.1f, %.1f  the %s wood  openness %.2f%s  "
+                    "(--spawn %u to come back here)\n",
+                    bestX, bestZ, t.woodName(bestX), double(bestScore),
+                    found ? "" : " -- nothing better found", unsigned(seed));
+        if (!roamed && !opt_.camPlace)
+            std::printf("  spawn    no shore found in the rolled wood -- fell back to the "
+                        "window's own anchor\n");
         std::fflush(stdout);
         if (world_.terrain.usingCover()) {
             const float d = world_.terrain.cover().waterDistance(opt_.camX, opt_.camZ, 400.0f);

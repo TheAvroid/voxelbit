@@ -65,6 +65,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>    // the arcade's .maps sidecar -- see loadLevelMaps
+#include <sstream>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -384,7 +386,7 @@ constexpr int kBunnySlots = 10;   // >= kBunnyCount, and >= 4 for the editor
 // means is "an animal that walks a strip of frames along the ground", which is
 // exactly what both of them do.
 //
-// FORTY, AND THE POPULATION IS THIRTY-THREE. A reservation is not a population,
+// FORTY, AND THE POPULATION IS TWENTY-NINE. A reservation is not a population,
 // and raising a count must not cost a structure rebuild -- which is exactly
 // what it just did cost when the four mammals went from two to six (see the
 // note over kBunnyCount: at two, the median distance to the nearest one was
@@ -392,6 +394,12 @@ constexpr int kBunnySlots = 10;   // >= kBunnyCount, and >= 4 for the editor
 // the next raise without this number moving again. The relationship is checked
 // at compile time where the counts live -- see the static_assert over
 // Bunnies::publishSkunks.
+//
+// IT FELL FROM 33 TO 29 ON 2026-09-18 ("cut the land mammals across biomes by
+// 25%") and this number did NOT follow it down, for the reason in the first
+// half of this note: shrinking a band costs a structure rebuild to change your
+// mind, and a mammal count that has been 2, then 6, then 5 inside four days is
+// the clearest argument there is for leaving the margin where it is.
 constexpr int kMarchSlots = 40;
 // ...AND THE BEES, which are the first thing in this band that belongs to a
 // PLACEMENT rather than to the ground: a bee exists because a beehive does, and
@@ -1697,6 +1705,17 @@ class World {
     const ref<Buffer> &instanceBuffer() const { return instanceInfo_; }
     const ref<Buffer> &materialBuffer() const { return materials_; }
 
+    // -- THIS ENTRY IS WORN BY SOMETHING YOU CARRY THROUGH [O] --------------
+    //
+    // The mask World::buildLevelPalette reserves out of the ARCADE's own
+    // table: one id has to mean one thing in the wood and in a map, and the
+    // held kit is the only thing drawn in both. Called by
+    // HeldItem::prewarmColors as it mints, which is before the arcade asks for
+    // anything -- see the note there for what reading it too late looked like.
+    void noteHeldMtl(uint8_t id) {
+        if (id != mat::AIR) heldMtl_[size_t(id)] = 1;
+    }
+
     // What the kept volumes cost, per kind. Reported at load rather than
     // guessed: the rocks are upscaled twice and are the whole budget.
     void reportVolumes() const {
@@ -2016,6 +2035,11 @@ class World {
         // axe in your hand comes out wearing a wall. Recorded here, where the
         // ids are in hand, rather than inferred later from the models --
         // World::buildLevelPalette only has to read the mask.
+        // ...AND HeldItem::prewarmColors WRITES IT TOO, through noteHeldMtl,
+        // because THAT is what runs before the arcade mints. This loop is
+        // still right and still needed -- a model loaded outside the prewarm
+        // list lands here and nowhere else -- but it is no longer the only
+        // writer, and it is no longer the FIRST one.
         for (int e = 1; e <= 255; ++e)
             if (used[size_t(e)] && idOfEntry[size_t(e)] != mat::AIR)
                 heldMtl_[size_t(idOfEntry[size_t(e)])] = 1;
@@ -2961,28 +2985,60 @@ class World {
         uploadMaterials();
     }
 
-    // -- WHICH TABLE THE DEVICE IS HOLDING ----------------------------------
+    // -- TWO TABLES IN ONE BUFFER, AND NOTHING IS EVER SWAPPED --------------
     //
-    // The wood's, or the level's -- see Palette::beginLevelTable. Swapped at
-    // the door by setLevel and nowhere else, because the two places are never
-    // in the acceleration structure together and one upload is 255 entries.
+    // (user 2026-09-18: "cant you give me seperate tables? one palete table
+    // for the sandbox world and one for the arcade with the fps maps".)
     //
-    // EVERY OTHER CALLER OF THIS STILL WORKS. A model loaded while the level is
-    // open would re-upload the level's table, which is correct: it is the table
-    // in force. Nothing loads models in there today.
+    // THE WOOD'S mat::COUNT ENTRIES ARE THE LOWER HALF AND THE LEVEL'S ARE THE
+    // UPPER HALF. Both go up together, every time, from every caller this
+    // function already had. Which half a ray reads is `V6Params::matBase` --
+    // 0 in the wood, mat::COUNT in the level -- one uint in a constant buffer
+    // that is rewritten every frame anyway. The material id in the mesh stays
+    // a uint8 and nothing about the geometry, the BLAS or the collider changes.
+    //
+    // THIS IS THE THIRD ATTEMPT AT A PER-PLACE TABLE AND THE FIRST THAT WORKS,
+    // for one reason: it does not do the thing the other two did. Both of
+    // those kept a single 255-entry buffer and SWAPPED ITS CONTENTS at the
+    // door -- once by rebuilding the buffer, once by updating it in place --
+    // and neither ever reached the screen. That was measured hard at the time:
+    // entry 243 was forced to pure magenta, the upload printed (1,0,1) going
+    // in, the level's mesh really did carry id 243 on 552,327 voxels, and the
+    // map still rendered in the WOOD's colours. Nobody found out why, and this
+    // does not need anybody to: THERE IS NO SWAP. The buffer is written with
+    // both tables in it by the same start-up calls that always wrote it, and
+    // the door does not touch it.
+    //
+    // WHY IT IS SAFE TO GIVE THE LEVEL A WHOLE TABLE: the wood is not in the
+    // acceleration structure while the level is open (see setLevel), so the
+    // two can never disagree on screen about what entry 243 means.
     void uploadMaterials() {
-        const std::vector<MaterialLook> &src =
-            (levelTableActive_ && palette.hasLevelTable()) ? palette.levelTable() : palette.table();
-        std::vector<V6Material> mats(src.size());
-        for (size_t i = 0; i < mats.size(); ++i) {
-            const MaterialLook &m = src[i];
-            mats[i].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
-            mats[i].roughness = m.roughness;
-            mats[i].specular = m.specular;
-            mats[i].translucency = m.translucency;
-            mats[i].alpha = m.alpha;
+        const std::vector<MaterialLook> &wood = palette.table();
+        const size_t half = wood.size();
+        std::vector<V6Material> mats(half * 2);
+        auto put = [&](size_t dst, const MaterialLook &m) {
+            mats[dst].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
+            mats[dst].roughness = m.roughness;
+            mats[dst].specular = m.specular;
+            mats[dst].translucency = m.translucency;
+            mats[dst].alpha = m.alpha;
             // See V6Material::ior -- 0 for everything that is not the smoke.
-            mats[i].ior = m.ior;
+            mats[dst].ior = m.ior;
+        };
+        const bool haveLevel = palette.hasLevelTable();
+        for (size_t i = 0; i < half; ++i) {
+            put(i, wood[i]);
+            // -- AN ENTRY THE LEVEL NEVER MINTED IS THE WOOD'S, AND LIVE -----
+            //
+            // Not the frozen copy beginLevelTable took. Everything drawn in
+            // BOTH places has to agree: the held kit that walks through the
+            // door with you, the fixed mat:: band the map borrows for its
+            // lawns, the wood's flower models that dressLevel stamps into it.
+            // Reading the wood's CURRENT entry wherever the level did not mint
+            // one makes all of that agree by construction, and leaves the two
+            // halves differing in exactly the places the level paid for.
+            put(half + i, (haveLevel && palette.levelOwns(uint8_t(i))) ? palette.levelTable()[i]
+                                                                       : wood[i]);
         }
         // -- IN PLACE IF IT CAN BE, AND IT ALWAYS CAN ------------------------
         //
@@ -2995,13 +3051,11 @@ class World {
         //
         // It went unnoticed for as long as it did because every previous caller
         // ran while the world was loading, before the tracer had bound
-        // anything. Swapping the level's table at the door is the first caller
-        // that does not, and the symptom was the map rendering in the WOOD's
-        // colours: concrete came out at the wood's entry 243, which is a red.
-        // The host print said the level's table had been uploaded, and it had.
+        // anything.
         //
-        // The table is mat::COUNT entries whichever place is open, so the
-        // capacity never changes and the update is a straight overwrite.
+        // The buffer is 2 * mat::COUNT entries from the first upload onward --
+        // the capacity never changes with what is in it, so the update is
+        // always a straight overwrite and the in-place branch always wins.
         const uint32_t n = uint32_t(mats.size());
         if (materials_ && materials_->getElementCount() == n) {
             ctx_->updateBuffer(materials_.get(), mats.data(), 0, n * sizeof(V6Material));
@@ -8748,49 +8802,35 @@ class World {
             if (levelBlocks_.empty()) return false;   // nothing to travel to
         }
         level_ = on;
-        // -- A PER-PLACE MATERIAL TABLE WAS TRIED HERE AND DOES NOT WORK YET --
+        // -- THE PER-PLACE MATERIAL TABLE IS LIVE, AND THIS IS NOT WHERE IT --
         //
         // (user 2026-09-17: "surely we can have multiple color paletes for
-        // multiple worlds?" -- and the idea is right. The wood is not in the
-        // acceleration structure while the level is open, so the two can never
-        // disagree on screen about what entry 243 means.)
+        // multiple worlds?", then 2026-09-18: "cant you give me seperate
+        // tables? one palete table for the sandbox world and one for the
+        // arcade with the fps maps".)
         //
-        // WHAT WAS BUILT: Palette::beginLevelTable / forLevelColor, a second
-        // 255-entry table allocated top-down over the entries the level does
-        // not share, with the fixed mat:: band, the held kit and the wood's
-        // flower models reserved out of it. World::buildLevelPalette still
-        // builds it -- that half works and the numbers were right: 13 colours
-        // into the level's own table with 121 free, and the WOOD dropped from
-        // 255 of 255 (the wheat losing two of its colours) to 245.
+        // TWO ATTEMPTS BEFORE THIS ONE SWAPPED THE DEVICE'S TABLE HERE, at the
+        // door, and neither ever reached the screen -- see uploadMaterials,
+        // which carries what was measured. The third does not swap anything:
+        // the buffer holds BOTH tables at once and `World::matBase()` picks a
+        // half. So there is nothing to do here, and that is the fix.
         //
-        // WHAT DOES NOT WORK is getting the device to read it. Swapping
-        // materials_ here -- by in-place update AND by rebuilding the buffer --
-        // changes nothing on screen. MEASURED, so nobody has to measure it
-        // again:
+        // What DOES still have to happen at the door is the TLAS rebuild, and
+        // matBase is read from `level_` by the tracer every frame -- so this
+        // assignment above is the whole of the switch.
         //
-        //   * the level's mesh really does carry the level's ids: id 243 is
-        //     552,327 voxels of it (histogram in buildLevelBlas).
-        //   * the table really is uploaded: entry 243 was forced to pure
-        //     MAGENTA and uploadMaterials printed (1.000,0.000,1.000) going in.
-        //   * nothing on screen was magenta, and the map kept rendering in the
-        //     WOOD's colours at those ids.
-        //
-        // AND THE STRONGEST CLUE CAME AFTERWARDS, from a different bug: the
-        // level's entries were ALSO invisible on the shared table until
-        // buildLevelPalette was made to call uploadMaterials itself (see the
-        // note there). So an upload from buildLevelPalette LANDS and an upload
-        // from here, one call later in the same start-up, does NOT. That is
-        // where to start -- not in the palette, but in what is different about
-        // this call site. gMaterials is bound per frame from materialBuffer()
-        // at three sites in tracer.h.
-        //
-        // UNTIL THEN THE LEVEL ALLOCATES OUT OF THE WOOD'S TABLE, as it always
-        // did -- see buildLevelPalette, which is one call away from switching
-        // back the moment the above is understood.
         rebuildTlas();
         return level_;
     }
     bool levelOn() const { return level_; }
+    // -- WHICH HALF OF gMaterials THIS PLACE READS --------------------------
+    //
+    // 0 in the wood, mat::COUNT in the level. Read by V2Tracer once a frame
+    // into V6Params::matBase; see uploadMaterials for why the two tables live
+    // in one buffer and nothing is swapped. It is derived from `level_` rather
+    // than stored, so there is no state that can disagree with which place the
+    // acceleration structure is holding.
+    uint32_t matBase() const { return level_ ? uint32_t(mat::COUNT) : 0u; }
     bool levelReady() const { return levelLoaded_; }
     static Vec3 levelOrigin() { return Vec3(kLevelAtX, kLevelAtY, kLevelAtZ); }
 
@@ -8846,6 +8886,26 @@ class World {
     // asset has no open ground anywhere near the end of it, which would mean
     // the level is not what this function was written for -- and a spawn that
     // is merely wrong is better than one that returns nothing.
+    // WHAT ROW THE ARCADE'S FLOOR IS ON -- the most common column top, because
+    // a map is mostly floor. Factored out of levelSpawn when levelMapSpawn
+    // needed the same answer: it is the one question both arrivals ask, and two
+    // copies of a histogram is two things to get wrong.
+    int levelGroundRow() const {
+        std::vector<int> hist;
+        for (int16_t v : levelColTop_) {
+            if (v <= 0) continue;
+            if (size_t(v) >= hist.size()) hist.resize(size_t(v) + 1, 0);
+            ++hist[size_t(v)];
+        }
+        int best = 0, ground = 0;
+        for (size_t i = 1; i < hist.size(); ++i)
+            if (hist[i] > best) {
+                best = hist[i];
+                ground = int(i);
+            }
+        return ground;
+    }
+
     Vec3 levelSpawn() const {
         const float spanX = float(levelAsset_.sx) * VOXEL_M;
         const float spanZ = float(levelAsset_.sz) * VOXEL_M;
@@ -8873,21 +8933,7 @@ class World {
         // the most common column top is the floor of the place, because a map
         // is mostly floor -- and "open" is that plus a metre of clutter. It is
         // right at any scale because it is not a height.
-        int ground = 0;
-        {
-            std::vector<int> hist;
-            for (int16_t v : levelColTop_) {
-                if (v <= 0) continue;
-                if (size_t(v) >= hist.size()) hist.resize(size_t(v) + 1, 0);
-                ++hist[size_t(v)];
-            }
-            int best = 0;
-            for (size_t i = 1; i < hist.size(); ++i)
-                if (hist[i] > best) {
-                    best = hist[i];
-                    ground = int(i);
-                }
-        }
+        const int ground = levelGroundRow();
         constexpr float kOpenM = 1.0f;
         const int top = ground + int(kOpenM / VOXEL_M);
         const int cx = int((idealX - kLevelAtX) / VOXEL_M);
@@ -8933,10 +8979,129 @@ class World {
     // than a guess -- App::teleportToLife is the one place that inverts it and
     // this is that line read forwards. Worth stating because the sign is not
     // obvious and the first version of this spawn faced the empty sky.
+    // -- ...AT THE MIDDLE OF THE MAP YOU LANDED IN, NOT OF THE GRID --------
+    //
+    // These were the same point while one slab filled the grid and the maps
+    // were laid along it. With the maps as ISLANDS the grid's middle is a
+    // hundred metres of open air between them, and aiming at it is aiming at
+    // nothing -- it happens to still point down nuketown today, which is
+    // exactly the kind of accident that stops being true when a map is added
+    // or the order changes. levelMapAt is the same question clampToLevel asks.
+    //
+    // The grid is still the fallback, for the one case that has no maps in it:
+    // a level asset with no .maps sidecar beside it. That is the old layout,
+    // and the old answer was right for it.
     float levelSpawnYaw() const {
         const Vec3 s = levelSpawn();
-        const float cx = kLevelAtX + float(levelAsset_.sx) * VOXEL_M * 0.5f;
-        const float cz = kLevelAtZ + float(levelAsset_.sz) * VOXEL_M * 0.5f;
+        const LevelMap *m = levelMapAt(s.x, s.z);
+        const float cx = m ? (levelMapMinX(*m) + levelMapMaxX(*m)) * 0.5f
+                           : kLevelAtX + float(levelAsset_.sx) * VOXEL_M * 0.5f;
+        const float cz = m ? (levelMapMinZ(*m) + levelMapMaxZ(*m)) * 0.5f
+                           : kLevelAtZ + float(levelAsset_.sz) * VOXEL_M * 0.5f;
+        return atan2f(cx - s.x, -(cz - s.z)) * 180.0f / PI;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE MAPS INSIDE THE ARCADE, AND WHERE EACH ONE STARTS
+    //
+    // (user 2026-09-18: "I want to be able to type /locate (map name) for
+    // example.")
+    //
+    // THE ARCADE IS ONE GRID WITH SEVERAL MAPS LAID OUT IN IT -- the engine has
+    // exactly one level asset and that has not changed -- so "which map" is a
+    // RECTANGLE of that grid and nothing more. The voxelizer knows those
+    // rectangles because it placed them, and it writes them beside the .vox as
+    // a three-line text file rather than anybody restating them here.
+    //
+    // WHY IT IS A SIDECAR AND NOT A CONSTANT: every number that describes where
+    // a map sits is decided by tools/voxelize_arcade.py -- how many maps, how
+    // big each source model came out, how far apart they stand. A constant here
+    // is a second description of that, and the two drift the first time a map
+    // is re-voxelised. The .maps file is written by the same run that writes
+    // the voxels, so it cannot be stale unless the .vox is too.
+    struct LevelMap {
+        std::string name;
+        int x0 = 0, z0 = 0, x1 = 0, z1 = 0;   // voxel bounds, half-open
+    };
+    const std::vector<LevelMap> &levelMaps() const { return levelMaps_; }
+    const LevelMap *findLevelMap(const std::string &name) const {
+        for (const LevelMap &m : levelMaps_)
+            if (m.name == name) return &m;
+        return nullptr;
+    }
+
+    // -- WHICH MAP A POSITION IS STANDING IN, OR NOTHING -------------------
+    //
+    // (user 2026-09-18: "the grey platform that shares both maps is still
+    //  there. remove it.")
+    //
+    // The maps used to sit on one slab that ran the length of the grid, so
+    // "outside a map" was still somewhere -- it was the paved walk between
+    // them. tools/voxelize_arcade.py cuts the foundation to each map's own
+    // rectangle now, so the answer here is genuinely nullptr for everything
+    // between them, and that is the air an island has around it.
+    //
+    // ASKED BY POSITION AND NOT REMEMBERED. A "current map" would have to be
+    // set by both doors ([O] and /locate), kept right across a teleport, and
+    // would be wrong for exactly as long as it was stale. The rectangles are
+    // disjoint and the fence keeps you inside the one you are in, so the
+    // position IS the answer and there is nothing to keep in step.
+    const LevelMap *levelMapAt(float wx, float wz) const {
+        const int x = int(floorf((wx - kLevelAtX) / VOXEL_M));
+        const int z = int(floorf((wz - kLevelAtZ) / VOXEL_M));
+        for (const LevelMap &m : levelMaps_)
+            if (x >= m.x0 && x < m.x1 && z >= m.z0 && z < m.z1) return &m;
+        return nullptr;
+    }
+    // ...and its edges in world metres, so no caller repeats the conversion.
+    float levelMapMinX(const LevelMap &m) const { return kLevelAtX + float(m.x0) * VOXEL_M; }
+    float levelMapMaxX(const LevelMap &m) const { return kLevelAtX + float(m.x1) * VOXEL_M; }
+    float levelMapMinZ(const LevelMap &m) const { return kLevelAtZ + float(m.z0) * VOXEL_M; }
+    float levelMapMaxZ(const LevelMap &m) const { return kLevelAtZ + float(m.z1) * VOXEL_M; }
+
+    // WHERE YOU ARRIVE IN ONE OF THEM -- levelSpawn's ring search, over that
+    // map's own rectangle instead of the whole grid. Same test for what counts
+    // as open ground and the same reason for it: see levelSpawn, which is the
+    // place that argument is written down, and which this deliberately does not
+    // duplicate any of beyond the loop itself.
+    Vec3 levelMapSpawn(const LevelMap &m) const {
+        const int cx = (m.x0 + m.x1) / 2, cz = (m.z0 + m.z1) / 2;
+        const float fx = kLevelAtX + (float(cx) + 0.5f) * VOXEL_M;
+        const float fz = kLevelAtZ + (float(cz) + 0.5f) * VOXEL_M;
+        if (levelColTop_.empty()) return Vec3(fx, kLevelAtY, fz);
+        const int ground = levelGroundRow();
+        const int top = ground + int(1.0f / VOXEL_M);
+        auto colAt = [&](int x, int z) {
+            return int(levelColTop_[size_t(x) + size_t(z) * size_t(levelAsset_.sx)]);
+        };
+        const int maxR = std::max(m.x1 - m.x0, m.z1 - m.z0) / 2;
+        for (int r = 0; r <= maxR; ++r)
+            for (int dz = -r; dz <= r; ++dz)
+                for (int dx = -r; dx <= r; ++dx) {
+                    if (r > 0 && std::abs(dx) != r && std::abs(dz) != r) continue;
+                    const int x = cx + dx, z = cz + dz;
+                    // INSIDE THIS MAP and two voxels off the grid's own edge --
+                    // the second is App::clampToLevel's fence, the first is
+                    // what makes this "locate the canyon" and not "locate
+                    // somewhere near the canyon".
+                    if (x < m.x0 + 1 || z < m.z0 + 1 || x >= m.x1 - 1 || z >= m.z1 - 1) continue;
+                    if (x < 2 || z < 2 || x >= levelAsset_.sx - 2 || z >= levelAsset_.sz - 2)
+                        continue;
+                    const int t = colAt(x, z);
+                    if (t < ground || t > top) continue;
+                    return Vec3(kLevelAtX + (float(x) + 0.5f) * VOXEL_M,
+                                kLevelAtY + float(t) * VOXEL_M,
+                                kLevelAtZ + (float(z) + 0.5f) * VOXEL_M);
+                }
+        return Vec3(fx, kLevelAtY + float(maxi(ground, 1)) * VOXEL_M, fz);
+    }
+    // ...AND FACING THE MIDDLE OF THAT MAP, on levelSpawnYaw's argument: two
+    // descriptions of one aim drift apart, so the aim is derived from the
+    // arrival rather than written beside it.
+    float levelMapYaw(const LevelMap &m) const {
+        const Vec3 s = levelMapSpawn(m);
+        const float cx = kLevelAtX + (float(m.x0 + m.x1) * 0.5f) * VOXEL_M;
+        const float cz = kLevelAtZ + (float(m.z0 + m.z1) * 0.5f) * VOXEL_M;
         return atan2f(cx - s.x, -(cz - s.z)) * 180.0f / PI;
     }
 
@@ -10296,6 +10461,65 @@ class World {
             }
     }
 
+    // -----------------------------------------------------------------------
+    // THE NEAREST APPLE, OR THE NEAREST ORANGE.
+    //
+    // (user 2026-09-19: "give me a /locate apple command along with the orange
+    // too" -- "teleports me to the nearest apple".)
+    //
+    // decorNear's sibling rather than a call to decorNear, and the two
+    // differences are both about a fruit in particular:
+    //
+    //   * KIND 6 IS BOTH FRUITS. Which one it is lives in DecorAt::index --
+    //     0 apple, 1 orange, loadFruit's own order, the same number
+    //     takeFruitAlong returns and pickFruit turns into a kit slot. decorNear
+    //     filters on the kind alone, so asking it would answer "an apple or an
+    //     orange, whichever is nearer", which is not the question.
+    //   * decorNear ANSWERS WITH THE CORNER, which its own note warns about.
+    //     /locate AIMS at what it finds, and a fruit is 40 cm hanging in a
+    //     crown: the corner puts the crosshair off its edge and, worse, at its
+    //     BASE, which is a metre of leaves. The same fix takeFruitAlong makes
+    //     -- midX/midZ, and half the model up.
+    //
+    // XZ ONLY, like every nearest() the life tables call: a fruit eight metres
+    // up the tree you are standing under must not rank behind one at head
+    // height across the clearing.
+    //
+    // A PICKED FRUIT IS NOT THERE. takeFruitAlong clears the instance mask and
+    // hiddenScatter_ keeps it clear across a re-mesh, so the mask is the one
+    // place that knows -- exactly as it is for a felled tree's hive above.
+    // -----------------------------------------------------------------------
+    bool nearestFruit(int index, const Vec3 &p, float reach, Vec3 *at) const {
+        if (fruit_.empty()) return false;
+        float best = 1e30f;
+        const float r2 = reach * reach;
+        const float span = reach + 8.0f;
+        const int x0 = floorDiv(int(floorf((p.x - span) / VOXEL_M)), CHUNK_VOX);
+        const int x1 = floorDiv(int(floorf((p.x + span) / VOXEL_M)), CHUNK_VOX);
+        const int z0 = floorDiv(int(floorf((p.z - span) / VOXEL_M)), CHUNK_VOX);
+        const int z1 = floorDiv(int(floorf((p.z + span) / VOXEL_M)), CHUNK_VOX);
+        for (int cz = z0; cz <= z1; ++cz)
+            for (int cx = x0; cx <= x1; ++cx) {
+                auto it = chunks_.find(chunkKey(cx, cz));
+                if (it == chunks_.end()) continue;
+                const Chunk &c = it->second;
+                for (size_t i = 0; i < c.decorAt.size() && i < c.decorDesc.size(); ++i) {
+                    const DecorAt &q = c.decorAt[i];
+                    if (q.kind != 6 || int(q.index) != index) continue;
+                    if (!c.decorDesc[i].instanceMask) continue;
+                    const float dx = q.midX() - p.x, dz = q.midZ() - p.z;
+                    const float d = dx * dx + dz * dz;
+                    if (d > r2 || d >= best) continue;
+                    best = d;
+                    if (at) {
+                        const ModelTemplate &mt = templateFor(6, int(q.index));
+                        *at = Vec3(q.midX(), q.y + 0.5f * float(mt.sy) * VOXEL_M, q.midZ());
+                    }
+                }
+            }
+        return best < 1e29f;
+    }
+
     // Block until the ring around the camera is fully resident. Used once at
     // startup so the first frame is not a hole in the ground.
     // -----------------------------------------------------------------------
@@ -10556,15 +10780,18 @@ class World {
     // CORNER is the right place to photograph a building from and the wrong
     // place to stand in a map. See its own note.
     //
-    // THE ASSET IS THE WHOLE .fbx voxelised at the engine's own 10 cm by
-    // tools/voxelize_nuketown.py -- 164 x 99 x 327 voxels, about 519 k
-    // triangles once meshed, seventeen colours. That tool's header carries the
-    // two decisions worth knowing about: the map is 1,374 solid boxes rather
-    // than a shell, so the cavity rule is separating a BOX's inside from a room
-    // rather than a wall seam from one; and the model has no ground outside its
-    // painted slabs, so the tool lays a foundation under the whole footprint.
-    // Without that last one this is a level you fall out of.
-    static constexpr const char *kLevelVox = "C:/voxelbit/game/assets/level/nuketown.vox";
+    // THE ASSET IS THE ARCADE, and it is more than one map now: several FPS
+    // maps laid out in ONE grid with a hundred metres of apron between them,
+    // voxelised at the engine's own 10 cm by tools/voxelize_arcade.py. Which
+    // maps, and where each one sits in the grid, is read from the .maps sidecar
+    // beside it -- see loadLevelMaps and the LevelMap struct. Nothing in the
+    // engine knows a map's name until it reads that file.
+    //
+    // That tool's header carries the decisions worth knowing about: how the
+    // cavity rule tells a solid box's inside from a room, and that these models
+    // bring no ground with them, so the tool lays a foundation under the whole
+    // footprint. Without that last one this is a level you fall out of.
+    static constexpr const char *kLevelVox = "C:/voxelbit/game/assets/level/arcade.vox";
     static constexpr float kLevelAtX = -4096.0f;
     static constexpr float kLevelAtY = 640.0f;
     static constexpr float kLevelAtZ = -4096.0f;
@@ -10575,6 +10802,8 @@ class World {
     VoxAsset levelAsset_;
     std::vector<uint8_t> levelVol_;     // global material ids, VoxAsset layout
     std::vector<int16_t> levelColTop_;
+    // The maps laid out inside that one grid -- see LevelMap and loadLevelMaps.
+    std::vector<LevelMap> levelMaps_;
     // -- THE PENDANT IN THE DARK ROOMS -- see loadLevelBulb and dressLevel ---
     //
     // The pause room's own lamp, at the path its buildRoom used.
@@ -10608,18 +10837,43 @@ class World {
     // array, and this list starts empty and is MEANT to. An initializer list
     // may be empty, so the braces below take a paste of nought entries or forty
     // without the shape of the declaration changing.
-    static std::vector<Vec3> levelBulbSeed() {
+    // -- ...AND THEY ARE RELATIVE TO THEIR MAP, NOT TO THE WORLD -------------
+    //
+    // (user 2026-09-18: "also remove the lightbulbs from the canyons map".)
+    //
+    // THEY WERE ABSOLUTE WORLD METRES AND THAT BROKE THE MOMENT A SECOND MAP
+    // ARRIVED. These eight are nuketown's house lamps, placed by hand when
+    // nuketown WAS the level and sat at the grid's own origin. Laying the
+    // arcade out moved nuketown 194 m down the grid -- and left the bake where
+    // it was, which is now the middle of the CANYON. Eight lightbulbs hanging
+    // in a desert, and nothing anywhere said so.
+    //
+    // So an entry names its MAP and gives metres from that map's own corner,
+    // at its own ground. `dressLevel` resolves it through findLevelMap, so a
+    // re-layout carries the lamps with the map they belong to and an entry for
+    // a map that is not in the arcade is simply skipped.
+    //
+    // THE PASTE STILL WORKS: App's CTRL+C writes absolute world metres, which
+    // is what the running engine knows. Convert on the way in -- subtract the
+    // map's origin -- or the next re-layout strands them again.
+    struct BulbSeed {
+        const char *map;
+        float x, y, z;      // metres from that map's corner, y above its ground
+    };
+    static std::vector<BulbSeed> levelBulbSeed() {
         return {
             // PLACED BY HAND 2026-09-17 and pasted back in from CTRL+C. Two
             // lamps a room, on two floors, in each of the two houses.
-            { -4071.75f, 645.05f, -4059.85f },
-            { -4073.05f, 645.05f, -4067.65f },
-            { -4073.45f, 649.85f, -4069.15f },
-            { -4073.05f, 649.85f, -4060.05f },
-            { -4078.25f, 645.15f, -4035.75f },
-            { -4077.85f, 650.05f, -4028.85f },
-            { -4077.55f, 650.05f, -4035.95f },
-            { -4078.05f, 645.15f, -4028.85f },
+            // Converted to map-local 2026-09-18 by subtracting the level
+            // origin and nuketown's own ground row (11 voxels = 1.10 m).
+            { "nuketown", 24.25f, 3.95f, 36.15f },
+            { "nuketown", 22.95f, 3.95f, 28.35f },
+            { "nuketown", 22.55f, 8.75f, 26.85f },
+            { "nuketown", 22.95f, 8.75f, 35.95f },
+            { "nuketown", 17.75f, 4.05f, 60.25f },
+            { "nuketown", 18.15f, 8.95f, 67.15f },
+            { "nuketown", 18.45f, 8.95f, 60.05f },
+            { "nuketown", 17.95f, 4.05f, 67.15f },
         };
     }
     // v1's FLWPATCH: how far one flower species runs before the next takes
@@ -10672,9 +10926,6 @@ class World {
     size_t levelTris_ = 0;
     bool level_ = false;
     bool levelLoaded_ = false;
-    // Whether the device is holding the LEVEL's material table rather than the
-    // wood's. Only setLevel writes it; uploadMaterials reads it.
-    bool levelTableActive_ = false;
 
     std::map<long long, Chunk> chunks_;
 
@@ -11943,8 +12194,31 @@ class World {
         // reasons that happen to agree.
         mesher_.oakBase = int(pines_.size());
         if (!terrain.forced || terrain.biome == Biome::Oak) {
+            // -- THREE OAKS, ALL THE SAME HEIGHT, AND THAT IS A DECISION -----
+            //
+            // (user 2026-09-19: "wipe the current oak trees on the field ...
+            // voxelize those files into our 10cm voxel format and put the 3
+            // trees in the oak forest biome. make sure when you voxelize oak
+            // trees, they are around 17 meters tall.")
+            //
+            // What was here was SEVEN models and they were a size LADDER --
+            // oak_1 was 3.4 x 3.2 x 2.1 m, a sapling, and oak_7 was 25.5 x 25 x
+            // 25.6 m. The picker below is a uniform hash over a species' range,
+            // so the ladder was the only source of height variety in the wood
+            // and there is no per-instance scale to replace it with. Three
+            // models cut at one height means a stand of trees that are all
+            // 17.1 m, distinguished by crown shape and the four yaws. That is
+            // what was asked for; if the wood wants saplings back, the answer
+            // is more entries in this list voxelised at other heights, not a
+            // scale in the scatter.
+            //
+            // The models come out of tools/fbx2vox.cpp; the three FBX sources
+            // are source/fbx/oak_trees/oak_tree_{1,2,3}.fbx -- same order as
+            // these .vox, and originally Oak-tree0301/0302/0303_Corona2016 --
+            // and the set they replace is parked in the asset folder beside
+            // them.
             std::vector<std::string> oaks;
-            for (int i = 1; i <= 7; ++i)
+            for (int i = 1; i <= 3; ++i)
                 oaks.push_back(oakDir + "/oak_" + std::to_string(i) + ".vox");
             loadModelSet(oaks, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
                          /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true,
@@ -12090,24 +12364,44 @@ class World {
     // OAK ONLY, and the gate is the same one loadHives uses: no model set
     // means no pass, with no second flag to keep in step.
     //
-    // THE LEAF WEARS THE OAK'S OWN CANOPY, WHICH IS WHAT stemId IS FOR.
-    // Each fruit is 19 voxels of flesh and 3 to 5 of stem and leaf, and the
-    // leaf is authored (171,178,100) -- a green that belongs to the bake
-    // rather than to this wood. Handed to stemId it is replaced by the
-    // crown's own entry instead of minting a fourth green, which is exactly
-    // what the browser engine does with `near(fj.pal[fj.nbody], OAKLEAF)`,
-    // and exactly what a flower's stem already does with the grass ramp.
+    // A FRUIT'S CROWN IS TWO THINGS: a BLADE and a STALK, and they are not
+    // the same colour. Each fruit is 19 voxels of flesh and 3 to 5 of crown;
+    // of those the apple's (1,1,3) and (0,1,4) are the stalk, authored
+    // (143,95,74), and the rest is blade, authored (178,199,107).
     //
-    // SO THE FRUIT COSTS TWO PALETTE ENTRIES, one red and one orange, and
-    // those two are the whole point of it: they are minted at tolerance 0
-    // rather than folded, because a fruit that shares an entry with
-    // something near it is a fruit you cannot see in a crown.
+    // THE BLADE WEARS THE OAK'S OWN CANOPY, WHICH IS WHAT stemId IS FOR.
+    // That green belongs to the bake rather than to this wood; handed to
+    // stemId it is replaced by the crown's own entry instead of minting a
+    // fourth green, which is exactly what the browser engine does with
+    // `near(fj.pal[fj.nbody], OAKLEAF)`, and exactly what a flower's stem
+    // already does with the grass ramp.
+    //
+    // THE STALK DOES NOT, AND THAT IS THE POINT (user 2026-09-18: "the
+    // apples stem is not brown but green"). stemId only claims a model's
+    // GREEN-DOMINANT colours, so a brown walks past it into forModelColor
+    // and mints an entry of its own -- and forModelColor classifies a
+    // non-green as bark, which is the look a stalk wants: rough, opaque, no
+    // canopy translucency. Two voxels is far under the fell collider's
+    // kFellFillFrac (9 of 64 in a 0.4 m cell), so calling them wood there
+    // cannot add a box, which is the one thing the foliage bit decides.
+    //
+    // THE SPLIT IS NOT VISIBLE FROM fruit.json -- the bake pools stalk and
+    // blade into one voxel-weighted mean and three greens outvote two
+    // browns, so it arrives olive. tools/vox_from_fruit_json.py recovers it
+    // from apple/00.vox, the same way and by the same hue rule the browser
+    // engine's assets/bow.js does. If a stem ever goes green again, that is
+    // the tool to run, not this function to change.
+    //
+    // SO THE FRUIT COSTS THREE PALETTE ENTRIES: one red, one orange, one
+    // brown. All three are minted at tolerance 0 rather than folded,
+    // because a fruit that shares an entry with something near it is a
+    // fruit you cannot see in a crown.
     void loadFruit() {
         if (!terrain.oak()) return;
-        // THE NEAREST CANOPY entry to the bake's leaf green -- not the
+        // THE NEAREST CANOPY entry to the blade's authored green -- not the
         // nearest entry, which is a different question and gave a wrong
         // answer here. See Palette::nearestFoliage for the measurement.
-        const uint8_t leaf = palette.nearestFoliage({171, 178, 100, 255});
+        const uint8_t leaf = palette.nearestFoliage({178, 199, 107, 255});
         loadModelSet({decorDir + "/fruit_apple.vox", decorDir + "/fruit_orange.vox"},
                      &fruit_, false, true, 0u, /*perches=*/false, /*upscale=*/0,
                      /*colourSink=*/nullptr, /*stemId=*/leaf ? leaf : mat::AIR,
@@ -12232,9 +12526,59 @@ class World {
     // runs never press the key. buildLevelBlas does that on arrival.
     //
     // A MISSING FILE IS A WARNING, NOT A FAILURE. The .fbx it is voxelised from
-    // is gitignored, so a fresh clone has no map until tools/voxelize_nuketown.py
+    // is gitignored, so a fresh clone has no map until tools/voxelize_arcade.py
     // is run, and refusing to start the wood over that would be absurd.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHICH MAPS ARE IN THE ARCADE -- read beside the .vox, never named here.
+    //
+    // See the LevelMap struct for why this is a sidecar. The format is one map
+    // a line, "name x0 z0 x1 z1" in VOXELS of the level grid, '#' to end of
+    // line is a comment. Written by tools/voxelize_arcade.py in the same run
+    // that writes the voxels.
+    //
+    // A MISSING FILE IS NOT AN ERROR. It means an asset built before this
+    // existed, or by hand -- /locate then has no map names to offer and
+    // everything else works exactly as it did. Saying so once is worth more
+    // than failing to load a level over it.
+    // -----------------------------------------------------------------------
+    void loadLevelMaps() {
+        levelMaps_.clear();
+        std::string path(kLevelVox);
+        const size_t dot = path.find_last_of('.');
+        if (dot != std::string::npos) path.resize(dot);
+        path += ".maps";
+        std::ifstream in(path);
+        if (!in) {
+            std::printf("  level    no %s -- /locate has no map names\n", path.c_str());
+            return;
+        }
+        std::string line;
+        while (std::getline(in, line)) {
+            const size_t hash = line.find('#');
+            if (hash != std::string::npos) line.resize(hash);
+            std::istringstream ls(line);
+            LevelMap m;
+            if (!(ls >> m.name >> m.x0 >> m.z0 >> m.x1 >> m.z1)) continue;
+            // A RECTANGLE THAT IS NOT INSIDE THE GRID IS A STALE SIDECAR, which
+            // is the one way these two files can disagree: the .maps was
+            // written for a bigger asset than the .vox beside it. Clamped and
+            // reported rather than trusted -- an out-of-range column index is
+            // a read past the end of levelColTop_.
+            m.x0 = maxi(0, mini(m.x0, levelAsset_.sx));
+            m.x1 = maxi(m.x0, mini(m.x1, levelAsset_.sx));
+            m.z0 = maxi(0, mini(m.z0, levelAsset_.sz));
+            m.z1 = maxi(m.z0, mini(m.z1, levelAsset_.sz));
+            for (char &c : m.name) c = char(tolower((unsigned char)c));
+            if (m.x1 > m.x0 && m.z1 > m.z0) levelMaps_.push_back(m);
+        }
+        std::printf("  level    %d map(s):", int(levelMaps_.size()));
+        for (const LevelMap &m : levelMaps_)
+            std::printf(" %s (%.0f x %.0f m)", m.name.c_str(), float(m.x1 - m.x0) * VOXEL_M,
+                        float(m.z1 - m.z0) * VOXEL_M);
+        std::printf("\n");
+    }
+
     bool loadLevel() {
         if (levelLoaded_) return true;
         VoxModel mo;
@@ -12249,6 +12593,7 @@ class World {
             std::fprintf(stderr, "v2: level %s composed to nothing\n", kLevelVox);
             return false;
         }
+        loadLevelMaps();
 
         // -- THE COLOURS ARE NOT ALLOCATED HERE ANY MORE ---------------------
         //
@@ -12265,22 +12610,23 @@ class World {
         // they were freed at the end of this function before.
         levelPal_ = mo.pal;
         levelLoaded_ = true;
-        // -- AND ITS COLOURS ARE TAKEN NOW, NOT AFTER THE KIT ----------------
+        // -- AND ITS COLOURS ARE TAKEN AFTER THE KIT, NOT HERE ---------------
         //
-        // This was deferred to App start-up while the level had a palette TABLE
-        // of its own: that table may not reuse an entry the held kit wears, and
-        // the kit's ids are not known until it has loaded. The table is gone
-        // (see World::setLevel) and the reason went with it.
+        // THIS HAS BEEN BOTH WAYS AND THE TABLE IS WHAT DECIDES IT. While the
+        // level allocated out of the WOOD's 255 entries it had to mint here,
+        // early, because colours are served first-come and deferring made the
+        // level the last thing in the program to ask: the moment the rifle went
+        // byte-exact and took three more, the level overran the table, 204,021
+        // voxels came back AIR, and the bulb's glass went with them -- which
+        // silently skipped every lamp in the map, because
+        // `levelGlassMtl_ != mat::AIR` guards that whole pass.
         //
-        // MOVING IT BACK MATTERS, it is not tidying. Deferred, the level was the
-        // LAST thing in the program to ask for colours -- after the trees, the
-        // animals, the flyer band and the kit -- and colours are served
-        // first-come. The moment the rifle went byte-exact and took three more,
-        // the level overran the table: 204,021 voxels came back AIR, and the
-        // bulb's glass came back AIR with them, which silently skipped every
-        // lamp in the map (`levelGlassMtl_ != mat::AIR` guards the whole pass).
-        // One overflow, two features gone, and the log only mentioned one.
-        buildLevelPalette();
+        // The arcade has a table OF ITS OWN now (see buildLevelPalette), so
+        // being last costs nothing -- it is not competing with anybody. And it
+        // has to be last, because the one thing that table may not reuse is an
+        // entry the HELD KIT wears, and the kit's ids do not exist until it has
+        // loaded. App start-up calls prepareLevelPalette straight after the
+        // kit; that is the only caller and the order is the whole point.
         std::printf("  level    %d x %d x %d voxels (%.1f x %.1f x %.1f m), colours deferred\n",
                     levelAsset_.sx, levelAsset_.sy, levelAsset_.sz,
                     float(levelAsset_.sx) * VOXEL_M, float(levelAsset_.sy) * VOXEL_M,
@@ -12322,6 +12668,47 @@ class World {
         for (uint8_t v : levelAsset_.a) used[v] = true;
         int asked = 0;
         int greens = 0;
+
+        // -- THE ARCADE GETS ITS OWN 255 ENTRIES, AND THIS IS WHERE IT STARTS -
+        //
+        // (user 2026-09-18: "cant you give me seperate tables? one palete table
+        // for the sandbox world and one for the arcade with the fps maps".)
+        //
+        // WHAT MAY NOT MOVE is anything drawn in BOTH places, because one id
+        // has to mean one thing in each. Three things qualify and they are the
+        // whole of `reserved`:
+        //
+        //   * the fixed mat:: band, 0 .. TREE_BASE. The map borrows BGRASS_0
+        //     for its lawns and ROCK for the bulb's flex, and every ramp
+        //     groundShade() spreads lives down there.
+        //   * every entry the HELD KIT wears. You carry the axe, the rifle and
+        //     the pistol through the door -- see the note beside heldMtl_,
+        //     which is recorded at load time for exactly this.
+        //   * every entry the WOOD'S FLOWER MODELS wear, because dressLevel
+        //     stamps those voxels into the map: wood art standing in a level.
+        //
+        // EVERYTHING ELSE THE WOOD OWNS IS FREE HERE -- every tree, rock,
+        // animal, butterfly, bird and fish is invisible from inside a map, so
+        // the ~130 entries they hold are ~130 entries the arcade may reuse for
+        // its own. That is the difference between a table that is full and one
+        // that is not, and it is why this runs AFTER the kit: the kit's ids are
+        // not known until it has loaded. See World::prepareLevelPalette.
+        std::vector<uint8_t> reserved(256, 0);
+        for (int i = 0; i <= int(mat::TREE_BASE); ++i) reserved[size_t(i)] = 1;
+        int kitIds = 0, flowerIds = 0;
+        for (int i = 0; i < 256; ++i)
+            if (heldMtl_[size_t(i)]) {
+                reserved[size_t(i)] = 1;
+                ++kitIds;
+            }
+        for (size_t fi = size_t(maxi(0, mesher_.flowerBirch0)); fi < flowers_.size(); ++fi)
+            for (uint8_t v : flowers_[fi].volume)
+                if (v && !reserved[size_t(v)]) {
+                    reserved[size_t(v)] = 1;
+                    ++flowerIds;
+                }
+        palette.beginLevelTable(reserved);
+
         const int before = palette.used();
         for (int e = 1; e <= 255; ++e)
             if (used[size_t(e)]) {
@@ -12356,7 +12743,11 @@ class World {
                     ++greens;
                     continue;
                 }
-                idOfEntry[size_t(e)] = palette.forModelColor(c, false);
+                // OUT OF THE ARCADE'S TABLE, NOT THE WOOD'S -- see the
+                // reservation above. forLevelColor falls back to the wood's
+                // allocator on its own if no level table was begun, so the
+                // single-table behaviour is still one early-return away.
+                idOfEntry[size_t(e)] = palette.forLevelColor(c);
                 ++asked;
             }
 
@@ -12396,12 +12787,27 @@ class World {
         // were. Nothing in the log was wrong, which is what cost the time.
         uploadMaterials();
         // MINTED, NOT ASKED, and the difference is the point: the level
-        // registers with exact=false, so a colour within kQuantStep of one the
-        // wood already owns costs NOTHING. "asked" made the level look like it
-        // was spending fifteen entries out of the scarcest thing in this
-        // engine, and it is not.
-        std::printf("  level    %d colours asked, %d minted, %d greens on the grass ramp\n", asked,
-                    palette.used() - before, greens);
+        // registers with exact=false, so a colour within kQuantStep of one it
+        // already owns costs NOTHING. "asked" made the level look like it was
+        // spending fifteen entries out of the scarcest thing in this engine,
+        // and it is not.
+        //
+        // AND THE WOOD'S OWN COUNT IS PRINTED BESIDE IT, unchanged, so the one
+        // number that matters is visible in one line: what the arcade spends
+        // no longer comes out of what the sandbox has.
+        std::printf("  level    %d colours asked, %d minted into the ARCADE's own table "
+                    "(%d free), %d greens on the grass ramp\n",
+                    asked, palette.levelMinted(), palette.levelFree(), greens);
+        std::printf("  level    reserved %d held-kit and %d flower entries, plus the fixed "
+                    "band; the wood is untouched at %d of %d\n",
+                    kitIds, flowerIds, palette.used(), int(mat::COUNT));
+        if (palette.levelOverflowed())
+            std::fprintf(stderr,
+                         "v2: the ARCADE's palette is full -- %d colour(s) refused. It has "
+                         "%d entries of its own; raise what it reserves or fold the map's "
+                         "shades in the voxelizer.\n",
+                         palette.levelOverflowed(), int(mat::COUNT));
+        (void)before;
         if (lost)
             std::fprintf(stderr,
                          "v2: PALETTE FULL -- %d level voxels came back AIR and will not draw\n",
@@ -12436,7 +12842,7 @@ class World {
         // no lamp in the wood and this entry would be dead weight in the wood's
         // 255. loadLevelBulb is called from buildLevelPalette, after
         // beginLevelTable, so forLevelColor is live by the time this runs.
-        levelGlassMtl_ = palette.forModelColor({255, 246, 214, 255}, false);
+        levelGlassMtl_ = palette.forLevelColor({255, 246, 214, 255});
         // -- THE CAP AND THE FLEX COST NOTHING, AND THAT IS THE POINT --------
         //
         // mat::ROCK rather than a colour of their own. The table was FULL when
@@ -12639,7 +13045,25 @@ class World {
         // would put the baked set back and throw the edit away.
         if (levelGlassMtl_ != mat::AIR && !levelBulbsSeeded_) {
             levelBulbsSeeded_ = true;
-            for (const Vec3 &baked : levelBulbSeed()) levelBulbs_.push_back(baked);
+            const int ground = levelGroundRow();
+            int placed = 0, orphan = 0;
+            for (const BulbSeed &b : levelBulbSeed()) {
+                // NAMED AT ITS OWN MAP -- see levelBulbSeed for what absolute
+                // coordinates did the moment a second map moved the first one.
+                const LevelMap *m = findLevelMap(b.map);
+                if (!m) {
+                    ++orphan;
+                    continue;
+                }
+                levelBulbs_.push_back(Vec3(kLevelAtX + float(m->x0) * VOXEL_M + b.x,
+                                           kLevelAtY + float(ground) * VOXEL_M + b.y,
+                                           kLevelAtZ + float(m->z0) * VOXEL_M + b.z));
+                ++placed;
+            }
+            if (orphan)
+                std::printf("  level    %d baked bulb(s) name a map this arcade does not "
+                            "have -- skipped\n", orphan);
+            (void)placed;
         }
         for (const Vec3 &bulb : levelBulbs_) stampBulbWorld(a, bulb);
         std::printf("  level    dressed: %d grass blades, %d flowers, %zu bulbs\n", blades,
@@ -12824,7 +13248,7 @@ class World {
     //
     // SO THE QUESTION IS ASKED PROPERLY: CAN THIS REACH THE GROUND. The
     // voxeliser lays a solid foundation under the entire footprint (see
-    // tools/voxelize_nuketown.py, BASE_M, and its note about there being no
+    // tools/voxelize_arcade.py, BASE_M, and its note about there being no
     // ground outside the painted slabs), so grounded has an exact meaning here
     // that it does not have in the terrain: the flood reaches y == 0. Anything
     // that cannot is severed, whatever shape it is.
@@ -13646,6 +14070,38 @@ class World {
                 c.blas = recordChunkBuild(b.mesh, key);
                 const auto tp = std::chrono::steady_clock::now();
                 c.triOffset = pool_.upload(ctx_, b.mesh.tri);
+                // -- AND A FAILED UPLOAD MUST NOT BE SILENT -----------------
+                //
+                // (user 2026-09-18, with a picture looking down on terrain with
+                // background showing through it: "theres missing terrain
+                // squares: investigate and fix".)
+                //
+                // upload returns kInvalid when the pool cannot find or grow a
+                // run for this chunk, and nothing here looked. The chunk was
+                // then marked resident carrying 0xFFFFFFFF as its offset, which
+                // draws NOTHING -- a chunk-shaped hole with the sky behind it,
+                // permanent until something else makes that chunk rebuild, and
+                // with not one line of output to say so.
+                //
+                // THIS IS NOT A REPRODUCTION, IT IS A TRIPWIRE. The report
+                // could not be reproduced: static renders at that spot are
+                // whole, the pool was at 270 of 420 MB, and grow() always hands
+                // back a contiguous block so take() cannot fail after it. So
+                // this does not claim to be the cause -- it makes the one
+                // failure that produces exactly that symptom announce itself
+                // instead of being invisible, and leaves the chunk CONSISTENT
+                // (no triangles, rather than triangles at an impossible
+                // offset) so nothing downstream reads the sentinel as an
+                // address.
+                if (c.triOffset == TriPool::kInvalid) {
+                    std::printf("v2: CHUNK %d,%d DROPPED -- the tri pool refused "
+                                "%zu units (%.1f of %.1f MB used). This is a hole "
+                                "in the world; please report it.\n",
+                                b.cx, b.cz, b.mesh.tri.size(),
+                                double(pool_.usedUnits() * sizeof(uint16_t)) / 1048576.0,
+                                double(pool_.capacityUnits() * sizeof(uint16_t)) / 1048576.0);
+                    c.tris = 0;
+                }
                 prof_.poolMs +=
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp)
                         .count();

@@ -563,7 +563,12 @@ struct V6DdgiConsts
     // magnitude and a 10-bit unorm cannot hold that linearly.
     float irradianceGamma;
     float viewBias;
-    float ddgiPad0, ddgiPad1;
+    // The probe pass shades its own hits, so it needs the same table offset the
+    // main trace does -- see V6Params::matBase, which is the place it is
+    // explained. It takes one of the two pads this struct was already carrying
+    // rather than growing it, so the layout is byte-identical to before.
+    uint matBase;
+    float ddgiPad1;
 };
 
 // ---------------------------------------------------------------------------
@@ -723,6 +728,41 @@ struct V6Params
     uint maxAccum; // cap on how many samples the film averages, 0 for none
     int maxDepth;
     int rrStart;
+
+    // -- WHICH MATERIAL TABLE THIS PLACE READS ------------------------------
+    //
+    // (user 2026-09-18: "cant you give me seperate tables? one palete table
+    // for the sandbox world and one for the arcade with the fps maps".)
+    //
+    // gMaterials holds BOTH: the wood's mat::COUNT entries, then the arcade's.
+    // This is the offset added to every material id before the lookup -- 0 in
+    // the wood, mat::COUNT in a map -- so one uint8 id in the mesh means one
+    // thing in the sandbox and something else in the arcade, and neither place
+    // spends entries the other needs.
+    //
+    // A FRAME PARAMETER AND NOT A PER-INSTANCE FIELD, because it is a property
+    // of WHERE YOU ARE and not of any one object: the wood is not in the
+    // acceleration structure while a map is open, so everything in the frame
+    // -- the map, the held rifle, the tracers, the debris -- reads the same
+    // half. See World::matBase, which derives it from `level_` so there is no
+    // second piece of state to disagree with the structure.
+    //
+    // NOT ADDED INTO h.mtl, which stays the raw id: that index is the neural
+    // cache's discrete surface identity (see Nrc.slang) and keying it on a
+    // number that shifts when you walk through a door would invalidate the
+    // cache at the door for nothing.
+    //
+    // AND IT COMES WITH THREE PADS, WHICH ARE NOT DECORATION. This struct is
+    // memcpy'd into a constant buffer by setBlob and read back under HLSL's
+    // packing rules, so C++'s tight layout and the shader's row layout have to
+    // agree member for member. FOUR scalars is exactly one 16-byte row: insert
+    // that and every member below keeps both its byte offset AND its position
+    // within its row. Insert one and the first float3 past it straddles a row
+    // boundary in the shader and not in C++, and what it reads then is not an
+    // error -- it is the wrong numbers. (V6Instance::prevOffset carries the
+    // same warning for the same reason.)
+    uint matBase;
+    uint matPad0, matPad1, matPad2;
 
     float clampIndirect; // firefly ceiling on indirect light, 0 = off
     float fogDensity;    // extinction per metre at y = 0
@@ -1190,6 +1230,9 @@ static_assert(sizeof(V6Material) == 32, "V6Material must fill whole 16-byte rows
 // 64, UP FROM 48, and the row is the hit flash -- see V6Instance::hurt.
 static_assert(sizeof(V6Instance) == 64, "V6Instance must fill whole 16-byte rows");
 static_assert(sizeof(V2Holo) == 112, "V2Holo must fill whole 16-byte rows");
+// 688, UP FROM 672, and the latest sixteen are matBase and its three pads --
+// one uint naming which half of gMaterials this place reads, and a row spent on
+// padding because a lone uint costs one either way. See V6Params::matBase.
 // 672, UP FROM 656, and the latest sixteen are sparkGlow and its three pads
 // -- one float on a slider, one row. See V6Params::sparkGlow.
 // 656, UP FROM 640, and those sixteen are the firefly's glowRadiance + glowMtl
@@ -1201,7 +1244,7 @@ static_assert(sizeof(V2Holo) == 112, "V2Holo must fill whole 16-byte rows");
 // needed a person to notice. kHoloSlots is the one place that decides.
 // ...AND THE EMITTER TABLE IS COUNTED THE SAME WAY, for the same reason: it is
 // four float4s today and the number lives in exactly one place.
-static_assert(sizeof(V6Params) == 672 + kEmitSlots * 16 + kBulbSlots * 16 + kHoloSlots * 112,
+static_assert(sizeof(V6Params) == 688 + kEmitSlots * 16 + kBulbSlots * 16 + kHoloSlots * 112,
               "V6Params must fill whole 16-byte rows");
 static_assert(sizeof(V6DdgiConsts) == 112, "V6DdgiConsts must fill whole 16-byte rows");
 } // namespace v2

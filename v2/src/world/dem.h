@@ -118,10 +118,72 @@ public:
         if (x0 >= w_ - 1){ x0 = w_ - 2; tx = 1.0f; }
         if (y0 < 0)      { y0 = 0;      ty = 0.0f; }
         if (y0 >= h_ - 1){ y0 = h_ - 2; ty = 1.0f; }
+        // -- WHY THE WEIGHTS ARE PLAIN LINEAR, AFTER TRYING NOT TO BE -------
+        //
+        // (user 2026-09-18, with a picture of a shoreline stepping in a regular
+        // zigzag and a lake bed striped like a ploughed field: "can you build
+        // an ai to clean up abnormalities in the terrain like this".)
+        //
+        // SMOOTHSTEP WAS TRIED HERE AND IT DID NOT WORK. The reasoning was
+        // sound -- a bilinear patch is a ruled facet and the facets meet at a
+        // crease, so t*t*(3-2t) makes the join C1 and the contours curve. It
+        // was built, shipped into a render of Lake Granby's bed, and the
+        // corduroy was still there, pixel for pixel. Measured on four
+        // transects: the longest flat tread went 56 -> 43 voxels on one and
+        // 45 -> 60 on another, which is noise, not a fix.
+        //
+        // THE REASON IS THAT THE INTERPOLANT WAS NEVER THE PROBLEM. Terracing
+        // is what QUANTISING a smooth ramp onto 0.1 m voxels does, and every
+        // smooth ramp does it: a 2% grade puts a step every fifty voxels
+        // whatever curve you draw between the postings. Smoothstep is in fact
+        // slightly WORSE at the one place it was supposed to help, because
+        // zero slope at each posting means the widest tread of all sits
+        // exactly on the sample.
+        //
+        // THE REAL FIX IS A SUB-VOXEL DITHER at the point of quantisation,
+        // and it lives in VoxelWorld::heightM, where the voxel grid actually
+        // is. See "THE STEPS ARE DITHERED, NOT SMOOTHED" there. What this
+        // function owes it is the SLOPE, which is what heightAndGrade is for.
         const float *r0 = &g_[(size_t)y0 * w_ + x0];
         const float *r1 = r0 + w_;
         const float a = r0[0] + (r0[1] - r0[0]) * tx;
         const float b = r1[0] + (r1[1] - r1[0]) * tx;
+        return aslToWorld(a + (b - a) * ty);
+    }
+
+    // THE HEIGHT AND THE SLOPE, OUT OF THE SAME FOUR TAPS.
+    //
+    // A bilinear patch has an EXACT analytic gradient -- the same four samples
+    // and three subtractions -- so a caller that needs to know how steep the
+    // ground is does not have to probe heightM four more times a column.
+    // VoxelWorld::heightM needs exactly that, to decide whether quantising
+    // this column to 0.1 m is going to show as a terrace.
+    //
+    // `grade` comes back as RISE OVER RUN IN WORLD UNITS -- world Y per world
+    // metre, so 0.02 is a 2% slope in the world the player walks, with the
+    // shrink and the exaggeration already folded in.
+    float heightAndGrade(float x, float z, float *grade) const {
+        if (!ok_) { *grade = 0.0f; return 0.0f; }
+        const double gx = double(x) * shrink_ / mx_ + w_ * 0.5 - 0.5;
+        const double gy = double(z) * shrink_ / my_ + h_ * 0.5 - 0.5;
+        int x0 = int(std::floor(gx)), y0 = int(std::floor(gy));
+        float tx = float(gx - x0), ty = float(gy - y0);
+        if (x0 < 0)      { x0 = 0;      tx = 0.0f; }
+        if (x0 >= w_ - 1){ x0 = w_ - 2; tx = 1.0f; }
+        if (y0 < 0)      { y0 = 0;      ty = 0.0f; }
+        if (y0 >= h_ - 1){ y0 = h_ - 2; ty = 1.0f; }
+        const float *r0 = &g_[(size_t)y0 * w_ + x0];
+        const float *r1 = r0 + w_;
+        const float dx0 = r0[1] - r0[0], dx1 = r1[1] - r1[0];
+        const float a = r0[0] + dx0 * tx;
+        const float b = r1[0] + dx1 * tx;
+        // Per CELL first, then per world metre: one cell is mx_ real metres,
+        // which is mx_/shrink_ world metres across, and the vertical carries
+        // the same exag_/shrink_ that aslToWorld applies.
+        const float vy = exag_ / shrink_;
+        const float ddx = (dx0 + (dx1 - dx0) * ty) * vy / float(mx_ / shrink_);
+        const float ddy = (b - a) * vy / float(my_ / shrink_);
+        *grade = std::sqrt(ddx * ddx + ddy * ddy);
         return aslToWorld(a + (b - a) * ty);
     }
 

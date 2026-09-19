@@ -90,6 +90,23 @@ inline constexpr float kBulletSolidsM = 90.0f;
 // nearly settles between shots and then is thrown again. At 100 it never came
 // home at all.
 inline constexpr double kBulletIntervalMs = 200.0;
+// -- ...AND THE PISTOL'S, WHICH IS SLOWER ---------------------------------
+//
+// (user 2026-09-18: "left clicking the pistol is not fireing bullets. fix
+// that. there should only be 6 bullets fired until the pistol has to
+// reload.")
+//
+// 350 ms is 170 rounds a minute. It is a CHOICE and the ask did not make it:
+// what was asked for is that the trigger works and that the magazine holds
+// six. But the same button behaves the same way on both guns -- held, it
+// repeats -- and a pistol repeating at the rifle's 300 rpm is a pistol firing
+// like a rifle, which is the one thing about it anybody would notice. At 350
+// a held trigger empties six rounds in two seconds.
+//
+// THE RECOIL CURVE IS STILL THE RIFLE'S (kRecoilOutS and the four terms under
+// it). It is a viewmodel kick and a pistol's is not obviously different at
+// this size; give it its own when it is worth a second set of numbers.
+inline constexpr double kPistolIntervalMs = 350.0;
 // ...and how far the VIEW climbs per round, in degrees. A third of a degree:
 // a ten-round burst walks the aim up three and a half, which is felt and not
 // fought. Not decayed -- see App::fireRifle.

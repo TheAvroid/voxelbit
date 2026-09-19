@@ -371,12 +371,22 @@ struct Options {
     // world is that wood everywhere, which is what a reproducible screenshot or
     // a profile run wants. See Biome and birchWeight in scene/voxelworld.h.
     bool birch = false;
-    // PINE IS THE WHOLE WORLD NOW (user 2026-09-17). This forces
-    // Biome::Pine, which makes woodMix return pure pine at every x, so the
-    // birch and oak landforms, species tables and life gates are never
-    // reached. NOTHING IS DELETED -- --all-woods puts the three bands back
-    // exactly as they were, and every birch/oak branch is still compiled.
-    bool pineOnly = true;
+    // PINE WAS THE WHOLE WORLD AND THE BIRCH IS BACK (user 2026-09-18: "also
+    // fix the birch forest. its not in the world").
+    //
+    // This was TRUE from 2026-09-17 ("pine is the whole world now"), which set
+    // `terrain.forced` in the ordinary game -- so `woodMix` returned pure pine
+    // at every x and the birch and oak landforms, species tables and life gates
+    // were never reached. Nothing was deleted and nothing had to be restored:
+    // false is the three bands, exactly as they were.
+    //
+    // AND IT IS WHY /locate birch COULD ONLY REFUSE. With the world pinned
+    // there was no birch anywhere to travel to, and the reply told the player
+    // to "restart without it" -- a flag they had never typed, because this
+    // default was doing the pinning. See the biome branch in app_console.inl.
+    //
+    // `--pine` still pins it, which is what a reproducible capture wants.
+    bool pineOnly = false;
     // --oak: pin the world to the oak wood, as --pine and --birch do for
     // theirs. Worth more here than for the other two: the band tiling
     // moved when the oak was inserted, so a coordinate is no longer a
@@ -600,6 +610,11 @@ struct Options {
     // trees stand and where the ground is bare, from a photograph rather
     // than from a threshold. Empty or missing = the old behaviour.
     std::string coverPath = "C:/voxelbit/v2/assets/dem/rmnp50.vbcov";
+    // WHETHER THE IMAGERY IS BELIEVED ABOUT THE GROUND as well as about the
+    // water. See VoxelTerrain::coverGround: --acadia turns it off because the
+    // Colorado classifier reads a Maine forest as bare rock, and --cover-water
+    // is the flag for any other window it gets wrong.
+    bool coverGround = true;
     // TWELVE, HALVED FROM 24 (user 2026-09-14: "reduce the butterflies in
     // half"). The band still reserves 64 -- a reservation is not a population,
     // and shrinking it would cost a structure rebuild to change your mind. This
@@ -921,9 +936,31 @@ struct Options {
     // random spawn off. Without this the flags would be silently overwritten by
     // a spawn the user did not ask for.
     bool camGiven = false;
+    // -- ...AND WHETHER A *FLAG* NAMED THE PLACE, WHICH IS NOT THE SAME THING -
+    //
+    // (user 2026-09-19: "have the player spawn at different locations that have
+    // water. pick a biome at random.")
+    //
+    // chooseSpawn roams the whole window now, so the pair above is only a
+    // STARTING POINT -- and five flags set it without setting camGiven, which
+    // splits into two kinds:
+    //
+    //   * --lake, --peak and --front NAME A FEATURE. "Take me to the lake" has
+    //     one right answer and roaming would quietly turn it into "somewhere
+    //     else entirely" while still printing a happy spawn line -- the same
+    //     class of silent wrongness the picker itself just had. These set it.
+    //
+    //   * --acadia and --ouachita pick a WORLD, and their coordinate is a hint
+    //     inside it. Both of their own notes already say the picker is meant
+    //     to wander off it, and --acadia's was scored for RELIEF rather than
+    //     water, which is why it spawned 400 m from any. These do not.
+    //
+    // So: camGiven is "do not pick at all", camPlace is "pick, but near here".
+    bool camPlace = false;
     // 0 means "somewhere new", which is the default for the viewer. Any other
     // value returns to the same place -- the seed is printed on every launch so
-    // a spot worth finding again can be.
+    // a spot worth finding again can be. It chooses the BIOME and the shore as
+    // well now, so one number still reproduces the whole spawn.
     uint32_t spawnSeed = 0;
     float yaw = 205.0f, pitch = 7.0f;
     float fov = defaults::kFov;

@@ -356,6 +356,31 @@ class Particles {
         tear_ = smoke_;
         tearMtl_ = smokeMtl_;
         tearShared_ = smokeShared_;
+        // -- AND THESE THREE IDS CARRY BEHAVIOUR, SO THEY ARE RESERVED ------
+        //
+        // (user 2026-09-18: "cant you give me seperate tables? one palete
+        // table for the sandbox world and one for the arcade with the fps
+        // maps".) The arcade has its OWN 255 entries now, allocated top-down
+        // from 254 -- which is exactly where a late loader like this one sits
+        // in the wood's table. That is fine for a COLOUR and fatal for a
+        // MATERIAL THAT MEANS SOMETHING.
+        //
+        // WHAT IT LOOKED LIKE: `Trace.cs.slang` tests emissiveness by material
+        // ID against V6Params::emitters, and that test is not table-aware --
+        // it cannot be, because `h.mtl` is the raw id. So the first canyon map
+        // in the arcade minted a sandstone shade onto the same id as the
+        // EMBER RED, and a few thousand rock voxels across the cliff faces
+        // glowed. Nothing was wrong with the asset -- measured, zero saturated
+        // red voxels in the .vox -- and nothing was wrong with the palette;
+        // the rock was simply being asked "are you an ember?" and answering
+        // yes.
+        //
+        // v1's own warning, quoted in Palette::nearestFoliage, is the same
+        // one: an id is a MATERIAL. Over there a pink bird landed 5/255 from
+        // the cactus flower and stung the player.
+        world.noteHeldMtl(sparkMtl_);
+        world.noteHeldMtl(redMtl_);
+        world.noteHeldMtl(smokeMtl_);
         if (spark_ < 0) {
             std::fprintf(stderr, "v2: the spark model would not load -- no sparks\n");
             return false;

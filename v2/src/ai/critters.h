@@ -567,6 +567,12 @@ class Critters {
             glowMtl_ = world.palette.resolveModelColor(
                 {glowWant_[0], glowWant_[1], glowWant_[2], 255}, Palette::kModelMatch,
                 &glowShared_);
+            // AN ID THAT MEANS "THIS GLOWS" MUST MEAN IT IN ONE PLACE ONLY --
+            // it reaches the shader as V6Params::glowMtl and is tested against
+            // the raw material id, which cannot know the arcade has a table of
+            // its own. Reserved out of that table exactly as the emitters are;
+            // see Particles::load, where the same collision lit up a cliff.
+            world.noteHeldMtl(glowMtl_);
             std::printf("  firefly  %zu frames, %d slots, after dark only, material %u "
                         "(%d entr%s within tolerance -- 1 is private)\n",
                         ffly_.size(), kFireflyCount, unsigned(glowMtl_), glowShared_,

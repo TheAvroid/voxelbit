@@ -148,7 +148,9 @@ struct MarchSpec {
     uint8_t woods;
 };
 
-// COUNTS ARE SIX ACROSS THE BOARD -- see the note over kBunnyCount for the
+// COUNTS WENT TO SIX ACROSS THE BOARD -- and the MAMMALS are five now; the
+// cut is the dated note at the bottom of this block. See the note over
+// kBunnyCount for the
 // arithmetic, which is the whole argument: at two apiece the median distance to
 // the nearest one was 58 m and a wood is thirty metres deep, so they existed
 // and were never seen. Four species at six is twenty-four animals, but a wood
@@ -165,6 +167,32 @@ struct MarchSpec {
 // against the mammals' 11, so six worms cover about the ground two skunks do.
 // The snake keeps v1's own rarity rather than its count (5 over that disc), at
 // THREE, because it is birch-only and the birch band is a slice of the world.
+
+// -- AND THE MAMMALS COME BACK DOWN A QUARTER (user 2026-09-18: "cut the land
+//    mammals across biomes by 25%") ----------------------------------------
+//
+// SIX DOES NOT TAKE A QUARTER, so this is a judgement and the other reading is
+// one character away: 6 * 0.75 = 4.5. FIVE is the round-half-up of it and a
+// 17% cut; FOUR is the 33% one. Five, because these were raised from two four
+// days ago for the specific reason that the wood read as empty, and the
+// arithmetic above says the whole of what a mammal costs you here is its
+// NEAREST DISTANCE:
+//
+//     n = 6   median 42.5 m        n = 5   44.5 m        n = 4   47.1 m
+//
+// Two metres at six-to-five against four and a half at six-to-four, over a
+// wood you can see thirty metres into. Four is the change to make if this is
+// meant to be felt rather than measured.
+//
+// ACROSS BIOMES MEANS EVERY ROW THAT IS A MAMMAL, not every row in the table.
+// The worm and the grass snake ride this table because they walk a strip of
+// frames along the ground (see the note above), and neither is a mammal, so
+// neither moves: worm 6 on its 7 m lattice, snake 3 on its 13 m one. The
+// RABBIT is a mammal and is not in this table at all -- kBunnyCount takes the
+// same cut, and that is the one place this ask reaches outside kMarchSpec.
+//
+// WHAT A WOOD HOLDS NOW: pine 20 (bunny, skunk, armadillo, porcupine at five
+// apiece), birch and oak 15 each (bunny, skunk, mouse) -- down from 24 and 18.
 // The load line's wording, from the mask. Every combination the table actually
 // uses has a name a reader recognises; anything else prints the bits rather
 // than guessing, so a new row cannot be quietly described as something it is
@@ -190,10 +218,10 @@ inline constexpr MarchSpec kMarchSpec[kMarchKinds] = {
     // could not be. Both halves of the ask are this column.
     //
     // dir            name          fr  n  cell  salt      spd  flee  fps  ffps  in    out   woods
-    {"skunk",         "skunk",      10, 6, 11.0f, 0x5C0Fu, 2.4f, 4.8f, 6.0f, 12.0f, 3.0f, 4.6f, kWoodAll},
-    {"armadillo/walk","armadillo",   8, 6, 11.0f, 0xA2DAu, 0.9f, 0.9f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
-    {"porcupine",     "porcupine",   6, 6, 11.0f, 0x90C0u, 0.9f, 1.8f, 12.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
-    {"desert_mouse",  "mouse",       9, 6, 11.0f, 0x3005u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
+    {"skunk",         "skunk",      10, 5, 11.0f, 0x5C0Fu, 2.4f, 4.8f, 6.0f, 12.0f, 3.0f, 4.6f, kWoodAll},
+    {"armadillo/walk","armadillo",   8, 5, 11.0f, 0xA2DAu, 0.9f, 0.9f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
+    {"porcupine",     "porcupine",   6, 5, 11.0f, 0x90C0u, 0.9f, 1.8f, 12.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
+    {"desert_mouse",  "mouse",       9, 5, 11.0f, 0x3005u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
     {"worm",          "worm",       12, 6,  7.0f, 0x7E2Bu, 1.6f, 1.6f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodAll},
     {"grass_snake",   "snake",      12, 3, 13.0f, 0x4D91u, 1.6f, 3.2f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
 };
@@ -483,8 +511,21 @@ inline void bunnyMul3(const float *a, const float *b, float *out) {
 // term triples it. If v1's own fourteen-per-species is ever wanted, THAT is
 // what has to be paid down first; the band, the palette and the traversal all
 // have room for it now.
+//
+// -- FIVE (user 2026-09-18: "cut the land mammals across biomes by 25%") -----
+//
+// THE RABBIT IS A LAND MAMMAL AND IT IS NOT IN kMarchSpec, which is the only
+// hard part of that ask: the table takes four species and this constant is the
+// fifth, and a cut applied to the table alone leaves the commonest animal in
+// the wood at its old density. The rounding argument is written once, over the
+// table -- 6 * 0.75 = 4.5, five is the round-half-up and four is the other
+// reading -- and both halves must be moved TOGETHER or they stop agreeing.
+//
+// The lattice does NOT move with it. kBunnyCellM is the spacing between the
+// sites a rabbit may stand on; the count is how many of them are alive inside
+// the disc, and it is the count that is the population.
 // ---------------------------------------------------------------------------
-inline constexpr int kBunnyCount = 6;
+inline constexpr int kBunnyCount = 5;
 inline constexpr float kBunnyCellM = 11.0f;
 inline constexpr uint32_t kBunnySalt = 0xB0DDu;
 

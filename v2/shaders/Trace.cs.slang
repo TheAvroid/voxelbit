@@ -1352,7 +1352,11 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // the position hash again would re-roll them every frame it moves.
     const uint shade =
         (inst.kind == KIND_LOOSE) ? triMaterial(packed) : groundShade(packed, h.p, ng);
-    const V6Material L = gMaterials[shade];
+    // ...OUT OF THIS PLACE'S HALF OF THE TABLE. gMaterials holds the sandbox's
+    // entries and then the arcade's; gParams.matBase says which set this frame
+    // is standing in. See V6Params::matBase. `shade` itself is NOT offset --
+    // h.mtl below is the neural cache's surface identity and must not move.
+    const V6Material L = gMaterials[gParams.matBase + shade];
     h.mtl = shade;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = L.albedo;

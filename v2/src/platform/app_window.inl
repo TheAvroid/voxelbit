@@ -512,6 +512,29 @@
     // owns the reload's CLOCK and knows nothing about what it is reloading.
     static constexpr int kRifleMag = 20;
     int rifleAmmo_ = kRifleMag;
+    // -- ...AND THE PISTOL'S SIX -------------------------------------------
+    //
+    // (user 2026-09-18: "there should only be 6 bullets fired until the pistol
+    // has to reload.")
+    //
+    // A SECOND NUMBER RATHER THAN A SHARED ONE, which is the whole of what
+    // makes the two guns different to hold: same trigger, same reload key, same
+    // badge, and a magazine a third the size. Kept beside the rifle's for the
+    // reason that one is not on the Tool -- see above.
+    static constexpr int kPistolMag = 6;
+    int pistolAmmo_ = kPistolMag;
+    // -- THE LAST RELOAD FRAME --swing-log REPORTED ------------------------
+    //
+    // (user 2026-09-18: "the reload needs to stay open as it cycles through
+    // the bullets.")
+    //
+    // A CYCLE IS ONLY WRONG IN ITS ORDER, and an order is not something a
+    // screenshot can hold: the complaint above is the strip's first frames
+    // coming back between rounds, which is four frames out of forty-four and
+    // is over in 180 ms. So the log prints the strip frame each time it
+    // CHANGES -- once per drawn frame rather than once per engine frame -- and
+    // the whole cycle is then one readable column. -2 so the first one prints.
+    int lastReloadStrip_ = -2;
     // The wheel as the wood left it -- see standInLevel. Empty while in the
     // wood, which is also what says "there is nothing to put back".
     std::vector<std::pair<bool, int>> woodKit_;

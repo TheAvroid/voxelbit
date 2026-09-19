@@ -59,6 +59,24 @@
             // either of the two cuts above; the sky note still applies to
             // anything much taller than this.
             {"assault rifle", {0.0150f, 0.145f, 0.338f, 0.000f}},
+            // THE PISTOL'S IS THE USER'S BAKE (2026-09-18), off the [K] card,
+            // and it sits closer in and lower than anything derived would have
+            // put it. What was derived first, and why it is worth keeping the
+            // reasoning even though the numbers moved:
+            //
+            //   across  is an offset from the model's OWN half width (0.5 * sx *
+            //           VOXEL_M), and the pistol's shared box is 5 voxels wide
+            //           against the rifle's 3, so equal numbers are not equal
+            //           places. 0.045 was tried and left the badge 4.5 cm off
+            //           the slide -- at 0.9 m the model ate the left half of the
+            //           glyph and it rendered as three white bars.
+            //   up      has to clear the gun's own BOX, not match the rifle's
+            //           height: 0.238 put it a centimetre UNDER the top of the
+            //           pistol's box and the near block cut the corner off it.
+            //
+            // If a number here ever renders as part of a glyph, it is one of
+            // those two collisions and not a font bug.
+            {"pistol", {0.0150f, 0.028f, 0.272f, 0.000f}},
         };
         return t;
     }
@@ -123,11 +141,14 @@
         // a stack turns gold at its cap; a full magazine is the ordinary state
         // of a gun and colouring it would make twenty the thing that catches
         // the eye rather than two.
-        const bool gun = (sel == rifleTool_);
+        // EITHER GUN (user 2026-09-18, the pistol). isGun and gunAmmoOf are the
+        // same two lookups the trigger uses, so the number beside the hand and
+        // the number the trigger spends can never be different numbers.
+        const bool gun = isGun(sel);
         // FORCED WHILE THE PANEL IS OPEN, so there is something to aim the
-        // sliders at -- almost everything in the kit sits at one. The gun needs
+        // sliders at -- almost everything in the kit sits at one. A gun needs
         // no such help: its number is always up.
-        const int n = gun ? rifleAmmo_
+        const int n = gun ? gunAmmoOf(sel)
                           : ((stackPanelOpen_ && stackPanelForce_) ? maxi(2, t.stack) : t.stack);
         // -- THE POP IS ARMED ABOVE THE BADGE'S OWN CUT-OFF -----------------
         //
@@ -476,6 +497,7 @@
             rifleAmmo_ = kRifleMag;
             held_.cancelReload();
         }
+
         // -- ...AND THE PISTOL IS IN THE WHEEL BESIDE IT -------------------
         //
         // (user 2026-09-18: "put it in the inventory, when the player scrolls
@@ -485,7 +507,13 @@
         // pistol is what scrolling up finds -- which is the whole of the ask,
         // and it is `give` without `select` that says it. See the kit block for
         // why the slot order is what makes "scroll up" mean this one.
-        if (pistolTool_ >= 0) held_.give(pistolTool_);
+        if (pistolTool_ >= 0) {
+            held_.give(pistolTool_);
+            // ...AND IT IS LOADED TOO, for the reason the rifle's magazine is
+            // filled here and not at start-up: this is the moment it becomes a
+            // fresh gun.
+            pistolAmmo_ = kPistolMag;
+        }
 
         // -- AND THE LAMP IS NOT (user 2026-09-17: "remove the lightbulb from
         // the hand on the fps map").
@@ -499,6 +527,47 @@
         // NOTHING ELSE CHANGES. The bulb is still a tool and still works in the
         // wood, and shooting a pendant out still runs through
         // takeLevelBulbNear, which has never cared what is in the hand.
+    }
+
+    // -----------------------------------------------------------------------
+    // THE DOOR, OPENED AT A NAMED MAP -- /locate <map name>.
+    //
+    // (user 2026-09-18: "I want to be able to type /locate (map name) for
+    // example.")
+    //
+    // EVERYTHING [O] DOES, AND THEN THE ARRIVAL. It is written here rather than
+    // in the console because [O]'s handler and this one have to agree about
+    // FOUR things or the trip is broken in a way that surfaces much later:
+    // where you were in the wood (or leaving by [O] drops you at the origin,
+    // underground -- app_input.inl's note), that no fall carries across the
+    // doorway, that the film is reset, and that the fog is invalidated.
+    //
+    // ALREADY IN THE ARCADE IS NOT A SPECIAL CASE, it is the common one:
+    // /locate canyon from inside nuketown must NOT re-save woodPos_, or the
+    // way home becomes the middle of the map you just left.
+    bool enterLevelAt(const World::LevelMap &m) {
+        if (!world_.levelOn()) {
+            woodPos_ = player_.pos;
+            woodYaw_ = yaw_;
+            woodPitch_ = pitch_;
+            woodFly_ = player_.fly;
+            if (!world_.setLevel(true)) return false;
+            // The kit swap is standInLevel's, and it is the whole of what
+            // arriving means beyond a position -- the rifle, the stowed wood
+            // tools, the badge. Called for its side effects; the position it
+            // picks is overwritten immediately below.
+            standInLevel();
+        }
+        player_.pos = world_.levelMapSpawn(m);
+        yaw_ = world_.levelMapYaw(m);
+        pitch_ = 7.0f;               // the wood's default -- see standInLevel
+        player_.fly = false;
+        player_.onGround = true;
+        player_.vy = 0.0f;
+        pos_ = player_.eyePosition();
+        tracer_.resetAccumulation();
+        volfog_.invalidate();
+        return true;
     }
 
     void leaveLevel() {
@@ -549,17 +618,47 @@
     // forest in behind it, which is the one thing a separate world is for
     // avoiding.
     //
-    // So the slab's footprint is the edge of the world while you are here. The
-    // asset IS the platform -- the .glb's biggest mesh by far is the slab, and
-    // every wall stands inside it -- so clamping to the asset's own bounds is
-    // clamping to the concrete, with no second description of where it is.
+    // So the slab's footprint is the edge of the world while you are here, and
+    // clamping to the concrete rather than to a second description of where it
+    // is has always been the rule.
+    //
+    // -- ...AND THE CONCRETE IS PER-MAP NOW ---------------------------------
+    //
+    // (user 2026-09-18: "the grey platform that shares both maps is still
+    //  there. remove it.")
+    //
+    // The slab used to run the whole length of the grid, so the grid's bounds
+    // and the concrete's were the same rectangle and this could use either.
+    // tools/voxelize_arcade.py cuts the foundation to each map's own footprint
+    // now -- the maps are ISLANDS with open air between them -- and the two
+    // stopped being the same thing. Clamping to the GRID would fence you a
+    // hundred metres out into that air, standing on the invisible floor below,
+    // which is a worse version of the platform the change was asked for.
+    //
+    // SO THE FENCE IS THE MAP YOU ARE IN. The same rule as before, read off
+    // the same sidecar /locate uses, and it still needs no second description
+    // of where anything is.
+    //
+    // FALLING BACK TO THE GRID IS DELIBERATE AND IS NOT A GUESS. There is no
+    // map underfoot in exactly two cases: a level with no .maps sidecar beside
+    // it (loadLevelMaps says a missing file is not an error, and that is the
+    // OLD layout, which wants the old fence), and a player who has turned FLY
+    // on and left the island. The second wants it too -- a fence that dragged
+    // a flying player sideways would be the bug, not the fix. The WALK can
+    // reach neither: you cannot step off an island that ends where the fence
+    // does.
     // -----------------------------------------------------------------------
     void clampToLevel() {
         if (!world_.levelOn()) return;
         const float r = 0.32f;   // shoulders -- clampToStage's number
         Vec3 p = player_.pos;
-        p.x = clampf(p.x, world_.levelMinX() + r, world_.levelMaxX() - r);
-        p.z = clampf(p.z, world_.levelMinZ() + r, world_.levelMaxZ() - r);
+        const World::LevelMap *m = world_.levelMapAt(p.x, p.z);
+        const float x0 = m ? world_.levelMapMinX(*m) : world_.levelMinX();
+        const float x1 = m ? world_.levelMapMaxX(*m) : world_.levelMaxX();
+        const float z0 = m ? world_.levelMapMinZ(*m) : world_.levelMinZ();
+        const float z1 = m ? world_.levelMapMaxZ(*m) : world_.levelMaxZ();
+        p.x = clampf(p.x, x0 + r, x1 - r);
+        p.z = clampf(p.z, z0 + r, z1 - r);
         // ...AND A FLOOR UNDER THE WHOLE OF IT. The slab's underside is the
         // bottom of this world; nothing below it is anywhere.
         const float floorY = World::levelOrigin().y;

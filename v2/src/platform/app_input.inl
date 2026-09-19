@@ -159,7 +159,7 @@
                 woodFly_ = player_.fly;
                 if (!world_.setLevel(true)) {
                     std::fprintf(stderr, "v2: no level to travel to -- run "
-                                         "tools/voxelize_nuketown.py\n");
+                                         "tools/voxelize_arcade.py\n");
                     return true;
                 }
                 standInLevel();
@@ -342,8 +342,8 @@
         // silently changed meaning is the complaint this is trying not to
         // cause.
         if (e.key == Input::Key::R && !consoleOpen_ && !menuOpen_ &&
-            !e.hasModifier(Input::Modifier::Ctrl) && rifleInHand()) {
-            const bool started = reloadRifle();
+            !e.hasModifier(Input::Modifier::Ctrl) && holdingGun()) {
+            const bool started = reloadGun();
             std::printf("v2: reload%s\n",
                         started ? "ing"
                                 : (held_.reloading() ? " -- already reloading"

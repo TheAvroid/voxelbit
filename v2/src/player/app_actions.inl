@@ -256,7 +256,42 @@
         return pistolTool_ >= 0 && held_.ready() && held_.selected() == pistolTool_ &&
                held_.carrying();
     }
-    bool holdingGun() const { return rifleInHand() || pistolInHand(); }
+    // -----------------------------------------------------------------------
+    // WHICH GUN IS IN THE HAND, as a kit slot, or -1 for none.
+    //
+    // (user 2026-09-18: "left clicking the pistol is not fireing bullets. fix
+    // that.")
+    //
+    // THE TRIGGER USED TO ASK rifleInHand() AND THAT IS WHY. Everything below
+    // this line -- the magazine, the cyclic rate, the reload, the badge -- was
+    // written against one gun and named after it, so the pistol arrived holding
+    // a model and nothing else. It is one question now and the four small
+    // lookups under it are the only places either gun is named.
+    //
+    // NOT AN ENUM AND NOT A TABLE. There are two guns; a `Guns[]` indexed by a
+    // second id would have to be kept in step with the kit slots that already
+    // identify them, and a slot IS the identity here -- it is what the wheel,
+    // the badge, standInLevel and snapshotKit all key on.
+    // -----------------------------------------------------------------------
+    int heldGun() const {
+        if (rifleInHand()) return rifleTool_;
+        if (pistolInHand()) return pistolTool_;
+        return -1;
+    }
+    bool holdingGun() const { return heldGun() >= 0; }
+    bool isGun(int tool) const {
+        return tool >= 0 && (tool == rifleTool_ || tool == pistolTool_);
+    }
+    int gunMagOf(int tool) const { return tool == pistolTool_ ? kPistolMag : kRifleMag; }
+    int gunAmmoOf(int tool) const { return tool == pistolTool_ ? pistolAmmo_ : rifleAmmo_; }
+    void setGunAmmo(int tool, int n) {
+        if (tool == pistolTool_) pistolAmmo_ = n;
+        else if (tool == rifleTool_) rifleAmmo_ = n;
+    }
+    // HOW OFTEN IT MAY GO OFF. See kPistolIntervalMs for why they differ.
+    double gunIntervalOf(int tool) const {
+        return tool == pistolTool_ ? kPistolIntervalMs : kBulletIntervalMs;
+    }
 
     // -----------------------------------------------------------------------
     // PUT A FRESH MAGAZINE IN. Returns true if a cycle actually started.
@@ -273,11 +308,31 @@
     // full magazine is 1800 ms of standing there with the gun unable to fire,
     // and the player's own keypress is the last thing they would suspect.
     // -----------------------------------------------------------------------
-    bool reloadRifle() {
-        if (rifleAmmo_ >= kRifleMag || held_.reloading()) return false;
-        if (!held_.startReload()) return false;
+    bool reloadGun() {
+        const int tool = heldGun();
+        if (tool < 0) return false;
+        if (gunAmmoOf(tool) >= gunMagOf(tool) || held_.reloading()) return false;
+        // -- HOW MANY TURNS OF THE STRIP THIS IS ---------------------------
+        //
+        // (user 2026-09-18: "it needs to play multiple times depending on how
+        // many shots have been powered. its a standard revolver with 6
+        // rounds.")
+        //
+        // ONE PER EMPTY CHAMBER for a gun whose strip loads rounds
+        // (Tool::reloadRounds), and exactly one for a gun whose strip is a
+        // magazine change. That is the only place the two kinds differ: the
+        // clock, the frames, the key and the badge are all the same code.
+        //
+        // COUNTED HERE, BEFORE THE FIRST TURN, so the animation and the
+        // magazine cannot disagree -- and so that reloading with two rounds
+        // left is two turns rather than six.
+        const int per = held_.tool(tool).reloadRounds;
+        const int missing = gunMagOf(tool) - gunAmmoOf(tool);
+        const int cycles = per > 0 ? (missing + per - 1) / per : 1;
+        if (!held_.startReload(cycles)) return false;
         if (opt_.swingLog) {
-            std::printf("v2: reload started -- %d of %d rounds left\n", rifleAmmo_, kRifleMag);
+            std::printf("v2: %s reload started -- %d of %d rounds left, %d turn(s)\n",
+                        held_.tool(tool).name, gunAmmoOf(tool), gunMagOf(tool), cycles);
             std::fflush(stdout);
         }
         return true;
@@ -286,7 +341,11 @@
     // Returns true if a round actually left the barrel -- false on an empty or
     // busy gun, which is what the trigger and the scripted burst both need to
     // know before they report a shot that never happened.
-    bool fireRifle() {
+    bool fireGun() {
+        // WHICH GUN, ASKED ONCE AT THE TOP. Everything below spends THIS
+        // slot's magazine, at this slot's rate -- see heldGun.
+        const int tool = heldGun();
+        if (tool < 0) return false;
         // -- NOTHING COMES OUT OF A GUN THAT IS BEING RELOADED ---------------
         //
         // FIRST, BEFORE THE AMMO TEST, because the magazine is still empty for
@@ -306,11 +365,11 @@
         // this function is the shot that EMPTIED it, which starts the cycle
         // straight away rather than making the player pull once more to
         // discover there is nothing left.
-        if (rifleAmmo_ <= 0) {
-            reloadRifle();
+        if (gunAmmoOf(tool) <= 0) {
+            reloadGun();
             return false;
         }
-        --rifleAmmo_;
+        setGunAmmo(tool, gunAmmoOf(tool) - 1);
         const Vec3 aim = forward();
         Vec3 from = pos_;
         // The same camera the frame is about to be drawn with, built the way
@@ -346,6 +405,12 @@
         if (lengthSq(dir) < 1e-6f) dir = aim;
         bullets_.launch(from, dir);
         held_.kick();
+        // THE BANG GOES WITH THE ROUND, on the frame it leaves the barrel and
+        // not with the click -- everything above this line can still refuse the
+        // shot (dry, reloading, inside the repeat interval), and a gun that
+        // cracked on a trigger pull that fired nothing would be the one way
+        // this could lie about what happened. See ToolSounds::gunFired.
+        toolSfx_.gunFired();
         // ONE LINE PER ROUND UNDER --swing-log, exactly as the arrow's flight
         // reports under the same flag. A tracer at 120 m/s is gone in a frame
         // or two, so this is the only way to see that the muzzle is where it
@@ -353,8 +418,8 @@
         if (opt_.swingLog) {
             std::printf("v2: round from (%.2f %.2f %.2f) eye (%.2f %.2f %.2f) %s  %d/%d left\n",
                         from.x, from.y, from.z, pos_.x, pos_.y, pos_.z,
-                        gotTip ? "MUZZLE" : "NO MUZZLE -- fell back to the eye", rifleAmmo_,
-                        kRifleMag);
+                        gotTip ? "MUZZLE" : "NO MUZZLE -- fell back to the eye",
+                        gunAmmoOf(tool), gunMagOf(tool));
             std::fflush(stdout);
         }
         // -- ...AND THE VIEW CLIMBS A LITTLE --------------------------------
@@ -375,7 +440,7 @@
         // AT THE BOTTOM, AFTER THE SHOT HAS BEEN FIRED AND REPORTED. The last
         // round is a round like any other -- it leaves the barrel, chips what
         // it hits and climbs the view -- and only then is the gun empty.
-        if (rifleAmmo_ <= 0) reloadRifle();
+        if (gunAmmoOf(tool) <= 0) reloadGun();
         return true;
     }
 

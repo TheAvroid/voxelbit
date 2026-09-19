@@ -344,7 +344,7 @@
         if (opt_.fireFrame >= 0 && shotFrames_ == opt_.fireFrame) {
             lastChipN_ = 0;
             lastChipSlot_ = -1;
-            fireRifle();
+            fireGun();
             std::printf("v2: fire test -- round away from (%.2f, %.2f, %.2f)\n",
                         pos_.x, pos_.y, pos_.z);
             std::fflush(stdout);
@@ -373,17 +373,29 @@
         // past that to see it. It prints what the badge would be showing, which
         // is the whole of what a reload is for.
         if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame) {
-            rifleAmmo_ = 0;
-            const bool started = reloadRifle();
-            std::printf("v2: reload test -- magazine emptied, cycle %s (%d reload frames)\n",
+            // WHICHEVER GUN IS UP -- the rifle unless --scroll put the pistol
+            // there, which is how one flag photographs both cycles.
+            const int g = heldGun();
+            setGunAmmo(g, 0);
+            const bool started = reloadGun();
+            std::printf("v2: reload test -- %s magazine emptied, cycle %s (%d reload frames)\n",
+                        g >= 0 ? held_.tool(g).name : "no gun",
                         started ? "STARTED" : "REFUSED -- WRONG",
-                        rifleTool_ >= 0 ? held_.tool(rifleTool_).reloadFrames : -1);
+                        g >= 0 ? held_.tool(g).reloadFrames : -1);
             std::fflush(stdout);
         }
-        if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame + 150) {
-            std::printf("v2: reload test -- %d/%d rounds, %s  %s\n", rifleAmmo_, kRifleMag,
+        // 220 FRAMES, WHICH IS 3.7 s. It was 150 when a reload was one turn of
+        // 1800 ms, and 150 frames would report a revolver as still reloading --
+        // which is the test lying about the feature it exists to check. The
+        // pistol is 44 drawn frames of 45 ms now (four out, six per round x
+        // six, four back in), so 1.98 s, and the margin is on purpose: this
+        // number wants to outlast the art, not to track it.
+        if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame + 220) {
+            const int g2 = heldGun();
+            const int have = g2 >= 0 ? gunAmmoOf(g2) : -1, want = g2 >= 0 ? gunMagOf(g2) : 0;
+            std::printf("v2: reload test -- %d/%d rounds, %s  %s\n", have, want,
                         held_.reloading() ? "STILL RELOADING" : "done",
-                        (rifleAmmo_ == kRifleMag && !held_.reloading())
+                        (have == want && !held_.reloading())
                             ? "-- the magazine came back"
                             : "-- NOTHING CAME BACK, WRONG");
             std::fflush(stdout);
@@ -425,7 +437,7 @@
             pos_ = player_.eyePosition();
             lastChipN_ = 0;
             lastChipSlot_ = -1;
-            fireRifle();
+            fireGun();
             std::printf("v2: fire test -- point blank, %.2f m from the wall\n",
                         double(kPointBlankM));
             std::fflush(stdout);

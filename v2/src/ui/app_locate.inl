@@ -46,13 +46,25 @@
     //          the minimum, because standNear walks out to the shore on its
     //          own and starting further out only skips usable ground.
     //
-    //   wood   WHERE IT LIVES WHEN IT IS NOT HERE: -1 either, 0 pine, 1 birch,
-    //          from MarchSpec::wood and the hive pass in scene/chunks.h. This
-    //          is only ever read when nothing was found, and then it is the
-    //          difference between "there are none" -- which is wrong, there
-    //          are plenty, one band over -- and taking the player to them.
+    //   woods  WHERE IT LIVES WHEN IT IS NOT HERE, as a SET of kWoodPine /
+    //          kWoodBirch / kWoodOak -- VoxelTerrain's own bits, and the same
+    //          value MarchSpec::woods carries. Only ever read on a miss, and
+    //          then it is the difference between "there are none" -- which is
+    //          wrong, there are plenty, one band over -- and taking the player
+    //          to them.
     //
-    //   water  IT NEEDS A LAKE RATHER THAN A WOOD. Same job as `wood` for the
+    //          IT WAS AN INDEX AND THE ENGINE HAS ALWAYS USED A SET. -1 / 0 / 1
+    //          could not say "birch AND oak", which is exactly what the mouse,
+    //          the grass snake and the frog are (kWoodBroad), so those three
+    //          were written down as birch-only and the housefly, which is
+    //          kWoodPine|kWoodOak, as pine-only. Nothing reported it: the
+    //          readers asked `birchAt(x)`, so in a PINE wood an oak-dweller and
+    //          a pine-dweller answered the same. --locate-test in `--oak`
+    //          printed three TABLE WRONG lines the moment the check learned
+    //          about the third wood, and all three were the column, not the
+    //          engine. One vocabulary now, so they cannot drift again.
+    //
+    //   water  IT NEEDS A LAKE RATHER THAN A WOOD. Same job as `woods` for the
     //          nine populations in render/lake.h: with none in range the
     //          fallback is the nearest shore, which is where they will be.
     // -----------------------------------------------------------------------
@@ -61,6 +73,22 @@
         Ant, Fly, Ladybug, Frog, Firefly,
         Bee, Hive, Butterfly, Songbird, Flock,
         Salmon, Bass, Koi, Minnow, Catfish, Bluegill, Duck, Dragonfly, LilyPad,
+        // -- AND TWO THINGS THAT ARE NOT ALIVE -------------------------------
+        //
+        // (user 2026-09-19: "give me a /locate apple command along with the
+        // orange too ... teleports me to the nearest apple".)
+        //
+        // A CROP BELONGS IN THIS TABLE AND A LAKE DOES NOT, and the line
+        // between them is the one the header above already draws: a biome is a
+        // PLACE, which is a coordinate this engine can compute from nothing,
+        // and everything in here is a THING, which exists only where it is
+        // right now and can only be found by asking the world. An apple is the
+        // second kind -- it hangs in one crown in a wood of them, at 15% of the
+        // oaks, and no arithmetic says which. So it gets a row, the whole
+        // machinery behind a row (the parser, Tab, both error messages, the
+        // arrival and --locate-test) comes with it, and the one thing it needs
+        // that no animal did is the `fruit` flag below.
+        Apple, Orange,
     };
 
     struct LifeName {
@@ -68,7 +96,10 @@
         const char *alias;   // "" for none
         Life life;
         float stand;
-        int wood;            // -1 either, 0 pine, 1 birch
+        // A SET OF kWood* BITS, never an index -- see the column note above.
+        // kWoodAll is "anywhere", and it is what every row that used to say -1
+        // means.
+        uint8_t woods;
         bool water;
         // ONLY AFTER DARK. The survey below judged a row by its wood and its
         // water and knew nothing about the clock, so the firefly -- which the
@@ -77,22 +108,40 @@
         // whole test. A test that is always red is a test nobody reads, and it
         // would have hidden a real row breaking behind it.
         bool night = false;
+        // NOT AN ANIMAL. Two readers need to know: the menu, which would
+        // otherwise list an apple under "life", and --kill-test, which walks
+        // this table shooting everything in it and has already had to make
+        // this exception by hand twice (the hive and the lily pad, named in
+        // its own code). A flag on the row is the version of that which a new
+        // crop cannot forget to join.
+        bool fruit = false;
     };
 
     static const std::vector<LifeName> &lifeNames() {
-        //                name         alias          kind             stand wood water
+        // THE WOOD COLUMN IS COPIED FROM THE ENGINE, ROW BY ROW -- kMarchSpec's
+        // `woods` for the six marchers, the `claim` call for each critter, the
+        // birchBase gate in hangHive and the oakBase one in hangFruit. Four of
+        // them did not match what was written here before; see the column note.
+        //   name         alias          kind             stand  woods         water
         static const std::vector<LifeName> t = {
-            {"bunny",     "rabbit",    Life::Bunny,      5.0f, -1, false},
-            {"skunk",     "",          Life::Skunk,      5.0f, -1, false},
-            {"armadillo", "",          Life::Armadillo,  5.0f,  0, false},
-            {"porcupine", "",          Life::Porcupine,  5.0f,  0, false},
-            {"mouse",     "",          Life::Mouse,     10.0f,  1, false},
-            {"worm",      "",          Life::Worm,       4.0f, -1, false},
-            {"snake",     "grass_snake",Life::Snake,     5.0f,  1, false},
-            {"firefly",   "fireflies", Life::Firefly,    4.0f, -1, false, true},
-            {"ant",       "ants",      Life::Ant,        4.0f, -1, false},
-            {"fly",       "flies",     Life::Fly,        4.0f,  0, false},
-            {"ladybug",   "ladybird",  Life::Ladybug,    4.0f, -1, false},
+            {"bunny",     "rabbit",    Life::Bunny,      5.0f, kWoodAll,  false},
+            {"skunk",     "",          Life::Skunk,      5.0f, kWoodAll,  false},
+            {"armadillo", "",          Life::Armadillo,  5.0f, kWoodPine, false},
+            {"porcupine", "",          Life::Porcupine,  5.0f, kWoodPine, false},
+            // BIRCH *AND* OAK -- kMarchSpec says kWoodBroad for both of these,
+            // and this column said birch. In the oak wood /locate mouse found
+            // a mouse and the survey called the find a table error, which is
+            // the right complaint aimed at the wrong half.
+            {"mouse",     "",          Life::Mouse,     10.0f, kWoodBroad,false},
+            {"worm",      "",          Life::Worm,       4.0f, kWoodAll,  false},
+            {"snake",     "grass_snake",Life::Snake,     5.0f, kWoodBroad,false},
+            {"firefly",   "fireflies", Life::Firefly,    4.0f, kWoodAll,  false, true},
+            {"ant",       "ants",      Life::Ant,        4.0f, kWoodAll,  false},
+            // ...AND THE HOUSEFLY IS THE PAIR NOTHING ELSE IS: pine and oak,
+            // straight off its claim() in critters.h.
+            {"fly",       "flies",     Life::Fly,        4.0f,
+             uint8_t(kWoodPine | kWoodOak),                                false},
+            {"ladybug",   "ladybird",  Life::Ladybug,    4.0f, kWoodAll,  false},
             // -- A WATERSIDE ROW, AND THAT IS THE FIX (user 2026-09-14: "I
             //    dont see any frogs even when doing /locate frog") -----------
             //
@@ -102,30 +151,115 @@
             // worked perfectly and took you to the one kind of place the
             // animal does not live, every time, for ever.
             //
-            // `water = true` with `wood = 1` is what it actually is: a frog
-            // wants a birch SHORE. nearestWater takes the wood now -- it is
-            // the first row that has ever needed it, since every other swimmer
-            // is a pine row and a lake was the whole condition.
-            {"frog",      "",          Life::Frog,       4.0f,  1, true},
-            {"bee",       "bees",      Life::Bee,        4.0f,  1, false},
-            {"hive",      "beehive",   Life::Hive,       5.0f,  1, false},
-            {"butterfly", "",          Life::Butterfly,  4.0f, -1, false},
-            {"songbird",  "bird",      Life::Songbird,   5.0f, -1, false},
+            // `water = true` with a WOOD is what it actually is: a frog wants a
+            // broadleaf SHORE. nearestWater takes the wood set now -- the frog
+            // is the only row that needs one, since a lake is the whole
+            // condition for everything else that swims.
+            //
+            // kWoodBroad, NOT BIRCH. fillFrogs tests `& kWoodBroad`, so there
+            // are frogs on every oak bank in the world and this column said
+            // there were none -- a miss in the oak wood walked the player to
+            // the birch band, past the water they were standing next to.
+            {"frog",      "",          Life::Frog,       4.0f, kWoodBroad,true},
+            // -- A HIVE HANGS IN AN OAK TOO, WHICH NOBODY MEANT ---------------
+            //
+            // hangHive's only wood test is `if (treeIndex < birchBase) return;`
+            // and its comment says why: "a pine carries no hive". That was a
+            // complete test when the models ran pines then birches. The oaks
+            // were appended AFTER the birches -- pines are [0, birchBase),
+            // birches [birchBase, oakBase), oaks [oakBase, size) -- so every
+            // oak is above the line and inherited the hives silently.
+            //
+            // THE TABLE DESCRIBES THE ENGINE, so both rows are kWoodBroad. The
+            // survey found a hive 300 m into the oak wood and called the row
+            // wrong, which it was. Whether the oak SHOULD bear hives is a
+            // separate question for whoever owns hangHive; answering it here
+            // by writing birch in this column would only make /locate lie
+            // about where the hives it can see are.
+            {"bee",       "bees",      Life::Bee,        4.0f, kWoodBroad,false},
+            {"hive",      "beehive",   Life::Hive,       5.0f, kWoodBroad,false},
+            {"butterfly", "",          Life::Butterfly,  4.0f, kWoodAll,  false},
+            {"songbird",  "bird",      Life::Songbird,   5.0f, kWoodAll,  false},
             // "songbird" is the one PERCHED in a crown (render/birds.h) and
             // "flock" is the one FLYING (render/birdflock.h) -- two
             // populations, two files, and the same animal to look at.
-            {"flock",     "flyingbird",Life::Flock,      8.0f, -1, false},
-            {"salmon",    "",          Life::Salmon,     2.0f,  0, true},
-            {"bass",      "",          Life::Bass,       2.0f,  0, true},
-            {"koi",       "",          Life::Koi,        2.0f,  0, true},
-            {"minnow",    "",          Life::Minnow,     2.0f,  0, true},
-            {"catfish",   "",          Life::Catfish,    2.0f,  0, true},
-            {"bluegill",  "blue_gill", Life::Bluegill,   2.0f,  0, true},
-            {"duck",      "",          Life::Duck,       2.0f,  0, true},
-            {"dragonfly", "",          Life::Dragonfly,  2.0f,  0, true},
-            {"lilypad",   "lily",      Life::LilyPad,    2.0f,  0, true},
+            {"flock",     "flyingbird",Life::Flock,      8.0f, kWoodAll,  false},
+            // EVERY LAKE, NOT THE PINE'S. Nothing in render/lake.h asks the
+            // terrain which wood it is in -- a fish exists because there is
+            // water -- and all three woods have been wet since the lakes
+            // landed. These rows said pine, which was harmless while it only
+            // ever chose a fallback shore in a two-wood world and is a walk to
+            // the wrong band now.
+            {"salmon",    "",          Life::Salmon,     2.0f, kWoodAll,  true},
+            {"bass",      "",          Life::Bass,       2.0f, kWoodAll,  true},
+            {"koi",       "",          Life::Koi,        2.0f, kWoodAll,  true},
+            {"minnow",    "",          Life::Minnow,     2.0f, kWoodAll,  true},
+            {"catfish",   "",          Life::Catfish,    2.0f, kWoodAll,  true},
+            {"bluegill",  "blue_gill", Life::Bluegill,   2.0f, kWoodAll,  true},
+            {"duck",      "",          Life::Duck,       2.0f, kWoodAll,  true},
+            {"dragonfly", "",          Life::Dragonfly,  2.0f, kWoodAll,  true},
+            {"lilypad",   "lily",      Life::LilyPad,    2.0f, kWoodAll,  true},
+            // -- THE CROP, WHICH IS AN OAK ROW --------------------------------
+            //
+            // hangFruit is the only thing that places kind 6 and it refuses
+            // anything that is not an oak above kFruitMinTreeVox, so `wood = 2`
+            // is not a preference -- it is where a fruit can exist at all. The
+            // pine and the birch have none and never will, which makes a miss
+            // out there the ORDINARY answer and the oak band the honest place
+            // to be sent.
+            //
+            // 4 m OFF, AND THE REASON IS THE OPPOSITE OF AN ANIMAL'S. Nothing
+            // here bolts -- a fruit is decor, and the whole column exists
+            // because a flee sphere does. It is the TREE that sets this one:
+            // arriving on the fruit's own column puts the player inside the
+            // trunk it hangs off, and findClear then shoves them out to a spot
+            // nobody chose. Four metres stands them clear of the bole, well
+            // inside kFruitReachM (8 m) for anything on a young oak, and
+            // looking up into the crown -- which is where the crop is.
+            {"apple",     "apples",    Life::Apple,      4.0f, kWoodOak,  false, false, true},
+            {"orange",    "oranges",   Life::Orange,     4.0f, kWoodOak,  false, false, true},
         };
         return t;
+    }
+
+    // ONE BIT -> ITS BAND, AND ITS NAME. Both take a single kWood* bit, never
+    // a set: a set is a question with up to three answers and nearestWoodX is
+    // what turns it into one.
+    static Biome woodBiome(uint8_t bit) {
+        return (bit & kWoodBirch) ? Biome::Birch : (bit & kWoodOak) ? Biome::Oak : Biome::Pine;
+    }
+    static const char *woodWord(uint8_t bit) {
+        return (bit & kWoodBirch) ? "birch" : (bit & kWoodOak) ? "oak" : "pine";
+    }
+
+    // -----------------------------------------------------------------------
+    // THE NEAREST OF THE WOODS A ROW LIVES IN.
+    //
+    // A ROW'S `woods` IS A SET, so "take me to where it lives" has up to three
+    // right answers and the useful one is whichever band is closest -- a mouse
+    // is birch AND oak, and walking a player past the oak band to reach the
+    // birch one is a longer trip to the same animal. Returns which bit won, so
+    // the reply can name the wood it actually picked.
+    //
+    // kWoodAll NEVER REACHES HERE: a row that lives everywhere and found
+    // nothing has nowhere better to be sent, and locateLife says so instead.
+    // -----------------------------------------------------------------------
+    bool nearestWoodX(uint8_t woods, float *outX, uint8_t *outBit) const {
+        bool any = false;
+        float bestX = 0.0f, best = 1e30f;
+        for (int i = 0; i < 3; ++i) {
+            const uint8_t bit = uint8_t(1u << i);   // pine, birch, oak
+            if (!(woods & bit)) continue;
+            const float x = nearestBandX(woodBiome(bit));
+            const float d = fabsf(x - pos_.x);
+            if (any && d >= best) continue;
+            best = d;
+            bestX = x;
+            any = true;
+            if (outBit) *outBit = bit;
+        }
+        if (any && outX) *outX = bestX;
+        return any;
     }
 
     // -----------------------------------------------------------------------
@@ -167,6 +301,13 @@
             case Life::Duck:      return lake_.nearestDuck(pos_, at, &d);
             case Life::Dragonfly: return lake_.nearestDfly(pos_, at, &d);
             case Life::LilyPad:   return lake_.nearestPad(pos_, at, &d);
+            // THE SAME REACH THE HIVE ASKS FOR, and for the same reason: decor
+            // exists as far out as the chunk holding it is resident, and a
+            // command that could only find a fruit already inside pick range
+            // would not be worth typing. The scan is over resident chunks only
+            // -- a one-off cost on one keystroke.
+            case Life::Apple:     return world_.nearestFruit(0, pos_, 260.0f, at);
+            case Life::Orange:    return world_.nearestFruit(1, pos_, 260.0f, at);
         }
         return false;
     }
@@ -238,15 +379,19 @@
     // the nearest one to the origin is several hundred metres away), so a
     // coarse ring is what keeps this from being a second of stalling.
     // -----------------------------------------------------------------------
-    // `wood` is -1 for any, 0 pine, 1 birch -- the frog is the only row that
-    // passes anything but -1, and it has to: sending it to the nearest lake
-    // full stop lands it on a PINE shore, where it is gated out and will never
-    // appear. See its row in lifeNames.
-    bool nearestWater(float *outX, float *outZ, int wood = -1) const {
+    // `woods` is a SET of kWood* bits, kWoodAll for any -- the frog is the only
+    // row that narrows it, and it has to: sending it to the nearest lake full
+    // stop lands it on a PINE shore, where fillFrogs gates it out and it will
+    // never appear. See its row in lifeNames.
+    bool nearestWater(float *outX, float *outZ, uint8_t woods = kWoodAll) const {
         const VoxelTerrain &t = world_.terrain;
         TerrainMemo memo;
         auto wetAt = [&](float x, float z) {
-            if (wood >= 0 && (t.birchAt(x) ? 1 : 0) != wood) return false;
+            // THE TERRAIN'S OWN BIT, not `birchAt` against an index. The frog
+            // is kWoodBroad and this used to ask "is it birch", so every oak
+            // bank in the world -- half the water a frog can live beside --
+            // was refused. See LifeName::woods.
+            if (woods != kWoodAll && !(t.woodBit(x) & woods)) return false;
             const int vi = int(floorf(x / VOXEL_M)), vj = int(floorf(z / VOXEL_M));
             int wy = 0;
             return t.lakeColumn(vi, vj, memo, &wy);
@@ -290,6 +435,69 @@
         const float c = VoxelTerrain::bandCentre(b);
         const float k = floorf((pos_.x - c) / period + 0.5f);
         return c + k * period;
+    }
+
+    // -----------------------------------------------------------------------
+    // WHERE THE TREES ACTUALLY ARE -- for a world that is all one wood.
+    //
+    // (user 2026-09-18: "/locate birch does not work. make it work.")
+    //
+    // A BAND CENTRE IS A MEANINGLESS COORDINATE IN A PINNED WORLD, and that is
+    // the whole of what was wrong. --acadia pins the island to birch, so
+    // nearestBandX answers with a number that is birch, like every other number
+    // in that world: the player was teleported ninety metres inside an
+    // identical wood, the reply said "birch forest", and nothing they could see
+    // had changed. Refusing (what it did before) and hopping (what it did
+    // after) are the same experience from the keyboard -- the command does
+    // nothing.
+    //
+    // SO IT GOES TO A STAND. The one thing "take me to the birch forest" can
+    // honestly mean where everything is birch is take me to where the birch is
+    // THICK -- out of whatever clearing, bare ridge or shore the player is
+    // standing in and under a canopy. standDensity is the field that plants the
+    // trees (see the gate in chunks.h), so it is the same question the wood
+    // itself is answered with, and it costs no chunk.
+    //
+    // FAR ENOUGH TO BE FELT. kStandMinM is 150 m -- half a view disc, so the
+    // trees around you when you arrive are not the ones you left. A closer
+    // "best" spot is worse than a slightly thinner one further out, which is
+    // why distance gates the candidates rather than scoring them.
+    //
+    // ON THE DATA, NOT IN THE LAKE, AND WHERE A TREE IS ALLOWED. The same three
+    // conditions the spawn picker uses, for the same reasons -- see chooseSpawn
+    // -- and with the DEM window clamp the band answer needed anyway.
+    // -----------------------------------------------------------------------
+    static constexpr float kStandMinM = 150.0f;
+    static constexpr float kStandMaxM = 420.0f;
+    bool nearestStand(float *outX, float *outZ) const {
+        if (!outX || !outZ) return false;
+        const VoxelTerrain &t = world_.terrain;
+        float bestX = 0.0f, bestZ = 0.0f, best = -1.0f;
+        const float half = t.usingDem()
+                               ? maxf(0.0f, 0.5f * t.dem().spanX() - 200.0f)
+                               : 1.0e9f;
+        for (uint32_t i = 0; i < 512; ++i) {
+            const float r =
+                kStandMinM + (kStandMaxM - kStandMinM) * sqrtf(hashUnit(0x51ed270bu, i));
+            const float a = hashUnit(0x9e3779b9u, i) * 6.2831853f;
+            const float x = clampf(pos_.x + r * cosf(a), -half, half);
+            const float z = clampf(pos_.z + r * sinf(a), -half, half);
+            if (std::hypot(x - pos_.x, z - pos_.z) < kStandMinM) continue;
+            if (!t.coverAllowsTree(x, z)) continue;
+            const float h = t.heightM(x, z);
+            const float w = t.waterAt(x);
+            if (w > -1.0e8f && h < w + 2.0f) continue;
+            const float d = t.standDensity(x, z);
+            if (d > best) {
+                best = d;
+                bestX = x;
+                bestZ = z;
+            }
+        }
+        if (best < 0.0f) return false;
+        *outX = bestX;
+        *outZ = bestZ;
+        return true;
     }
 
     void teleportTo(float x, float z) {
@@ -424,12 +632,21 @@
     //
     // BUILT FROM THE TABLE, so the help can never list a creature /locate does
     // not know or miss one it does.
-    static std::string lifeList(const char *indent, size_t perLine) {
+    //
+    // `fruit` PICKS WHICH HALF, because an apple listed under "life" is a lie
+    // the size of the word. The wrap counts what it PRINTS rather than where
+    // the row sits in the table -- counting the index instead leaves a hole
+    // wherever the filter skipped one, and the crop is the tail of the table,
+    // so every line of the life list would have been short by two.
+    static std::string lifeList(const char *indent, size_t perLine, bool fruit = false) {
         std::string m;
-        for (size_t i = 0; i < lifeNames().size(); ++i) {
-            if (i % perLine == 0) m += (i ? "\n" : "");
-            m += (i % perLine == 0) ? indent : "  ";
-            m += lifeNames()[i].name;
+        size_t n = 0;
+        for (const LifeName &ln : lifeNames()) {
+            if (ln.fruit != fruit) continue;
+            if (n % perLine == 0) m += (n ? "\n" : "");
+            m += (n % perLine == 0) ? indent : "  ";
+            m += ln.name;
+            ++n;
         }
         return m;
     }
@@ -442,7 +659,19 @@
         for (size_t i = 0; i < biomeNames().size(); ++i)
             m += "  " + std::string(biomeNames()[i].name);
         m += poi_.menu();
-        return m + "\n  life\n" + lifeList("    ", 7);
+        // ...AND THE MAPS ARE THEIR OWN ROW, not another place. They are not in
+        // this world at all -- naming one walks you through [O] into the arcade
+        // -- and a list that puts "canyon" beside a summit is a list that says
+        // those are the same kind of trip.
+        if (!world_.levelMaps().empty()) {
+            m += "\n  arcade ";
+            for (const World::LevelMap &lm : world_.levelMaps()) m += "  " + lm.name;
+        }
+        // ...AND THE CROP IS ITS OWN ROW, for the reason the arcade line above
+        // is: a list is a claim about what kind of thing each name is, and
+        // "apple" sitting between "bee" and "duck" says an apple walks around.
+        return m + "\n  life\n" + lifeList("    ", 7) + "\n  fruit\n" +
+               lifeList("    ", 7, true);
     }
 
     // -----------------------------------------------------------------------
@@ -489,14 +718,13 @@
 
         // ---- none in range: go to where they live ---------------------------
         //
-        // WATER FIRST, because it is the stronger condition of the two. Every
-        // row that swims is also a pine row, and a lake is a place inside that
-        // wood rather than a second wood to choose between -- so sending a
-        // salmon-hunter to the band centre would leave them standing in dry
-        // pines having been told they were on their way to a fish.
+        // WATER FIRST, because it is the stronger condition of the two. A lake
+        // is a place inside a wood rather than a wood to choose between, so
+        // sending a salmon-hunter to a band centre would leave them standing in
+        // dry trees having been told they were on their way to a fish.
         if (ln.water) {
             float wx = 0.0f, wz = 0.0f;
-            if (!nearestWater(&wx, &wz, ln.wood))
+            if (!nearestWater(&wx, &wz, ln.woods))
                 return std::string("no ") + ln.name +
                        " and no water it would live beside within 6 km -- lakes sit in "
                        "basins, and this one has to be in the right wood";
@@ -508,28 +736,53 @@
             return std::string(buf);
         }
 
-        if (ln.wood >= 0) {
-            const bool inBirch = world_.terrain.birchAt(pos_.x);
-            const bool wantBirch = (ln.wood == 1);
-            // ALREADY IN THE RIGHT WOOD AND STILL NOTHING. Not a place
+        if (ln.woods != kWoodAll) {
+            // -- ASKED AS A SET, NOT AS "IS IT BIRCH" ------------------------
+            //
+            // This was `birchAt(x) == (ln.wood == 1)`, a pair of booleans over
+            // a gate the engine has always kept as a SET of three bits. It
+            // answered correctly for a pine row and a birch row in a two-wood
+            // world and for nothing else: an OAK row would have found agreement
+            // standing in the PINE -- neither of them is birch -- and replied
+            // "walk on a little", which is the answer for being in the right
+            // wood, from two bands away. See the note on LifeName::woods.
+            const uint8_t here = world_.terrain.woodBit(pos_.x);
+            // ALREADY IN A WOOD IT LIVES IN AND STILL NOTHING. Not a place
             // problem, so do not teleport: either the models failed to load
-            // (the loaders say so on stdout) or, for a hive, this stretch of
-            // birch simply drew none -- they are on 5% of the trees.
-            if (inBirch == wantBirch)
+            // (the loaders say so on stdout) or this stretch of the wood
+            // simply drew none -- a hive is on 5% of the birches and a crop on
+            // 15% of the oaks big enough to carry one.
+            if (here & ln.woods)
                 return std::string("no ") + ln.name + " in range -- walk on a little";
+            // WHICH OF ITS WOODS, ASKED ONCE. A row can name more than one and
+            // the nearest is the only one worth either travelling to or
+            // naming in the refusal below.
+            float tx = pos_.x;
+            uint8_t want = kWoodPine;
+            if (!nearestWoodX(ln.woods, &tx, &want))
+                return std::string("no ") + ln.name + " anywhere -- its row lists no wood";
             if (world_.terrain.forced)
-                return std::string("no ") + ln.name + " here, and the world is pinned to one "
-                                   "wood (--birch / --pine) -- restart without it";
-            const float tx = nearestBandX(wantBirch ? Biome::Birch : Biome::Pine);
+                // -- AND IT NAMES A FLAG THAT EXISTS -----------------------
+                //
+                // The biome branch carries the paragraph about why: "restart
+                // without it" is an instruction to remove something that may
+                // never have been on the command line, and it also named
+                // --birch / --pine only, so an oak row asked in a birch world
+                // was told to restart with one of two flags, neither of which
+                // would have helped.
+                return std::string("no ") + ln.name + " here -- this world is " +
+                       world_.terrain.woodName(pos_.x) +
+                       " everywhere. restart with --all-woods for the three bands, or --" +
+                       woodWord(want) + " for a world of it";
             teleportTo(tx, pos_.z);
             char buf[200];
             std::snprintf(buf, sizeof(buf), "no %s here -- the %s wood, %.0f, %.0f. "
                                             "give it a moment",
-                          ln.name, wantBirch ? "birch" : "pine", tx, pos_.z);
+                          ln.name, woodWord(want), tx, pos_.z);
             return std::string(buf);
         }
 
-        // Either wood, so there is nowhere better to be sent: this one did not
+        // Every wood, so there is nowhere better to be sent: this one did not
         // load. Every loader prints its own reason at startup.
         return std::string("no ") + ln.name + " anywhere -- check the console output for the "
                            "loader's warning";

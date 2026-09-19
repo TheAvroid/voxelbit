@@ -229,9 +229,41 @@ struct ColumnStack {
     // failure the buried-shaft case has, same fix.
     int topMax = 0;
 
+    // -----------------------------------------------------------------------
+    // "SOLID THROUGH" MEANS THE ROW ABOVE IS SOLID TOO, AND THE `>` IS THE
+    // WHOLE OF IT.
+    //
+    // (user 2026-09-19: "parts of the seafloor are still missing", with an
+    // underwater shot of a large flat straight-edged patch where the bed should
+    // be.)
+    //
+    // This was `hMin >= y1`, which throws away a brick whose surface lies
+    // EXACTLY on its top row. A column of height h has its upward face AT h,
+    // and that face belongs to the brick containing h -- so a stack whose
+    // lowest column sits at y1 is not faceless, it is a stack whose entire
+    // floor is the last row of this brick. The brick above holds nothing but
+    // air and draws nothing, so the ground is simply absent: a hole you can see
+    // through, with the water lid still meshed over it.
+    //
+    // A LAKE BED IS WHERE IT SHOWS, because a bed is the one surface in this
+    // world that is FLAT across a whole 68-column stack -- heightM's carve is a
+    // smooth ramp off the shore distance and levels off in open water. It needs
+    // the bed to land on y == 63 (mod 64), which is one depth in sixty-four,
+    // and then a whole flat region loses its floor at once. Measured on Lake
+    // Ouachita at (1083, 2606): 9,524 of 641,601 wet columns inside an 80 m
+    // square, one connected patch about 15 m across, bed at voxel 127 -- the
+    // top row of brick 1. tests/seafloor_probe.cpp is that measurement, and it
+    // reports zero after this line.
+    //
+    // NOTHING ABOUT IT IS SPECIFIC TO WATER. Any ground flat enough across a
+    // brick stack and unlucky enough in its height -- a snowfield, a tilled
+    // field, the level's floor, a beach -- loses its top face the same way.
+    // Water is only what makes it obvious, because a hole in a lit hillside
+    // reads as a shadow and a hole in a lake bed reads as a void.
+    // -----------------------------------------------------------------------
     bool brickHasSurface(int by) const {
         const int y0 = by * BRICK_VOX, y1 = y0 + BRICK_VOX - 1;
-        if (hMin >= y1) return false;                          // solid through
+        if (hMin > y1) return false;                           // solid through
         if (topMax < y0) return false;                         // open air
         return true;
     }
