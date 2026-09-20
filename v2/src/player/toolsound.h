@@ -111,6 +111,28 @@ inline constexpr float kSfxPickUpBase = 0.0631f;
 // land at the same -40 dB. Picking a fresh number here would put the bite out
 // of line with the kit it sits beside.
 inline constexpr float kSfxEatBase = 0.1084f;
+// -- THE SHOT -----------------------------------------------------------
+//
+// (user 2026-09-18: "take the bullet.mp4 file located in videos and make it
+// the guns bullet sounds when firing.")
+//
+// 0.6310 IS THE LEVELLING PASS'S OWN FORMULA, not a taste: the cut measures
+// -30.0 LUFS integrated, and 10^((-34 - -30.0)/20) = 0.6310. That is the same
+// arithmetic that produced kSfxBlockBase and kSfxImpactBase EXACTLY, which is
+// how it was checked -- measure block.mp4 (-13.1 LUFS) and bow/impact.mp4
+// (-16.9) and the formula hands back 0.0902 and 0.1396, the two shipped
+// numbers. A gunshot that is level with the rest of the bank is the point; it
+// is loud because it is a gunshot, not because its cue was turned up.
+//
+// THE FILE IN THE BANK IS A CUT OF THE ONE THAT WAS HANDED OVER. Videos/
+// bullet.mp4 is a 2.95 s screen capture with a video track, and the bang is
+// 1.184 s to 1.502 s of it (ffmpeg silencedetect at -60 dB) -- so played whole
+// the shot would arrive a second and a fifth AFTER the trigger. The decoder's
+// own trim cannot save it: audio.h strips at most 100 ms of padding, by
+// design. sound/gun/bullet.mp4 is `-ss 1.17 -to 1.58 -vn -ac 2 -ar 48000
+// -c:a aac`, 410 ms, audio only, 11 KB. Re-cut it with those numbers if the
+// original is ever re-recorded.
+inline constexpr float kSfxBulletBase = 0.6310f;
 
 // Five takes each, and two voices per take. BOTH numbers are that engine's and
 // the second is the one that is easy to think optional: a held swing repeats
@@ -120,6 +142,11 @@ inline constexpr int kSfxTakes = 5;
 inline constexpr int kSfxTakeVoices = 2;
 // ...and four for the arrow's thud, because shafts land in twos and threes.
 inline constexpr int kSfxImpactVoices = 4;
+// FOUR FOR THE GUN, AND THE ARITHMETIC IS THE WHOLE REASON: the rifle repeats
+// every kBulletIntervalMs (300 ms) against a 410 ms shot, so a held trigger
+// always has the tail of the last round still sounding. One voice would clip
+// every shot in a burst to 300 ms and a burst would read as a stutter.
+inline constexpr int kSfxGunVoices = 4;
 
 // WHAT A BLOW TURNED OUT TO SOUND LIKE. Returned by blow() so --swing-log can
 // print it beside what the swing hit: "trunk" and "wood" on one line is the
@@ -160,12 +187,17 @@ class ToolSounds {
         // ONE VOICE. A bite is 900 ms and there is one mouth; a second voice
         // could only ever overlap the first with itself.
         eat_ = sfx_.load(dir + "/eat.mp4", kSfxEatBase, 1);
+        // ONE SHOT FOR BOTH GUNS -- "the guns bullet sounds", and the rifle and
+        // the pistol are the guns. A second file is what a second gun would
+        // need if one is ever recorded; nothing here is keyed to which is up.
+        bullet_ = sfx_.load(dir + "/gun/bullet.mp4", kSfxBulletBase, kSfxGunVoices);
         if (block_ >= 0) ++loaded;
         if (stretch_ >= 0) ++loaded;
         if (swish_ >= 0) ++loaded;
         if (impact_ >= 0) ++loaded;
         if (reload_ >= 0) ++loaded;
         if (pickUp_ >= 0) ++loaded;
+        if (bullet_ >= 0) ++loaded;
         std::printf("v2: tool sounds %d cues from %s%s\n", loaded, dir.c_str(),
                     reload_ < 0 ? "  (no bow/reload -- the re-nock is silent)" : "");
         std::fflush(stdout);
@@ -270,6 +302,34 @@ class ToolSounds {
     // would be late by the same third of a second.
     void pickedUp() { sfx_.play(pickUp_); }
 
+    // -- THE GUNS -----------------------------------------------------------
+    //
+    // (user 2026-09-18: "make it the guns bullet sounds when firing ... for the
+    // reload sound use the pick up sound from the sandbox".)
+    //
+    // FIRED ON THE FRAME THE ROUND LEAVES THE BARREL, beside bullets_.launch
+    // and held_.kick -- the same rule the arrow's whoosh follows, and for the
+    // same reason: a gun that is dry, busy reloading or between repeats never
+    // reaches that line, so this cannot report a shot that did not happen.
+    void gunFired() { sfx_.play(bullet_); }
+
+    // -- ...AND A ROUND GOING IN IS THE SANDBOX'S OWN PICKUP ---------------
+    //
+    // THE SAME HANDLE, NOT A SECOND LOAD OF THE SAME FILE, which is a decision
+    // about VOICES and not about memory. A revolver's six rounds arrive 270 ms
+    // apart against a 933 ms sample: on one voice each round retriggers the
+    // cue, which is a crisp tick per chamber, and on four they would ring over
+    // each other into one long chime. One voice is also all the pickup ever
+    // wanted -- "only one grab flight is ever in the air" -- so sharing it
+    // costs that cue nothing. The two cannot collide in practice anyway: the
+    // guns exist only in nuketown and nothing there levitates into the hand.
+    //
+    // ONCE PER ROUND, WHICH IS ONCE PER RELOAD FOR THE RIFLE, and that falls
+    // out of where it is called rather than from asking which gun is up -- see
+    // the reloadDone() poll in App::onFrameRender. A magazine change is one
+    // turn of the strip and a cylinder is six. See [[v2-rifle-ammo-and-reload]].
+    void gunLoaded() { sfx_.play(pickUp_); }
+
     // -----------------------------------------------------------------------
     // WHERE IT LANDED, and how far off.
     //
@@ -288,7 +348,7 @@ class ToolSounds {
     int wood_[kSfxTakes] = {-1, -1, -1, -1, -1};
     int rock_[kSfxTakes] = {-1, -1, -1, -1, -1};
     int block_ = -1, stretch_ = -1, swish_ = -1, impact_ = -1, reload_ = -1, pickUp_ = -1;
-    int eat_ = -1;
+    int eat_ = -1, bullet_ = -1;
     // Seeded apart, or the two sets would walk the same permutation and a
     // chop-then-mine would repeat the same index in both.
     vb::SfxBag woodBag_{kSfxTakes, 0x51ED270Bu};

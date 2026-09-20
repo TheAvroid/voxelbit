@@ -159,7 +159,7 @@
                 woodFly_ = player_.fly;
                 if (!world_.setLevel(true)) {
                     std::fprintf(stderr, "v2: no level to travel to -- run "
-                                         "tools/voxelize_nuketown.py\n");
+                                         "tools/voxelize_arcade.py\n");
                     return true;
                 }
                 standInLevel();
@@ -313,8 +313,20 @@
         // BLOCKING, deliberately. A reload is a thing you ASKED for and then
         // watch; streaming it in over the next few seconds would look like the
         // wood dissolving rather than like a refresh.
+        // -- [G] IS THE BIOME HOP NOW, AND CTRL+G IS THE REFRESH ----------
+        //
+        // (user 2026-09-19: "have it where the keybind g respawns the player to
+        //  a new biome. if the player keeps pressing g to respawn, it cycles
+        //  through the biomes.")
+        //
+        // THE KEY WAS TAKEN, and this is the split [R] already made for the
+        // same reason: the ask names a key, the key does something else, so the
+        // modifier decides which one this is. The refresh is a developer's
+        // tool -- rebuild a constant, press it, see the wood without your
+        // digging -- and it keeps every use it had, one chord further away.
         if (e.key == Input::Key::G && !consoleOpen_ && !menuOpen_) {
-            refreshWorld();
+            if (e.hasModifier(Input::Modifier::Ctrl)) refreshWorld();
+            else respawnToNextBiome();
             return true;
         }
         if (e.key == Input::Key::H && held_.ready()) {
@@ -342,8 +354,8 @@
         // silently changed meaning is the complaint this is trying not to
         // cause.
         if (e.key == Input::Key::R && !consoleOpen_ && !menuOpen_ &&
-            !e.hasModifier(Input::Modifier::Ctrl) && rifleInHand()) {
-            const bool started = reloadRifle();
+            !e.hasModifier(Input::Modifier::Ctrl) && holdingGun()) {
+            const bool started = reloadGun();
             std::printf("v2: reload%s\n",
                         started ? "ing"
                                 : (held_.reloading() ? " -- already reloading"
@@ -394,6 +406,10 @@
             return true;
         }
         if (e.key == Input::Key::P) shotRequested_ = true;
+        // WHERE YOU ARE -- see showCoords_. Free of the console and the menu
+        // for the reason every other bare key here is: a letter typed into the
+        // console must reach the console.
+        if (e.key == Input::Key::F3 && !consoleOpen_) showCoords_ = !showCoords_;
         if (e.key == Input::Key::F1) printHelp();
         std::fflush(stdout);
         return false;

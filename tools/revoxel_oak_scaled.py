@@ -31,6 +31,7 @@ WHAT 1.5 DOES TO THE CEILING
   So 1.5 is close to the most this set can take without a second kind of split.
 """
 
+import glob
 import os
 import sys
 
@@ -47,10 +48,15 @@ def main():
     if '--scale' in args:
         scale = float(args[args.index('--scale') + 1])
 
-    paths = [os.path.join(OAK, 'oak_%d.vox' % i) for i in range(1, 8)]
-    missing = [p for p in paths if not os.path.exists(p)]
-    if missing:
-        print('missing: %s' % ', '.join(os.path.basename(p) for p in missing))
+    # WHATEVER IS IN THE FOLDER, not a hardcoded 1..7. The seven this was
+    # written for were replaced by three FBX-voxelised oaks on 2026-09-19 and
+    # parked in _replaced-*/ -- a fixed range then fails on oak_4 and the set
+    # it should be growing is the one that is actually shipping. Non-recursive,
+    # so the parked folder is not picked up.
+    paths = sorted(glob.glob(os.path.join(OAK, 'oak_*.vox')),
+                   key=lambda q: int(os.path.basename(q)[4:-4]))
+    if not paths:
+        print('no oak_*.vox in %s' % OAK)
         return 1
 
     read = [(p,) + rt.read_vox(p) for p in paths]

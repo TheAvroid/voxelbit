@@ -93,3 +93,8 @@ v2/assets/dem/*.vbcov
 
 # Built by hand from tools/*.cpp; not a deliverable.
 v2/tools/*.exe
+
+# Scratch backups taken before a destructive asset regeneration. The originals
+# they hold are the committed versions of the same files, so git already has
+# them and a second copy is only noise in the tree.
+game/assets/**/_pre-revoxel-*/

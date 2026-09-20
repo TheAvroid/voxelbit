@@ -3155,6 +3155,22 @@ class LakeLife {
                 // to it. Waived for a tick after a teleport, when there is no
                 // previous frame to pop against.
                 if (!birth_.mayAt(ex, ez, birthMinM, birthFarM)) continue;
+                // -- NOT A CHERRY LAKE, 2026-09-19 ---------------------
+                //
+                // (user: "only the worm, pink bird, flamingos and pink
+                //  butterflies should be in the cherry forest".)
+                //
+                // ONE GATE FOR THE WHOLE LAKE. Every population in this file
+                // -- six fish, the ducks and their brood, the lily pads and the
+                // dragonflies -- draws its home from this list, so refusing the
+                // column here is refusing all of them, and there is no roster
+                // to keep in step with the ask.
+                //
+                // The cherry band has water because its ground IS the oak's by
+                // construction (see VoxelTerrain::woodWeights); it is the one
+                // thing the fold gave it that the blossom's roster does not
+                // want.
+                if (terrain_ && terrain_->cherryMix(st.x) >= 0.5f) continue;
                 if (!field_.at(st.x, st.z, &st.top, &st.bed)) continue;
                 if (st.top - st.bed < minDepthM) continue;
                 sites_.push_back(st);

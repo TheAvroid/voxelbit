@@ -42,15 +42,20 @@
         // which species to load, and the chunk mesher is handed a COPY of the
         // terrain when it starts its workers. Set it late and half the engine
         // has already been told it is a pine wood.
-        world_.terrain.forced = opt_.birch || opt_.pineOnly || opt_.oakOnly;
-        world_.terrain.biome = opt_.birch    ? Biome::Birch
-                               : opt_.oakOnly ? Biome::Oak
-                                              : Biome::Pine;
+        world_.terrain.forced = opt_.birch || opt_.pineOnly || opt_.oakOnly ||
+                                opt_.cherryOnly || opt_.desertOnly;
+        world_.terrain.biome = opt_.birch         ? Biome::Birch
+                               : opt_.oakOnly     ? Biome::Oak
+                               : opt_.cherryOnly  ? Biome::Cherry
+                               : opt_.desertOnly  ? Biome::Desert
+                                                  : Biome::Pine;
+        showCoords_ = opt_.coords;
         world_.terrain.grassDensity = clampf(opt_.grass, 0.0f, 1.0f);
         world_.flowerDensity = clampf(opt_.flowers, 0.0f, 1.0f);
         world_.rockDensity = clampf(opt_.rocks, 0.0f, 1.0f);
         world_.pineconesPerTree = maxi(0, opt_.pineconesPerTree);
         world_.treeDensity = clampf(opt_.treeDensity, 0.0f, 1.0f);
+        world_.oakDensity = clampf(opt_.oakDensity, 0.0f, 1.0f);
         world_.pineDir = opt_.pines;
         world_.decorDir = opt_.decor;
         // THE CEILING IS A MEMORY CEILING, NOT A DESIGN ONE. It was 15,
@@ -84,6 +89,23 @@
             if (world_.terrain.loadDem(opt_.demPath, opt_.demBaseM,
                                        opt_.demScale, opt_.demExag)) {
                 world_.terrain.demDetailM = opt_.demDetail;
+                world_.terrain.demRoughM = opt_.demRough;
+                // The patch goes on AFTER the DEM, because it is rebased onto
+                // whatever the DEM says locally -- see world/inset.h.
+                if (!opt_.insetPath.empty()) {
+                    if (world_.terrain.inset.load(opt_.insetPath, opt_.insetX,
+                                                  opt_.insetZ, opt_.demScale))
+                        printf("[inset] %s  %dx%d at %.3f world m, %.0f m across,"
+                               " centred (%.0f, %.0f)\n",
+                               opt_.insetPath.c_str(), world_.terrain.inset.w(),
+                               world_.terrain.inset.h(),
+                               world_.terrain.inset.stepWorldM(),
+                               world_.terrain.inset.spanWorldM(),
+                               opt_.insetX, opt_.insetZ);
+                    else
+                        printf("[inset] FAILED %s -- %s\n", opt_.insetPath.c_str(),
+                               world_.terrain.inset.err());
+                }
                 world_.terrain.stemDiv = opt_.stemDiv;
                 const DemField &d = world_.terrain.dem();
                 printf("[dem] %s  %dx%d  %.1f..%.1f m asl  relief %.1f m\n"
@@ -109,6 +131,10 @@
                 // AFTER THE DEM, ALWAYS -- loadCover is handed the terrain's
                 // shrink, so a cover loaded first would be indexed at 1:1 and
                 // put every tree in the wrong place.
+                // BEFORE loadCover, because the ground ramp below is only
+                // published into the palette when the imagery is trusted for
+                // the ground -- see VoxelTerrain::coverGround.
+                world_.terrain.coverGround = opt_.coverGround;
                 if (!opt_.coverPath.empty()) {
                     if (world_.terrain.loadCover(opt_.coverPath)) {
                         const CoverField &cv = world_.terrain.cover();
@@ -116,7 +142,14 @@
                         // renders flat 170-grey until the table is uploaded
                         // again, and that failure looks like the ramp was never
                         // set at all.
-                        world_.palette.setGroundBand(cv.ramp(), CoverField::kRamp);
+                        // ...AND ONLY IF THE GROUND IS THE PICTURE'S. The ramp is
+                        // built from the window's bare-ground pixels, so under
+                        // --cover-water it would paint mat::GROUND_0..9 with
+                        // colours nothing is ever going to ask for -- and on a
+                        // window the classifier misreads, those ten entries are
+                        // the lavender the rock came out as.
+                        if (opt_.coverGround)
+                            world_.palette.setGroundBand(cv.ramp(), CoverField::kRamp);
                         printf("[cover] %s  %dx%d  ground ramp #%02x%02x%02x .. #%02x%02x%02x\n",
                                opt_.coverPath.c_str(), cv.w(), cv.h(),
                                cv.ramp()[0], cv.ramp()[1], cv.ramp()[2],
@@ -313,6 +346,7 @@
         tracer_.init(getDevice(), &world_, neural_.available(), !opt_.sharcHashGrid,
                      !opt_.nrcFreqEncoding);
         makeCrosshair();
+        makeVitalsPasses();   // the two bars and the death curtain
 
         // A denoiser that takes the program down when a driver is old is worse
         // than no denoiser, so this is allowed to fail and say so. Everything
@@ -649,6 +683,7 @@
             std::fflush(stdout);
         }
 
+
         // -- and what is in the air (render/butterflies.h) -------------------
         //
         // AFTER the world, and it has to be: the models go into the same
@@ -740,6 +775,33 @@
             // Printed unconditionally, and on the OFFLINE path too. It used to
             // sit inside the held-model branch, which --out deliberately does
             // not take, so a headless render could not see the number at all.
+            // -- AND NOW THE ARCADE'S OWN TABLE, WHICH HAS TO BE LAST --------
+            //
+            // (user 2026-09-18: "cant you give me seperate tables? one palete
+            // table for the sandbox world and one for the arcade with the fps
+            // maps".)
+            //
+            // AFTER EVERY LOADER IN THE PROGRAM, and that is not tidiness. The
+            // arcade allocates its own 255 entries TOP-DOWN from 254, and the
+            // one thing it may not reuse is an id that carries BEHAVIOUR in
+            // the wood, because `h.mtl` is a raw uint8 and none of the tests
+            // that read it can be told which table is in force. Three sets
+            // qualify and all three are recorded through World::noteHeldMtl:
+            //
+            //   * the HELD KIT -- you carry it through [O] (prewarmColors).
+            //   * the PARTICLE materials -- spark, ember red and smoke are in
+            //     V6Params::emitters, and an arcade colour that lands on one
+            //     of those ids GLOWS. That is not a guess; see the note in
+            //     Particles::load for the cliff face it lit up.
+            //   * the firefly's glow, for the same reason.
+            //
+            // The first of those is known at line 631 and the other two are
+            // not known until here, which is what decides the position of this
+            // call. Being last costs the arcade nothing -- it is not competing
+            // with anybody for entries any more, which is the whole point of
+            // it having a table.
+            world_.prepareLevelPalette();
+
             {
                 const int used = world_.palette.used();
                 const int lost = world_.palette.overflowedColors();
@@ -749,9 +811,9 @@
                 if (lost)
                     std::fprintf(stderr,
                                  "v2: PALETTE FULL -- %d distinct colour(s) could not be "
-                                 "registered and render as AIR, refused %d time(s) across all "
-                                 "models. Models are served in load order, so what you cannot "
-                                 "see is whatever loaded last.\n",
+                                                                         "registered and render as AIR, refused %d time(s) across all "
+                                                                         "models. Models are served in load order, so what you cannot "
+                                                                         "see is whatever loaded last.\n",
                                  lost, calls);
             }
             edit_.attach(&bunnies_);
@@ -813,6 +875,18 @@
             // printing, and was read as a known quirk.
             applySun(true);
             runClipTest();
+            shutdown(0);
+            return;
+        }
+        if (opt_.biteTest) {
+            // The same clock/sun pair every headless diagnostic needs -- see
+            // the note above, which is about the half of it that was missing
+            // for months.
+            clock_.tday = opt_.timeOfDay;
+            clock_.cycleSpeed = opt_.cycleSpeed;
+            clock_.azimuthBase = opt_.sunAz;
+            applySun(true);
+            runBiteTest();
             shutdown(0);
             return;
         }
@@ -1196,7 +1270,8 @@
             // hand moves. Its merge tolerance rides along -- see the note above
             // on why the meat's nine colours must not be snapped.
             if (!held_.addFood(world_, "steak", opt_.steak,
-                               HeldPose{8.799f, -1.624f, 8.730f, 0.050f, 0.680f, 1.951f, 1.000f},
+                               // Re-baked 2026-09-19 off the [K] card.
+                               HeldPose{8.799f, -1.624f, 8.730f, 0.977f, 0.575f, 1.885f, 1.000f},
                                HeldItem::kSteakMergeTol))
                 steakTool_ = -1;
             // -- THE APPLE AND THE ORANGE, WHICH ARE THE SAME TWO MODELS -----
@@ -1231,13 +1306,26 @@
                            HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f},
                            Takes::Nothing))
                 arrowTool_ = -1;
+            // THE USER'S BAKE, off the [K] card. It drops the fruit 67 cm in
+            // the hand's own units from the seeds' starting pose -- the note
+            // above called that pose "a starting point for a bake, said as
+            // one", and this is the bake. ONE POSE FOR BOTH: an apple and an
+            // orange are 4x3x5 and 3x3x5 of the same kit scale, so a pose that
+            // sits one correctly sits the other (user: "apply these new
+            // positions for the apple as well since they are the same shape").
+            //
+            // RE-BAKED 2026-09-19: roll 1.580 -> 1.231, the user's own card
+            // again ("apple { 8.799, -1.577, 8.730, 0.040, -1.420, 1.231,
+            // 1.000 }. apply this to the orange too"). A fifth of a radian
+            // about the shaft and nothing else moves -- the fruit turns in the
+            // hand, it does not change where the hand is.
             appleTool_ = held_.count();
             if (!held_.addFood(world_, "apple", opt_.apple,
-                               HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
+                               HeldPose{8.799f, -1.577f, 8.730f, 0.040f, -1.420f, 1.231f, 1.000f}))
                 appleTool_ = -1;
             orangeTool_ = held_.count();
             if (!held_.addFood(world_, "orange", opt_.orange,
-                               HeldPose{8.799f, -0.910f, 8.730f, 0.040f, -1.420f, 1.580f, 1.000f}))
+                               HeldPose{8.799f, -1.577f, 8.730f, 0.040f, -1.420f, 1.231f, 1.000f}))
                 orangeTool_ = -1;
             // -- THE ASSAULT RIFLE, ON THE WHEAT'S TERMS AND FOR A NEW REASON -
             //
@@ -1399,18 +1487,47 @@
             //   y  the rifle's body sits at the TOP of its box, one voxel above
             //      its centre; the pistol fills its box, so it needs that voxel
             //      back: -4.5 + 1 = -3.5.
-            //   z  a 0.8 m pistol rather than a 1.1 m rifle. Held so its near
-            //      end is where the rifle's is (0.36 m from the eye), which is
-            //      a centre at 7.6.
+            //   z  THE RIFLE'S OWN DEPTH, 9.135, AND THAT IS THE ANSWER TO "IS
+            //      IT THE SAME VOXEL SIZE" (user 2026-09-18: "can you make sure
+            //      the pistol is the same voxel size as the assault rifle").
+            //
+            //      IT ALWAYS WAS, in the only sense the pose can express it:
+            //      `scale` is 1.000 on both, and HeldItem::xform builds the
+            //      instance from `pose.scale * VOXEL_M`, so one model voxel is
+            //      one world voxel -- 10 cm -- for both guns and for every
+            //      other thing in the kit.
+            //
+            //      WHAT WAS DIFFERENT WAS THE DISTANCE, and on screen that is
+            //      indistinguishable from a scale. The first cut put the pistol
+            //      at 7.600 so its grip sat where the rifle's stock does; 15 cm
+            //      nearer the eye is 20% more angle per voxel, so the same-sized
+            //      voxels drew bigger. Held at the rifle's own depth they
+            //      measure the same, which is what was asked. The pistol is
+            //      SHORTER, so its muzzle now stops 30 cm short of where the
+            //      rifle's does -- that is the gun being a different gun rather
+            //      than a different size.
             //
             // Tune it live on [K] and use the copy-pose row, exactly as the
             // rifle's and the hoe's were baked.
-            static const HeldPose kPistolAds{0.000f, -2.600f, 6.500f,
+            // SHIPPED AT THE USER'S OWN BAKE (2026-09-18, off the [K] card):
+            // {-1.000f, -2.933f, 8.000f}. Both terms moved off the derived
+            // number -- the sight sits LEFT of the pistol's centreline where
+            // the rifle's is on it, and a third of a voxel lower.
+            static const HeldPose kPistolAds{-1.000f, -2.933f, 8.000f,
                                              0.000f, -1.571f, 0.000f, 1.000f};
             pistolTool_ = held_.count();
+            // -- ...AND IT LOADS LIKE A REVOLVER ---------------------------
+            //
+            // (user 2026-09-18: "its a standard revolver with 6 rounds".)
+            //
+            // The last two arguments are the whole of it: ONE TURN of the strip
+            // takes kPistolReloadMs and loads ONE round, so the gun plays it
+            // once per empty chamber. The rifle takes the defaults -- 1800 ms,
+            // and 0 meaning "this turn loads the magazine".
             if (!held_.addGun(world_, "pistol", opt_.pistol, opt_.pistolReload,
-                              HeldPose{6.250f, -3.500f, 7.600f, 0.000f, -1.571f, 0.000f, 1.000f},
-                              HeldItem::kGunMergeTol, &kPistolAds))
+                              HeldPose{6.250f, -3.500f, 9.135f, 0.000f, -1.571f, 0.000f, 1.000f},
+                              HeldItem::kGunMergeTol, &kPistolAds, kPistolReloadMs,
+                              /*reloadRounds=*/1))
                 pistolTool_ = -1;
             // -- THE BULB, RIGHT AFTER THE RIFLE ---------------------------
             //

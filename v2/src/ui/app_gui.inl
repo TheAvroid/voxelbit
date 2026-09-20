@@ -327,7 +327,7 @@
             // headed STACK COUNT while you tune the ammo counter is the kind
             // of small lie that costs somebody ten minutes looking for the
             // other panel.
-            sw.text(sel >= 0 && sel == rifleTool_ ? "AMMO COUNT" : "STACK COUNT");
+            sw.text(isGun(sel) ? "AMMO COUNT" : "STACK COUNT");
             sw.separator();
             sw.text(sel >= 0 ? held_.tool(sel).name : "nothing in hand");
             sw.checkbox("show a count while this is open", stackPanelForce_);
@@ -419,8 +419,10 @@
         }
 
         float below = 12.0f;
+        // HOISTED out of the frame-rate block: the coordinate readout shares
+        // this corner now and "the two corners agree" has to mean three.
+        const float inset = 12.0f;
         {
-            const float inset = 12.0f;  // the HUD's, so the two corners agree
             // Room for the shadow, and no more: a window's draw list is clipped
             // to its own rectangle, and at zero padding a two-pixel offset
             // loses its bottom-right corner.
@@ -483,6 +485,47 @@
         // So the saved notice is retired HERE, before the test, rather than
         // inside the window where it used to be -- expiring mid-draw would
         // leave exactly that empty rectangle for a frame.
+        // ---- where you are, under the frame rate ---------------------------
+        //
+        // (user 2026-09-19: "give me a toggle for coords. x, y, and z coords.")
+        //
+        // THE PLAYER'S FEET, NOT THE EYE. pos_ is where the body stands, and a
+        // coordinate readout is for knowing where you ARE -- somewhere to walk
+        // back to, a spot to describe. The eye is 1.6 m of head above that and
+        // would make every y a decimal nobody asked for.
+        //
+        // IN METRES, which is the unit the whole engine is written in and the
+        // one /locate and every log line already print. Voxels would be ten
+        // times the number and agree with nothing the player can read anywhere
+        // else.
+        //
+        // IT SHARES THE CORNER, so it takes `below` from whatever drew above it
+        // and hands it on -- the frame rate, then this, then the recorder. Two
+        // readouts stacked on one another is two readouts and neither legible;
+        // that is the rule the REC badge already follows.
+        if (showCoords_) {
+            const float pad = 3.0f;
+            styleV2 style(pGui, px3_, 0.0f, fbH);
+            ImGui::GetStyle().WindowPadding = ImVec2(pad, pad);
+            Gui::Window cw2(pGui, "v2coords", {0, 0}, {0, 0}, kBare);
+            px3Font face(px3_);
+            ImGui::SetWindowFontScale(style.scale);
+            ImGui::SetWindowPos(ImVec2(inset - pad, below - pad));
+            const std::string line =
+                fmt("%.0f  %.0f  %.0f", pos_.x, pos_.y, pos_.z);
+            const ImVec2 sz = ImGui::CalcTextSize(line.c_str());
+            below += sz.y + 8.0f;
+            // A DROP SHADOW, like the frame rate's and for its reason: this
+            // sits over open sky as often as over ground, and a pale number on
+            // a pale cloud is not a readout.
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + 2.0f, at.y + 2.0f),
+                                                IM_COL32(0, 0, 0, 150), line.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::rgb(196, 204, 214));
+            ImGui::TextUnformatted(line.c_str());
+            ImGui::PopStyleColor();
+        }
+
         if (savedTake_.valid() && nowSeconds() - savedAt_ >= kSavedNotice)
             savedTake_ = vb::Take{};
         if (recorder_.recording() || recorder_.busy() || savedTake_.valid()) {
@@ -1023,424 +1066,531 @@
         // menu to ask it through. What is gone is the in-game control, not
         // the capability behind it.
 
-        // ---- the denoiser ---------------------------------------------------
+        // =====================================================================
+        // THREE TABS: CONTROLS, VISUALS, GENERAL.
         //
-        // NO ON/OFF ROW. Ray Reconstruction is always on -- at one sample a
-        // pixel it is not an enhancement, it is the thing that makes the image
-        // an image, and offering to switch it off is offering to break the
-        // renderer. --no-dlss still exists for a reference render, which is the
-        // only context where the accumulating film is the right answer.
+        // (user 2026-09-19: "can you organize the settings better into
+        //  categories. have controls, visuals, and general.")
         //
-        // THREE MODES, NOT FIVE. Ultra performance and Performance are not
-        // offered: below Balanced, Ray Reconstruction is upscaling from so few
-        // pixels that a conifer canopy -- thin, high-frequency geometry with
-        // bright sky behind it -- comes back as mush that no amount of
-        // denoising recovers. The ENUM still has them and --dlss names them, so
-        // a benchmark keeps a capability the in-game menu does not offer; the
-        // same split --scale got.
-        if (dlss_.available() && opt_.dlss) {
-            Falcor::Gui::DropdownList modes = {
-                {uint32_t(DlssQuality::Balanced), "Balanced"},
-                {uint32_t(DlssQuality::Quality), "Quality"},
-                {uint32_t(DlssQuality::Dlaa), "DLAA (no upscale)"},
-            };
-
-            // AND IF WE ARE IN A MODE THE LIST DOES NOT OFFER, SHOW IT ANYWAY.
-            // This is not tidiness. Falcor's addDropdown scans the list for the
-            // live value and leaves its index at -1 when it is not found, then
-            // unconditionally does `values[curItem]` (Gui.cpp:668) -- so a value
-            // outside the list is not a blank combo, it is an out-of-bounds read
-            // on a std::vector. Reachable from the command line today with
-            // `--dlss performance`.
-            const uint32_t live = uint32_t(opt_.dlssQuality);
-            bool listed = false;
-            for (const auto &e : modes) listed = listed || e.value == live;
-            if (!listed)
-                modes.insert(modes.begin(), {live, dlssQualityName(opt_.dlssQuality)});
-
-            uint32_t m = live;
-            if (w.dropdown("Mode", modes, m)) {
-                opt_.dlssQuality = DlssQuality(m);
-                tracer_.setQuality(opt_.dlssQuality);
-            }
-        } else if (dlss_.available()) {
-            // --no-dlss: the film is accumulating instead, and a reconstruction
-            // mode is not a thing that has a meaning here.
-            w.text("Ray Reconstruction off (--no-dlss) -- accumulating");
-        } else {
-            w.text(fmt("DLSS unavailable: %s", dlss_.status().c_str()));
-        }
-
-        // FRAME GENERATION IS NOT IN THIS MENU. It is on at 2x and stays there;
-        // --fg 2x|3x|4x|off still works and the capability probes in
-        // streamline.h still run, so a card that cannot do it still declines
-        // quietly. Its diagnostics -- what DLSS-G says about itself, the
-        // generated-frame counts, whether the device reached Streamline before
-        // the swapchain -- are printed at start-up and under --stats, which is
-        // where a diagnostic belongs.
-        w.separator();
-
-        // ---- the neural radiance cache --------------------------------------
+        // WHAT WAS HERE was one column of forty-odd rows in the order they were
+        // added over three weeks -- the denoiser, then the cache, then a
+        // hardware readout, then exposure, then the walk speed, then the audio,
+        // then the hand, then the fog, then the sky -- so finding anything
+        // meant reading all of it, and the panel had already outgrown the
+        // screen once and been given a scrollbar for it.
         //
-        // The batch count is the honest indicator and it is why it is on screen:
-        // "on" tells you what was asked for, and the number climbing tells you
-        // the network is actually being fed. A cache that is enabled but whose
-        // count is stuck is a cache that is doing nothing, and without this row
-        // that looks exactly like one that is working.
-        if (nrc_.available()) {
-            if (w.checkbox("Neural radiance cache", opt_.nrc)) {
-                nrc_.enabled = opt_.nrc;
-                invalidate();
-            }
-            if (opt_.nrc) {
+        // THE ROWS THEMSELVES ARE UNTOUCHED, and that is deliberate: every one
+        // of them carries a note explaining what it does and what it costs, and
+        // this change is about WHERE they sit, not what they say. The blocks
+        // were moved whole.
+        //
+        // WHERE THE LINE IS DRAWN, when a row could go in two places:
+        //
+        //   CONTROLS  what YOU do -- how fast you walk, how far the mouse
+        //             turns you, how much you can see at once, and what is in
+        //             your hand. Everything here changes the player.
+        //   VISUALS   what it LOOKS like -- reconstruction, the cache behind
+        //             it, the tone curve, the lens, the air. Everything here
+        //             changes the picture and nothing here changes the world.
+        //   GENERAL   everything else -- the sound, the clock, the machine
+        //             underneath, and the button that makes all of it the
+        //             default. The sky is here rather than in visuals because
+        //             the time of day is a property of the WORLD: it moves the
+        //             shadows in a screenshot taken an hour later, which is not
+        //             what a look setting does.
+        //
+        // The header above the tabs stays outside them -- the resolution, the
+        // frame rate and the counts are what every tab is a trade against.
+        // =====================================================================
+        if (ImGui::BeginTabBar("##v2tabs", ImGuiTabBarFlags_None)) {
+            if (ImGui::BeginTabItem("controls")) {
+                ImGui::Spacing();
+                // -- THE KEYS THEMSELVES, FIRST ---------------------------
+                //
+                // (user 2026-09-19: "list all the keybinds in controls in the
+                //  settings".)
+                //
+                // ONE COPY, TWO READERS -- see ForestApp::keyHelpText, which
+                // is the string F1 prints. A second list typed in here is a
+                // list that goes stale, and [G] changing meaning this morning
+                // is the proof: it would still say REFRESH.
+                //
+                // COLLAPSED BY DEFAULT, because this tab's sliders are what a
+                // returning player opens it for and forty lines of keys above
+                // them is a wall. Open it once and ImGui remembers.
+                //
+                // The monospace font is not decoration: the string is laid out
+                // in columns and the proportional face closes them up.
+                if (ImGui::CollapsingHeader("Key bindings")) {
+                    if (px3_) ImGui::PushFont(px3_);
+                    ImGui::BeginChild("##v2keys", ImVec2(0.0f, 320.0f), true,
+                                      ImGuiWindowFlags_HorizontalScrollbar);
+                    ImGui::TextUnformatted(keyHelpText());
+                    ImGui::EndChild();
+                    if (px3_) ImGui::PopFont();
+                    ImGui::Spacing();
+                }
+            w.slider("Walk speed", player_.walk, 0.2f, 200.0f);
+            // No invalidate: it changes nothing that has already been traced, only
+            // how far the next mouse movement will turn the view -- exactly like
+            // exposure and walk speed above it.
+            w.slider("Sensitivity", opt_.sensitivity, 0.02f, 0.50f, false, "%.3f deg/px");
+            // AND NOTHING ELSE ABOUT THE MOUSE. There were two more rows here --
+            // acceleration and weight -- and they are gone at the user's word; the
+            // note in Options says why they were removed rather than zeroed.
+            // Sensitivity is now the whole of it, which is what a raw mouse means.
+            if (w.slider("Field of view", fov_, 10.0f, 100.0f)) invalidate();
+
+            // ---- THE THING IN YOUR HAND ---------------------------------------
+            //
+            // SEVEN SLIDERS, AND THEY ARE THE POINT OF THIS SECTION. The pose came
+            // over from the JS engine's held-item panel, and it came over because
+            // that panel existed: nobody arrives at { 0.91, -0.10, 0.96, 0.04,
+            // -1.42, 1.58 } by reasoning about it. A viewmodel is judged by eye and
+            // adjusted by hand, and the two conversions between that engine and
+            // this one (see render/helditem.h) mean the bake is a starting point
+            // here rather than a finished answer.
+            //
+            // THERE IS NO LIGHTING ROW, and that is the feature. The tool is traced
+            // at the primary vertex off the world's own materials, so how bright it
+            // is has exactly one answer and it is the same answer the wood gets --
+            // there is nothing here to tune, and nothing that can drift out of step
+            // with the frame behind it. An earlier cut of this composited a
+            // separately lit axe over the finished image and needed three rows to
+            // make it agree with the picture; it never quite did.
+            //
+            // THESE SEVEN DO INVALIDATE, through animating(): moving the tool makes
+            // every sample already in the film describe a tool that is somewhere
+            // else.
+            //
+            // The values are the JS engine's units, voxels and radians, so a row
+            // read here can be pasted straight back into that engine's PICK_DEFS
+            // and vice versa. See the note on HeldPose.
+            // -- THE POSE ROWS MOVED TO [K] (user 2026-09-17) -------------------
+            //
+            // "put the hand held item adjustments and the aim down site adjustments
+            // all on the k keybind with the stack number positionings."
+            //
+            // They were seven sliders in the middle of a settings MENU, and a
+            // viewmodel is not a setting: it is a thing you move while looking at
+            // it, which means the menu must not be holding the mouse. [K] draws
+            // them as a card down the right edge with the sights and the stack
+            // badge under it -- see the block in drawUi. What is left here is the
+            // pointer, because a row that used to be in a menu and is now nowhere
+            // is worse than either.
+            if (held_.ready()) {
+                w.separator();
+                w.checkbox(fmt("%s in hand  (H)", held_.name()).c_str(), held_.shown);
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-                ImGui::TextUnformatted(
-                    fmt("   %s   %u batches", nrc_.warm() ? "predicting" : "warming up",
-                        nrc_.batches())
-                        .c_str());
+                ImGui::TextUnformatted("  K -- pose, sights and stack badge");
                 ImGui::PopStyleColor();
-                w.checkbox("  keep learning", nrc_.training);
-                if (w.slider("  from bounce", nrc_.queryDepth, 1, 6)) invalidate();
-                w.slider("  train 1 px in", nrc_.trainEvery, 8, 512);
-                w.slider("  learning rate", nrc_.learningRate, 0.0005f, 0.05f, false, "%.4f");
-                // fp16 training does diverge, and when it does every query is a
-                // NaN that the film will happily accumulate. There is no
-                // recovering a poisoned network, so the only cure is on offer.
-                if (w.button("  retrain from scratch")) nrc_.reset();
             }
-        } else if (neural_.available()) {
-            w.text(fmt("Neural radiance cache: %s", nrc_.status().c_str()));
-        }
-        w.separator();
-
-        // ---- what the hardware is doing under all of this --------------------
-        //
-        // Read-only where there is nothing to decide. Clusters and cooperative
-        // vectors are capabilities of this device and this backend, not
-        // preferences, and a checkbox for something the driver has already
-        // refused is a checkbox that lies.
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-        ImGui::TextUnformatted(fmt("clusters   %s", clusters_.available() ? "available"
-                                                                          : "not on this backend")
-                                   .c_str());
-        ImGui::TextUnformatted(
-            fmt("neural     %s", neural_.available() ? "cooperative vectors" : "unavailable")
-                .c_str());
-        ImGui::TextUnformatted(fmt("cuda       %s", cuda_.available() ? "shared with the renderer"
-                                                                     : "unavailable")
-                                   .c_str());
-        ImGui::PopStyleColor();
-        w.separator();
-
-        // Exposure changes no sample already drawn, so it deliberately does NOT
-        // throw the accumulation away. Nor does the toe -- both are the curve
-        // between the film and the screen, not the film.
-        w.slider("Exposure", opt_.r.exposure, 0.05f, 40.0f);
-        // THE KNOB FOR "SHADOWS ARE TOO DARK", and the range matters. This is
-        // the ACES toe: the curve's slope near black is b/0.14, so the 0.14
-        // default is a slope of exactly 1.0 -- linear, no crush. Below that the
-        // curve is eating shadow detail; above it is deliberately lifting.
-        //
-        // It used to stop at 0.20 and that was too low to be the answer to
-        // anything. 0.35 reaches a slope of 2.5, and the shoulder does not move
-        // with it: b appears only in the linear term, so highlights roll off
-        // identically at every setting on this slider.
-        w.slider("Shadow lift", opt_.r.shadowLift, 0.03f, 0.35f, false, "%.3f toe");
-
-        // THE ONE THAT ONLY TOUCHES THE DARK. The toe above is a parameter of
-        // the tone curve and so acts on the whole frame; this falls to exactly
-        // zero at the reach below it, which is why the midtones do not move.
-        // Reach for this one when the undersides of the canopy are too dark and
-        // the rest of the frame is right, which is the usual case in a wood.
-        w.slider("Deep shadow lift", opt_.r.deepLift, 0.0f, 0.15f, false, "%.3f");
-        // How far the corners fall off. 0 is off, which is where it starts --
-        // the tone map runs it last, after the flare, so it darkens the
-        // finished image rather than having the ghosts scatter back over it.
-        // THE SUN GLARE HAD NO CONTROL AT ALL, which is how "I can see the sun
-        // through the tree" ended up with no way to answer it from inside the
-        // game. It is a look, and every other look in this menu is a slider.
-        // 0 removes the glare and the ghosts entirely and costs nothing else --
-        // the sun disc itself is drawn by the sky, not by this.
-        // RANGE RAISED WITH THE DEFAULT. 2.0 was the ceiling and is now where
-        // the slider starts, which would have made it a knob that only turns
-        // down. 4.0 keeps as much headroom above the default as there is below.
-        w.slider("Sun glare", tracer_.flare, 0.0f, 4.0f, false, "%.2f");
-        w.slider("Vignette", tracer_.vignette, 0.0f, 1.0f, false, "%.2f");
-
-        // AUTO-EXPOSURE, BLOOM AND THE DEEP-LIFT'S REACH ARE NOT IN THIS MENU,
-        // deliberately. All three are reachable from the command line
-        // (--auto-exposure, --exposure-key, --bloom, --bloom-threshold,
-        // --deep-range) and the first three bake, so nothing about them is
-        // gone -- they are simply not worth the rows they cost here.
-        w.slider("Walk speed", player_.walk, 0.2f, 200.0f);
-        // No invalidate: it changes nothing that has already been traced, only
-        // how far the next mouse movement will turn the view -- exactly like
-        // exposure and walk speed above it.
-        w.slider("Sensitivity", opt_.sensitivity, 0.02f, 0.50f, false, "%.3f deg/px");
-        // AND NOTHING ELSE ABOUT THE MOUSE. There were two more rows here --
-        // acceleration and weight -- and they are gone at the user's word; the
-        // note in Options says why they were removed rather than zeroed.
-        // Sensitivity is now the whole of it, which is what a raw mouse means.
-        if (w.slider("Field of view", fov_, 10.0f, 100.0f)) invalidate();
-        // No invalidate here either, and for a stronger reason than the two
-        // above: this one changes nothing the renderer can even see. Hidden
-        // rather than greyed when there is no voice -- under --no-sound or on
-        // a machine with no endpoint, a slider that does nothing is worse
-        // than no slider.
-        // CALLED VOLUME, BECAUSE THAT IS WHAT SOMEBODY LOOKS FOR. It was
-        // "Ambience", which is accurate -- the bed is the only sound the engine
-        // makes -- and accurate is not the same as findable.
-        //
-        // AND A REASON WHEN IT IS MISSING, which reverses the old rule here.
-        // Hiding a dead slider is right; hiding it without explanation sends
-        // somebody hunting through a menu for a row that was never going to be
-        // drawn. A line of text is not a control that does nothing, it is the
-        // answer to the question the missing control provokes.
-        //
-        // THE DEFAULT IS THE MIDDLE OF THE TRACK. This ran to 2.0, and the
-        // bed is a background: everything anybody would actually choose
-        // lived in the first eighth of the travel, with the whole right-hand
-        // half reserved for twice the level the asset was baked at. So the
-        // top is now twice the default instead of eight times it, which puts
-        // the handle you start with in the centre and spends the travel on
-        // the range the ear is actually being asked about.
-        //
-        // The command line is unchanged and still reaches the baked level:
-        // --ambience 1.0, or 2.0, is a number rather than a drag.
-        if (ambience_.active()) {
-            float amb = ambience_.masterGain();
-            // The floor is what stops a bake at zero from welding the control
-            // shut: a slider whose top is its bottom can never be dragged back
-            // up, and the volume is the one setting somebody is most likely to
-            // take all the way down before baking.
-            const float top = maxf(0.05f, defaults::kAmbience * 2.0f);
-            if (w.slider("Volume", amb, 0.0f, top, false, "%.2f"))
-                ambience_.setMasterGain(amb);
-        }
-        // ITS OWN SLIDER, which is the JS engine's split: the bed and the
-        // things the world does are two buses there, because a wood that is too
-        // loud and an axe that is too loud are different complaints.
-        if (toolSfx_.ready()) {
-            float s = toolSfx_.gain();
-            if (w.slider("Tools", s, 0.0f, 2.0f, false, "%.2f")) toolSfx_.setGain(s);
-        }
-        if (!ambience_.active()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted(opt_.background
-                                       ? "Volume: no audio under --background"
-                                       : "Volume: no audio (--no-sound, or no endpoint)");
-            ImGui::PopStyleColor();
-        }
-
-        // ---- THE THING IN YOUR HAND ---------------------------------------
-        //
-        // SEVEN SLIDERS, AND THEY ARE THE POINT OF THIS SECTION. The pose came
-        // over from the JS engine's held-item panel, and it came over because
-        // that panel existed: nobody arrives at { 0.91, -0.10, 0.96, 0.04,
-        // -1.42, 1.58 } by reasoning about it. A viewmodel is judged by eye and
-        // adjusted by hand, and the two conversions between that engine and
-        // this one (see render/helditem.h) mean the bake is a starting point
-        // here rather than a finished answer.
-        //
-        // THERE IS NO LIGHTING ROW, and that is the feature. The tool is traced
-        // at the primary vertex off the world's own materials, so how bright it
-        // is has exactly one answer and it is the same answer the wood gets --
-        // there is nothing here to tune, and nothing that can drift out of step
-        // with the frame behind it. An earlier cut of this composited a
-        // separately lit axe over the finished image and needed three rows to
-        // make it agree with the picture; it never quite did.
-        //
-        // THESE SEVEN DO INVALIDATE, through animating(): moving the tool makes
-        // every sample already in the film describe a tool that is somewhere
-        // else.
-        //
-        // The values are the JS engine's units, voxels and radians, so a row
-        // read here can be pasted straight back into that engine's PICK_DEFS
-        // and vice versa. See the note on HeldPose.
-        // -- THE POSE ROWS MOVED TO [K] (user 2026-09-17) -------------------
-        //
-        // "put the hand held item adjustments and the aim down site adjustments
-        // all on the k keybind with the stack number positionings."
-        //
-        // They were seven sliders in the middle of a settings MENU, and a
-        // viewmodel is not a setting: it is a thing you move while looking at
-        // it, which means the menu must not be holding the mouse. [K] draws
-        // them as a card down the right edge with the sights and the stack
-        // badge under it -- see the block in drawUi. What is left here is the
-        // pointer, because a row that used to be in a menu and is now nowhere
-        // is worse than either.
-        if (held_.ready()) {
             w.separator();
-            w.checkbox(fmt("%s in hand  (H)", held_.name()).c_str(), held_.shown);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("visuals")) {
+                ImGui::Spacing();
+            // ---- the denoiser ---------------------------------------------------
+            //
+            // NO ON/OFF ROW. Ray Reconstruction is always on -- at one sample a
+            // pixel it is not an enhancement, it is the thing that makes the image
+            // an image, and offering to switch it off is offering to break the
+            // renderer. --no-dlss still exists for a reference render, which is the
+            // only context where the accumulating film is the right answer.
+            //
+            // THREE MODES, NOT FIVE. Ultra performance and Performance are not
+            // offered: below Balanced, Ray Reconstruction is upscaling from so few
+            // pixels that a conifer canopy -- thin, high-frequency geometry with
+            // bright sky behind it -- comes back as mush that no amount of
+            // denoising recovers. The ENUM still has them and --dlss names them, so
+            // a benchmark keeps a capability the in-game menu does not offer; the
+            // same split --scale got.
+            if (dlss_.available() && opt_.dlss) {
+                Falcor::Gui::DropdownList modes = {
+                    {uint32_t(DlssQuality::Balanced), "Balanced"},
+                    {uint32_t(DlssQuality::Quality), "Quality"},
+                    {uint32_t(DlssQuality::Dlaa), "DLAA (no upscale)"},
+                };
+
+                // AND IF WE ARE IN A MODE THE LIST DOES NOT OFFER, SHOW IT ANYWAY.
+                // This is not tidiness. Falcor's addDropdown scans the list for the
+                // live value and leaves its index at -1 when it is not found, then
+                // unconditionally does `values[curItem]` (Gui.cpp:668) -- so a value
+                // outside the list is not a blank combo, it is an out-of-bounds read
+                // on a std::vector. Reachable from the command line today with
+                // `--dlss performance`.
+                const uint32_t live = uint32_t(opt_.dlssQuality);
+                bool listed = false;
+                for (const auto &e : modes) listed = listed || e.value == live;
+                if (!listed)
+                    modes.insert(modes.begin(), {live, dlssQualityName(opt_.dlssQuality)});
+
+                uint32_t m = live;
+                if (w.dropdown("Mode", modes, m)) {
+                    opt_.dlssQuality = DlssQuality(m);
+                    tracer_.setQuality(opt_.dlssQuality);
+                }
+            } else if (dlss_.available()) {
+                // --no-dlss: the film is accumulating instead, and a reconstruction
+                // mode is not a thing that has a meaning here.
+                w.text("Ray Reconstruction off (--no-dlss) -- accumulating");
+            } else {
+                w.text(fmt("DLSS unavailable: %s", dlss_.status().c_str()));
+            }
+
+            // FRAME GENERATION IS NOT IN THIS MENU. It is on at 2x and stays there;
+            // --fg 2x|3x|4x|off still works and the capability probes in
+            // streamline.h still run, so a card that cannot do it still declines
+            // quietly. Its diagnostics -- what DLSS-G says about itself, the
+            // generated-frame counts, whether the device reached Streamline before
+            // the swapchain -- are printed at start-up and under --stats, which is
+            // where a diagnostic belongs.
+            w.separator();
+
+            // ---- the neural radiance cache --------------------------------------
+            //
+            // The batch count is the honest indicator and it is why it is on screen:
+            // "on" tells you what was asked for, and the number climbing tells you
+            // the network is actually being fed. A cache that is enabled but whose
+            // count is stuck is a cache that is doing nothing, and without this row
+            // that looks exactly like one that is working.
+            if (nrc_.available()) {
+                if (w.checkbox("Neural radiance cache", opt_.nrc)) {
+                    nrc_.enabled = opt_.nrc;
+                    invalidate();
+                }
+                if (opt_.nrc) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+                    ImGui::TextUnformatted(
+                        fmt("   %s   %u batches", nrc_.warm() ? "predicting" : "warming up",
+                            nrc_.batches())
+                            .c_str());
+                    ImGui::PopStyleColor();
+                    w.checkbox("  keep learning", nrc_.training);
+                    if (w.slider("  from bounce", nrc_.queryDepth, 1, 6)) invalidate();
+                    w.slider("  train 1 px in", nrc_.trainEvery, 8, 512);
+                    w.slider("  learning rate", nrc_.learningRate, 0.0005f, 0.05f, false, "%.4f");
+                    // fp16 training does diverge, and when it does every query is a
+                    // NaN that the film will happily accumulate. There is no
+                    // recovering a poisoned network, so the only cure is on offer.
+                    if (w.button("  retrain from scratch")) nrc_.reset();
+                }
+            } else if (neural_.available()) {
+                w.text(fmt("Neural radiance cache: %s", nrc_.status().c_str()));
+            }
+            w.separator();
+
+
+            // Exposure changes no sample already drawn, so it deliberately does NOT
+            // throw the accumulation away. Nor does the toe -- both are the curve
+            // between the film and the screen, not the film.
+            w.slider("Exposure", opt_.r.exposure, 0.05f, 40.0f);
+            // THE KNOB FOR "SHADOWS ARE TOO DARK", and the range matters. This is
+            // the ACES toe: the curve's slope near black is b/0.14, so the 0.14
+            // default is a slope of exactly 1.0 -- linear, no crush. Below that the
+            // curve is eating shadow detail; above it is deliberately lifting.
+            //
+            // It used to stop at 0.20 and that was too low to be the answer to
+            // anything. 0.35 reaches a slope of 2.5, and the shoulder does not move
+            // with it: b appears only in the linear term, so highlights roll off
+            // identically at every setting on this slider.
+            w.slider("Shadow lift", opt_.r.shadowLift, 0.03f, 0.35f, false, "%.3f toe");
+
+            // THE ONE THAT ONLY TOUCHES THE DARK. The toe above is a parameter of
+            // the tone curve and so acts on the whole frame; this falls to exactly
+            // zero at the reach below it, which is why the midtones do not move.
+            // Reach for this one when the undersides of the canopy are too dark and
+            // the rest of the frame is right, which is the usual case in a wood.
+            w.slider("Deep shadow lift", opt_.r.deepLift, 0.0f, 0.15f, false, "%.3f");
+            // How far the corners fall off. 0 is off, which is where it starts --
+            // the tone map runs it last, after the flare, so it darkens the
+            // finished image rather than having the ghosts scatter back over it.
+            // THE SUN GLARE HAD NO CONTROL AT ALL, which is how "I can see the sun
+            // through the tree" ended up with no way to answer it from inside the
+            // game. It is a look, and every other look in this menu is a slider.
+            // 0 removes the glare and the ghosts entirely and costs nothing else --
+            // the sun disc itself is drawn by the sky, not by this.
+            // RANGE RAISED WITH THE DEFAULT. 2.0 was the ceiling and is now where
+            // the slider starts, which would have made it a knob that only turns
+            // down. 4.0 keeps as much headroom above the default as there is below.
+            w.slider("Sun glare", tracer_.flare, 0.0f, 4.0f, false, "%.2f");
+            w.slider("Vignette", tracer_.vignette, 0.0f, 1.0f, false, "%.2f");
+
+            // AUTO-EXPOSURE, BLOOM AND THE DEEP-LIFT'S REACH ARE NOT IN THIS MENU,
+            // deliberately. All three are reachable from the command line
+            // (--auto-exposure, --exposure-key, --bloom, --bloom-threshold,
+            // --deep-range) and the first three bake, so nothing about them is
+            // gone -- they are simply not worth the rows they cost here.
+
+            // ---- the air, and the lens ------------------------------------------
+            //
+            // THE CAP IS THE TOP OF THE USEFUL BAND, NOT THE TOP OF WHAT THE PASS
+            // WILL DRAW. The froxel grid goes on working far past this -- the cap
+            // used to be 0.10, five times what the analytic fog could offer before it
+            // washed out to grey -- but nothing up there is a look anyone reaches for,
+            // and a trough that wide is not adjustable. The default is 0.0022, so 0.10
+            // spent its first 2% on every value worth having and the rest on soup.
+            // 0.0040 puts the default a little past halfway and makes the whole travel
+            // mean something.
+            //
+            // Five decimals rather than four for the same reason: %.4f reads out in
+            // steps of 0.0001, which over this range is forty of them end to end.
+            if (w.slider("Fog density", opt_.r.fogDensity, 0.0f, 0.0040f, false, "%.5f /m"))
+                invalidate();
+            if (w.slider("Fog height", opt_.r.fogHeight, 1.0f, 200.0f, false, "%.0f m"))
+                invalidate();
+
+            // -- THE GLOW ROUND A SPARK, AND ROUND A LAMP ----------------------
+            //
+            // (user 2026-09-17: "can you give me a slider to adjust the intensity
+            //  of the voluemtric light coming from the spark voxel? put it on the
+            //  y settings toggle.")
+            //
+            // IN THE FOG BLOCK RATHER THAN A NEW ONE, because that is what it is:
+            // light scattered by air. It is deliberately NOT under the volumetric
+            // fog checkbox below -- pointLightGlow is its own medium and its own
+            // integral precisely so that it still works where the fog volume does
+            // not (indoors, and in air too clear to march), so hiding it there
+            // would put the control behind a switch that does not govern it.
+            //
+            // 0 TO 4, with 1 where it shipped. Past about 3 a pendant starts to
+            // haze the room it is in rather than ring itself, which is a look and
+            // not a fault -- the top of the range is there to make it reachable.
+            if (w.slider("Spark / lamp glow", opt_.r.sparkGlow, 0.0f, 4.0f, false, "%.2fx"))
+                invalidate();
+
+            if (volfog_.available()) {
+                // Unchecking this leaves NO fog at all, not the old analytic
+                // model -- that one is gone. It is here to measure what the two
+                // passes cost, and to see the wood without any air in it.
+                if (w.checkbox("Volumetric fog (all fog)", volfog_.enabled)) {
+                    volfog_.invalidate();
+                    invalidate();
+                }
+                if (volfog_.enabled) {
+                    // Forward scattering. This is the knob that decides whether the
+                    // air near the sun GLOWS or whether the whole volume simply
+                    // lifts: at 0 the phase is a sphere and the fog is milk, and by
+                    // 0.9 nearly all the scattered light goes on in the direction it
+                    // was already travelling, which is what makes a beam a beam.
+                    if (w.slider("  forward scatter", volfog_.anisotropy, 0.0f, 0.95f, false,
+                                 "%.2f g")) {
+                        volfog_.invalidate();
+                        invalidate();
+                    }
+
+                    // The one honestly fudged number in the system -- the sky dome
+                    // is not traced per froxel, see the note in VolFogInject. Drop
+                    // it to zero and shadowed air goes black, which is a stronger
+                    // effect than it sounds and worth seeing once.
+                    if (w.slider("  sky fill", volfog_.ambient, 0.0f, 1.0f, false, "%.2f")) {
+                        volfog_.invalidate();
+                        invalidate();
+                    }
+
+                    // How much sky light reaches air the up-ray found under
+                    // canopy. 1.00 is the old unshadowed behaviour and brings the
+                    // sun blur back with it; 0 puts black holes under the trees.
+                    if (w.slider("  sky under canopy", volfog_.skyShadow, 0.0f, 1.0f, false,
+                                 "%.2f")) {
+                        volfog_.invalidate();
+                        invalidate();
+                    }
+
+                    // How far the 64 slices are stretched. Short and the haze stops
+                    // dead at a visible wall; long and every slice is spent on air
+                    // too distant to resolve, so the beams in the first ten metres
+                    // coarsen. 400 m is about where the wood stops being legible.
+                    if (w.slider("  march reaches", volfog_.farD, 50.0f, 1200.0f, false, "%.0f m")) {
+                        volfog_.invalidate();
+                        invalidate();
+                    }
+                    w.slider("  settle (still)", volfog_.settleStill, 0.02f, 1.0f, false, "%.2f");
+                    w.slider("  settle (moving)", volfog_.settleMoving, 0.05f, 1.0f, false, "%.2f");
+                    w.text("  160x90x64 froxels, one shadow ray each");
+                }
+            }
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("general")) {
+                ImGui::Spacing();
+            // -- WHERE YOU ARE --------------------------------------------
+            //
+            // (user 2026-09-19: "give me a toggle for coords. x, y, and z
+            //  coords.")
+            //
+            // IN GENERAL RATHER THAN VISUALS, and the line the tabs are drawn
+            // on is what decides it: visuals is what the PICTURE looks like and
+            // this changes nothing about the picture -- it is a readout, like
+            // the frame rate and the hardware line further down.
+            //
+            // THE KEY IS ON THE LABEL. Every other toggle in this panel that
+            // has one says so in its own text (the hand item's "(H)"), because
+            // a checkbox is how you find a feature and a key is how you use it
+            // afterwards.
+            w.checkbox("Show coordinates  (F3)", showCoords_);
             ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted("  K -- pose, sights and stack badge");
+            ImGui::TextUnformatted("  metres, under the frame rate -- x y z at your feet");
             ImGui::PopStyleColor();
-        }
-        w.separator();
+            w.separator();
 
-        // ---- the air, and the lens ------------------------------------------
-        //
-        // THE CAP IS THE TOP OF THE USEFUL BAND, NOT THE TOP OF WHAT THE PASS
-        // WILL DRAW. The froxel grid goes on working far past this -- the cap
-        // used to be 0.10, five times what the analytic fog could offer before it
-        // washed out to grey -- but nothing up there is a look anyone reaches for,
-        // and a trough that wide is not adjustable. The default is 0.0022, so 0.10
-        // spent its first 2% on every value worth having and the rest on soup.
-        // 0.0040 puts the default a little past halfway and makes the whole travel
-        // mean something.
-        //
-        // Five decimals rather than four for the same reason: %.4f reads out in
-        // steps of 0.0001, which over this range is forty of them end to end.
-        if (w.slider("Fog density", opt_.r.fogDensity, 0.0f, 0.0040f, false, "%.5f /m"))
-            invalidate();
-        if (w.slider("Fog height", opt_.r.fogHeight, 1.0f, 200.0f, false, "%.0f m"))
-            invalidate();
+            // No invalidate here either, and for a stronger reason than the two
+            // above: this one changes nothing the renderer can even see. Hidden
+            // rather than greyed when there is no voice -- under --no-sound or on
+            // a machine with no endpoint, a slider that does nothing is worse
+            // than no slider.
+            // CALLED VOLUME, BECAUSE THAT IS WHAT SOMEBODY LOOKS FOR. It was
+            // "Ambience", which is accurate -- the bed is the only sound the engine
+            // makes -- and accurate is not the same as findable.
+            //
+            // AND A REASON WHEN IT IS MISSING, which reverses the old rule here.
+            // Hiding a dead slider is right; hiding it without explanation sends
+            // somebody hunting through a menu for a row that was never going to be
+            // drawn. A line of text is not a control that does nothing, it is the
+            // answer to the question the missing control provokes.
+            //
+            // THE DEFAULT IS THE MIDDLE OF THE TRACK. This ran to 2.0, and the
+            // bed is a background: everything anybody would actually choose
+            // lived in the first eighth of the travel, with the whole right-hand
+            // half reserved for twice the level the asset was baked at. So the
+            // top is now twice the default instead of eight times it, which puts
+            // the handle you start with in the centre and spends the travel on
+            // the range the ear is actually being asked about.
+            //
+            // The command line is unchanged and still reaches the baked level:
+            // --ambience 1.0, or 2.0, is a number rather than a drag.
+            if (ambience_.active()) {
+                float amb = ambience_.masterGain();
+                // The floor is what stops a bake at zero from welding the control
+                // shut: a slider whose top is its bottom can never be dragged back
+                // up, and the volume is the one setting somebody is most likely to
+                // take all the way down before baking.
+                const float top = maxf(0.05f, defaults::kAmbience * 2.0f);
+                if (w.slider("Volume", amb, 0.0f, top, false, "%.2f"))
+                    ambience_.setMasterGain(amb);
+            }
+            // ITS OWN SLIDER, which is the JS engine's split: the bed and the
+            // things the world does are two buses there, because a wood that is too
+            // loud and an axe that is too loud are different complaints.
+            if (toolSfx_.ready()) {
+                float s = toolSfx_.gain();
+                if (w.slider("Tools", s, 0.0f, 2.0f, false, "%.2f")) toolSfx_.setGain(s);
+            }
+            if (!ambience_.active()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+                ImGui::TextUnformatted(opt_.background
+                                           ? "Volume: no audio under --background"
+                                           : "Volume: no audio (--no-sound, or no endpoint)");
+                ImGui::PopStyleColor();
+            }
 
-        // -- THE GLOW ROUND A SPARK, AND ROUND A LAMP ----------------------
-        //
-        // (user 2026-09-17: "can you give me a slider to adjust the intensity
-        //  of the voluemtric light coming from the spark voxel? put it on the
-        //  y settings toggle.")
-        //
-        // IN THE FOG BLOCK RATHER THAN A NEW ONE, because that is what it is:
-        // light scattered by air. It is deliberately NOT under the volumetric
-        // fog checkbox below -- pointLightGlow is its own medium and its own
-        // integral precisely so that it still works where the fog volume does
-        // not (indoors, and in air too clear to march), so hiding it there
-        // would put the control behind a switch that does not govern it.
-        //
-        // 0 TO 4, with 1 where it shipped. Past about 3 a pendant starts to
-        // haze the room it is in rather than ring itself, which is a look and
-        // not a fault -- the top of the range is there to make it reachable.
-        if (w.slider("Spark / lamp glow", opt_.r.sparkGlow, 0.0f, 4.0f, false, "%.2fx"))
-            invalidate();
 
-        if (volfog_.available()) {
-            // Unchecking this leaves NO fog at all, not the old analytic
-            // model -- that one is gone. It is here to measure what the two
-            // passes cost, and to see the wood without any air in it.
-            if (w.checkbox("Volumetric fog (all fog)", volfog_.enabled)) {
-                volfog_.invalidate();
+            // ---- WHICH SKY IS NOT A QUESTION THIS MENU ASKS ---------------------
+            //
+            // Atmospheric scattering is ON and stays on. The Preetham fit it
+            // replaced survives only as a fallback for a machine where the LUT
+            // shaders will not compile, and as --no-atmosphere for anyone comparing
+            // against an image taken before 2026-09-06. Neither is worth a row, and
+            // the wrong answer to it silently freezes every sunset.
+            //
+            // THE NIGHT FLOOR IS BACK, as half of the row below rather than as a
+            // row of its own. It left with the sky group and lived on --night-floor
+            // alone, which put the answer to "the night is too dark" behind a
+            // relaunch. It stands in for airglow and starlight: the model knows
+            // about sunlight and nothing else, so at 0 a deep night is honestly --
+            // and uselessly -- black.
+            //
+            // AND NOTE THE TURBIDITY ROW BELOW. It is a PREETHAM parameter, and the
+            // scattering path carries its own fixed aerosol profile and ignores it,
+            // so with the atmosphere always on that slider moves nothing anybody
+            // can see. It is left alone because --no-atmosphere still reads it.
+            // ONE ROW FOR THE WHOLE NIGHT. It drives the moon's key light and the
+            // airglow floor together -- Options::nightBrightness says why it has to
+            // be both -- so 0.5x is a night half as bright at every phase of the
+            // moon, rather than only on the ones where the term it happened to move
+            // was the one doing the lighting. 0 is the physically honest black; 3
+            // leaves the wood readable at midnight, which is usually what a
+            // screenshot at that hour actually wants.
+            //
+            // LEFT OF 1.0 IS DARKER, which is the direction this gets reached for,
+            // and the row is still named for brightness: every other slider in this
+            // menu moves right for more of what it names, and one that ran
+            // backwards would be wrong more often than it was clever.
+            if (w.slider("Night brightness", nightLevel_, 0.0f, 3.0f, false, "%.2fx"))
+                applyNightLevel();
+            if (w.slider("Sky turbidity", opt_.turbidity, 1.8f, 8.0f)) {
+                applySun(true);
                 invalidate();
             }
-            if (volfog_.enabled) {
-                // Forward scattering. This is the knob that decides whether the
-                // air near the sun GLOWS or whether the whole volume simply
-                // lifts: at 0 the phase is a sphere and the fog is milk, and by
-                // 0.9 nearly all the scattered light goes on in the direction it
-                // was already travelling, which is what makes a beam a beam.
-                if (w.slider("  forward scatter", volfog_.anisotropy, 0.0f, 0.95f, false,
-                             "%.2f g")) {
-                    volfog_.invalidate();
-                    invalidate();
-                }
+            // NO DEPTH-OF-FIELD ROW HERE, and this time the reason is measured
+            // rather than assumed. There was a slider, and the lens it drove was
+            // correct -- the result still looked wrong. Ray Reconstruction wants
+            // every sample in a pixel to share an origin, and a lens is precisely
+            // the thing that stops them doing so; what came out was not shallow
+            // focus but a smear the denoiser could not resolve. render/camera.h
+            // said as much before any of it was tried.
+            //
+            // --aperture and --focus still drive the same lens OFFLINE, where the
+            // film accumulates and there is no denoiser in the way. That is where
+            // it earns its keep, and it is the only place it ever did.
+            w.separator();
 
-                // The one honestly fudged number in the system -- the sky dome
-                // is not traced per froxel, see the note in VolFogInject. Drop
-                // it to zero and shadowed air goes black, which is a stronger
-                // effect than it sounds and worth seeing once.
-                if (w.slider("  sky fill", volfog_.ambient, 0.0f, 1.0f, false, "%.2f")) {
-                    volfog_.invalidate();
-                    invalidate();
-                }
-
-                // How much sky light reaches air the up-ray found under
-                // canopy. 1.00 is the old unshadowed behaviour and brings the
-                // sun blur back with it; 0 puts black holes under the trees.
-                if (w.slider("  sky under canopy", volfog_.skyShadow, 0.0f, 1.0f, false,
-                             "%.2f")) {
-                    volfog_.invalidate();
-                    invalidate();
-                }
-
-                // How far the 64 slices are stretched. Short and the haze stops
-                // dead at a visible wall; long and every slice is spent on air
-                // too distant to resolve, so the beams in the first ten metres
-                // coarsen. 400 m is about where the wood stops being legible.
-                if (w.slider("  march reaches", volfog_.farD, 50.0f, 1200.0f, false, "%.0f m")) {
-                    volfog_.invalidate();
-                    invalidate();
-                }
-                w.slider("  settle (still)", volfog_.settleStill, 0.02f, 1.0f, false, "%.2f");
-                w.slider("  settle (moving)", volfog_.settleMoving, 0.05f, 1.0f, false, "%.2f");
-                w.text("  160x90x64 froxels, one shadow ray each");
+            float hours = clock_.tday * 24.0f;
+            if (w.slider("Time of day", hours, 0.0f, 24.0f)) {
+                clock_.tday = clampf(hours / 24.0f, 0.0f, 0.99999f);
+                invalidate();
             }
-        }
-        // ---- WHICH SKY IS NOT A QUESTION THIS MENU ASKS ---------------------
-        //
-        // Atmospheric scattering is ON and stays on. The Preetham fit it
-        // replaced survives only as a fallback for a machine where the LUT
-        // shaders will not compile, and as --no-atmosphere for anyone comparing
-        // against an image taken before 2026-09-06. Neither is worth a row, and
-        // the wrong answer to it silently freezes every sunset.
-        //
-        // THE NIGHT FLOOR IS BACK, as half of the row below rather than as a
-        // row of its own. It left with the sky group and lived on --night-floor
-        // alone, which put the answer to "the night is too dark" behind a
-        // relaunch. It stands in for airglow and starlight: the model knows
-        // about sunlight and nothing else, so at 0 a deep night is honestly --
-        // and uselessly -- black.
-        //
-        // AND NOTE THE TURBIDITY ROW BELOW. It is a PREETHAM parameter, and the
-        // scattering path carries its own fixed aerosol profile and ignores it,
-        // so with the atmosphere always on that slider moves nothing anybody
-        // can see. It is left alone because --no-atmosphere still reads it.
-        // ONE ROW FOR THE WHOLE NIGHT. It drives the moon's key light and the
-        // airglow floor together -- Options::nightBrightness says why it has to
-        // be both -- so 0.5x is a night half as bright at every phase of the
-        // moon, rather than only on the ones where the term it happened to move
-        // was the one doing the lighting. 0 is the physically honest black; 3
-        // leaves the wood readable at midnight, which is usually what a
-        // screenshot at that hour actually wants.
-        //
-        // LEFT OF 1.0 IS DARKER, which is the direction this gets reached for,
-        // and the row is still named for brightness: every other slider in this
-        // menu moves right for more of what it names, and one that ran
-        // backwards would be wrong more often than it was clever.
-        if (w.slider("Night brightness", nightLevel_, 0.0f, 3.0f, false, "%.2fx"))
-            applyNightLevel();
-        if (w.slider("Sky turbidity", opt_.turbidity, 1.8f, 8.0f)) {
-            applySun(true);
-            invalidate();
-        }
-        // NO DEPTH-OF-FIELD ROW HERE, and this time the reason is measured
-        // rather than assumed. There was a slider, and the lens it drove was
-        // correct -- the result still looked wrong. Ray Reconstruction wants
-        // every sample in a pixel to share an origin, and a lens is precisely
-        // the thing that stops them doing so; what came out was not shallow
-        // focus but a smear the denoiser could not resolve. render/camera.h
-        // said as much before any of it was tried.
-        //
-        // --aperture and --focus still drive the same lens OFFLINE, where the
-        // film accumulates and there is no denoiser in the way. That is where
-        // it earns its keep, and it is the only place it ever did.
-        w.separator();
+            char speed[24];
+            clock_.speedLabel(speed, sizeof(speed));
+            w.text(fmt("Cycle speed  %s   (X + wheel, or:)", speed));
+            if (w.button("slower")) clock_.nudgeSpeed(false);
+            if (w.button("faster", true)) clock_.nudgeSpeed(true);
+            if (w.button(clock_.paused ? "resume" : "pause", true)) clock_.paused = !clock_.paused;
+            w.separator();
 
-        float hours = clock_.tday * 24.0f;
-        if (w.slider("Time of day", hours, 0.0f, 24.0f)) {
-            clock_.tday = clampf(hours / 24.0f, 0.0f, 0.99999f);
-            invalidate();
-        }
-        char speed[24];
-        clock_.speedLabel(speed, sizeof(speed));
-        w.text(fmt("Cycle speed  %s   (X + wheel, or:)", speed));
-        if (w.button("slower")) clock_.nudgeSpeed(false);
-        if (w.button("faster", true)) clock_.nudgeSpeed(true);
-        if (w.button(clock_.paused ? "resume" : "pause", true)) clock_.paused = !clock_.paused;
-        w.separator();
 
-        // A bake writes SOURCE, not a config file, deliberately. A config read
-        // at startup would be one more thing that can be stale, missing, or
-        // disagree with the flags; a header means the defaults are visible in
-        // the diff, travel with the branch, and cost nothing at runtime.
-        if (w.button("Bake as default")) bakeStatus_ = bakeDefaults();
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-        ImGui::TextUnformatted(bakeStatus_.empty()
-                                   ? "writes src/core/defaults.h; then rebuild.bat, in v2/"
-                                   : bakeStatus_.c_str());
-        w.separator();
+            // ---- what the hardware is doing under all of this --------------------
+            //
+            // Read-only where there is nothing to decide. Clusters and cooperative
+            // vectors are capabilities of this device and this backend, not
+            // preferences, and a checkbox for something the driver has already
+            // refused is a checkbox that lies.
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+            ImGui::TextUnformatted(fmt("clusters   %s", clusters_.available() ? "available"
+                                                                              : "not on this backend")
+                                       .c_str());
+            ImGui::TextUnformatted(
+                fmt("neural     %s", neural_.available() ? "cooperative vectors" : "unavailable")
+                    .c_str());
+            ImGui::TextUnformatted(fmt("cuda       %s", cuda_.available() ? "shared with the renderer"
+                                                                         : "unavailable")
+                                       .c_str());
+            ImGui::PopStyleColor();
+            w.separator();
+
+
+            // A bake writes SOURCE, not a config file, deliberately. A config read
+            // at startup would be one more thing that can be stale, missing, or
+            // disagree with the flags; a header means the defaults are visible in
+            // the diff, travel with the branch, and cost nothing at runtime.
+            if (w.button("Bake as default")) bakeStatus_ = bakeDefaults();
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+            ImGui::TextUnformatted(bakeStatus_.empty()
+                                       ? "writes src/core/defaults.h; then rebuild.bat, in v2/"
+                                       : bakeStatus_.c_str());
+            ImGui::PopStyleColor();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        // ...AND THE CLOSING KEYS BELONG TO THE PANEL, NOT TO A TAB.
+        //
         // v2 closed with the keys, because a panel that has to be discovered
-        // twice is a panel nobody finds the second thing in.
+        // twice is a panel nobody finds the second thing in -- and a line that
+        // says how to SHUT the panel is no use only on the third tab of it.
+        // Outside the tab bar, under all three.
+        w.separator();
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
         ImGui::TextUnformatted("Y or ESC  close        F1  controls, in the console");
         ImGui::PopStyleColor();
         ImGui::PopItemWidth();

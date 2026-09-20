@@ -1,8 +1,0 @@
-# Build output. 3.5 GB across 5,345 files, entirely reproducible from build.bat.
-#
-# The same rule and the same reason as v2/.gitignore: CMake's cache, ninja's
-# logs, the compiled objects and the deployed Falcor payload are all derived
-# from the 76 files beside them, and none of it belongs in history. Without this
-# line `git status` collapses the whole tree to a single `?? template/` and a
-# routine `git add -A` quietly tries to push three and a half gigabytes.
-build/

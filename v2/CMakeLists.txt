@@ -109,6 +109,8 @@ target_sources(v2 PRIVATE
     shaders/Bloom.cs.slang
     shaders/Exposure.cs.slang
     shaders/Crosshair.ps.slang
+    shaders/Vitals.ps.slang
+    shaders/GameOver.ps.slang
     shaders/CaptureNv12.cs.slang
 )
 

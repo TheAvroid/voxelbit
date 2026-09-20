@@ -204,10 +204,23 @@ void usage() {
         "  --ground-stats            print what the ground is made of, region by region,\n"
         "                            and what it is lit by -- sun against sky -- then exit\n"
         "  --fly                     start in fly mode -- no collision, so a scripted\n"
+        "  --acadia                  ACADIA NATIONAL PARK: the birch wood on real\n"
+        "                            USGS elevation of Mount Desert Island, 10 km at\n"
+        "                            true scale with Cadillac Mountain in it. Sets\n"
+        "                            --dem, --no-cover, --dem-scale 1 and --birch;\n"
+        "                            anything after it on the line still wins\n"
         "  --birch                   pin the world to the birch wood: low rounded\n"
         "                            hills, one light green, beehives in 1%% of trees\n"
-        "  --pine                    pin the world to the pine wood. Without either flag\n"
+        "  --pine                    pin the world to the pine wood. WITHOUT either flag\n"
         "                            the two are BANDS you walk between -- T, /locate birch\n"
+        "  --cherry                  pin the world to the cherry wood: the oak's own\n"
+        "  --coords                  open with the x y z readout up (F3 toggles it)\n"
+        "  --desert                  pin the world to the open sand: dunes, cacti,\n"
+        "                            scrub and no water at all\n"
+        "  --deathvalley             ...on the REAL thing -- 50 km of Death Valley,\n"
+        "                            California, centred on the Mesquite Flat dunes\n"
+        "                            ground with pink crowns, pink butterflies and\n"
+        "                            the pink songbird. /locate cherry walks there\n"
         "                            walk cannot park itself against a trunk\n"
         "  --shot-dt F               simulated seconds per frame  (default 1/60), so\n"
         "                            two captures cover the same ground\n"
@@ -324,13 +337,193 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     if (a == "--hand-sway") { argFloat(argc, argv, i, &o->handSway); return true; }
     if (a == "--bird-dir") { if (i + 1 < argc) o->birdDir = argv[++i]; return true; }
     if (a == "--dem") { if (i + 1 < argc) o->demPath = argv[++i]; return true; }
+    // -----------------------------------------------------------------------
+    // --acadia -- THE BIRCH WOOD ON MOUNT DESERT ISLAND.
+    //
+    // (user 2026-09-18: "can you import the acadia national park dataset, and
+    // use our birch trees ontop of the terrain. add the mushroom and rocks of
+    // course and the life, the standard things that come with the birch
+    // forest.")
+    //
+    // FOUR SETTINGS, AND EVERY ONE OF THEM IS A CONSEQUENCE OF THE DATASET
+    // rather than a taste:
+    //
+    //   the window   10 km on -68.2700, 44.3550 -- the park's mountain ridge,
+    //                Cadillac (465.6 m) through Sargent and Penobscot, with
+    //                Eagle Lake and Jordan Pond in it and only 7.8% open sea.
+    //                Measured over candidates; an 8 km window is 2.9% sea and
+    //                a 12 km is 20%, which is a fifth of the world flat.
+    //
+    //   --dem-scale 1  TRUE SCALE, and here that is the right answer where in
+    //                Colorado it was not. The objection to 1:1 is that a 10 km
+    //                mountain crosses a 300 m view disc as one featureless
+    //                ramp; Acadia's landforms are 1-2 km wide and 400 m tall,
+    //                so a disc holds real curvature. It also fixes the stand
+    //                density for free -- see below -- and keeps /locate's band
+    //                jump inside the data.
+    //
+    //   NO COVER, and this is a measurement, not an omission. naip2cov's
+    //                classifier is tuned on Colorado and does not transfer:
+    //                over this window it calls 41.9% of the island bare ROCK
+    //                at a median elevation of 64 m, where the bare granite
+    //                domes are all above 250 m. Cross-checked against the DEM
+    //                it is draped on, which is the check that catches this.
+    //                Trees would then be forbidden over half of a national
+    //                park that is famously forested. The water class IS right
+    //                (median 2 m -- the sea), so the file is kept beside the
+    //                DEM for whenever the classifier learns about Maine.
+    //
+    //   --birch      "use our birch trees". The bands are 800 m wide and the
+    //                world is 10 km, so unforced this would be stripes of
+    //                pine, birch and oak across the island.
+    //
+    // WHY THE SCALE FIXES THE DENSITY: realStemsPerHa is an ALTITUDE table
+    // built for Colorado, and everything below 1800 m gets its floor of 120
+    // stems a hectare. The target is then divided by the shrink, so at 6 the
+    // island would be thinned to 20 stems a world hectare against the 146 the
+    // scatter lays down -- a seventh of a wood. At 1 it is 120 against 146,
+    // which is the standard wood very nearly untouched.
+    //
+    // LAST WINS, so --acadia --dem-scale 3 is the island at a third scale and
+    // --acadia --cover <file> puts the imagery back. That is why this sets
+    // fields rather than being read at load.
+    // -----------------------------------------------------------------------
+    if (a == "--acadia") {
+        o->demPath = "C:/voxelbit/v2/assets/dem/acadia10.vbdem";
+        // -- THE IMAGERY, FOR THE WATER AND NOTHING ELSE --------------------
+        //
+        // The first cut of this dropped the cover entirely, and that was half
+        // right in a way worth writing down: the classifier's GROUND is wrong
+        // here and its WATER is not, and on a DEM world the imagery is the only
+        // thing that makes water at all (waterAt returns kNoWater the moment a
+        // DEM is loaded -- an invented sea over measured ground is a plane
+        // cutting valleys into islands). So --no-cover bought a forest and paid
+        // for it with the entire coast: no sea round an ISLAND, no Eagle Lake,
+        // no Jordan Pond, and with them no fish, no ducks, no lily pads, no
+        // dragonflies and no frogs -- a third of the life this wood comes with.
+        //
+        // MEASURED BEFORE TRUSTING IT: 13.0% of the window is water, half of it
+        // under 3 m (the sea), the rest clustered at 83 m, which is where those
+        // two ponds actually sit; mean grade 5%, and only 9.9% of it on ground
+        // steeper than 15%. That is a real coastline, not a shadow artefact.
+        o->coverPath = "C:/voxelbit/v2/assets/dem/acadia10.vbcov";
+        o->coverGround = false;
+        o->demScale = 1.0f;
+        o->birch = true;
+        // -- AND IT HAS TO SPAWN ON THE ISLAND ------------------------------
+        //
+        // The default camX/camZ are a lake shore in Rocky Mountain National
+        // Park quoted in REAL metres from ITS window's centre -- 14.6 km out,
+        // which in a 10 km window is not merely the wrong place, it is off the
+        // data, on the flat ground heightM holds at the border. That looks
+        // exactly like the DEM having failed to load, and it is the trap the
+        // note beside the division in app_load.inl warns about from the other
+        // direction.
+        //
+        // 31, 154 IS SCORED, NOT PICKED: over the window at 60 m steps, the
+        // spot with ~130 m of relief inside one 300 m view disc, ground between
+        // 60 and 180 m asl, under a 22% grade where the player actually stands,
+        // no more than a third of the disc flat (which is how a pond reads) and
+        // 2 km clear of the border. It comes out on the forested west flank of
+        // the Sargent-Penobscot ridge at 44.3537, -68.2697: 152 m up, 129 m of
+        // hillside in view, a 17% grade underfoot.
+        //
+        // NOT camGiven -- the spawn picker still wanders 30-400 m off this for
+        // an open, sunlit spot, which is what it is for.
+        o->camX = 31.0f;
+        o->camZ = 154.0f;
+        // NOT camPlace: --acadia picks a WORLD, and this coordinate is a
+        // starting hint inside it -- the note above already says the picker is
+        // expected to wander off it. Scored for RELIEF, which is why the spawn
+        // line said "water is 400 m away" until the roam landed: a starting
+        // point chosen for the view is not a starting point beside a lake, and
+        // an island is the one window where a shore is never far.
+        return true;
+    }
+    // ------------------------------------------------- THE OAK WOOD'S GROUND
+    //
+    // (user 2026-09-18: "can you retrieve a dataset for an oak forest
+    // elevation. replace the current oak forest terrain with the new
+    // dataset.")
+    //
+    // LAKE OUACHITA, ARKANSAS -- the Ouachita National Forest, 12 km on
+    // -93.3000, 34.6600. A drowned dendritic river valley in oak-hickory
+    // country: 339 m of relief, 79.1% of the window forest, and the lake's
+    // northern arms running up every hollow.
+    //
+    // WHY NOT THE OZARKS, WHICH IS THE PURER OAK. The first cut of this was
+    // the upper Buffalo River in the Boston Mountains -- 12 km on -93.4000,
+    // 36.1000, off tile n37w094 -- and on paper it wins: 446 m of relief
+    // against 339, and the same 77.7% forest. It was built, and it has NO
+    // WATER: one flat body, 1 hectare, 0.01% of the window. The Boston
+    // Mountains are an upland with no lakes in them, and the Buffalo is a
+    // free-flowing river too narrow for a 10.29 m posting to hold.
+    //
+    // On a DEM world the imagery is the only thing that makes water at all
+    // (waterAt returns kNoWater the moment a DEM is loaded), so that window is
+    // a wood with no fish, no ducks, no lily pads, no dragonflies and no
+    // frogs -- the same third of the life the note over --acadia weighs, and
+    // it loses for the same reason.
+    //
+    // AND THE SPECIES ARGUMENT IS MOOT, which is what settles it. The Ouachita
+    // is oak-hickory-PINE where the Boston Mountains are oak-hickory, and it
+    // makes no difference to anything: the cover only ever says forest, meadow
+    // or rock, and the trees that go in it are the oak models this engine
+    // authored. The real mix chooses nothing here. So the trade is drama
+    // against the whole water half of the wood, and 339 m is still more world
+    // relief than rmnp50 has after its shrink.
+    //
+    // MEASURED BEFORE TRUSTING IT:
+    //
+    //   * 14.3% of the window is water, and ALL of it is at lake level --
+    //     15.8% of the 174-258 m band and 0.0% of every band above it. Water
+    //     that climbed would show up here as a band that never empties.
+    //   * the ridges are 98.4%, 99.4% and 99.5% forest going up, so the
+    //     classifier has not smeared rock over the high ground the way it did
+    //     on Mount Desert Island -- rock is 3.6% of the whole window. That is
+    //     why this one keeps coverGround.
+    //   * the DEM water pass found 113,255 samples of lake the photograph had
+    //     called something else, which is the reservoir surface the imagery
+    //     reads as dark forest. Without that pass this window is a third of a
+    //     lake.
+    if (a == "--ouachita") {
+        o->demPath = "C:/voxelbit/v2/assets/dem/ouachita12.vbdem";
+        o->coverPath = "C:/voxelbit/v2/assets/dem/ouachita12.vbcov";
+        o->demScale = 1.0f;     // 174-513 m asl: the stand table floors at 120
+                                // stems/ha below 1800 m, so a shrink would thin
+                                // the wood to a seventh of itself for nothing.
+        o->oakOnly = true;
+        // ON THE SHORE, IN THE WOOD, WITH A HILLSIDE BEHIND IT. Scored over the
+        // window at 25 m steps for forest that is not itself water, the most
+        // relief inside 150 m, and the lake within 250 m so the water and
+        // everything living in it is a walk away. It comes out at 76 m of
+        // hillside in view with the shore 50 m off.
+        o->camX = -3950.0f;
+        o->camZ = -425.0f;
+        // NOT camPlace either, and for the same reason -- plus this one's own
+        // note asks for "the lake within 250 m so the water and everything
+        // living in it is a walk away", which a 60 m water gate serves better
+        // than a single scored coordinate can.
+        return true;
+    }
     // The two ways back to the old world, kept deliberately.
     if (a == "--no-dem") { o->demPath.clear(); return true; }
+    // A NO-OP NOW, AND KEPT SO EVERY SCRIPT AND NOTE THAT USES IT STILL RUNS.
+    // The three bands are the default again -- see Options::pineOnly and the
+    // 2026-09-18 "fix the birch forest. its not in the world".
     if (a == "--all-woods") { o->pineOnly = false; return true; }
     if (a == "--dem-base") { argFloat(argc, argv, i, &o->demBaseM); return true; }
     if (a == "--dem-scale") { argFloat(argc, argv, i, &o->demScale); return true; }
     if (a == "--dem-exag") { argFloat(argc, argv, i, &o->demExag); return true; }
     if (a == "--dem-detail") { argFloat(argc, argv, i, &o->demDetail); return true; }
+    if (a == "--dem-rough") { argFloat(argc, argv, i, &o->demRough); return true; }
+    if (a == "--oak-density") { argFloat(argc, argv, i, &o->oakDensity); return true; }
+    if (a == "--inset" && i + 1 < argc) { o->insetPath = argv[++i]; return true; }
+    if (a == "--inset-at" && i + 2 < argc) {
+        argFloat(argc, argv, i, &o->insetX);
+        argFloat(argc, argv, i, &o->insetZ);
+        return true;
+    }
     if (a == "--spawn-pick") { o->spawnPick = true; return true; }
     if (a == "--waves") { argFloat(argc, argv, i, &o->waves); return true; }
     if (a == "--stem-div") { argFloat(argc, argv, i, &o->stemDiv); return true; }
@@ -339,13 +532,23 @@ bool parseLifeOpt(const std::string &a, int argc, char **argv, int &i, Options *
     // Places worth standing, by name. REAL metres from the window centre of
     // whichever .vbdem is loaded -- so --lake/--peak only mean anything with
     // the Front Range window (--dem .../front60.vbdem).
-    if (a == "--lake") { o->camX = -10717.0f; o->camZ = -19649.0f; return true; }
-    if (a == "--peak") { o->camX = 10316.0f; o->camZ = 18445.0f; return true; }
+    if (a == "--lake") { o->camX = -10717.0f; o->camZ = -19649.0f; o->camPlace = true;
+                         return true; }
+    if (a == "--peak") { o->camX = 10316.0f; o->camZ = 18445.0f; o->camPlace = true;
+                         return true; }
     if (a == "--front") { o->demPath = "C:/voxelbit/v2/assets/dem/front60.vbdem";
                           o->coverPath = "C:/voxelbit/v2/assets/dem/front60.vbcov";
-                          o->camX = -10717.0f; o->camZ = -19649.0f; return true; }
+                          o->camX = -10717.0f; o->camZ = -19649.0f; o->camPlace = true;
+                          return true; }
     if (a == "--cover") { if (i + 1 < argc) o->coverPath = argv[++i]; return true; }
     if (a == "--no-cover") { o->coverPath.clear(); return true; }
+    // The imagery for the WATER only -- its lakes and its coast, none of its
+    // opinions about trees or bare ground. See VoxelTerrain::coverGround.
+    if (a == "--cover-water") { o->coverGround = false; return true; }
+    // ...and back again, so --acadia --cover-ground is the island WITH the
+    // classifier's opinion of the ground -- which is worth being able to ask
+    // for, if only to look at what it got wrong.
+    if (a == "--cover-ground") { o->coverGround = true; return true; }
     return false;
 }
 
@@ -397,6 +600,8 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         if (a == "--locate-test") { o->locateTest = true; continue; }
         // ...AND THE SAME, for the check that no animal is inside anything.
         if (a == "--clip-test") { o->clipTest = true; continue; }
+        // DOES A HUNTER COME AT YOU AND COST YOU HEALTH -- see runBiteTest.
+        if (a == "--bite-test") { o->biteTest = true; continue; }
         // BEFORE THE CHAIN, like every flag added since the C1061 -- see the
         // note above. Writes the live material table out as a MagicaVoxel
         // plate and exits; the optional path overrides where it goes.
@@ -421,6 +626,54 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         if (a == "--hitch") { o->hitch = true; continue; }
         if (a == "--lbug-test") { o->lbugTest = true; continue; }
         if (a == "--oak") { o->oakOnly = true; continue; }
+        if (a == "--cherry") { o->cherryOnly = true; continue; }
+        if (a == "--desert") { o->desertOnly = true; continue; }
+        if (a == "--coords") { o->coords = true; continue; }
+        // -- DEATH VALLEY, CALIFORNIA -------------------------------------
+        //
+        // (user 2026-09-19: "find a desert landscape dataset, somewhere in
+        //  california maybe?")
+        //
+        // THE REAL GROUND UNDER THE DESERT BIOME, the way --acadia is the real
+        // ground under the birch wood. A 50 km window on 36.61 N, -117.11 W --
+        // the Mesquite Flat dune field, with the valley floor running south
+        // east from it and the Grapevine and Panamint ranges either side.
+        // Measured off the 3DEP tiles: -83.6 m at the salt pan to 2283 m on
+        // the ridge, which is 2366 m of relief and the deepest ground in North
+        // America inside the same window.
+        //
+        // IT FORCES THE BIOME, and that is not a convenience. A DEM world takes
+        // its FLOOR from the aerial imagery (mat::GROUND_0..9) and there is no
+        // .vbcov for this window -- so without the pin the ground would fall
+        // through to a forest floor of soil and litter over Death Valley. The
+        // desert biome paints sand by its own rule, which needs no imagery.
+        //
+        // ...AND THE COVER HAS TO BE CLEARED BY HAND, WHICH COST A LAKE.
+        //
+        // coverPath is not derived from demPath -- it is a separate option with
+        // its own DEFAULT, and that default is Rocky Mountain's. Setting the
+        // DEM alone therefore does not give a window with no imagery, it gives
+        // Death Valley's ground wearing RMNP's land cover, and the first render
+        // of this flag had open water on the horizon of Badwater Basin: the
+        // cover raster's lakes, faithfully placed, 300 km from where they are.
+        //
+        // The biome pin hid half of it. A forced desert paints sand over
+        // whatever the cover says the ground is, so the FLOOR looked right and
+        // only the water gave it away.
+        //
+        // "" is the value the loader already understands -- app_load skips the
+        // cover entirely when the path is empty -- so this is the flag saying
+        // the true thing about its own window rather than a new switch.
+        //
+        // NO COVER MEANS NO MAPPED WATER, which is exactly right here: Badwater
+        // is a salt pan, not a lake, and waterAt returns kNoWater through the
+        // whole band anyway.
+        if (a == "--deathvalley" || a == "--death-valley") {
+            o->demPath = "C:/voxelbit/v2/assets/dem/deathvalley50.vbdem";
+            o->coverPath = "";
+            o->desertOnly = true;
+            continue;
+        }
         if (a == "--soil-test") { o->soilTest = true; continue; }
         // The same NINE bits the panel sets, for a scripted A/B: 511 is all on,
         // and clearing one proves that term and only that term moved. 507 is

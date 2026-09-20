@@ -11,9 +11,15 @@
 // and wet, and both of those are things the data already knows.
 //
 // Names are attached AFTERWARDS and only where the data agrees: a landmark in
-// kNamed is matched to the nearest found feature, and if nothing is within
-// kNameSnapM it simply keeps its generated name. A wrong name is worse than no
-// name, because it is the kind of wrong that gets believed.
+// kNamed is matched to the nearest found feature, and a feature no landmark
+// reaches is DROPPED (user 2026-09-19: "I want actual mountain/lake names in
+// the locate command"). A wrong name is worse than no name, because it is the
+// kind of wrong that gets believed -- and a place called `lake3` is worse than
+// no place, because there is nothing in the world to recognise it by.
+//
+// So the two halves of this file answer to different authorities and that is
+// deliberate: WHERE a feature is comes from the DEM, and WHAT IT IS CALLED
+// comes from USGS GNIS. Neither is allowed to invent the other.
 #pragma once
 
 #include <algorithm>
@@ -32,9 +38,20 @@ class PoiIndex {
         float x = 0, z = 0;   // world metres
         float m = 0;          // metres above sea level
         bool lake = false;
-        bool named = false;    // a real landmark matched it, not "peak3"
+        bool named = false;    // a real landmark matched it
         float size = 0;       // lake: samples. peak: prominence-ish drop.
         float radiusM = 0;    // lake: how far its own water reaches, REAL metres
+        // -- WHAT THIS FEATURE COVERS, IN WORLD METRES --------------------
+        //
+        // A summit is a point and this is that point. A LAKE IS NOT, and the
+        // radius above cannot stand in for its shape: Lake Ouachita is a
+        // hundred square kilometres of drowned valley, and the gazetteer's
+        // coordinate for it sits six kilometres from the arm this window
+        // looks at -- a perfectly good published position that no tolerance
+        // hung off a centroid will ever reach. Matching a name against the
+        // water's own EXTENT is the honest test, because the question a name
+        // answers is "is this that lake", not "is this near the middle of it".
+        float x0 = 0, z0 = 0, x1 = 0, z1 = 0;
     };
 
     // A landmark is only named if a found feature sits within this of it, IN
@@ -45,6 +62,10 @@ class PoiIndex {
     // renamed it. A tolerance quoted in the wrong unit does not fail, it just
     // quietly labels the wrong mountain.
     static constexpr float kNameSnapM = 900.0f;
+    // ...AND IT IS NOW A TEST A FEATURE CAN FAIL OUT OF THE INDEX. Every
+    // coordinate in kNamed is GNIS, so a name that does not reach anything is
+    // saying the window has no such landmark in it -- and the feature that
+    // nothing reached is saying it has no name. Both are ordinary answers.
 
     // How far a summit must see nothing higher, in REAL metres. 1.2 km is about
     // the scale that separates a named peak from its own shoulder in this
@@ -120,6 +141,7 @@ class PoiIndex {
                 if (!dominates(dem, i, j, c.first, domR)) continue;
                 Poi p;
                 p.x = x; p.z = z; p.m = c.first; p.lake = false;
+                p.x0 = p.x1 = x; p.z0 = p.z1 = z;   // a summit IS its point
                 peaks.push_back(p);
                 if (peaks.size() >= 12) break;
             }
@@ -232,6 +254,11 @@ class PoiIndex {
                     Poi p;
                     p.x = bx; p.z = bz;
                     p.m = surf; p.lake = true; p.size = float(n);
+                    // The water's own footprint, in world metres -- see
+                    // Poi::x0. ib/jb are the LAST cell, so the far corner is
+                    // one cell further out.
+                    worldOf(dem, ia * step, ja * step, &p.x0, &p.z0);
+                    worldOf(dem, (ib + 1) * step, (jb + 1) * step, &p.x1, &p.z1);
                     // The radius of a disc of the same area. Used to size the
                     // name tolerance below, and it is the only honest way to
                     // say how big a bent lake is in one number.
@@ -244,68 +271,111 @@ class PoiIndex {
             if (lakes.size() > 10) lakes.resize(10);
         }
 
-        // ------------------------------------------------- generated names...
-        for (size_t i = 0; i < peaks.size(); ++i) {
-            char b[48];
-            std::snprintf(b, sizeof b, "peak%d", int(i) + 1);
-            peaks[i].name = b;
-        }
-        for (size_t i = 0; i < lakes.size(); ++i) {
-            char b[48];
-            std::snprintf(b, sizeof b, "lake%d", int(i) + 1);
-            lakes[i].name = b;
-        }
         poi_ = peaks;
         poi_.insert(poi_.end(), lakes.begin(), lakes.end());
 
-        // ...AND REAL NAMES ONLY WHERE THE DATA AGREES.
-        // Each of these was checked against the DEM: the elevation the data
-        // reports at the matched feature is within a few metres of published.
-        // A CANDIDATE LIST, NOT A GAZETTEER. Every one of these is a recalled
-        // coordinate, and recalled coordinates for this park were wrong three
-        // separate times in one session -- the Mummy Range by 0.05 degrees of
-        // latitude, Bear and Sprague Lake by 300 m, and a "lake surface" that
-        // was a forested bench. So the list is allowed to be wrong: a landmark
-        // that has no found feature within kNameSnapM of it attaches to
-        // nothing, keeps its generated name and costs nothing. What it must
-        // never do is attach to the wrong thing, which is what the tight snap
-        // and the one-name-per-feature rule below are for.
+        // =====================================================================
+        // ...AND EVERY ONE OF THEM IS A REAL PLACE OR IT IS NOT A PLACE.
         //
-        // Several of these will never match on purpose. Meeker and Hallett are
-        // real peaks that lose the dominance test to Longs and Otis a kilometre
-        // away, so they are not in the found list at all -- and that is the
-        // right answer, not a gap to widen the tolerance for. Elbert, Pikes and
-        // Cheesman are out of this window entirely; they are here so a window
-        // loaded from one of the other datasets names itself too.
+        // (user 2026-09-19: "remove all of the environment locations from the
+        //  /locate command. I want you to remove the lake2, lake3, and give
+        //  real actual names of the location. same thing for the mountains. I
+        //  want actual mountain/lake names in the locate command.")
+        //
+        // There used to be a `peak%d` / `lake%d` fallback here and the menu was
+        // eighteen of those against four real names. It is gone: a feature this
+        // pass cannot name is ERASED below rather than numbered, so /locate
+        // only ever offers somewhere with a name.
+        //
+        // WHICH MEANT THE GAZETTEER HAD TO STOP BEING RECALLED. The list that
+        // stood here was written from memory, and its own note says what that
+        // cost -- "recalled coordinates for this park were wrong three separate
+        // times in one session". Measured against the data, most of it never
+        // matched anything: Mummy Mountain was out by 5.2 km (the entry said
+        // 40.4308 N, the mountain is at 40.4752 N), Specimen Mountain by 1.1
+        // km, and eleven more named peaks are not in this window's found list
+        // at all. Four names of twenty-five attached.
+        //
+        // EVERY COORDINATE BELOW IS USGS GNIS -- the Domestic Names file for
+        // the state, which is the authority the maps are drawn from. Each was
+        // then checked the way this file has always asked: matched to the
+        // nearest feature the DEM found of the same kind, and the elevation the
+        // DEM reports there compared against the published one. Both numbers
+        // are in the comments, and every summit but Parika lands within a
+        // hundred metres of the peak the data found. That agreement is the
+        // check: a name that is right about WHICH mountain agrees about its
+        // height as well, and a recalled coordinate has no reason to do either.
+        //
+        // A NAME WITH NO FEATURE COSTS NOTHING, and most of these will never
+        // match -- they are the landmarks of six windows and only one is
+        // loaded. A FEATURE WITH NO NAME now costs the whole entry, which is
+        // the standard this list has to be good enough for.
+        // =====================================================================
         static const Named kNamed[] = {
-            // --- Rocky Mountain National Park, the peaks
-            {"longs",      40.2549, -105.6151, false},   // 4346 m, data 4344
-            {"meeker",     40.2430, -105.6297, false},   // 4240 m
-            {"chiefshead", 40.2381, -105.6606, false},   // 4139 m
-            {"pagoda",     40.2444, -105.6486, false},   // 4093 m
-            {"mchenrys",   40.2600, -105.6722, false},   // 4085 m
-            {"hagues",     40.4472, -105.6472, false},   // 4051 m
-            {"mummy",      40.4308, -105.6467, false},   // 4003 m
-            {"ypsilon",    40.4267, -105.6797, false},   // 4117 m
-            {"alice",      40.2133, -105.6900, false},   // 4004 m
-            {"otis",       40.3025, -105.6753, false},   // 3894 m
-            {"hallett",    40.3103, -105.6729, false},   // 3875 m, data 3876
-            {"flattop",    40.3050, -105.6858, false},   // 3673 m
-            {"taylor",     40.2864, -105.6853, false},   // 4041 m
-            {"specimen",   40.4400, -105.8200, false},   // 3805 m, data 3804
-            // --- ...and the water
-            {"grand",      40.2503, -105.8222, true},    // 2550 m, data 2552
-            {"shadow",     40.2183, -105.8433, true},    // 2545 m
-            {"granby",     40.1483, -105.8750, true},    // 2478 m
-            {"bear",       40.3128, -105.6458, true},    // 2885 m
-            {"sprague",    40.3222, -105.6114, true},    // 2670 m
-            {"bierstadt",  40.3167, -105.6300, true},    // 2782 m
-            {"lawn",       40.4067, -105.6975, true},    // 3383 m
-            {"sandbeach",  40.2094, -105.5717, true},    // 3200 m
-            // --- other windows: elbert40, front60, cheesman30
-            {"elbert",     39.1178, -106.4453, false},   // Sawatch window
-            {"pikes",      38.8409, -105.0423, false},   // Front Range window
-            {"cheesman",   39.2003, -105.2712, true},    // Front Range window
+            // -- rmnp50: Rocky Mountain National Park ---------------------
+            // The summits. The first figure is published, `data` is what this
+            // DEM reports at the feature the name attached to, and the last is
+            // how far apart the two positions are.
+            {"longs",        40.2549, -105.6162, false},  // 4346 m, data 4343, 81 m
+            {"mummy",        40.4752, -105.6236, false},  // 4092 m, data 4086, 14 m
+            {"audubon",      40.0990, -105.6163, false},  // 4030 m, data 4026, 37 m
+            {"isolation",    40.2023, -105.6777, false},  // 3998 m, data 3989, 32 m
+            {"ida",          40.3718, -105.7794, false},  // 3926 m, data 3922, 48 m
+            {"howard",       40.4271, -105.8989, false},  // 3904 m, data 3907, 27 m
+            {"cumulus",      40.4103, -105.9023, false},  // 3878 m, data 3878, 82 m
+            {"sprague",      40.3466, -105.7364, false},  // 3875 m, data 3871, 99 m
+            {"lead",         40.4486, -105.8971, false},  // 3821 m, data 3818,  6 m
+            {"bowen",        40.3605, -105.9334, false},  // 3817 m, data 3815, 12 m
+            {"specimen",     40.4446, -105.8085, false},  // 3807 m, data 3802, 32 m
+            {"parika",       40.3851, -105.9466, false},  // 3778 m, data 3778, 190 m
+            // ...and the water.
+            {"granby",       40.1555, -105.8484, true},   // Lake Granby
+            {"shadow",       40.2275, -105.8425, true},   // Shadow Mountain Lake
+            {"grand",        40.2436, -105.8147, true},   // Grand Lake
+            {"willowcreek",  40.1472, -105.9502, true},   // Willow Creek Reservoir
+            {"longdraw",     40.4991, -105.7866, true},   // Long Draw Reservoir
+            {"monarch",      40.1057, -105.7418, true},   // Monarch Lake
+            {"estes",        40.3764, -105.4965, true},   // Lake Estes
+            {"beaver",       40.1171, -105.5232, true},   // Beaver Reservoir
+            // -- acadia10: Mount Desert Island, the birch wood ------------
+            {"sargent",      44.3429,  -68.2732, false},  // Sargent Mountain, 39 m
+            {"eagle",        44.3635,  -68.2502, true},   // Eagle Lake
+            {"jordan",       44.3314,  -68.2553, true},   // Jordan Pond
+            {"bubble",       44.3446,  -68.2390, true},   // Bubble Pond
+            {"auntbetty",    44.3702,  -68.2749, true},   // Aunt Betty Pond
+            {"upperhadlock", 44.3216,  -68.2876, true},   // Upper Hadlock Pond
+            {"lowerhadlock", 44.3108,  -68.2895, true},   // Lower Hadlock Pond
+            // -- ouachita12: the oak wood --------------------------------
+            //
+            // ONE NAME, AND IT IS THE RESERVOIR. Every water body this window
+            // finds sits at 174 m: they are arms of Lake Ouachita, cut into
+            // separate components by the ridges between them, and the published
+            // point is 6 km from the nearest of them -- which is why a name has
+            // to be matched against the water's EXTENT as well as its middle.
+            // See Poi::x0. The window's own high point is an unnamed ridge
+            // crest with nothing in GNIS within 2.6 km of it, so it is dropped
+            // rather than called after a summit two valleys away.
+            {"ouachita",     34.6065,  -93.3478, true},   // Lake Ouachita
+            // -- elbert40: the Sawatch ------------------------------------
+            {"elbert",       39.1179, -106.4453, false},  // Mount Elbert, 11 m
+            {"oxford",       38.9648, -106.3388, false},  // Mount Oxford, 18 m
+            {"huron",        38.9455, -106.4381, false},  // Huron Peak, 24 m
+            {"grizzly",      39.0425, -106.5975, false},  // Grizzly Peak, 65 m
+            {"casco",        39.1141, -106.4938, false},  // Casco Peak, 11 m
+            {"oklahoma",     39.1786, -106.5062, false},  // Mount Oklahoma, 19 m
+            {"deer",         39.1575, -106.5212, false},  // Deer Mountain, 7 m
+            {"blaurock",     39.0113, -106.4537, false},  // Mount Blaurock, 24 m
+            // -- front60 and cheesman30: the Front Range ------------------
+            {"bison",        39.2385, -105.4979, false},  // Bison Mountain, 15 m
+            {"sheep",        38.7930, -105.0545, false},  // Sheep Mountain, 33 m
+            {"windy",        39.3023, -105.4398, false},  // Windy Peak, 13 m
+            {"buffalo",      39.2755, -105.3679, false},  // Buffalo Peak, 70 m
+            {"green",        39.3053, -105.3002, false},  // Green Mountain, 41 m
+            {"cheesman",     39.1955, -105.2846, true},   // Cheesman Lake
+            {"rampart",      38.9808, -104.9700, true},   // Rampart Reservoir
+            {"lakegeorge",   38.9787, -105.3641, true},   // Lake George
+            {"wrights",      38.7996, -105.2713, true},   // Wrights Reservoir
+            {"wilson",       38.8166, -105.0710, true},   // Wilson Reservoir
         };
         // ONE NAME PER FEATURE, NEAREST CLAIM WINS. Two landmarks a kilometre
         // apart can both be closest to the same found summit, and a loop that
@@ -313,32 +383,56 @@ class PoiIndex {
         // "meeker". Every pairing inside tolerance is scored first and they are
         // settled in order of distance, which makes the result independent of
         // the order kNamed happens to be written in.
-        // THE TOLERANCE IS THE FEATURE'S OWN EXTENT PLUS THE ALLOWANCE. A
-        // summit is a point and 900 m around it is generous. A lake is not a
-        // point: this window's largest is a five-kilometre reservoir with arms,
-        // and the entry's coordinate is the water cell nearest its centroid, so
-        // a perfectly good recalled position anywhere along it lands kilometres
-        // from that and matched nothing. Two of twenty-five names attached
-        // before this, and the twenty-three misses were the tolerance being
-        // wrong about what it was measuring, not the coordinates being wrong.
         //
-        // A small lake keeps a small tolerance, because its radius is small --
-        // which is the property that makes this safe rather than just looser.
-        struct Claim { float d; int poi; int name; };
+        // TWO WAYS TO CLAIM, AND THE SECOND IS WHAT A BIG LAKE NEEDS.
+        //
+        //   * WITHIN REACH OF THE POINT -- kNameSnapM plus the feature's own
+        //     radius. A summit is a point and 900 m round it is generous; a
+        //     small lake keeps a small tolerance because its radius is small,
+        //     which is what makes this safe rather than merely looser.
+        //
+        //   * ...OR STANDING ON THE WATER ITSELF. A published coordinate for a
+        //     reservoir is one point on a shape tens of kilometres long and it
+        //     is under no obligation to sit near the arm a window happens to
+        //     hold: Lake Ouachita's is 6 km from the nearest of the eight
+        //     components this engine finds of it, and Lake Granby's is 2.4 km
+        //     from its own. Inside a component's footprint IS that lake
+        //     whatever the distance to the piece's middle -- and a footprint
+        //     belongs to one component, so no two can swallow the same point.
+        //
+        // Both still rank by distance, so where several arms of one reservoir
+        // qualify the name goes to the one whose middle is nearest the
+        // published position and the rest stay unnamed. Which is right: the
+        // name belongs to the lake, and the lake is one of them.
+        struct Claim { float d; float size; int poi; int name; };
         std::vector<Claim> claims;
         for (int k = 0; k < int(sizeof kNamed / sizeof kNamed[0]); ++k) {
             float tx = 0, tz = 0;
             dem.worldOf(kNamed[k].lon, kNamed[k].lat, &tx, &tz);
             for (int i = 0; i < int(poi_.size()); ++i) {
-                if (poi_[i].lake != kNamed[k].lake) continue;
-                const float snapW = (kNameSnapM + poi_[i].radiusM) / sh;
-                const float d = (poi_[i].x - tx) * (poi_[i].x - tx) +
-                                (poi_[i].z - tz) * (poi_[i].z - tz);
-                if (d < snapW * snapW) claims.push_back({d, i, k});
+                const Poi &q = poi_[i];
+                if (q.lake != kNamed[k].lake) continue;
+                // HOW FAR OUTSIDE THIS FEATURE THE PUBLISHED POINT FALLS, which
+                // for a summit is simply how far away it is (its box is the
+                // point) and for a lake is ZERO anywhere on the water. That is
+                // the measure that settles the arms -- see the note above.
+                const float bx = tx < q.x0 ? q.x0 - tx : (tx > q.x1 ? tx - q.x1 : 0.0f);
+                const float bz = tz < q.z0 ? q.z0 - tz : (tz > q.z1 ? tz - q.z1 : 0.0f);
+                const float box = bx * bx + bz * bz;
+                const float snapW = (kNameSnapM + q.radiusM) / sh;
+                const float mid = (q.x - tx) * (q.x - tx) + (q.z - tz) * (q.z - tz);
+                if (box <= 0.0f || mid < snapW * snapW)
+                    claims.push_back({box, q.size, i, k});
             }
         }
-        std::sort(claims.begin(), claims.end(),
-                  [](const Claim &a, const Claim &b) { return a.d < b.d; });
+        // ...AND WHERE TWO PIECES BOTH HOLD IT, THE BIGGER ONE IS THE LAKE.
+        // Eight arms of Lake Ouachita all qualify and all of them ARE Lake
+        // Ouachita; the name belongs on the one with the shore, the fish and
+        // the room to swim, not on whichever 64-cell inlet the coordinate
+        // happened to land nearest.
+        std::sort(claims.begin(), claims.end(), [](const Claim &a, const Claim &b) {
+            return a.d != b.d ? a.d < b.d : a.size > b.size;
+        });
         std::vector<uint8_t> nameTaken(sizeof kNamed / sizeof kNamed[0], 0);
         for (const Claim &c : claims) {
             if (poi_[c.poi].named || nameTaken[size_t(c.name)]) continue;
@@ -346,6 +440,35 @@ class PoiIndex {
             poi_[c.poi].named = true;
             nameTaken[size_t(c.name)] = 1;
         }
+
+        // -- AND THE SEA IS A PLACE WITHOUT BEING IN ANY GAZETTEER ---------
+        //
+        // The Acadia window is an ISLAND, and the biggest body of water in it
+        // is the one all round it: 2.8 km across the part this window holds,
+        // with a surface the data puts at sea level. GNIS names the coves and
+        // the sound, not the ocean, so nothing in the list above can claim it
+        // and the erase below would take it -- the one destination in that
+        // world with fish, ducks, lily pads and dragonflies in it.
+        //
+        // ITS OWN MEDIAN SURFACE IS THE EVIDENCE, which is how everything else
+        // in this file is decided. Anything at or below the datum is the sea; a
+        // lake in the mountains is two kilometres above it.
+        for (Poi &p : poi_)
+            if (p.lake && !p.named && p.m <= 1.0f) {
+                p.name = "sea";
+                p.named = true;
+                break;   // one window, one sea -- and the list is biggest first
+            }
+
+        // -- ...AND WHAT IS LEFT OVER IS NOT A PLACE ----------------------
+        //
+        // The erase that makes the rule at the top of this block true. A summit
+        // the data found on an unnamed ridge, and an arm of a reservoir whose
+        // name is already on another arm, are both real features; neither is
+        // somewhere a player can be sent BY NAME, which is all /locate does.
+        poi_.erase(std::remove_if(poi_.begin(), poi_.end(),
+                                  [](const Poi &p) { return !p.named; }),
+                   poi_.end());
     }
 
     int namedCount() const {
@@ -380,10 +503,10 @@ class PoiIndex {
         char b[160];
         for (const Poi &p : poi_) {
             if (p.lake)
-                std::snprintf(b, sizeof b, "    %-10s lake  %4.0f m asl, %.1f km across\n",
+                std::snprintf(b, sizeof b, "    %-13s lake  %4.0f m asl, %.1f km across\n",
                               p.name.c_str(), p.m, p.radiusM * 2.0f / 1000.0f);
             else
-                std::snprintf(b, sizeof b, "    %-10s peak  %4.0f m asl\n", p.name.c_str(), p.m);
+                std::snprintf(b, sizeof b, "    %-13s peak  %4.0f m asl\n", p.name.c_str(), p.m);
             s += b;
         }
         return s;

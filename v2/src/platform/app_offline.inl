@@ -61,6 +61,13 @@
                 world_.collidersNear(cam.origin, kBirdKeepM, &perches);
                 for (int i = 0; i < 60; ++i) birds_.update(1.0f / 60.0f, perches, cam.origin);
                 birds_.publish(world_);
+                {
+                    float closest = 0.0f, mean = 0.0f;
+                    const int n = birds_.census(&closest, &mean);
+                    std::printf("  bird     %d perched, closest two %.1f m apart "
+                                "(mean %.1f)\n",
+                                n, double(closest), double(mean));
+                }
             }
             // ...AND THE LAKE, for the reason the flock above is ticked: an
             // --out picture of a lake with nothing living on it is a picture of
@@ -353,6 +360,15 @@
                             double(at.x), double(at.y), double(at.z));
             else
                 std::printf("  flock    %d butterflies\n", flock_.flying());
+            {
+                // ...AND WHICH COLOURS, because the cherry wood owns one
+                // of them -- see Butterflies::cherryColour. Pink outside
+                // the blossom or yellow inside it is the rule broken.
+                int bp = 0, by = 0, bo = 0;
+                flock_.census(&bp, &by, &bo);
+                std::printf("  flock    %d pink, %d yellow, %d other%s\n", bp, by, bo,
+                            (bp && by) ? "  <-- BOTH, at a band seam" : "");
+            }
         }
 
         // -- LIGHT THE FOG GRID, WHICH OFFLINE NEVER DID --------------------

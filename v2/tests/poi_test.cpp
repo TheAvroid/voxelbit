@@ -124,8 +124,21 @@ int main(int argc, char **argv) {
         if (poi.find(p.name) != &p) ++unreachable;
     printf("names /locate cannot resolve: %d\n", unreachable);
 
-    const bool pass = peaks > 0 && (!haveCover || lakes > 0) && badPeak == 0 && badLake == 0 &&
-                      unreachable == 0;
+    // EVERY PLACE HAS A REAL NAME. The index used to number what it could not
+    // name (`peak7`, `lake3`) and now erases it instead, so this is the new
+    // invariant and it is the cheapest one here to check.
+    int unnamed = 0;
+    for (const PoiIndex::Poi &p : poi.all()) unnamed += p.named ? 0 : 1;
+    printf("places with no real name: %d\n", unnamed);
+
+    // NOT `peaks > 0` ANY MORE, and the window that broke it is worth naming:
+    // ouachita12's high point is an unnamed ridge crest with nothing in the
+    // gazetteer within 2.6 km of it, so that window legitimately offers a lake
+    // and no summit. What this has to assert is that the index is not EMPTY --
+    // a build wired in at the wrong point in the load produces exactly that,
+    // which is the failure this test was written for.
+    const bool pass = !poi.all().empty() && (!haveCover || lakes > 0) && badPeak == 0 &&
+                      badLake == 0 && unreachable == 0 && unnamed == 0;
     printf("\n%s\n", pass ? "PASS -- every place is where the data says it is"
                           : "FAIL -- see the marked rows above");
     return pass ? 0 : 1;

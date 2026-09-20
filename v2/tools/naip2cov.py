@@ -20,6 +20,9 @@ and at 4,000 m a sunlit granite slope and a dry meadow look alike in RGB.
 """
 import array, io, json, math, os, struct, subprocess, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import geoimg
+
 SERVICE = ("https://imagery.nationalmap.gov/arcgis/rest/services/"
            "USGSNAIPPlus/ImageServer/exportImage")
 
@@ -154,6 +157,9 @@ def main():
     block = 2048
     if "--px" in sys.argv:
         block = int(sys.argv[sys.argv.index("--px") + 1])
+    imagery_dir = None
+    if "--imagery-dir" in sys.argv:
+        imagery_dir = sys.argv[sys.argv.index("--imagery-dir") + 1]
 
     HFMT = "<8s2i6d2f8i"
     hb = io.open(dem_path, "rb").read(struct.calcsize(HFMT))
@@ -162,36 +168,218 @@ def main():
     print("extent  lon %.5f..%.5f  lat %.5f..%.5f" % (olon, olon + slon * w, olat - slat * h, olat))
 
     cov = bytearray(w * h)
-    rgbs = [(0, 0, 0)] * (w * h)   # kept so the ramp can be built from real pixels
+    # THE WINDOW'S PIXELS, RGBA, kept so the blocks can be blended into each
+    # other and the ramp built from what was actually classified. Four bytes a
+    # cell -- 94 MB on rmnp50 -- and it REPLACES a list of w*h three-tuples,
+    # which was gigabytes of object header for the same information.
+    pix = bytearray(w * h * 4)
+    seen = bytearray(w * h)
     tmp = os.path.join(os.environ.get("TEMP", "."), "_naip_block.tif")
-    nbx, nby = (w + block - 1) // block, (h + block - 1) // block
-    print("tiles   %dx%d requests of up to %dpx" % (nbx, nby, block))
 
-    for by in range(nby):
-        for bx in range(nbx):
-            x0, y0 = bx * block, by * block
-            bw, bh = min(block, w - x0), min(block, h - y0)
-            west, east = olon + slon * x0, olon + slon * (x0 + bw)
-            north, south = olat - slat * y0, olat - slat * (y0 + bh)
-            print("  block %d,%d  %dx%d" % (bx, by, bw, bh))
-            if not fetch((west, south, east, north), (bw, bh), tmp):
-                print("    FAILED -- left as unknown")
-                continue
-            tw, th, spp, px = read_tiff_rgbn(tmp)
-            if tw != bw or th != bh:
-                print("    got %dx%d, wanted %dx%d" % (tw, th, bw, bh))
-            for r in range(min(th, bh)):
-                base = r * tw * spp
-                row = (y0 + r) * w + x0
-                for c in range(min(tw, bw)):
-                    o = base + c * spp
-                    cov[row + c] = classify(px[o], px[o+1], px[o+2],
-                                            px[o+3] if spp > 3 else px[o])
-                    rgbs[row + c] = (px[o], px[o+1], px[o+2])
-    try:
-        os.remove(tmp)
-    except OSError:
-        pass
+    # -----------------------------------------------------------------------
+    # EITHER THE SUPPLIER'S OWN PIXELS, OR THE SERVICE'S RESAMPLED ONES.
+    #
+    # --imagery-dir reads a directory of georeferenced tiles and skips the
+    # entire block/fade path below. There is nothing to fade, because nothing
+    # was resampled and there is no join: the pixels are the ones that were
+    # flown. See tools/geoimg.py for why that matters and what it costs.
+    #
+    # SUPERSAMPLED 2x2, WHICH IS THE POINT OF THE RESOLUTION. At 15 cm imagery
+    # and a 1 m posting there are 44 source pixels inside one cell; the mean of
+    # four of them, at the quarter points, is a real use of that and still only
+    # four reads. Averaging all 44 would BLUR the class boundaries this whole
+    # tool exists to find -- a shoreline is exactly where neighbouring pixels
+    # disagree -- so the supersample is deliberately small.
+    # -----------------------------------------------------------------------
+    if imagery_dir:
+        print("imagery local tiles from %s" % imagery_dir)
+        src = geoimg.LocalImagery(imagery_dir)
+        print("        %.3f m/px over lon %.5f..%.5f lat %.5f..%.5f%s"
+              % (src.metres, src.lo0, src.lo1, src.la0, src.la1,
+                 "" if src.has_nir else "   NO NIR BAND -- NDVI/NDWI are dead"))
+        if not src.has_nir:
+            print("        3-band imagery cannot separate water from shadow or")
+            print("        rock from dry meadow; the classifier needs band 4.")
+        qx, qy = slon * 0.25, slat * 0.25
+        miss = 0
+        for j in range(h):
+            lat = olat - (j + 0.5) * slat
+            row = j * w
+            for i in range(w):
+                lon = olon + (i + 0.5) * slon
+                acc = [0, 0, 0, 0]
+                got = 0
+                for dx, dy in ((-qx, -qy), (qx, -qy), (-qx, qy), (qx, qy)):
+                    v = src.at(lon + dx, lat + dy)
+                    if v is None:
+                        continue
+                    acc[0] += v[0]; acc[1] += v[1]; acc[2] += v[2]; acc[3] += v[3]
+                    got += 1
+                k = row + i
+                if not got:
+                    miss += 1
+                    continue
+                d = k * 4
+                pix[d] = acc[0] // got
+                pix[d + 1] = acc[1] // got
+                pix[d + 2] = acc[2] // got
+                pix[d + 3] = acc[3] // got
+                seen[k] = 1
+            if (j & 255) == 0:
+                print("\r  row %d/%d" % (j, h), end="")
+        print("\r  %d rows done            " % h)
+        if miss:
+            # NOT silent: a window that reaches past the tiles leaves cover
+            # holes, and a hole reads downstream as unknown ground.
+            print("        %d samples (%.2f%%) had no imagery under them"
+                  % (miss, 100.0 * miss / (w * h)))
+    else:
+        # -----------------------------------------------------------------------
+        # FULL RESOLUTION, AND NO SEAM: OVERLAPPING BLOCKS, CROSS-FADED.
+        #
+        # (user 2026-09-18, in order: "odd generation formations like this straight
+        # line", then "the data appears as squares that are visible. can we get more
+        # detail?")
+        #
+        # THE TWO COMPLAINTS ARE THE SAME TRADE AND THIS IS THE WAY OUT OF IT.
+        # exportImage caps a request at 2048 px, so a 4,859-sample window is either
+        # ONE coarse request -- 24.4 m a sample, which at shrink 6 is four world
+        # metres of flat colour, the "squares" -- or several full-resolution ones
+        # with a JOIN, and the join is where the straight line came from.
+        #
+        # WHAT THE JOIN ACTUALLY IS, measured rather than assumed. Fetching the same
+        # 512 m of ground as two requests and as one:
+        #
+        #     separate requests, across the join   39.5% of pixels change class
+        #     ONE request, across the same join    22.5%   <- the natural variation
+        #     a +2 DN shift on r, g, b              4.0%
+        #
+        # So the difference in the PIXELS is about two levels out of 255 -- the
+        # service resamples per request and that is all it costs -- and the
+        # classifier turns those two levels into seventeen points of class change,
+        # correlated along the whole row. Correlated is what the eye sees. An
+        # exposure match alone was tried and measured: it moves 4% and leaves the
+        # line.
+        #
+        # SO THE BLOCKS OVERLAP AND FADE INTO EACH OTHER. Each request is 2048 wide
+        # but they step by kStride, so every join has kOverlap of ground that both
+        # blocks saw; across that band the pixels are mixed linearly, which turns a
+        # straight discontinuity into a gradient a kilometre wide. The classifier
+        # still flips whatever it flips, but it flips it RAGGEDLY and over ground
+        # that already varies by 22% row to row.
+        #
+        # AND THE EXPOSURE IS MATCHED FIRST, cheaply: one reference request covers
+        # the whole window in a single exposure, and each block is mapped onto it
+        # with ONE 256-entry table -- bytes.translate, a C-speed pass -- built from
+        # the mean and spread of all four channels together. Per-channel tables
+        # would be a per-pixel Python loop over 37 M pixels; the channels differ by
+        # less than a level here (x0.95/0.94/0.93/0.92), so one table takes almost
+        # all of it.
+        # -----------------------------------------------------------------------
+        MAXPX = 2048
+        kOverlap = 192
+        kStride = MAXPX - kOverlap
+        rw, rh = min(w, MAXPX), min(h, MAXPX)
+        west, east = olon, olon + slon * w
+        north, south = olat, olat - slat * h
+        print("exposure  one reference request of %dx%d over the whole window" % (rw, rh))
+        ref_tmp = os.path.join(os.environ.get("TEMP", "."), "_naip_ref.tif")
+        if not fetch((west, south, east, north), (rw, rh), ref_tmp):
+            print("    FAILED -- the cover would be empty, so nothing is written")
+            return 1
+        rtw, rth, rspp, rpx = read_tiff_rgbn(ref_tmp)
+
+        def stats(buf, spp_, x0, y0, bw, bh, stride, step):
+            """mean and spread over all channels of a rectangle, every `step` px."""
+            n = 0
+            s = 0.0
+            q = 0.0
+            for yy in range(y0, y0 + bh, step):
+                base = yy * stride * spp_
+                for xx in range(x0, x0 + bw, step):
+                    o = base + xx * spp_
+                    for c in range(min(4, spp_)):
+                        v = buf[o + c]
+                        s += v
+                        q += v * v
+                    n += min(4, spp_)
+            if n == 0:
+                return 128.0, 1.0
+            mean = s / n
+            return mean, max(1.0, (q / n - mean * mean) ** 0.5)
+
+        nbx = max(1, (w - kOverlap + kStride - 1) // kStride)
+        nby = max(1, (h - kOverlap + kStride - 1) // kStride)
+        print("tiles   %dx%d requests of %dpx stepping %d (%.2f m a sample, %d px of overlap)"
+              % (nbx, nby, MAXPX, kStride, mx, kOverlap))
+
+        for by in range(nby):
+            for bx in range(nbx):
+                x0, y0 = bx * kStride, by * kStride
+                bw, bh = min(MAXPX, w - x0), min(MAXPX, h - y0)
+                if bw <= 0 or bh <= 0:
+                    continue
+                bwest, beast = olon + slon * x0, olon + slon * (x0 + bw)
+                bnorth, bsouth = olat - slat * y0, olat - slat * (y0 + bh)
+                print("  block %d,%d  %dx%d at %d,%d" % (bx, by, bw, bh, x0, y0))
+                if not fetch((bwest, bsouth, beast, bnorth), (bw, bh), tmp):
+                    print("    FAILED -- left as unknown")
+                    continue
+                tw, th, spp, px = read_tiff_rgbn(tmp)
+                if tw != bw or th != bh:
+                    print("    got %dx%d, wanted %dx%d" % (tw, th, bw, bh))
+                bm, bs = stats(px, spp, 0, 0, min(tw, bw), min(th, bh), tw, 16)
+                rx0, ry0 = x0 * rtw // w, y0 * rth // h
+                rbw, rbh = max(1, bw * rtw // w), max(1, bh * rth // h)
+                rm, rs = stats(rpx, rspp, rx0, ry0, min(rbw, rtw - rx0), min(rbh, rth - ry0), rtw, 4)
+                gain = min(2.5, max(0.4, rs / bs))
+                print("    exposure x%.3f, shift %+.1f" % (gain, rm - bm))
+                lut = bytes(min(255, max(0, int((v - bm) * gain + rm + 0.5))) for v in range(256))
+                px = bytes(px).translate(lut)
+                # ---- write it in, fading across the overlap ---------------------
+                for r in range(min(th, bh)):
+                    gy = y0 + r
+                    ty = 1.0 if (by == 0 or r >= kOverlap) else (r + 0.5) / kOverlap
+                    srow = r * tw * spp
+                    drow = gy * w
+                    if ty >= 1.0 and bx == 0:
+                        # Nothing to fade against on this row: one memcpy.
+                        n = min(tw, bw)
+                        pix[drow * 4:(drow + n) * 4] = px[srow:srow + n * 4]
+                        for i in range(n):
+                            seen[drow + i] = 1
+                        continue
+                    for c in range(min(tw, bw)):
+                        gx = x0 + c
+                        tx = 1.0 if (bx == 0 or c >= kOverlap) else (c + 0.5) / kOverlap
+                        t = tx * ty
+                        o = srow + c * spp
+                        k = drow + gx            # the CELL, not the block-local one
+                        d = k * 4
+                        if not seen[k] or t >= 1.0:
+                            pix[d] = px[o]
+                            pix[d+1] = px[o+1]
+                            pix[d+2] = px[o+2]
+                            pix[d+3] = px[o+3] if spp > 3 else px[o]
+                            seen[k] = 1
+                        else:
+                            u = 1.0 - t
+                            pix[d] = int(pix[d] * u + px[o] * t)
+                            pix[d+1] = int(pix[d+1] * u + px[o+1] * t)
+                            pix[d+2] = int(pix[d+2] * u + px[o+2] * t)
+                            nv = px[o+3] if spp > 3 else px[o]
+                            pix[d+3] = int(pix[d+3] * u + nv * t)
+        try:
+            os.remove(tmp)
+            os.remove(ref_tmp)
+        except OSError:
+            pass
+
+    # ---- and now classify the whole window from one consistent image --------
+    print("classifying %d samples..." % (w * h))
+    for k in range(w * h):
+        o = k * 4
+        cov[k] = classify(pix[o], pix[o+1], pix[o+2], pix[o+3])
 
     # -------------------------------------------------- RESOLVING THE SHADOW
     # A shadowed pixel takes the class of what is around it. That is the whole
@@ -250,12 +438,203 @@ def main():
     # Only ROCK and SNOW feed the ramp. Forest and meadow already have their own
     # green ramps in the palette, and letting a million dark conifer pixels vote
     # would drag every entry towards black.
+    # -----------------------------------------------------------------------
+    # THE DEM KNOWS WHERE THE WATER IS. THE PHOTOGRAPH ONLY GUESSES.
+    #
+    # (user 2026-09-18, with a picture of a flat grey polygon lying in the
+    # middle of a wood: "heres some more artifacting" / "it should be able to
+    # detect and fix the terrain artifacts".)
+    #
+    # THAT POLYGON IS A LAKE. USGS HYDRO-FLATTENS water surfaces: every posting
+    # inside a mapped water body is written at ONE elevation, TO THE BIT. So a
+    # lake in a .vbdem is a connected region of exactly equal float -- which is
+    # a thing that does not otherwise happen in a lidar or photogrammetric
+    # surface, where even a car park wanders by centimetres. When the imagery
+    # classifier misses it, the engine draws that surface as what it is: dead
+    # flat bare ground, with straight edges where the hydrography polygon ran.
+    #
+    # MEASURED on rmnp50: 225 regions of 60 postings or more, 323,846 samples,
+    # 3,429 ha of it. The biggest is 178,647 samples at 2,522.65 m -- Lake
+    # Granby -- and the imagery had only 75.8% of that as water. Several
+    # 20-to-70 ha lakes were at 0.1%.
+    #
+    # THE DRAIN TEST IS ABOUT DEPTH, NOT COUNT, AND THAT IS THE WHOLE TRICK.
+    # Water sits in a hollow, so the first cut of this refused any region with
+    # a lower neighbour -- and it threw away every lake in the window, Granby
+    # included. The reason is the reservoir shoreline: 43% of Granby's 38,468
+    # rim cells read BELOW full pool, because the drawdown zone is exposed lake
+    # bed and the resampled waterline lands a centimetre or two under. Measured
+    # across all 225 regions, the worst drop anywhere on any rim is under 5 cm.
+    #
+    # A bench -- a flat spot on a hillside, a mine bench, a runway -- is not
+    # like that. It is CUT INTO a slope, so its downhill side falls metres
+    # within one posting. So the test is kDrainDropM, and on this window it
+    # rejects nothing at all, which is exactly the point: it is the guard that
+    # lets bit-exact flatness do the work.
+    #
+    # It runs AFTER the shadow resolution, so the photograph has already had
+    # its say, and BEFORE the shore bake, so the banks are measured from the
+    # corrected water.
+    # -----------------------------------------------------------------------
+    kFlatMinCells = 60          # 0.6 ha at a 10 m posting -- a pond, not a step
+    kDrainDropM = 0.25          # a rim cell this far down means it is not water
+    kDrainMaxFrac = 0.02        # and a couple of those is an outlet, not a slope
+    print("\nflat water from the DEM (hydro-flattened surfaces)...")
+    demg = array.array("f")
+    with io.open(dem_path, "rb") as fdem:
+        fdem.seek(struct.calcsize(HFMT))
+        demg.fromfile(fdem, w * h)
+    flatseen = bytearray(w * h)
+    lakes = 0
+    moved = 0
+    area = 0
+    for s in range(w * h):
+        if flatseen[s]:
+            continue
+        e = demg[s]
+        stack = [s]
+        flatseen[s] = 1
+        cells = []
+        edge = 0
+        drains = 0
+        while stack:
+            k = stack.pop()
+            cells.append(k)
+            i, j = k % w, k // w
+            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                a, b = i + di, j + dj
+                if a < 0 or b < 0 or a >= w or b >= h:
+                    continue
+                t = b * w + a
+                v = demg[t]
+                if v == e:
+                    if not flatseen[t]:
+                        flatseen[t] = 1
+                        stack.append(t)
+                else:
+                    edge += 1
+                    if e - v > kDrainDropM:
+                        drains += 1
+        if len(cells) < kFlatMinCells:
+            continue
+        if edge and float(drains) / float(edge) > kDrainMaxFrac:
+            continue
+        lakes += 1
+        area += len(cells)
+        for k in cells:
+            if cov[k] != WATER:
+                moved += 1
+            cov[k] = WATER
+    print("   %d flat bodies, %d samples, %.0f ha -- %d of them the photograph"
+          " had called something else"
+          % (lakes, area, area * mx * my / 10000.0, moved))
+
+    # -----------------------------------------------------------------------
+    # AND THE SAME RULE BACKWARDS: WATER THAT IS NOT ON A FLAT SURFACE IS NOT
+    # WATER.
+    #
+    # The pass above puts water back where the photograph missed a lake. This
+    # one takes it away where the photograph invented one, and it is the same
+    # question asked the other way round -- the DEM gets the last word both
+    # times, because standing water is level and a photograph does not know
+    # that.
+    #
+    # WHAT THE PHOTOGRAPH GETS WRONG is dark, blue-grey and high up: cloud
+    # shadow on rock, wet talus, and above all SNOW IN SHADOW, which sits in
+    # the same corner of colour space as deep water. Measured on rmnp50 before
+    # this existed: 14.8% of every water sample stood on ground steeper than
+    # 2%, and 2.6% of it on ground steeper than 12%, which is a hillside.
+    # Found by standing at 4,103 m asl -- above every lake in Colorado, 240 m
+    # under the highest summit in the window -- in an ocean with waves on it.
+    #
+    # THE TEST IS ANCHORING, NOT SLOPE, and that distinction is the whole
+    # reason this works. A slope threshold would eat the SHORE of every real
+    # lake, because a rim cell's central difference straddles the bank and
+    # reads steep. So the water is flooded into connected bodies first, and a
+    # body is kept if enough of it stands on ground the DEM has hydro-flattened
+    # -- if it is anchored to a surface that is flat to the bit.
+    #
+    # IT SEPARATES CLEANLY, which is how you know it is the right question.
+    # 336 bodies came back anchored, at 70-97% flat cells each, and they are
+    # the lakes. 20,225 came back unanchored at ZERO flat cells -- 78,968
+    # samples, 17.7% of all the water, at a median of four samples a body,
+    # which is what speckle looks like. The largest was 12,076 samples with
+    # 55 m of relief across it, and the one after that had 129.5 m. Nothing
+    # sat in between; no body was a close call.
+    # -----------------------------------------------------------------------
+    kAnchorFrac = 0.10          # a tenth of the body on hydro-flat ground
+    print("\nwater the photograph invented (not anchored to a flat surface)...")
+    # A cell is "flat" if it agrees exactly with most of its neighbours. This is
+    # the cheap local form of the flood fill above -- it does not need the
+    # region, only the evidence that one is there.
+    flat = bytearray(w * h)
+    for j in range(1, h - 1):
+        b = j * w
+        for i in range(1, w - 1):
+            k = b + i
+            e = demg[k]
+            if (demg[k - 1] == e) + (demg[k + 1] == e) + \
+               (demg[k - w] == e) + (demg[k + w] == e) >= 3:
+                flat[k] = 1
+    wseen = bytearray(w * h)
+    kept = 0
+    dropped = 0
+    dropcells = 0
+    for s in range(w * h):
+        if wseen[s] or cov[s] != WATER:
+            continue
+        stack = [s]
+        wseen[s] = 1
+        cells = []
+        nflat = 0
+        while stack:
+            k = stack.pop()
+            cells.append(k)
+            nflat += flat[k]
+            i, j = k % w, k // w
+            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                a, b = i + di, j + dj
+                if a < 0 or b < 0 or a >= w or b >= h:
+                    continue
+                t = b * w + a
+                if not wseen[t] and cov[t] == WATER:
+                    wseen[t] = 1
+                    stack.append(t)
+        if nflat >= kAnchorFrac * len(cells):
+            kept += 1
+            continue
+        # NOT A LAKE. Give the ground back to whatever surrounds it, so a
+        # misread snowfield becomes snow and a misread scree becomes rock,
+        # rather than everything becoming one default class.
+        ring = {}
+        for k in cells:
+            i, j = k % w, k // w
+            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                a, b = i + di, j + dj
+                if a < 0 or b < 0 or a >= w or b >= h:
+                    continue
+                c = cov[b * w + a]
+                if c != WATER:
+                    ring[c] = ring.get(c, 0) + 1
+        fill = ROCK
+        if ring:
+            fill = max(ring.items(), key=lambda p: p[1])[0]
+        for k in cells:
+            cov[k] = fill
+        dropped += 1
+        dropcells += len(cells)
+    print("   %d bodies kept, %d dropped (%d samples, %.1f%% of the water)"
+          % (kept, dropped, dropcells,
+             100.0 * dropcells / max(1, dropcells + sum(1 for k in range(w * h)
+                                                        if cov[k] == WATER))))
+
+
     print("\nbuilding the ground ramp from the imagery...")
     hist = {}
     for k in range(0, w * h, 3):
         if cov[k] in (ROCK, SNOW):
-            rgb = rgbs[k]
-            q = (rgb[0] >> 4, rgb[1] >> 4, rgb[2] >> 4)
+            o = k * 4
+            q = (pix[o] >> 4, pix[o+1] >> 4, pix[o+2] >> 4)
             hist[q] = hist.get(q, 0) + 1
     # SPREAD ACROSS THE BRIGHTNESS RANGE, NOT THE TOP TEN BY FREQUENCY. The ten
     # commonest colours of a granite basin are ten nearly identical tans, and a
@@ -282,7 +661,8 @@ def main():
     for k in range(w * h):
         c = cov[k]
         if c in (ROCK, SNOW):
-            r, g_, b = rgbs[k]
+            o = k * 4
+            r, g_, b = pix[o], pix[o+1], pix[o+2]
             best, bd = 0, 1 << 30
             for i, e in enumerate(ramp):
                 d = (r-e[0])**2 + (g_-e[1])**2 + (b-e[2])**2

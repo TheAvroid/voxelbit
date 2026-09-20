@@ -56,6 +56,11 @@
                     // transitively today because Falcor gets there first
 #include <cstdint>
 #include <cstdio>
+#include <cstring>  // std::memcpy, in every copyOut below -- this header was
+                    // relying on its includer for it, which MSVC happens to
+                    // satisfy transitively and g++ does not. A test that
+                    // includes audio.h first sees it as four errors in a file
+                    // it did not touch.
 #include <mutex>
 #include <string>
 #include <vector>

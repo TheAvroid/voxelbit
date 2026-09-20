@@ -81,6 +81,50 @@
         player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
         pos_ = player_.eyePosition();
 
+        // -- A TEST THAT NEEDS A WOOD HAS TO GO AND FIND ONE ---------------
+        //
+        // The spawn picker learned to roll all five bands on 2026-09-19, and
+        // two of them are not forests. Before that it could only ever land in
+        // the pine, birch or oak, so every test in this file could assume
+        // trees, soil and animals underfoot and none of them said so.
+        //
+        // Now two spawns in five land in the SAND, where there is nothing to
+        // till, nothing to chop and nothing to hunt -- and the run reported
+        // FAIL, which is a test accusing the engine of a bug it does not have.
+        //
+        // TRAVELLED, NOT RE-ROLLED: /locate is the tested way to reach a band
+        // (see --locate-test) and it keeps the seed, so a run stays as
+        // reproducible as it was. A world PINNED to the desert genuinely has
+        // no wood and the reply says so; there the test is skipped rather
+        // than failed.
+        // -- ...AND ONTO GROUND A HOE CAN ACTUALLY TURN --------------------
+        //
+        // THE TEST USED TO ASK "am I in the sand", which was the right question
+        // for one wood and the wrong one in general: isTillableMat excludes the
+        // IMAGERY ramp as well, deliberately -- measured ground is not soil
+        // this tool is allowed to dig. So a DEM world's pine wood refuses the
+        // hoe too, and the day the spawn defaulted to pine the run began
+        // reporting "the bed GREW BACK" about a bed that had never been turned.
+        //
+        // Asked of the MATERIAL now, which is the thing the tool actually
+        // tests, so the travel cannot drift from the rule again.
+        {
+            auto tillableHere = [&] {
+                const int ci = int(std::floor(pos_.x / VOXEL_M));
+                const int cj = int(std::floor(pos_.z / VOXEL_M));
+                TerrainMemo memo;
+                const int h = world_.terrain.heightVox(ci, cj, memo);
+                return isTillableMat(world_.terrain.topMaterial(ci, cj, h, memo));
+            };
+            if (!tillableHere()) {
+                std::printf("  nothing here a hoe can turn -- travelling to the oak: %s\n",
+                            runCommand("/locate oak").c_str());
+                if (!tillableHere()) {
+                    std::printf("  SKIPPED -- no tillable earth in this world\n");
+                    return;
+                }
+            }
+        }
         int hoe = -1;
         for (int i = 0; i < held_.count(); ++i)
             if (held_.tool(i).takes == Takes::Earth) hoe = i;
@@ -1717,8 +1761,55 @@
                     "stack %d -> %d, chew %s\n", m0, mMid,
                     ate ? "yes" : "NO", stack0, stack1, bit ? "cued" : "NOT CUED");
 
-        const bool pass =
-            took && !again && shot && ate && bit && mMid != m0 && mMid >= 0 && stack1 < stack0;
+        // ---- 5. PICKING WITH A FRUIT ALREADY IN HAND DOES NOT EAT IT -------
+        //
+        // (user: "if Im holding an apple/orange in hand, then right click to
+        //  pick up another one from a tree, it eats the fruit.")
+        //
+        // WHY THIS NEEDS ITS OWN ARM RATHER THAN A CHECK BOLTED ONTO ARM 1.
+        // Arm 1 picks with an EMPTY hand, and an empty hand cannot reproduce
+        // this: wantEat falls straight out on holdingFood(), so the press does
+        // no harm and the arrival spends it 360 ms later. The bug needs food in
+        // the hand ON THE PRESS FRAME. Arm 1 also drives the drops to arrival
+        // first, and the arrival path spends the press itself -- so anything
+        // measured after that loop passes whatever pickFruit did.
+        //
+        // SO: food in hand, pick, and poll the bite in the SAME step with the
+        // button still down -- which is the order the game runs them in, the
+        // event handler and then processInput. No drops_.update between them.
+        held_.give(appleTool_);
+        held_.select(appleTool_);      // select cancels any bite -- a clean start
+        const bool hadFood = held_.holdingFood();
+        Vec3 f3{0.0f, 0.0f, 0.0f};
+        bool armed = false, noBiteOnPick = false, tookSecond = false;
+        if (hadFood && world_.lowestFruitNear(player_.pos, 90.0f, &f3)) {
+            // STAND UNDER THIS ONE TOO. Arm 1 took the lowest fruit and arm 3
+            // shot another down, so the next one up can easily be past
+            // kFruitReachM from where arm 1 left the feet -- and an arm that
+            // quietly does not run is the thing this whole test exists to
+            // avoid. Same placeOnGround the first pick uses.
+            player_.placeOnGround(walkWorld(), f3.x, f3.z);
+            pos_ = player_.eyePosition();
+            const Vec3 d3{f3.x - pos_.x, f3.y - pos_.y, f3.z - pos_.z};
+            const float dl3 = sqrtf(d3.x * d3.x + d3.y * d3.y + d3.z * d3.z);
+            yaw_ = atan2f(d3.x, -d3.z) * 180.0f / PI;
+            pitch_ = asinf(clampf(d3.y / maxf(dl3, 1e-4f), -1.0f, 1.0f)) * 180.0f / PI;
+            armed = dl3 <= kFruitReachM;
+            if (armed) {
+                tookSecond = pickFruit();          // the ButtonDown half
+                held_.wantEat(true, simMs_);       // ...and processInput, same frame
+                noBiteOnPick = !held_.eating();
+                held_.bitNow();                    // swallow the cue either way
+            }
+        }
+        std::printf("  second pick with food in hand: %s, bite %s\n",
+                    !armed ? "NO FRUIT IN REACH -- not exercised"
+                           : tookSecond ? "took one" : "NOTHING PICKED",
+                    !armed ? "n/a" : noBiteOnPick ? "not opened -- correct"
+                                                  : "OPENED -- it ate the one in hand");
+
+        const bool pass = took && !again && shot && ate && bit && mMid != m0 && mMid >= 0 &&
+                          stack1 < stack0 && (!armed || (tookSecond && noBiteOnPick));
         std::printf("\n  %s\n", pass ? "PASS" : "FAIL");
         std::fflush(stdout);
     }
@@ -1982,6 +2073,96 @@
         int n = 0;
         for (int y = lo; y <= hi; ++y) n += isBlade(probe.material(i, j, y)) ? 1 : 0;
         return n;
+    }
+
+    // -----------------------------------------------------------------------
+    // DOES THE COBRA COME AT YOU, AND DOES IT COST YOU ANYTHING.
+    //
+    // (user 2026-09-19: "have the cobra attack the player instead of running
+    //  away from the player. same thing for the scorpion too.")
+    //
+    // WHY IT NEEDS A TEST OF ITS OWN. Nothing else in the suite ever gets near
+    // one. Every creature is born at least 30 m out (the shared birth floor,
+    // see Bunnies::fillSkunks) and a hunter only charges once you are inside
+    // its flee sphere at 7 m -- so a test that stands still, which is every
+    // other one, watches a cobra wander at its leash forever. --clip-test runs
+    // 9000 cobra-frames at a mean 1.38 m/s, which is its WALK: proof that it
+    // never noticed the player at all, and the reason that test could pass
+    // either side of this change.
+    //
+    // So this one walks the player ONTO the animal and then stands there.
+    // ----------------------------------------------------------------------
+    void runBiteTest() {
+        std::printf("\n=== BITE TEST ===\n");
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+        if (!world_.terrain.desert()) {
+            std::printf("  SKIPPED -- the hunters are desert only; run with --desert\n");
+            return;
+        }
+        warmLife(player_.pos, 3);
+        publishLife();
+
+        const auto groundAt = [this](float x, float z) {
+            return float(world_.terrain.heightVox(int(std::floor(x / VOXEL_M)),
+                                                  int(std::floor(z / VOXEL_M))) + 1) * VOXEL_M;
+        };
+        const float dt = 1.0f / 60.0f;
+        int bites = 0, charged = 0;
+        float closest = 1e9f;
+        vitals_.reset(player_.pos);
+        const int hp0 = vitals_.hp;
+        for (int frame = 0; frame < 40 * 60; ++frame) {
+            bunnies_.update(dt, pos_, groundAt,
+                            [this](float x, float z) { return wetColumnAt(x, z); }, perches_,
+                            [this](float x) { return world_.terrain.woodBit(x); },
+                            [this](float x, float z) { return sandAt(x, z); });
+            // -- WALK ONTO THE NEAREST HUNTER, ONE STEP A FRAME -----------
+            //
+            // At a walk, not a teleport: the charge is a state the animal
+            // enters when you cross its rim, and dropping the player inside the
+            // rim would skip the very transition being tested.
+            Vec3 at{0, 0, 0};
+            int kind = -1;
+            if (bunnies_.nearestHunter(pos_, &at, &kind)) {
+                const float dx = at.x - pos_.x, dz = at.z - pos_.z;
+                const float d = std::sqrt(dx * dx + dz * dz);
+                closest = minf(closest, d);
+                if (d > 1.2f) {
+                    const float step = minf(player_.walk * dt, d - 1.0f);
+                    player_.pos.x += dx / d * step;
+                    player_.pos.z += dz / d * step;
+                    player_.pos.y = groundAt(player_.pos.x, player_.pos.z);
+                    pos_ = player_.eyePosition();
+                } else {
+                    ++charged;
+                }
+            }
+            if (const int bit = bunnies_.biteDamage(); bit > 0) {
+                ++bites;
+                vitals_.hurt(bit, bit >= 5 ? "a cobra struck you" : "a scorpion stung you");
+                std::printf("  bite     %s for %d, hp now %d/%d\n",
+                            bit >= 5 ? "cobra" : "scorpion", bit, vitals_.hp, kVitHpMax);
+            }
+            if (vitals_.deathWhy) {
+                std::printf("  death    %s\n", vitals_.deathWhy);
+                vitals_.deathWhy = nullptr;
+                break;
+            }
+            simMs_ += double(dt) * 1000.0;
+        }
+        std::printf("  closest  %.2f m, %d frames at contact, %d bites\n", double(closest), charged,
+                    bites);
+        std::printf("  health   %d -> %d of %d\n", hp0, vitals_.hp, kVitHpMax);
+        const bool ok = bites > 0 && vitals_.hp < hp0;
+        std::printf("  %s\n", ok ? "PASS -- it came at the player and it cost health."
+                                : "FAIL -- nothing reached the player.");
+        std::fflush(stdout);
     }
 
     void runClipTest() {
@@ -2249,30 +2430,76 @@
         }
         player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
         pos_ = player_.eyePosition();
-        const bool birch = world_.terrain.birchAt(pos_.x);
+        // THE TERRAIN'S OWN WOOD BIT, NOT "IS IT BIRCH". This read `birchAt`,
+        // so an OAK spawn reported itself as pine and every row was then judged
+        // against the wrong wood -- which is what hid four bad gates in the
+        // table for as long as it did. See LifeName::woods.
+        const uint8_t here = world_.terrain.woodBit(pos_.x);
         std::printf("  spawn (%.0f, %.0f, %.0f) -- the %s wood\n", pos_.x, pos_.y, pos_.z,
-                    birch ? "birch" : "pine");
+                    world_.terrain.woodName(pos_.x));
 
         warmLife(pos_, 30);
 
         // ---- the survey ---------------------------------------------------
         std::printf("\n  -- what /locate finds from here --\n");
-        std::printf("  %-11s %-6s %8s   %s\n", "name", "lives", "distance", "at");
+        // "lives" IS A SET AND NEEDS THE ROOM TO SAY SO -- bunnies.h's
+        // woodsName prints "birch and oak", which is the whole point of the
+        // column and does not fit in six characters.
+        std::printf("  %-11s %-13s %8s   %s\n", "name", "lives", "distance", "at");
         int found = 0, expectedMisses = 0, wrong = 0;
         for (const LifeName &ln : lifeNames()) {
             Vec3 at{0, 0, 0};
-            const char *lives = ln.water ? "water" : ln.wood < 0 ? "both" : ln.wood ? "birch"
-                                                                                    : "pine";
+            const char *lives = ln.water ? "water" : woodsName(ln.woods);
             if (nearestLife(ln.life, &at)) {
                 const float d = std::hypot(at.x - pos_.x, at.z - pos_.z);
-                std::printf("  %-11s %-6s %6.0f m   (%.0f, %.0f, %.0f)\n", ln.name, lives, d,
+                std::printf("  %-11s %-13s %6.0f m   (%.0f, %.0f, %.0f)\n", ln.name, lives, d,
                             at.x, at.y, at.z);
                 ++found;
-                // A row gated to the OTHER wood that finds one anyway means
-                // the gate in the table disagrees with the gate in the engine.
-                if (!ln.water && ln.wood >= 0 && (ln.wood == 1) != birch) {
-                    std::printf("      ^ TABLE WRONG: found in the %s wood\n",
-                                birch ? "birch" : "pine");
+                // A row that finds an animal standing in a wood it does not
+                // list means the gate in the table disagrees with the gate in
+                // the engine -- and it caught four of them the day it learned
+                // to ask with the terrain's own bits. See LifeName::woods.
+                //
+                // ASKED AT THE ANIMAL, NOT AT THE PLAYER, and that is the
+                // whole difference between a report and a false one. A band is
+                // 800 m and the streaming disc is 300, so standing anywhere
+                // near a boundary means the ring spans TWO woods: from a pine
+                // spawn nine metres off the birch line this flagged the mouse,
+                // the grass snake and a beehive, and all three were correctly
+                // in the BIRCH a few dozen metres away. The player's wood is
+                // the right question for a MISS, below, and the wrong one for
+                // a find.
+                // -- ...AND IT MAY HAVE WALKED HERE ----------------------
+                //
+                // A band is a STRIPE IN X and every one of these animals
+                // moves, so an animal found a few metres into the next wood is
+                // an animal that crossed a seam -- which the spawn gate's own
+                // note calls fine in as many words: "a marcher may wander
+                // across the seam afterwards and that is fine -- what would
+                // not be fine is a population that thins out every time one of
+                // them crosses it".
+                //
+                // This asked woodBit at one point, so standing anywhere near a
+                // boundary failed the whole run: spawn 99 lands at x = 0,
+                // which is exactly the desert|birch seam, and the snake, the
+                // ladybug, the butterfly and the songbird were all reported as
+                // TABLE WRONG for being fifteen to fifty metres the wrong side
+                // of a line they are allowed to cross.
+                //
+                // So the question is "could this animal have come from a wood
+                // its row accepts", and a stripe makes that cheap: look along
+                // x either way by the distance one could plausibly have
+                // travelled. Flagging then needs the animal to be DEEP in a
+                // wood that is not its own, which is the table error this is
+                // for.
+                bool woodOk = false;
+                for (int step = -2; step <= 2 && !woodOk; ++step)
+                    woodOk = (ln.woods &
+                              world_.terrain.woodBit(at.x + float(step) * 40.0f)) != 0;
+                if (!ln.water && !woodOk) {
+                    std::printf("      ^ TABLE WRONG: one is standing in the %s wood, which "
+                                "its row says it does not live in\n",
+                                world_.terrain.woodName(at.x));
                     ++wrong;
                 }
                 continue;
@@ -2280,11 +2507,133 @@
             // Nothing found. Expected when the row is gated elsewhere -- by
             // wood, by water, or by the CLOCK.
             const bool asleep = ln.night && !isNight();
-            const bool elsewhere =
-                ln.water ? true : (ln.wood >= 0 && (ln.wood == 1) != birch);
-            std::printf("  %-11s %-6s %8s   %s\n", ln.name, lives, "-",
+            bool elsewhere = ln.water ? true : !(ln.woods & here);
+            // WHY IT IS EXCUSED, IN ITS OWN WORDS. Every exemption below used
+            // to print "not this wood", which is true of the first one and a
+            // lie about the rest: a bee is excused because there is no HIVE,
+            // a songbird because there is no TREE tall enough, a crop because
+            // it is sparse. A line that gives the wrong reason for a real
+            // miss is worse than no line -- it sends the next reader to the
+            // band table to fix something that is not there.
+            const char *why = "(not this wood -- /locate will travel)";
+            // -- A BEE IS GATED ON A LANDMARK, NOT ON A WOOD ---------------
+            //
+            // kBeeHiveM is 40 m: a bee exists because a HIVE is within forty
+            // metres of the player, and hives hang in one birch in a hundred.
+            // So "no bee here" is the ordinary state of most of the birch wood
+            // and finding one is luck -- `--birch` passed this row and the
+            // banded world failed it from a spawn two hundred metres away,
+            // which is the same world and the same code.
+            //
+            // THE SAME SHAPE AS THE FROG, which the table already flags with
+            // `water`: the row is gated on something being NEAR, and /locate
+            // travels to it on a miss. warmLife has already gathered the hives
+            // this query would use, so the honest test is whether there was
+            // one to find at all.
+            if (ln.life == Life::Bee && hivesNear_.empty()) {
+                elsewhere = true;
+                why = "(no hive within 40 m -- /locate will travel)";
+            }
+            // -- AND A HIVE IS THE SPARSE LANDMARK THE BEE IS GATED ON -------
+            //
+            // The bee beside it has had this excuse since the day it was
+            // written and the hive itself never did, because until now the row
+            // said birch-only and every oak spawn excused it as "not this
+            // wood". Widening it to kWoodBroad -- which is what hangHive
+            // actually does -- took that excuse away and left the row with
+            // none at all, so `--oak` reported WRONG for a hive being where
+            // hives usually are not. hangHive bears on a small fraction of
+            // trees; a 260 m disc holding none is ordinary.
+            //
+            // AN OPEN QUESTION IT IS DELIBERATELY NOT HIDING: the banded world
+            // finds hives in the oak (one at 300 m, measured) and this `--oak`
+            // run found none anywhere. That may be hangHive's `treeIndex <
+            // birchBase` gate behaving differently when only the oak models
+            // are loaded. The reason string says so rather than printing a
+            // reassuring "-".
+            if (ln.life == Life::Hive) {
+                elsewhere = true;
+                why = "(none in range -- hives are sparse; if a PINNED wood never has "
+                      "any, look at hangHive's birchBase gate)";
+            }
+            // -- AND A SONGBIRD IS GATED ON A TREE TALL ENOUGH TO SIT IN -----
+            //
+            // Exactly the same shape, and the roaming spawn is what finally
+            // showed it: the picker now opens in whatever wood it rolled
+            // rather than always the one clearing, and a thin stretch of oak
+            // reported "NONE, AND IT SHOULD BE HERE" on a world with nothing
+            // wrong with it. `all woods` says where a songbird MAY live, not
+            // that any given hundred metres of it holds a perch.
+            //
+            // MEASURED THE WAY THE BIRDS MEASURE IT, off the same list they
+            // are handed: a trunk (not standable), at least kBirdMinTreeM
+            // tall, inside kBirdPlaceM -- birds.h's own three tests. A count
+            // of nearby SOLIDS would not do; most of them are rocks and
+            // saplings, and a bird cannot perch on either.
+            if (ln.life == Life::Songbird) {
+                int perchable = 0;
+                for (const Solid &s : perches_) {
+                    if (s.standable) continue;
+                    if (s.top - s.baseY < kBirdMinTreeM) continue;
+                    if (std::hypot(s.cx - pos_.x, s.cz - pos_.z) > kBirdPlaceM) continue;
+                    ++perchable;
+                }
+                if (perchable == 0) {
+                    elsewhere = true;
+                    why = "(no tree tall enough within 42 m -- /locate will travel)";
+                }
+            }
+            // -- AND A CROP IS SPARSE, WHICH IS NOT THE SAME AS MISSING ------
+            //
+            // hangFruit bears on 15% of the oaks tall enough to carry one and
+            // gives each of those ONE species on a 50/50 roll, so a stretch of
+            // oak with apples in it and no orange inside 260 m is a wood, not
+            // a defect -- measured, the nearest apple was 222 m out and there
+            // was no orange at all. "The oak holds a crop" is a real claim and
+            // it is still checked, but per-WOOD rather than per-fruit, down in
+            // "the crop", which is the block that can ask it properly.
+            if (ln.fruit) {
+                elsewhere = true;
+                why = "(none of this one in range -- the crop is checked below)";
+            }
+            // -- ...OR NOT THERE YET, WHICH IS NOT THE SAME AS NOT THERE -----
+            //
+            // A POPULATION FILLS IN OVER TIME and some of them are slower than
+            // others: a bee exists because a HIVE does (see World::decorNear),
+            // hives hang in one birch in a hundred, and in the BANDED world
+            // only a third of the ring is birch -- so the nearest hive can be
+            // hundreds of metres out and the swarm has not been born by the
+            // time this survey runs. Measured: --birch finds a bee at 35 m and
+            // the same wood inside the bands finds none, while the flyer band
+            // at the end of this very test reports ten bees drawn.
+            //
+            // So a miss gets a second chance with more time on the clock before
+            // it is called WRONG. A test that reports a failure on a healthy
+            // world is a test that stops being read.
+            //
+            // A CROP IS NOT A POPULATION, so it gets no second chance and
+            // wants none. warmLife ticks the flocks and the marchers and
+            // streams nothing; a fruit is decor that was either meshed with
+            // its chunk or does not exist, so another sixty seconds of
+            // simulation cannot change the answer -- it can only spend a
+            // minute of the run arriving at the same one.
+            bool late = false;
+            if (!asleep && !elsewhere && !ln.fruit) {
+                warmLife(pos_, 60);
+                Vec3 at2{0, 0, 0};
+                late = nearestLife(ln.life, &at2);
+                if (late) {
+                    const float d2 = std::hypot(at2.x - pos_.x, at2.z - pos_.z);
+                    std::printf("  %-11s %-13s %6.0f m   (%.0f, %.0f, %.0f)  -- after another "
+                                "60 ticks\n",
+                                ln.name, lives, d2, at2.x, at2.y, at2.z);
+                    ++found;
+                    continue;
+                }
+            }
+            std::printf("  %-11s %-13s %8s   %s\n", ln.name, lives, "-",
                         asleep      ? "(after dark only -- try --time 23)"
-                        : elsewhere ? "(not this wood -- /locate will travel)"
+                        : elsewhere ? why
                                     : "NONE, AND IT SHOULD BE HERE");
             if (asleep || elsewhere) ++expectedMisses;
             else ++wrong;
@@ -2317,6 +2666,7 @@
                         lake_.ducksLiving(true));
         }
 
+
         // ---- the THREE WOODS, which are places rather than animals --------
         //
         // (user 2026-09-16: "give me a /locate oak".)
@@ -2335,20 +2685,43 @@
         {
             const Vec3 was = pos_;
             // A PINNED WORLD HAS ONE WOOD AND THAT IS NOT A FAILURE. --pine,
-            // --birch, --oak and every DEM world set `forced`, and /locate
-            // answers such a world by saying so rather than walking to a band
-            // that is not there. This test predates the DEM terrain being the
-            // default, so it read that correct refusal as three wrong arrivals
-            // and printed FAIL on a run with nothing wrong in it -- which is
-            // the failure mode that makes a test stop being read.
+            // --birch, --oak and --acadia set `forced`, and there is no band to
+            // walk to -- so this arm asks the two questions that world can
+            // actually answer rather than the three a banded one can.
+            //
+            // THE WOOD IT IS PINNED TO MUST STILL TELEPORT (user 2026-09-18:
+            // "make sure /locate birch still works teleporting"). It is the
+            // ordinary state of the Acadia island, not a debugging flag, and a
+            // player with ten kilometres of forest around them asking to be
+            // taken to it is asking for something possible. The OTHER two are
+            // the refusal, and that is still the right answer for them.
             if (world_.terrain.forced) {
-                const std::string reply = runCommand("/locate birch");
-                const bool says = reply.find("pinned") != std::string::npos;
-                std::printf("  the world is pinned to the %s wood -- /locate %s\n",
-                            world_.terrain.woodName(pos_.x),
-                            says ? "says so, which is the right answer"
-                                 : "DOES NOT SAY SO -- WRONG");
-                if (!says) ++wrong;
+                const char *pinned = world_.terrain.woodName(pos_.x);
+                for (const BiomeName &bn : biomeNames()) {
+                    const Vec3 from = pos_;
+                    const std::string reply = runCommand(std::string("/locate ") + bn.name);
+                    const bool mine = std::string(pinned) == bn.name;
+                    const bool moved = std::fabs(pos_.x - from.x) > 0.5f ||
+                                       std::fabs(pos_.z - from.z) > 0.5f;
+                    // The refusal names the flag that would put that wood in
+                    // reach -- see the reply itself for why "pinned" is not the
+                    // word to look for any more.
+                    const bool says = reply.find("--all-woods") != std::string::npos;
+                    const bool right = mine ? (moved && !says) : (says && !moved);
+                    std::printf("  /locate %-6s in a %s world -> %-42s %s\n", bn.name, pinned,
+                                reply.c_str(),
+                                right ? (mine ? "teleported" : "says so, which is right")
+                                      : (mine ? "DID NOT TELEPORT -- WRONG"
+                                              : "SHOULD HAVE REFUSED -- WRONG"));
+                    if (!right) ++wrong;
+                    // AND IT HAS TO LAND ON THE DATA. A band period is 2400 m
+                    // and a DEM window is finite, so a jump can end up outside
+                    // it, on the flat ground held at the border sample -- a
+                    // legal teleport onto a featureless plain.
+                    if (mine && moved)
+                        std::printf("      landed at (%.0f, %.0f, %.0f), the %s wood\n", pos_.x,
+                                    pos_.y, pos_.z, world_.terrain.woodName(pos_.x));
+                }
             } else
             for (const BiomeName &bn : biomeNames()) {
                 const std::string reply = runCommand(std::string("/locate ") + bn.name);
@@ -2524,6 +2897,31 @@
             // Put the world back under the player before the second pass --
             // the survey above moved them, and the next row is chosen from
             // populations that were filled somewhere else.
+            //
+            // -- AND THIS TEST CAN RUN THE CARD OUT OF MEMORY ----------------
+            //
+            // At some spawns it dies here, in World::update, and takes the run
+            // with it SILENTLY -- the log stops mid-section with no FAIL,
+            // which reads as a timeout:
+            //
+            //   (Fatal) GFX call '...createCommandBuffer(...)' failed with
+            //   error -2005270523 (DXGI_ERROR_DEVICE_REMOVED)
+            //     5# v2::World::update            world.h:9790
+            //     6# v2::ForestApp::runLocateTest app_tests_interaction.inl
+            //
+            // NOT AN UNPACED SUBMIT LOOP, which is what it looks like and what
+            // it was first "fixed" as: adding the 2 ms every sibling loop here
+            // carries changed nothing at all, the crash simply moved to the
+            // next streaming loop along. It is VRAM. The card reports 6.0 of
+            // 11.0 GB in use before the test starts (see the `gpu` line) and
+            // this test teleports across the world a dozen times, each jump
+            // streaming a fresh ring while the old chunks are still resident.
+            //
+            // It surfaced the day the spawn started roaming -- see
+            // chooseSpawn's stage one -- because the old spawn was always the
+            // same clearing and never reached the configurations that tip it
+            // over. The spawn is not the bug; it is the thing that found it.
+            // UNFIXED, and it wants someone with the eviction path in hand.
             for (int i = 0; i < 120; ++i) world_.update(player_.pos);
         }
 
@@ -2551,7 +2949,27 @@
                 const std::string said = locateLife(*fr);
                 std::printf("  said: %s\n", said.c_str());
                 pos_ = player_.eyePosition();
-                const bool birchThere = world_.terrain.birchAt(pos_.x);
+                // -- THE FROG'S OWN WOOD, NOT THE BIRCH ------------------
+                //
+                // This asked birchAt, and it was right on the day it was
+                // written: the frog was birch-only then. It gained the oak on
+                // 2026-09-17 ("add the grass snake, frog, and mouse to the oak
+                // forest") and this line did not move -- so an arrival at a
+                // perfectly good OAK shore, with frogs hopping on it twenty
+                // seconds later, still failed the run. The console said it in
+                // as many words: "frogs after 20 s yes -- and that is the whole
+                // point", and then FAIL.
+                //
+                // It also mislabelled every one of them. The printf below read
+                // `birchThere ? "birch" : "PINE"`, which is the same two-wood
+                // assumption woodBit was introduced to end -- an oak arrival
+                // and a cherry arrival both printed as PINE.
+                //
+                // ASKED THE WAY THE SPAWN ASKS IT, off the row's own mask, so
+                // the test cannot drift from the gate again: the frog's row
+                // moves and this moves with it.
+                const uint8_t woodThere = world_.terrain.woodBit(pos_.x);
+                const bool frogWood = (woodThere & fr->woods) != 0;
                 // HOW FAR THE WATER IS FROM WHERE IT PUT YOU. A frog stands
                 // within kFrogShoreM of a bank, so an arrival that is not
                 // beside one is an arrival with no frogs in its future.
@@ -2566,8 +2984,9 @@
                         break;
                     }
                 }
-                std::printf("  arrived (%.0f, %.0f) -- the %s wood, water %.0f m away\n", pos_.x,
-                            pos_.z, birchThere ? "birch" : "PINE", double(best));
+                std::printf("  arrived (%.0f, %.0f) -- the %s wood%s, water %.0f m away\n",
+                            pos_.x, pos_.z, world_.terrain.woodName(pos_.x),
+                            frogWood ? "" : " -- WHICH IS NOT THE FROG'S", double(best));
                 // ...AND THEN GIVE IT THE MOMENT THE REPLY PROMISES.
                 warmLife(pos_, 20);
                 Vec3 at{0, 0, 0};
@@ -2578,13 +2997,31 @@
                 // one and no amount of waiting will produce a frog. That is the
                 // world being what it was asked to be, not a defect, and
                 // counting it as one made this whole run print FAIL.
-                const bool canExist = !world_.terrain.forced || birchThere;
+                const bool canExist = !world_.terrain.forced || frogWood;
                 std::printf("  frogs after 20 s  %s\n",
                             got ? "yes -- and that is the whole point"
                                 : canExist ? "NONE, AND THERE SHOULD BE -- WRONG"
                                            : "none -- this world is pinned to a wood "
                                              "the frog does not live in");
-                if (canExist && (!got || !birchThere || best > 20.0f)) ++wrong;
+                // -- WHAT THIS TEST SAYS IT IS FOR IS THE FROGS ------------
+                //
+                // Its own opening note: "the check is not 'does /locate
+                // answer' but 'does where it puts you have frogs in it a
+                // moment later', which is the only thing the player was ever
+                // asking". `frogWood` is not that question and it disagrees
+                // with it at a seam -- an arrival on a PINE shore ten metres
+                // from the oak had frogs hopping on it and still failed, and
+                // the console printed both halves of the contradiction one
+                // line apart:
+                //
+                //   arrived ... the pine wood -- WHICH IS NOT THE FROG'S
+                //   frogs after 20 s  yes -- and that is the whole point
+                //
+                // So the wood stays in the LABEL, where it explains a result,
+                // and comes out of the verdict, where it overrules one. What
+                // remains is the pair the note asks for: frogs turned up, and
+                // the water they need is close enough to have brought them.
+                if (canExist && (!got || best > 20.0f)) ++wrong;
             }
         }
 
@@ -2645,7 +3082,253 @@
             }
         }
 
-        std::printf("\n  %s\n", wrong ? "FAIL" : "PASS -- every row is wired to its own animal.");
+        // -- ...AND THE ARCADE'S MAPS, WHICH ARE THE OTHER HALF OF /locate ---
+        //
+        // (user 2026-09-18: "I want to be able to type /locate (map name) for
+        // example.")
+        //
+        // WHAT THIS CATCHES is everything between the voxelizer and the
+        // console: a .maps sidecar that does not match the .vox beside it, a
+        // rectangle the spawn search cannot find open ground inside, and a
+        // map seated so that its arrival lands in the foundation rather than
+        // on it. None of those is visible in a render -- the map looks
+        // perfect and the command puts you inside a wall.
+        //
+        // IT DOES NOT ENTER THE LEVEL. enterLevelAt swaps the held kit and
+        // rebuilds the TLAS, which is not what a survey should do; the
+        // question here is only whether the arrival POINT is sound, and that
+        // is a pure function of the asset.
+        {
+            const auto &maps = world_.levelMaps();
+            std::printf("\n  -- what /locate finds in the arcade --\n");
+            if (maps.empty()) {
+                std::printf("  no maps -- the level asset has no .maps sidecar beside it; "
+                            "run tools/voxelize_arcade.py\n");
+                ++wrong;
+            }
+            const float baseY = World::levelOrigin().y;
+            for (const World::LevelMap &m : maps) {
+                const Vec3 s = world_.levelMapSpawn(m);
+                const float yaw = world_.levelMapYaw(m);
+                const int vx = int((s.x - World::levelOrigin().x) / VOXEL_M);
+                const int vz = int((s.z - World::levelOrigin().z) / VOXEL_M);
+                const bool in = vx >= m.x0 && vx < m.x1 && vz >= m.z0 && vz < m.z1;
+                // ON the floor, not IN it. levelMapSpawn's fallback returns the
+                // grid's own base, which is half a metre under the concrete --
+                // the exact bug levelSpawn was rewritten for once already.
+                const bool stood = s.y > baseY + 0.05f;
+                std::printf("  %-11s %4d x %-4d voxels   spawn (%.0f, %.1f, %.0f) yaw %.0f  %s\n",
+                            m.name.c_str(), m.x1 - m.x0, m.z1 - m.z0, s.x, s.y, s.z, yaw,
+                            (in && stood) ? "ok" : "BAD");
+                if (!in) {
+                    std::printf("      ^ the arrival is OUTSIDE this map's own rectangle\n");
+                    ++wrong;
+                }
+                if (!stood) {
+                    std::printf("      ^ the arrival is at the base of the grid -- it found no "
+                                "open ground and fell through to the fallback\n");
+                    ++wrong;
+                }
+            }
+        }
+
+        // ---- THE CROP, WHICH IS FOUND THE SAME WAY AND IS NOT ALIVE --------
+        //
+        // (user 2026-09-19: "give me a /locate apple command along with the
+        // orange too" -- "teleports me to the nearest apple".)
+        //
+        // THE ONE THING THE REPLY CANNOT SAY IS WHICH FRUIT IT TOOK YOU TO,
+        // and that is what this is for. Kind 6 is BOTH fruits and the species
+        // is DecorAt::index, so a query that dropped the index would answer
+        // "the nearest fruit" to both names: the console would print "orange
+        // -- 412, -80, 4.0 m off", the teleport would be real, the arrival
+        // would be four metres from something -- and it would be an apple.
+        // Nothing in the reply, the distance or the crosshair is wrong in that
+        // world; only the fruit is.
+        //
+        // SO THE TWO NAMES MUST NOT ANSWER WITH THE SAME TREE. hangFruit gives
+        // a crown ONE species on its own salt ("an apple tree is an apple
+        // tree"), so two hits at one coordinate cannot happen while the filter
+        // works and cannot fail to happen once it stops.
+        //
+        // IT PUTS ITS OWN SPAWN BACK before each arrival, because being stood
+        // next to the apple moves which orange is nearest.
+        //
+        // AND IT RUNS LAST, WHICH IS NOT TIDINESS. Fruit is oak-only, so from
+        // anywhere else this block's travel arm is a 1.2 km round trip to the
+        // oak band -- and a teleport is instant while a population is not.
+        // Run in the middle, it left all THREE of the world's frogs an oak
+        // band away with no slot free to place one near the player, and the
+        // frog check below reported "NONE, AND THERE SHOULD BE -- WRONG"
+        // standing one metre from water in the right wood, on a world where
+        // nothing was broken. Putting the populations back costs twenty
+        // simulated seconds of every class in the game and pushed the whole
+        // test past its timeout; running last costs nothing and cannot be
+        // forgotten the way a restore can.
+        //
+        // IT THEREFORE ASKS THE WORLD WHERE IT IS rather than reading `here`,
+        // which is the wood at the ORIGINAL spawn and several sections stale
+        // by the time this runs.
+        {
+            const Vec3 spawn = pos_;
+            const uint8_t cropWood = world_.terrain.woodBit(spawn.x);
+            static const char *kFruit[2] = {"apple", "orange"};
+            Vec3 fat[2] = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
+            bool got[2] = {false, false};
+            std::printf("\n  -- the crop, in the %s wood --\n",
+                        world_.terrain.woodName(pos_.x));
+            for (int i = 0; i < 2; ++i) {
+                got[i] = world_.nearestFruit(i, spawn, 260.0f, &fat[i]);
+                if (!got[i]) {
+                    // NO OAK IN RANGE IS THE ORDINARY ANSWER out here, and it
+                    // is the same answer the survey above already counted:
+                    // /locate travels to the oak band on it.
+                    //
+                    // AND ONE SPECIES MISSING IS ORDINARY EVEN IN THE OAK.
+                    // This counted a miss as WRONG per fruit, which is a
+                    // stricter claim than the world makes: hangFruit gives a
+                    // whole crown ONE species on a 50/50 roll and only bears
+                    // on 15% of the oaks tall enough, so a thin stretch of
+                    // wood holding apples and no oranges inside 260 m is a
+                    // wood, not a defect. Measured -- the nearest apple was
+                    // 222 m out and there was no orange at all, and nothing
+                    // was broken. The verdict moved to "neither", below.
+                    std::printf("  %-6s  none within 260 m\n", kFruit[i]);
+                    continue;
+                }
+                std::printf("  %-6s  (%.0f, %.1f, %.0f)  %.0f m out, %.1f m off the ground\n",
+                            kFruit[i], fat[i].x, fat[i].y, fat[i].z,
+                            std::hypot(fat[i].x - spawn.x, fat[i].z - spawn.z),
+                            fat[i].y - world_.terrain.heightM(fat[i].x, fat[i].z));
+            }
+            // THE OAK WOOD HAS TO HOLD A CROP, but it is "either fruit" that
+            // says so -- see the note above on why per-fruit was too strict.
+            if ((cropWood & kWoodOak) && !got[0] && !got[1]) {
+                std::printf("  NO CROP AT ALL IN THE OAK WOOD -- WRONG\n");
+                ++wrong;
+            }
+            if (got[0] && got[1]) {
+                const float gap = std::hypot(fat[0].x - fat[1].x, fat[0].z - fat[1].z);
+                std::printf("  the two are %.1f m apart  %s\n", gap,
+                            gap > 0.5f
+                                ? "-- two different trees, which is the index filter working"
+                                : "-- ONE FRUIT ANSWERING TO BOTH NAMES, WRONG");
+                if (gap <= 0.5f) ++wrong;
+            }
+            bool walked = false;
+            for (int i = 0; i < 2; ++i) {
+                teleportTo(spawn.x, spawn.z);
+                const LifeName *row = nullptr;
+                for (const LifeName &ln : lifeNames())
+                    if (std::string(ln.name) == kFruit[i]) row = &ln;
+                if (!row) {
+                    std::printf("  NO %s ROW -- WRONG\n", kFruit[i]);
+                    ++wrong;
+                    continue;
+                }
+                const std::string said = runCommand(std::string("/locate ") + kFruit[i]);
+                pos_ = player_.eyePosition();
+                // -- THE TRAVEL ARM, WHICH IS THE ONE A PLAYER MEETS FIRST ---
+                //
+                // Fruit is oak-only and the default world spawns you wherever
+                // the spawn picker likes, so "/locate apple" typed in the pine
+                // is the ORDINARY case and its whole job is the trip. The
+                // reply promises an oak wood with a crop in it; this checks
+                // both halves rather than the sentence.
+                //
+                // THE RING HAS TO BE STREAMED BEFORE IT CAN BE ASKED. Decor
+                // lives on meshed chunks, so nearestFruit on the frame of the
+                // teleport reads an empty world and reports "no crop" whatever
+                // is standing there -- the same trap the arrival check below
+                // this block already carries for trunks.
+                if (!got[i]) {
+                    // ONE TRIP, NOT TWO. Both names take the identical route --
+                    // the same nearestWoodX, the same oak band, the same
+                    // "give it a moment" -- and the only thing that differs is
+                    // the index, which the two checks above already pin down.
+                    // Walking it twice costs two full re-rings across 2.4 km of
+                    // world and pushed this test past ten minutes, which is
+                    // long enough that it stops being run.
+                    if (walked) {
+                        std::printf("  /locate %-6s -> %s\n      (the same trip the %s just "
+                                    "made -- not walked twice)\n",
+                                    kFruit[i], said.c_str(), kFruit[1 - i]);
+                        continue;
+                    }
+                    walked = true;
+                    if (world_.terrain.forced) {
+                        std::printf("  /locate %-6s -> %s\n      (pinned to one wood -- there "
+                                    "is nowhere to travel, and saying so is the answer)\n",
+                                    kFruit[i], said.c_str());
+                        continue;
+                    }
+                    const bool inOak = (world_.terrain.woodBit(pos_.x) & kWoodOak) != 0;
+                    // -- IT ASKS THE TERRAIN, NOT THE CHUNKS ---------------
+                    //
+                    // This used to stream the destination (120 world_.update
+                    // passes) and then check a crop was really there. That is
+                    // the honest question and it is the one thing in this test
+                    // the card will not survive: a fresh wood streamed in at
+                    // the end of a run that has already teleported a dozen
+                    // times takes the DEVICE out inside World::update --
+                    //
+                    //   (Fatal) DXGI_ERROR_DEVICE_REMOVED
+                    //
+                    // -- and the run dies with no FAIL and no verdict, which
+                    // costs far more than the check is worth. Confirmed to be
+                    // nothing to do with the spawn: it fires with the picker
+                    // skipped (--cam-x/--cam-z), and evicting first
+                    // (reloadWorld) does not save it either, because the peak
+                    // is the NEW wood rather than the old residency.
+                    //
+                    // So this arm checks what it can ask for free -- the reply
+                    // routed you into the oak -- and the CROP ITSELF is proved
+                    // by the other arm, which runs whenever the spawn is
+                    // already in the oak wood and checks the fruit, the
+                    // species filter and the arrival. Between them the claim
+                    // is covered; it is only covering it in ONE run that the
+                    // hardware refuses.
+                    std::printf("  /locate %-6s -> %s\n", kFruit[i], said.c_str());
+                    std::printf("      landed in the %s wood   %s\n",
+                                world_.terrain.woodName(pos_.x),
+                                inOak ? "travelled (run --oak to see the crop checked)"
+                                      : "WRONG");
+                    if (!inOak) ++wrong;
+                    continue;
+                }
+                const float d = std::hypot(fat[i].x - pos_.x, fat[i].z - pos_.z);
+                // ON THE CROSSHAIR, which is half of what the command means: a
+                // fruit hangs several metres up, so an arrival that faces the
+                // right coordinate on the ground still has the player looking
+                // at a trunk. `dot` is against the FULL 3D bearing for that
+                // reason -- lookAt sets the pitch as well as the yaw.
+                // (`closeEnough`, not `near`: windows.h defines `near` to
+                // nothing, and app.h carries that note three times.)
+                const Vec3 f = forward();
+                const Vec3 want{fat[i].x - pos_.x, fat[i].y - pos_.y, fat[i].z - pos_.z};
+                const float wl = maxf(0.01f, length(want));
+                const float dot = (want.x * f.x + want.y * f.y + want.z * f.z) / wl;
+                // THE STAND-OFF IS A FLOOR, NOT A TARGET. standNear walks
+                // outward from the fruit taking the first dry column, and
+                // teleportTo's findClear then steps the body out of whatever
+                // trunk it landed in -- so the arrival is at least `stand` and
+                // a few metres more is the ring doing its job, not a miss.
+                const bool closeEnough = d >= row->stand - 1.5f && d < row->stand + 6.0f;
+                std::printf("  /locate %-6s -> %s\n", kFruit[i], said.c_str());
+                std::printf("      stood %.1f m off (asked %.1f), crosshair %.3f   %s\n", d,
+                            row->stand, dot,
+                            (closeEnough && dot > 0.99f) ? "on it" : "WRONG");
+                if (!closeEnough || dot <= 0.99f) ++wrong;
+            }
+            // Nothing runs after this, so the populations are left wherever
+            // the trip put them on purpose -- see the note at the top of the
+            // block. The player still goes home: a test that ends somewhere
+            // other than it started is one you cannot read the last section of.
+            teleportTo(spawn.x, spawn.z);
+        }
+
+        std::printf("\n  %s\n", wrong ? "FAIL" : "PASS -- every row is wired to its own animal, "
+                                                 "and every map has somewhere to arrive.");
     }
 
     void runFellTest() {
@@ -2740,6 +3423,9 @@
         std::printf("  felled after %d blows\n\n", blows);
         std::printf("  %6s %9s %9s %9s %9s %9s %9s %9s\n", "ms", "x", "y", "z", "pitch",
                     "fall m/s", "spin r/s", "in ground");
+        std::printf("        (top = how far the body's highest point still is above the ground"
+                    " under it,%s         as a fraction of the tree's own standing height:"
+                    " 1 upright, ~0 flat)%s", "\n", "\n");
 
         // ---- and then watch it -------------------------------------------
         //
@@ -2773,10 +3459,25 @@
                 const WalkWorld wwT = walkWorld();
                 const World::Sink sk = world_.debrisSink(
                     i, [&](float x, float z) { return walkGroundM(wwT, x, z); });
-                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f  %5.1f%% %.1fm\n",
+                // HOW FAR THE TOP STILL HAS TO COME DOWN. The bounds against
+                // the ground under the body's own footprint, over the model's
+                // standing height -- see kFellDownFrac.
+                float top = -1.0f;
+                Vec3 blo{0, 0, 0}, bhi{0, 0, 0};
+                float hx = 0, hy = 0, hz = 0;
+                world_.debrisHalf(i, &hx, &hy, &hz);
+                if (world_.debrisBounds(physics_, i, &blo, &bhi) && hy > 0.01f) {
+                    const float g = maxf(walkGroundM(wwT, blo.x, blo.z),
+                                         maxf(walkGroundM(wwT, bhi.x, blo.z),
+                                              maxf(walkGroundM(wwT, blo.x, bhi.z),
+                                                   walkGroundM(wwT, bhi.x, bhi.z))));
+                    top = (bhi.y - g) / (2.0f * hy);
+                }
+                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f  %5.1f%% %.1fm  %5.2f\n",
                             double(f) * dt * 1000.0, p.x, p.y, p.z, pitch, -lin.y,
                             sqrtf(ang.x * ang.x + ang.y * ang.y + ang.z * ang.z),
-                            100.0 * double(sk.under) / double(maxi(1, sk.solid)), double(sk.worst));
+                            100.0 * double(sk.under) / double(maxi(1, sk.solid)), double(sk.worst),
+                            double(top));
                 break;
             }
         }
@@ -2857,6 +3558,83 @@
             break;
         }
         std::printf("\n  (pitch 0 = still standing, 90 = flat on the ground)\n");
+
+        // -------------------------------------------------------------------
+        // ...AND THEN WALK OVER AND PICK THE PIECES UP.
+        //
+        // (user 2026-09-19: "when the tree lands on the ground it breaks up
+        //  into smaller chunks that can then be absorbed by the player".)
+        //
+        // THE BREAK ON ITS OWN PROVES HALF THE FEATURE. The other half is that
+        // the pieces are LOOT, and nothing else in this test could have caught
+        // that they are not: a piece of a felled oak is ten thousand voxels
+        // against a kAbsorbSize of six hundred, so on size alone every one of
+        // them is refused and lies in the wood for ever looking exactly like a
+        // feature that works. Debris::loot is the exemption and this is the
+        // check on it.
+        //
+        // IT ALSO CHECKS THE REACH, which is the other way this goes wrong.
+        // kFellLootReachM is 2.6 m, so the player is put down JUST INSIDE it
+        // and the count has to fall; a piece that flies in from wherever the
+        // player happens to be standing is the "absorb at any distance" v1 was
+        // reported for and fixed.
+        // -------------------------------------------------------------------
+        {
+            std::printf("\n=== ABSORB TEST -- walking up to the pieces ===\n");
+            int live0 = 0, target = -1;
+            Vec3 at{0, 0, 0};
+            for (int i = 0; i < kDebrisInstances; ++i) {
+                Vec3 p{0, 0, 0};
+                float q[4] = {0, 0, 0, 1};
+                if (!world_.debrisPose(i, &p, q)) continue;
+                ++live0;
+                if (target < 0 && world_.debrisAim(i, &at)) target = i;
+            }
+            if (target < 0) {
+                std::printf("  nothing loose to collect -- the tree never broke\n");
+            } else {
+                // FAR ENOUGH AWAY THAT IT MUST NOT COME, then near enough that
+                // it must. Two readings off one piece, which is the only way
+                // the reach is tested rather than assumed.
+                const float far0 = kFellLootReachM * 4.0f;
+                teleportTo(at.x + far0, at.z);
+                for (int f = 0; f < 120; ++f) {
+                    maybeRebuildGroundPatch();
+                    physics_.step(1.0f / 60.0f);
+                    simMs_ += 1000.0 / 60.0;
+                    world_.updateDebris(
+                        physics_, player_.eyePosition(), simMs_,
+                        [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
+                }
+                int outOfReach = 0;
+                for (int i = 0; i < kDebrisInstances; ++i)
+                    if (world_.debrisAbsorbing(i)) ++outOfReach;
+                std::printf("  standing %.1f m off: %d of %d pieces coming to me  %s\n",
+                            double(far0), outOfReach, live0,
+                            outOfReach ? "WRONG -- the reach is not being read"
+                                       : "correct, they wait");
+
+                teleportTo(at.x + kFellLootReachM * 0.6f, at.z);
+                for (int f = 0; f < 600; ++f) {
+                    maybeRebuildGroundPatch();
+                    physics_.step(1.0f / 60.0f);
+                    simMs_ += 1000.0 / 60.0;
+                    world_.updateDebris(
+                        physics_, player_.eyePosition(), simMs_,
+                        [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
+                }
+                int live1 = 0;
+                for (int i = 0; i < kDebrisInstances; ++i) {
+                    Vec3 p{0, 0, 0};
+                    float q[4] = {0, 0, 0, 1};
+                    if (world_.debrisPose(i, &p, q)) ++live1;
+                }
+                std::printf("  standing %.1f m off: %d pieces left of %d  %s\n",
+                            double(kFellLootReachM * 0.6f), live1, live0,
+                            live1 < live0 ? "correct, they came to me"
+                                          : "WRONG -- nothing was collected");
+            }
+        }
 
         // -------------------------------------------------------------------
         // ...AND NOW CHOP THE LOG THAT IS LYING THERE.

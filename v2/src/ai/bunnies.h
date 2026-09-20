@@ -129,6 +129,29 @@ enum MarchKind {
     kMarchMouse,
     kMarchWorm,
     kMarchSnake,
+    // -- AND THE DESERT'S OWN THREE, 2026-09-19 --------------------------
+    //
+    // (user: "basically create the desert biome now.")
+    //
+    // v1's desert band is DES_N species over DES_PER slots, and four of them
+    // are the sand's alone: gecko, cobra, scorpion and the desert_mouse -- the
+    // fourth of which v2 has had all along, wearing the name "mouse" in the
+    // broadleaf wood, because that engine put it in BOTH (DES_OAK, "two homes
+    // rather than one"). So only three are actually new, and the mouse gets
+    // its own biome back on its existing row.
+    kMarchGecko,
+    kMarchCobra,
+    kMarchScorpion,
+    // -- AND THE CHERRY WOOD'S ONE ANIMAL, 2026-09-19 -------------------
+    //
+    // (user: "only the worm, pink bird, flamingos and pink butterflies should
+    //  be in the cherry forest".)
+    //
+    // v2 HAS NEVER HAD ONE -- ai/lifehit.h says so in as many words, "and its
+    // flamingo, which v2 has not got" -- so this is an import rather than a
+    // gate. The models were already in the shared asset tree beside every
+    // other animal: game/assets/life/flamingo, ten walk frames.
+    kMarchFlamingo,
     kMarchKinds
 };
 
@@ -146,9 +169,37 @@ struct MarchSpec {
     // VoxelTerrain::woodBit for why this is a mask and not an index, and for
     // the two-wood bug it replaces.
     uint8_t woods;
+    // HOW FAR ITS COLOURS MAY TRAVEL TO SHARE AN ENTRY, in sRGB -- see
+    // World::addFlyerModel. 0 means the house tolerance, which is what every
+    // row that was here before this column says and keeps them byte-identical.
+    int matchTol = 0;
+    // -- DOES IT COME AT YOU (user 2026-09-19: "have the cobra attack the
+    //    player instead of running away from the player. same thing for the
+    //    scorpion too.") -----------------------------------------------
+    //
+    // THE NOTE OVER THE DESERT ROWS SAID THIS COLUMN DID NOT EXIST -- "close
+    // range makes them quick rather than dangerous. That is a gameplay
+    // mechanic rather than a biome, and this table has no column for it." It
+    // does now, and it is one bool because that is all v1 has: DES_HUNT is a
+    // name-keyed set and every creature in it charges the same way.
+    //
+    // IT REUSES THE FLEE SPHERE rather than adding a second radius. `flee` is
+    // already "has it noticed you", hysteretic at both ends, and v1's charge
+    // radius (90 voxels, 9 m) is within a metre of what fleeOutM already is --
+    // so a hunter is an animal that runs the same state the other way.
+    //
+    // LAST, so every row written before it keeps its meaning: the four mammals
+    // and the flamingo are all false by omission.
+    bool hunts = false;
+    // ...AND WHAT IT TAKES OFF YOU, on Minecraft's 20-point scale, which is
+    // the unit every hazard quotes in and Vitals::hurt converts at the door.
+    // v1's own numbers: a cobra bites harder than a scorpion.
+    int bite = 0;
 };
 
-// COUNTS ARE SIX ACROSS THE BOARD -- see the note over kBunnyCount for the
+// COUNTS WENT TO SIX ACROSS THE BOARD -- and the MAMMALS are five now; the
+// cut is the dated note at the bottom of this block. See the note over
+// kBunnyCount for the
 // arithmetic, which is the whole argument: at two apiece the median distance to
 // the nearest one was 58 m and a wood is thirty metres deep, so they existed
 // and were never seen. Four species at six is twenty-four animals, but a wood
@@ -165,13 +216,45 @@ struct MarchSpec {
 // against the mammals' 11, so six worms cover about the ground two skunks do.
 // The snake keeps v1's own rarity rather than its count (5 over that disc), at
 // THREE, because it is birch-only and the birch band is a slice of the world.
+
+// -- AND THE MAMMALS COME BACK DOWN A QUARTER (user 2026-09-18: "cut the land
+//    mammals across biomes by 25%") ----------------------------------------
+//
+// SIX DOES NOT TAKE A QUARTER, so this is a judgement and the other reading is
+// one character away: 6 * 0.75 = 4.5. FIVE is the round-half-up of it and a
+// 17% cut; FOUR is the 33% one. Five, because these were raised from two four
+// days ago for the specific reason that the wood read as empty, and the
+// arithmetic above says the whole of what a mammal costs you here is its
+// NEAREST DISTANCE:
+//
+//     n = 6   median 42.5 m        n = 5   44.5 m        n = 4   47.1 m
+//
+// Two metres at six-to-five against four and a half at six-to-four, over a
+// wood you can see thirty metres into. Four is the change to make if this is
+// meant to be felt rather than measured.
+//
+// ACROSS BIOMES MEANS EVERY ROW THAT IS A MAMMAL, not every row in the table.
+// The worm and the grass snake ride this table because they walk a strip of
+// frames along the ground (see the note above), and neither is a mammal, so
+// neither moves: worm 6 on its 7 m lattice, snake 3 on its 13 m one. The
+// RABBIT is a mammal and is not in this table at all -- kBunnyCount takes the
+// same cut, and that is the one place this ask reaches outside kMarchSpec.
+//
+// WHAT A WOOD HOLDS NOW: pine 20 (bunny, skunk, armadillo, porcupine at five
+// apiece), birch and oak 15 each (bunny, skunk, mouse) -- down from 24 and 18.
 // The load line's wording, from the mask. Every combination the table actually
 // uses has a name a reader recognises; anything else prints the bits rather
 // than guessing, so a new row cannot be quietly described as something it is
 // not.
 inline const char *woodsName(uint8_t w) {
     switch (w) {
-        case kWoodAll:   return "all woods";
+        case kWoodAll:    return "everywhere";
+        case kWoodForest: return "all woods";
+        case kWoodGreen:  return "every wood but the blossom";
+        case kWoodBroadGreen: return "birch and oak";
+        case kWoodCherry: return "the blossom only";
+        case kWoodDesert: return "desert only";
+        case uint8_t(kWoodBroad | kWoodDesert): return "birch, oak and desert";
         case kWoodPine:  return "pine only";
         case kWoodBirch: return "birch only";
         case kWoodOak:   return "oak only";
@@ -190,12 +273,90 @@ inline constexpr MarchSpec kMarchSpec[kMarchKinds] = {
     // could not be. Both halves of the ask are this column.
     //
     // dir            name          fr  n  cell  salt      spd  flee  fps  ffps  in    out   woods
-    {"skunk",         "skunk",      10, 6, 11.0f, 0x5C0Fu, 2.4f, 4.8f, 6.0f, 12.0f, 3.0f, 4.6f, kWoodAll},
-    {"armadillo/walk","armadillo",   8, 6, 11.0f, 0xA2DAu, 0.9f, 0.9f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
-    {"porcupine",     "porcupine",   6, 6, 11.0f, 0x90C0u, 0.9f, 1.8f, 12.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
-    {"desert_mouse",  "mouse",       9, 6, 11.0f, 0x3005u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
-    {"worm",          "worm",       12, 6,  7.0f, 0x7E2Bu, 1.6f, 1.6f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodAll},
-    {"grass_snake",   "snake",      12, 3, 13.0f, 0x4D91u, 1.6f, 3.2f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroad},
+    {"skunk",         "skunk",      10, 5, 11.0f, 0x5C0Fu, 2.4f, 4.8f, 6.0f, 12.0f, 3.0f, 4.6f, kWoodGreen},
+    {"armadillo/walk","armadillo",   8, 5, 11.0f, 0xA2DAu, 0.9f, 0.9f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
+    {"porcupine",     "porcupine",   6, 5, 11.0f, 0x90C0u, 0.9f, 1.8f, 12.0f, 24.0f, 3.0f, 4.6f, kWoodPine},
+    // ...AND THE MOUSE IS IN THE SAND TOO, WHICH IS WHERE ITS NAME CAME FROM.
+    // v1 runs desert_mouse in both -- its desert slots first and its DES_OAK
+    // population in whatever the head-count leaves spare -- and v2 had only
+    // ever had the second half of that. One bit, and the row stops being the
+    // odd one out in a file where the file name is `desert_mouse`.
+    {"desert_mouse",  "mouse",       9, 5, 11.0f, 0x3005u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f,
+     uint8_t(kWoodBroadGreen | kWoodDesert)},
+    // THE WORM KEEPS kWoodForest, AND THAT IS THE ONE ROW THAT DID NOT MOVE.
+    // "only the worm, pink bird, flamingos and pink butterflies should be in
+    // the cherry forest" -- the worm is named IN, so the mask that includes
+    // every forest is the right one for it and the wrong one for its
+    // neighbours on this table.
+    {"worm",          "worm",       12, 6,  7.0f, 0x7E2Bu, 1.6f, 1.6f, 24.0f, 24.0f, 3.0f, 4.6f, kWoodForest},
+    {"grass_snake",   "snake",      12, 3, 13.0f, 0x4D91u, 1.6f, 3.2f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodBroadGreen},
+    // -- THE SAND'S OWN, AND EVERY COLUMN IS v1's ------------------------
+    //
+    // DES_SPD is 16 vox/s across the band with two exceptions, and DES_DASH
+    // doubles it inside DES_DASH_R (70 vox = 7 m of the player) -- which is
+    // exactly what this table's speed/fleeSpeed and fleeInM/fleeOutM pair
+    // already is, so the port is a row and not a behaviour:
+    //
+    //   gecko      DES_SPD 32, so 3.2 -> 6.4 like the mouse. 24 fps.
+    //   cobra      the shared 16, so 1.6 -> 3.2, 24 fps. Which is the grass
+    //              snake's row to the digit, and deliberately: v2's note over
+    //              that row says the snake IS this animal's model and cadence
+    //              with the hunt taken out, so the two agreeing is the point.
+    //   scorpion   the shared 16, and the ONE entry in v1's DES_FPS -- twelve,
+    //              because "the scorpion reads slow at the house 24".
+    //
+    // FIVE APIECE, which is v2's mammal count and not v1's DES_PER of 8. The
+    // long note above this table is the argument: these counts were measured
+    // against the nearest-animal distance in a wood you can see thirty metres
+    // into, and the sand is more open than that, not less.
+    //
+    // WHAT IS NOT PORTED IS THE HUNT. v1 gives the cobra and the scorpion
+    // DES_HUNT, which steers them AT the player and bites; here they take the
+    // same flee sphere every other marcher has, so close range makes them
+    // quick rather than dangerous. That is a gameplay mechanic rather than a
+    // biome, and this table has no column for it.
+    //
+    // dir            name          fr  n  cell  salt      spd  flee  fps  ffps  in    out   woods
+    // THE LAST COLUMN IS WHY THESE THREE FIT. Between them they author 46
+    // quantised shades -- 19 greens, 18 tans and 9 reds -- into a table that
+    // the cherry wood and the desert's own scatter had already taken to 255 of
+    // 255, and the first load of them put seven colours into AIR. At 44 each
+    // ramp collapses onto a handful of entries the world already holds, and
+    // with avoidFoliage on the share search none of them can land on an id
+    // that carries behaviour. See World::addFlyerModel.
+    {"gecko",         "gecko",       7, 5, 11.0f, 0x6EC0u, 3.2f, 6.4f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodDesert, 44},
+    // THE TWO THAT HUNT. Their `fleeSpeed` is what they now CHARGE at -- the
+    // column was always "how fast when it has noticed you", and which way it
+    // points is the new bool beside it.
+    {"cobra",         "cobra",      12, 5, 13.0f, 0xC0B7u, 1.6f, 3.2f, 24.0f, 48.0f, 7.0f, 8.6f, kWoodDesert, 44, true, 5},
+    {"scorpion",      "scorpion",    4, 5, 11.0f, 0x5C09u, 1.6f, 3.2f, 12.0f, 24.0f, 7.0f, 8.6f, kWoodDesert, 44, true, 3},
+    // -- THE FLAMINGO, AND THE BLOSSOM IS THE WHOLE OF ITS RANGE --------
+    //
+    // SLOW AND UNBOTHERED, which is most of what a flamingo is: v1 gives it no
+    // DES_DASH and no flee multiplier worth the name, so this walks at 0.8 m/s
+    // and only lifts to 1.6 when you are inside seven metres. 12 fps for the
+    // same reason the scorpion has 12 -- a wading bird at the house 24 reads
+    // like it is hurrying.
+    //
+    // A WIDE CELL. It is a 1.5 m bird and five of them on the mammals' 11 m
+    // lattice would be a flock in a clearing; 16 m spreads the same five over
+    // the band the way a few tall birds actually stand.
+    //
+    // NOT IN PAIRS, and v1's note is the thing not ported: over there "the
+    // flamingo's cell takes TWO, and the second one is placed off the first
+    // rather than off the cell" (user 2026-08-18, "can you spawn flamingos as
+    // a couple"). kMarchSpec has one animal per site by construction -- the
+    // pairing lives in v1's slot allocator, not in its species table -- so
+    // that is a change to this file's shape rather than a column, and it is
+    // worth doing on its own.
+    //
+    // matchTol 44 like the desert's three: it is twenty-three authored shades
+    // of pink and orange arriving into a table with single digits left, and
+    // most of the pink folds straight onto mat::CPINK_0..5, which the moss and
+    // the petals in the same wood are already paying for.
+    //
+    // dir            name          fr  n  cell  salt      spd  flee  fps  ffps  in    out   woods
+    {"flamingo",      "flamingo",   10, 5, 16.0f, 0xF1A4u, 0.8f, 1.6f, 12.0f, 24.0f, 7.0f, 8.6f, kWoodCherry, 44},
 };
 
 // SUMMED OVER THE TABLE, not typed out. It was four terms added by hand and a
@@ -483,8 +644,21 @@ inline void bunnyMul3(const float *a, const float *b, float *out) {
 // term triples it. If v1's own fourteen-per-species is ever wanted, THAT is
 // what has to be paid down first; the band, the palette and the traversal all
 // have room for it now.
+//
+// -- FIVE (user 2026-09-18: "cut the land mammals across biomes by 25%") -----
+//
+// THE RABBIT IS A LAND MAMMAL AND IT IS NOT IN kMarchSpec, which is the only
+// hard part of that ask: the table takes four species and this constant is the
+// fifth, and a cut applied to the table alone leaves the commonest animal in
+// the wood at its old density. The rounding argument is written once, over the
+// table -- 6 * 0.75 = 4.5, five is the round-half-up and four is the other
+// reading -- and both halves must be moved TOGETHER or they stop agreeing.
+//
+// The lattice does NOT move with it. kBunnyCellM is the spacing between the
+// sites a rabbit may stand on; the count is how many of them are alive inside
+// the disc, and it is the count that is the population.
 // ---------------------------------------------------------------------------
-inline constexpr int kBunnyCount = 6;
+inline constexpr int kBunnyCount = 5;
 inline constexpr float kBunnyCellM = 11.0f;
 inline constexpr uint32_t kBunnySalt = 0xB0DDu;
 
@@ -517,6 +691,39 @@ inline constexpr float kBunnyHopChance = 0.68f;
 // double speed for this long. See kFlyThreatM, kFishThreatM, kDflyThreatM --
 // all of them are the same idea and this is the ground-dwelling version.
 inline constexpr float kBunnyThreatM = 6.5f;
+// -- WHAT A HUNTER'S CONTACT IS -- see MarchSpec::hunts ---------------------
+//
+// The BASE of the reach: the player's own half-width plus a little, to which
+// the animal's larger half-extent is added at the test. v1's equivalent is
+// `5.0 + fit.hd` voxels, and its whole note is that the animal's own size has
+// to be in there or the reach fits one species and excludes the other.
+inline constexpr float kMarchBiteM = 1.0f;
+// HOW FAR ABOVE OR BELOW IT MAY BE AND STILL REACH YOU. A scorpion on the sand
+// biting a player on a ledge is the thing this refuses.
+//
+// -- 2.2, AND 1.5 WAS UNREACHABLE ------------------------------------------
+//
+// Measured by --bite-test: the player walked to 0.35 m of a cobra and stood
+// there for 1152 frames without being bitten once. The horizontal test passed
+// every one of those frames; this one failed all of them.
+//
+// THE `player` THIS FUNCTION IS HANDED IS NOT ALWAYS THE SAME POINT. The game
+// passes the player's FEET (app_frame.inl hands over player_.pos) and both
+// harnesses pass the EYE (pos_), and those are 1.7 m apart -- so a gate at 1.5
+// is true of a standing player in one caller and false in the other, on the
+// same animal at the same distance. That inconsistency is older than this
+// constant and it silently shifts the flee sphere too, since `d2` includes the
+// vertical term; it is worth fixing at the call sites, but not by a number
+// here pretending it is not there.
+//
+// 2.2 covers the eye reading (1.7) and the feet reading (0.0) and still
+// refuses a player standing on anything more than waist-high above the sand,
+// which is the case the test exists for.
+inline constexpr float kMarchBiteRiseM = 2.2f;
+// ...AND HOW OFTEN. v1's one second, and its reason: standing in one must not
+// drain the whole bar in a single second.
+inline constexpr float kMarchBiteCool = 1.0f;
+
 inline constexpr float kBunnyFleeHold = 2.6f;
 inline constexpr float kBunnyFleeMul = 2.0f;
 // It does not run for ever in one direction: a leash on its own birth site, so
@@ -589,7 +796,7 @@ class Bunnies {
             for (int k = 0; k < kMarchKinds; ++k) {
                 const MarchSpec &sp = kMarchSpec[k];
                 loadStrip(world, life + "/" + sp.dir, sp.frames, &march_[k], sp.name,
-                          &marchHX_[k], &marchHZ_[k]);
+                          &marchHX_[k], &marchHZ_[k], sp.matchTol);
             }
         }
         marchers_.assign(size_t(kMarchCount), March{});
@@ -670,10 +877,36 @@ class Bunnies {
         // ...AND THE OTHER GAIT, on the same sensors, the same lattice rule and
         // the same fade. Everything that differs between the two animals is in
         // stepSkunk; everything they share is shared rather than copied.
+        // CLEARED HERE, SET IN stepSkunk, READ BY THE APP AFTER THIS RETURNS
+        // -- one frame's worth, so a bite cannot be collected twice.
+        bite_ = 0;
         recycleSkunks(player, dt);
         fillSkunks(player, ground);
         for (size_t i = 0; i < marchers_.size(); ++i)
             if (marchers_[i].live) stepSkunk(&marchers_[i], uint32_t(i), dt, player, ground);
+    }
+
+    // WHAT BIT THE PLAYER ON THE LAST update(), on the 20-point scale every
+    // hazard quotes in, or 0. See MarchSpec::hunts -- this class reports and
+    // the app spends, because the vitals are the player's and not the wood's.
+    int biteDamage() const { return bite_; }
+
+    // THE NEAREST LIVE HUNTER TO A POINT -- see MarchSpec::hunts. For the
+    // harness, which has to walk the player onto one; nothing in the game asks
+    // this, because in the game the player is the one doing the walking.
+    bool nearestHunter(const Vec3 &from, Vec3 *at, int *kind) const {
+        float best = 1e18f;
+        const March *found = nullptr;
+        for (const March &m : marchers_) {
+            if (!m.live || !kMarchSpec[m.kind].hunts) continue;
+            const float dx = m.x - from.x, dz = m.z - from.z;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 < best) { best = d2; found = &m; }
+        }
+        if (!found) return false;
+        if (at) *at = Vec3(found->x, found->y, found->z);
+        if (kind) *kind = found->kind;
+        return true;
     }
 
     // ...and onto the band. Every slot, empty ones included: a slot that has
@@ -1043,6 +1276,7 @@ class Bunnies {
         float spd = 0, fps = 0;      // both eased, never snapped -- v1's ramp
         float frame = 0;             // where it is in the walk cycle
         bool flee = false;           // hysteretic; see kSkunkFleeInM
+        float biteAt = 0.0f;         // ...and when it may bite again -- see kMarchBiteCool
         float stuck = 0.0f;          // seconds with nowhere to go -- see kMarchStuckSec
         float age = 0.0f, dying = -1.0f;
     };
@@ -1347,6 +1581,32 @@ class Bunnies {
     void stepSkunk(March *s, uint32_t i, float dt, const Vec3 &player, const GroundF &ground) {
         const MarchSpec &sp = kMarchSpec[s->kind];
         const float hx = marchHX_[s->kind], hz = marchHZ_[s->kind];
+        // -- AND IF IT IS A HUNTER, HAS IT REACHED YOU -------------------
+        //
+        // (user 2026-09-19: "have the cobra attack the player".)
+        //
+        // THE REACH IS THE ANIMAL'S OWN SIZE PLUS THE PLAYER'S, and v1's note
+        // is the reason it is not a constant: it tried 2.2 and then 6.5, and
+        // both simply excluded the cobra -- a 19-segment snake's bulk holds its
+        // CENTRE further out than a scorpion's, so a single pair of numbers
+        // covers one animal and locks the other out. Measured there: the
+        // scorpion sits 4.7 voxels off at contact and the cobra 12.2.
+        //
+        // AND IT KEEPS BITING ON THE COOLDOWN while you stand in it, which is
+        // the point of testing every frame rather than on an approach edge: a
+        // creature CIRCLING at contact range goes on being in contact.
+        if (sp.hunts && sp.bite > 0 && clock_ > s->biteAt) {
+            const float bx = s->x - player.x, bz = s->z - player.z;
+            const float reach = kMarchBiteM + maxf(hx, hz);
+            if (bx * bx + bz * bz < reach * reach &&
+                fabsf(player.y - s->y) < kMarchBiteRiseM) {
+                s->biteAt = clock_ + kMarchBiteCool;
+                // THE WORST ONE THIS FRAME, not the sum: standing in a nest
+                // must cost a bite, not four of them at once. maxi rather than
+                // an assignment so a scorpion cannot overwrite a cobra.
+                bite_ = maxi(bite_, sp.bite);
+            }
+        }
         s->g = groundUnder(s->x, s->z, s->th, hx, hz, ground);
 
         // -- IT BREAKS WHEN YOU GET CLOSE, AND THE TWO RADII ARE WHY IT DOES
@@ -1381,7 +1641,14 @@ class Bunnies {
             if (s->flee) {
                 // Directly away, with a little scatter -- the rabbit's own
                 // line, so two startled together do not leave along one.
-                want = atan2f(px, pz) + (rnd(i, 0x5A4u) - 0.5f) * 0.8f;
+                //
+                // ...OR DIRECTLY AT YOU, WHICH IS THE SAME LINE NEGATED. See
+                // MarchSpec::hunts: px/pz point from the player to the animal,
+                // so away is atan2(px, pz) and toward is its opposite. The
+                // scatter stays -- two cobras converging along one exact
+                // bearing look like one animal drawn twice.
+                want = (sp.hunts ? atan2f(-px, -pz) : atan2f(px, pz)) +
+                       (rnd(i, 0x5A4u) - 0.5f) * 0.8f;
             } else if (lx * lx + lz * lz > kMarchLeashM * kMarchLeashM) {
                 // HOME BEATS THE WANDER. The slot is recycled on the SITE, and
                 // v1's own note says what the leash is really for: without it
@@ -1591,6 +1858,15 @@ class Bunnies {
                                           maxf(fabsf(ground(sx, sz + 1.0f) - g0),
                                                fabsf(ground(sx, sz - 1.0f) - g0)));
                     if (sl > kBunnyStepM) continue;
+                    // -- AND IN A WOOD ------------------------------------
+                    //
+                    // The rabbit is the one mammal with no row in kMarchSpec,
+                    // so it is the one that never had this test -- and until
+                    // there was a treeless band, not having it cost nothing.
+                    // It costs five rabbits on a dune field now. Same shape as
+                    // the marchers' gate twenty lines up, same mask, asked of
+                    // the SITE rather than of the animal for the same reason.
+                    if (wood_ && !(wood_(sx) & kWoodGreen)) continue;
                     // ...NOR INSIDE ANYTHING. A site is a fact about the world
                     // and so is the boulder standing on it; the lattice does not
                     // know about the scatter, so this is where the two meet.
@@ -1866,7 +2142,7 @@ class Bunnies {
     // dragonfly and the songbirds' strips follow.
     // -----------------------------------------------------------------------
     void loadStrip(World &world, const std::string &dir, int frames, std::vector<Frame> *out,
-                   const char *what, float *hxOut, float *hzOut) {
+                   const char *what, float *hxOut, float *hzOut, int matchTol = 0) {
         std::vector<VoxModel> mo;
         mo.resize(size_t(frames));
         for (int f = 0; f < frames; ++f) {
@@ -1880,7 +2156,14 @@ class Bunnies {
         }
         for (int f = 0; f < frames; ++f) {
             int sx = 0, sy = 0, sz = 0;
-            const int m = world.addFlyerModel(mo[size_t(f)], what, &sx, &sy, &sz, true);
+            // AVOIDING FOLIAGE ALWAYS, not only when the tolerance is loose.
+            // A land animal wearing a leaf's id is the one palette mistake this
+            // engine has a name for -- the fell collider reads that bit to tell
+            // a trunk from a canopy -- and skipping those ids costs nothing at
+            // the house tolerance, where almost nothing was matching them.
+            const int m = world.addFlyerModel(mo[size_t(f)], what, &sx, &sy, &sz, true,
+                                              matchTol > 0 ? matchTol : Palette::kModelMatch,
+                                              /*avoidFoliage=*/true);
             if (m < 0) { out->clear(); return; }
             // MEASURED, NOT ASSUMED. Only the horizontal half is wanted and it
             // is the same in every frame of every strip -- the frames differ in
@@ -1927,6 +2210,10 @@ class Bunnies {
     // added to prevent when there were two of them.
     std::vector<Frame> march_[kMarchKinds];
     std::vector<March> marchers_;
+    // WHAT BIT THE PLAYER THIS FRAME, on the 20-point scale, or 0. See
+    // MarchSpec::bite -- this class has no way to reach the player's vitals and
+    // should not; it reports and the app spends.
+    int bite_ = 0;
     float marchHX_[kMarchKinds] = {0.2f, 0.2f, 0.2f, 0.2f};
     float marchHZ_[kMarchKinds] = {0.45f, 0.45f, 0.45f, 0.45f};
     // WHICH WOOD THIS POINT IS IN, 0 pine .. 1 birch. Held the way `wet_` is

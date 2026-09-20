@@ -536,7 +536,13 @@ class Critters {
         glowWant_[0] = glow[0];
         glowWant_[1] = glow[1];
         glowWant_[2] = glow[2];
-        loadStrip(world, lifeDir + "/firefly", kFireflyFrames, "firefly", &ffly_, glowPaint);
+        // THE ONE STRIP THAT MAY NOT FOLD. Its yellow must come back out of
+        // the table as an id of its own -- if it snapped onto the butterflies'
+        // yellow, every butterfly in the wood would light up after dark, which
+        // is the failure the resolve below was written for. See loadStrip's
+        // matchTol.
+        loadStrip(world, lifeDir + "/firefly", kFireflyFrames, "firefly", &ffly_, glowPaint,
+                  /*matchTol=*/0);
 
         loadStrip(world, lifeDir + "/ant", 1, "ant", &ant_);
         // NO REPAINT AND NO PRIVATE MATERIAL. The wing is the white the file
@@ -567,6 +573,12 @@ class Critters {
             glowMtl_ = world.palette.resolveModelColor(
                 {glowWant_[0], glowWant_[1], glowWant_[2], 255}, Palette::kModelMatch,
                 &glowShared_);
+            // AN ID THAT MEANS "THIS GLOWS" MUST MEAN IT IN ONE PLACE ONLY --
+            // it reaches the shader as V6Params::glowMtl and is tested against
+            // the raw material id, which cannot know the arcade has a table of
+            // its own. Reserved out of that table exactly as the emitters are;
+            // see Particles::load, where the same collision lit up a cliff.
+            world.noteHeldMtl(glowMtl_);
             std::printf("  firefly  %zu frames, %d slots, after dark only, material %u "
                         "(%d entr%s within tolerance -- 1 is private)\n",
                         ffly_.size(), kFireflyCount, unsigned(glowMtl_), glowShared_,
@@ -959,7 +971,7 @@ class Critters {
             if (f.live) continue;
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(fireflies_, kFireflyCellM, kFireflySalt, player, kWoodAll, 0.0f, &sx, &sz, &cx,
+            if (!claim(fireflies_, kFireflyCellM, kFireflySalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx,
                        &cz))
                 break;
             f = Firefly{};
@@ -1095,7 +1107,7 @@ class Critters {
             }
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(ants_, kAntCellM, kAntSalt, player, kWoodAll, 0.0f, &sx, &sz, &cx, &cz)) break;
+            if (!claim(ants_, kAntCellM, kAntSalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx, &cz)) break;
             a = Ant{};
             a.live = true;
             a.lead = -1;
@@ -1356,7 +1368,7 @@ class Critters {
             if (b.live) continue;
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(bugs_, kLbugCellM, kLbugSalt, player, kWoodAll, 0.0f, &sx, &sz, &cx, &cz)) break;
+            if (!claim(bugs_, kLbugCellM, kLbugSalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx, &cz)) break;
             b = Lbug{};
             b.live = true;
             b.cx = cx;
@@ -1541,7 +1553,12 @@ class Critters {
                 // true everywhere in the oak band, so the frog was refused there --
                 // see VoxelTerrain::woodBit. v1 agrees: its frog is BIO_OAKF, and
                 // BIO_OAKF means EITHER broadleaf band.
-                if (birch_ && !(birch_(b.x) & kWoodBroad)) continue;
+                // BIRCH AND OAK, AND NOT THE BLOSSOM. kWoodBroad includes the
+                // cherry band -- see kWoodBroadGreen -- so the frog was in it
+                // by inclusion, on a shore under trees it has no business
+                // under. "only the worm, pink bird, flamingos and pink
+                // butterflies should be in the cherry forest."
+                if (birch_ && !(birch_(b.x) & kWoodBroadGreen)) continue;
                 // ...AND NOT UP AGAINST A TRUNK. A bank spot is chosen from
                 // the shoreline and the shoreline runs right past the trees on
                 // it. The hop guard cannot help here -- it refuses a leap INTO
@@ -1676,7 +1693,9 @@ class Critters {
     // fly are unaffected in the way that matters: only a column's LEADER and a
     // bunch's ANCHOR ever call this, and those two SHOULD take separate cells.
     template <class T>
-    // `woods` is a set of kWood* bits, or kWoodAll for "anywhere".
+    // `woods` is a set of kWood* bits, or kWoodAll for "anywhere" -- which is
+    // not what a forest creature means and no longer what it says: see
+    // kWoodForest, and the five rabbits that were found in Death Valley.
     bool claim(const std::vector<T> &pop, float cellM, uint32_t salt, const Vec3 &player,
                uint8_t woods,
                float shoreM, float *ox, float *oz, int *ocx, int *ocz) {
@@ -2007,8 +2026,14 @@ class Critters {
     // firefly, whose lamp must own one for the same reason. Done to the MODEL
     // rather than to the table, so the colour the art carries and the colour
     // the material wears are one fact rather than two that have to agree.
+    // `matchTol` is handed on to addFlyerModel. Zero means MINT EXACTLY, and
+    // the firefly is the one caller that needs it: its glow has to be an id
+    // nothing else in the world wears -- see the resolve in load(), and
+    // [[v2-private-material]]. Everything else on this path is an ordinary
+    // animal and takes the folding default.
     void loadStrip(World &world, const std::string &dir, int frames, const char *what,
-                   std::vector<Frame> *out, const uint8_t *repaint = nullptr) {
+                   std::vector<Frame> *out, const uint8_t *repaint = nullptr,
+                   int matchTol = World::kLifeMatch) {
         std::vector<VoxModel> mo;
         mo.resize(size_t(frames));
         for (int f = 0; f < frames; ++f) {
@@ -2028,7 +2053,7 @@ class Critters {
                         e[1] = repaint[4];
                         e[2] = repaint[5];
                     }
-        adopt(world, mo, what, out);
+        adopt(world, mo, what, out, matchTol);
     }
 
     // ONE FILE, EVERY MODEL IN IT -- the koi's reader. ladybug.vox is keyframed
@@ -2115,10 +2140,10 @@ class Critters {
     }
 
     void adopt(World &world, const std::vector<VoxModel> &mo, const char *what,
-               std::vector<Frame> *out) {
+               std::vector<Frame> *out, int matchTol = World::kLifeMatch) {
         for (const VoxModel &m : mo) {
             int sx = 0, sy = 0, sz = 0;
-            const int id = world.addFlyerModel(m, what, &sx, &sy, &sz, true);
+            const int id = world.addFlyerModel(m, what, &sx, &sy, &sz, true, matchTol);
             if (id < 0) { out->clear(); return; }
             Frame fr;
             fr.model = id;

@@ -344,7 +344,7 @@
         if (opt_.fireFrame >= 0 && shotFrames_ == opt_.fireFrame) {
             lastChipN_ = 0;
             lastChipSlot_ = -1;
-            fireRifle();
+            fireGun();
             std::printf("v2: fire test -- round away from (%.2f, %.2f, %.2f)\n",
                         pos_.x, pos_.y, pos_.z);
             std::fflush(stdout);
@@ -373,17 +373,29 @@
         // past that to see it. It prints what the badge would be showing, which
         // is the whole of what a reload is for.
         if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame) {
-            rifleAmmo_ = 0;
-            const bool started = reloadRifle();
-            std::printf("v2: reload test -- magazine emptied, cycle %s (%d reload frames)\n",
+            // WHICHEVER GUN IS UP -- the rifle unless --scroll put the pistol
+            // there, which is how one flag photographs both cycles.
+            const int g = heldGun();
+            setGunAmmo(g, 0);
+            const bool started = reloadGun();
+            std::printf("v2: reload test -- %s magazine emptied, cycle %s (%d reload frames)\n",
+                        g >= 0 ? held_.tool(g).name : "no gun",
                         started ? "STARTED" : "REFUSED -- WRONG",
-                        rifleTool_ >= 0 ? held_.tool(rifleTool_).reloadFrames : -1);
+                        g >= 0 ? held_.tool(g).reloadFrames : -1);
             std::fflush(stdout);
         }
-        if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame + 150) {
-            std::printf("v2: reload test -- %d/%d rounds, %s  %s\n", rifleAmmo_, kRifleMag,
+        // 220 FRAMES, WHICH IS 3.7 s. It was 150 when a reload was one turn of
+        // 1800 ms, and 150 frames would report a revolver as still reloading --
+        // which is the test lying about the feature it exists to check. The
+        // pistol is 44 drawn frames of 45 ms now (four out, six per round x
+        // six, four back in), so 1.98 s, and the margin is on purpose: this
+        // number wants to outlast the art, not to track it.
+        if (opt_.reloadFrame >= 0 && shotFrames_ == opt_.reloadFrame + 220) {
+            const int g2 = heldGun();
+            const int have = g2 >= 0 ? gunAmmoOf(g2) : -1, want = g2 >= 0 ? gunMagOf(g2) : 0;
+            std::printf("v2: reload test -- %d/%d rounds, %s  %s\n", have, want,
                         held_.reloading() ? "STILL RELOADING" : "done",
-                        (rifleAmmo_ == kRifleMag && !held_.reloading())
+                        (have == want && !held_.reloading())
                             ? "-- the magazine came back"
                             : "-- NOTHING CAME BACK, WRONG");
             std::fflush(stdout);
@@ -425,7 +437,7 @@
             pos_ = player_.eyePosition();
             lastChipN_ = 0;
             lastChipSlot_ = -1;
-            fireRifle();
+            fireGun();
             std::printf("v2: fire test -- point blank, %.2f m from the wall\n",
                         double(kPointBlankM));
             std::fflush(stdout);
@@ -705,11 +717,14 @@
         // gather walks every resident chunk's solids, and paying that on every
         // frame of a walk in the woods to serve an arrow nobody has loosed
         // would be the wrong trade entirely.
+        // WHERE IT WAS AND WHERE IT IS GOING -- see Arrows::LifeF, and
+        // LifeHits::along for what is done with the pair.
+        const auto onLife = [this](const Vec3 &a, const Vec3 &b) { return arrowKill(a, b); };
         if (arrows_.inFlight() > 0) {
             const WalkWorld aw = wideWalkWorld(kArrowSolidsM);
-            arrows_.update(dt, aw, [this](const Vec3 &p) { return arrowKill(p); });
+            arrows_.update(dt, aw, onLife);
         } else {
-            arrows_.update(dt, walkWorld(), [this](const Vec3 &p) { return arrowKill(p); });
+            arrows_.update(dt, walkWorld(), onLife);
         }
         // ...and each one that stopped this tick lands with a thud, quieter the
         // further off it stuck. Drained here rather than inside the flight so
@@ -750,7 +765,8 @@
         // and must not run from inside the march loop.
         if (bullets_.inFlight() > 0) {
             const WalkWorld bw = wideWalkWorld(kBulletSolidsM);
-            bullets_.update(dt, bw, [this](const Vec3 &p) { return arrowKill(p); });
+            bullets_.update(dt, bw,
+                            [this](const Vec3 &a, const Vec3 &b) { return arrowKill(a, b); });
         } else {
             // THE LAST ROUND'S IMPACT IS STILL IN THE LIST. See
             // Bullets::clearImpacts -- the shot that lands is the shot that
@@ -936,6 +952,18 @@
                             [this](float x) { return world_.terrain.woodBit(x); },
                             // ...AND NOT ON THE BEACH -- see Bunnies::blocked.
                             [this](float x, float z) { return sandAt(x, z); });
+            // -- AND IF ONE OF THEM REACHED YOU ---------------------------
+            //
+            // (user 2026-09-19: "have the cobra attack the player instead of
+            //  running away from the player. same thing for the scorpion
+            //  too.")
+            //
+            // The marchers report and the app spends -- see
+            // Bunnies::biteDamage. On the 20-point scale, which Vitals::hurt
+            // converts at its own door, so the cobra's 5 is two points of a
+            // five-point bar and the scorpion's 3 is one. v1's numbers.
+            if (const int bit = bunnies_.biteDamage(); bit > 0)
+                vitals_.hurt(bit, bit >= 5 ? "a cobra struck you" : "a scorpion stung you");
             bunnies_.publish(world_, kBunnySlot0);
             // ...AND THE MARCHERS, WHICH HAVE THEIR OWN RUN OF THE BAND. The
             // editor branch above deliberately does not publish them: the deck
@@ -1262,7 +1290,13 @@
             // way the two can be guaranteed to describe the same frame.
             // ...AND WHICH TOOL IT IS, so a change of hands does not carry the
             // last one's motion vector onto this one. See heldPrevValid.
-            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show, held_.selected());
+            // drawnTool(), NOT selected(). This is the identity the motion
+            // vector is invalidated on (V6Params::heldPrevValid), so it has to
+            // name the geometry that is on screen -- during a swap the hand
+            // holds the new tool and the old one is still falling out of frame,
+            // and telling the tracer the new one's name there would throw away
+            // a perfectly good vector for every frame of the drop.
+            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show, held_.drawnTool());
             hStart();
             arrows_.publish(world_);
             bullets_.publish(world_);
@@ -1523,6 +1557,10 @@
                       Falcor::uint4(0, 0, uint32_t(tracer_.displayWidth()),
                                     uint32_t(tracer_.displayHeight())));
             drawCrosshair(ctx, target);
+            // AFTER the crosshair, because a dying player should not be
+            // squinting past a mark, and the curtain is meant to cover it.
+            drawVitals(ctx, target);
+            drawGameOver(ctx, target);
         }
 
         // -- the recorder ----------------------------------------------------

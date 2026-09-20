@@ -190,6 +190,9 @@ class Player {
     float vy = 0.0f;
     bool onGround = false;
     bool fly = false;
+    // IS THE BODY IN A LAKE. Swimming costs a tenth of what walking does (see
+    // kExhSwim), and the drain has no other way to tell water from ground.
+    bool swimming() const { return swimming_; }
 
     // THE WHOLE GAIT MOVED DOWN ONE STEP: what used to be a walk is now a run.
     //
@@ -576,7 +579,7 @@ class Player {
             // against the same groundInfo a fall lands on, which is the terrain
             // AND the top of anything standable, so you settle onto a boulder
             // rather than into it.
-            const Ground g = groundInfo(w, pos.x, pos.z);
+            const Ground g = groundInfo(w, pos.x, pos.z, pos.y + upMax());
             if (pos.y < g.y) pos.y = g.y;
         } else {
             // -----------------------------------------------------------
@@ -674,7 +677,7 @@ class Player {
                 vy += (tgt - vy) * (1.0f - expf(-swimEase * dt));
                 pos.y += vy * dt;
                 // The bed is still ground: sink far enough and you stand on it.
-                const Ground g = groundInfo(w, pos.x, pos.z);
+                const Ground g = groundInfo(w, pos.x, pos.z, pos.y + upMax());
                 if (pos.y <= g.y && vy <= 0.0f) {
                     pos.y = g.y;
                     vy = 0.0f;
@@ -686,7 +689,7 @@ class Player {
                 const float gK = 1.0f + minf(fallRampMax, fallT_ * fallRamp);
                 vy = maxf(-fallTermV, vy - gravity * gK * dt);
                 pos.y += vy * dt;
-                const Ground g = groundInfo(w, pos.x, pos.z);
+                const Ground g = groundInfo(w, pos.x, pos.z, pos.y + upMax());
                 if (pos.y <= g.y && vy <= 0.0f) {
                     pos.y = g.y;
                     if (g.bouncy) {
@@ -747,7 +750,25 @@ class Player {
     // wins -- the same rule the terrain already used and for the same reason:
     // one sample at the centre lets half the body sink into the step it is
     // standing against.
-    Ground groundInfo(const WalkWorld &w, float x, float z) const {
+    // -- ...AND WHO IS ASKING, WHICH IS NOT ALWAYS THE PLAYER ----------------
+    //
+    // `ceilY` is the height of the thing asking, plus its one step of reach.
+    // Above it, stone is a CEILING and not a floor -- that is what lets a body
+    // stand under an overhang instead of on top of it.
+    //
+    // kNoCeil IS THE DEFAULT AND IT IS NOT LAZINESS. surfaceAt and
+    // groundHeight are public and are asked by things that are nowhere near
+    // the player: loose debris bodies (see World::updateDebris, which the
+    // comment on surfaceAt points at), the life-clipping tests, the collide
+    // probe. Those callers hand over an (x, z) and no height at all, and
+    // answering them with the PLAYER's height would be a different kind of
+    // wrong -- a chip falling on the far side of the wood measured against the
+    // player's knees. With no ceiling the answer is the old one, the top of
+    // the column, which is what "what is the surface at this spot" means when
+    // nobody is standing there.
+    static constexpr float kNoCeil = 1e30f;
+
+    Ground groundInfo(const WalkWorld &w, float x, float z, float ceilY = kNoCeil) const {
         const float hw = halfWidth;
         Ground g;
         for (int c = 0; c < 4; ++c) {
@@ -797,20 +818,51 @@ class Player {
             // no better answer available and keeps the old test.
             if (s.col ? !overModel(s, x, z, VOXEL_M, hw) : !touches(s, x, z, hw)) continue;
 
+            // -- THE STONE UNDER THE FEET, NOT THE STONE OVERHEAD -------------
+            //
+            // (user 2026-09-18: "I cant move the player underneath a big rock
+            // for example".)
+            //
+            // THIS ASKED FOR THE TOP OF THE COLUMN AND THAT IS THE WRONG
+            // QUESTION FOR ANYTHING YOU CAN BE UNDER. A column heightfield
+            // says "the stone here reaches this high", so standing beneath an
+            // overhang, an arch or the flared cap of a big boulder, the floor
+            // came back as the top of the rock and the body was lifted onto
+            // it. The hitbox was not a box round the rock -- it was worse than
+            // that, a full-height column under every voxel of it.
+            //
+            // The same question the building asks, and for the same reason:
+            // the highest voxel AT OR BELOW the feet plus one step. An
+            // overhang is then simply not the floor, and the ground beneath it
+            // is. See solidColumnTopBelow, and Solid::interior for where this
+            // rule came from.
+            //
+            // IT NEEDS THE VOXELS, NOT THE HEIGHTFIELD -- `col` cannot answer
+            // it at all, which is why the fallback below is still here for any
+            // model that has no `vol`.
             float hit = -1e9f;
             bool any = false;
             for (int c = 0; c < 5; ++c) {
                 const float sx = x + ((c == 4) ? 0.0f : ((c & 1) ? hw : -hw));
                 const float sz = z + ((c == 4) ? 0.0f : ((c & 2) ? hw : -hw));
                 float y = 0.0f;
-                if (solidColumnTop(s, sx, sz, VOXEL_M, &y)) {
+                const bool got = (s.vol && ceilY < kNoCeil)
+                                     ? solidColumnTopBelow(s, sx, sz, ceilY, VOXEL_M, &y)
+                                     : solidColumnTop(s, sx, sz, VOXEL_M, &y);
+                if (got) {
                     hit = maxf(hit, y);
                     any = true;
                 }
             }
-            // No heightfield on this model: fall back to the old flat top
-            // rather than letting the body through it.
-            if (!any && !s.col) {
+            // NOTHING TO ASK, as against ASKED AND TOLD NO. A model with
+            // neither a heightfield nor voxels has no better answer than its
+            // flat top, and letting the body through it is worse. But a model
+            // that WAS asked and answered "no stone at or below your feet" has
+            // given the right answer -- that is a body standing under an
+            // overhang -- and falling back to `top` there would put it back on
+            // the roof, which is the whole bug.
+            const bool hadSource = s.col || (s.vol && ceilY < kNoCeil);
+            if (!any && !hadSource) {
                 hit = s.top;
                 any = true;
             }
@@ -825,12 +877,12 @@ class Player {
     // The same surface a fall lands on -- terrain, and the voxel column of
     // any standable model over it. Public because the loose bodies need the
     // identical answer: see World::updateDebris.
-    float surfaceAt(const WalkWorld &w, float x, float z) const {
-        return groundInfo(w, x, z).y;
+    float surfaceAt(const WalkWorld &w, float x, float z, float ceilY = kNoCeil) const {
+        return groundInfo(w, x, z, ceilY).y;
     }
 
-    float groundHeight(const WalkWorld &w, float x, float z) const {
-        return groundInfo(w, x, z).y;
+    float groundHeight(const WalkWorld &w, float x, float z, float ceilY = kNoCeil) const {
+        return groundInfo(w, x, z, ceilY).y;
     }
 
     // True if the body at (x, z) is inside something that is a wall at every
@@ -895,7 +947,43 @@ class Player {
                     return true;
                 continue;
             }
-            if (s.standable) continue;
+            // -- A ROCK IS A WALL WHERE IT IS, AND NOWHERE ELSE ---------------
+            //
+            // (user 2026-09-18: "you seem to creating a boxed hitbox instead of
+            // a hitbox that hugs the voxels of the shape itself".)
+            //
+            // THIS USED TO `continue` ON EVERY STANDABLE SOLID, on the argument
+            // that walking into a rock is meant to put you ON it and moveAxis's
+            // step-up is what does that. That argument only holds while the
+            // FLOOR is the top of the rock's column -- and it no longer is (see
+            // groundInfo). With the floor answering honestly, skipping the rock
+            // here would let you walk straight into the stone.
+            //
+            // So a rock is tested exactly the way a building is: the body's box
+            // against the model's VOXELS, from the step-up to the top of the
+            // head. That is what "hugs the shape" means -- an overhang you can
+            // duck under stops nothing, and the face of a boulder stops you at
+            // the stone rather than at a circle drawn round it.
+            //
+            // THE SMALL END IS UNCHANGED AND THAT IS THE POINT. A stone shorter
+            // than the step-up is entirely below the bottom of this box, so it
+            // never blocks, and groundInfo still finds its top to step onto. A
+            // rock taller than the step-up used to be stopped by moveAxis
+            // refusing the climb; it is stopped by its own voxels now, which is
+            // the same answer where the two agree and a better one everywhere
+            // else.
+            //
+            // ANCHORED TO THE BODY, NOT THE TERRAIN. `feet` is the ground at
+            // (x, z), and a body standing ON a boulder is four metres above
+            // that -- testing there would report it blocked by the rock it is
+            // standing on. The trunk branch below keeps `feet` because nothing
+            // stands on a trunk.
+            if (s.standable) {
+                if (s.vol && solidBoxOverlap(s, x, pos.y + stepUp, z, pos.y + kBodyHeightM,
+                                             halfWidth, VOXEL_M))
+                    return true;
+                continue;
+            }
             if (s.vol) {
                 if (solidBoxOverlap(s, x, feet, z, feet + kBodyHeightM, halfWidth, VOXEL_M))
                     return true;
@@ -1001,10 +1089,13 @@ class Player {
         const bool stuck = blocked(w, pos.x, pos.z);
         if (!stuck && blocked(w, next.x, next.z)) return;
 
-        const float g = groundHeight(w, next.x, next.z);
+        // THE BODY'S OWN HEIGHT GOES IN -- see groundInfo's ceilY. Without it the
+        // "a wall, not a step" test below reads an overhang three metres over the
+        // head as a surface it is being asked to climb, and refuses the move.
+        const float g = groundHeight(w, next.x, next.z, pos.y + upMax());
 
         if (onGround) {
-            const float here = groundHeight(w, pos.x, pos.z);
+            const float here = groundHeight(w, pos.x, pos.z, pos.y + upMax());
             if (g > pos.y + upMax() && here <= pos.y + upMax()) return;  // a wall, not a step
             pos = next;
             if (g >= pos.y - stepDown) {

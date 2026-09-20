@@ -261,8 +261,13 @@ inline constexpr float kFlyChaseSpd = 1.22f;
 // remapped and its four near-black body cells left alone: same geometry, same
 // eight frames, same flap.
 //
-// v2 HAS NO CHERRY WOOD, so the rule is not a condition here -- it is simply
-// what pink becomes. The pink models are never built at all.
+// v2 HAS A CHERRY WOOD SINCE 2026-09-19, so the rule is a condition again and
+// it is v1's: the pink set is built AS WELL, as a seventh colour, and which of
+// the two a butterfly wears is decided where it is born. v1 says it in one
+// line -- the yellow "appears exactly where a pink would have, and only
+// outside the cherry band" -- and that is exactly what this is: the spatial
+// hash still deals six colours, and the one that comes up pink is swapped for
+// the yellow unless the ground under it is in blossom.
 //
 // Keyed on SATURATION rather than on the two exact pinks, so a re-authored pink
 // still yields a yellow: max - min > 24 is true of every wing cell in the file
@@ -284,6 +289,13 @@ inline void yellowFromPink(VoxModel *mo) {
 // ---------------------------------------------------------------------------
 class Butterflies {
   public:
+    // WHICH INDEX IS WHICH, and they are members because the placement needs
+    // them as much as the loader does. kPink is the authored folder's position
+    // in kColours; kYellow is the seventh set built out of it. See the note
+    // over yellowFromPink: pink belongs to the cherry blossom and nowhere
+    // else, and the yellow stands in for it everywhere else.
+    static constexpr int kPink = 4;
+    static constexpr int kYellow = 6;
     // How many are wanted in the air. Slots past what the world can house
     // simply stay empty; see kFlyerInstances for the ceiling the structure has.
     // The app sets this from Options::butterflies at load (12, halved on
@@ -306,14 +318,20 @@ class Butterflies {
         // picked by a hash and the distribution is uniform either way -- but
         // keeping it means a given cell wears the colour it wears there.
         static const char *kColours[] = {"orange", "red", "blue", "lime", "pink", "purple"};
-        static const int kPink = 4;
 
-        for (int c = 0; c < 6; ++c) {
+        // SEVEN PASSES OVER SIX FOLDERS. Pass 6 re-reads the pink set and
+        // yellows it, so the yellow lands at index kYellow == 6 and the six
+        // authored colours keep the indices the spatial hash has always dealt
+        // them. Building it as a SEVENTH rather than in place is the whole of
+        // what lets both exist at once -- see the note over yellowFromPink.
+        for (int c = 0; c < 7; ++c) {
+            const int folder = (c == kYellow) ? kPink : c;
             std::vector<VoxModel> frames;
             bool whole = true;
             for (int f = 0; f < kFlyFrames; ++f) {
                 char path[600];
-                std::snprintf(path, sizeof(path), "%s/%s/%02d.vox", dir.c_str(), kColours[c], f);
+                std::snprintf(path, sizeof(path), "%s/%s/%02d.vox", dir.c_str(),
+                              kColours[folder], f);
                 VoxModel mo;
                 std::string err;
                 if (!voxLoad(path, &mo, &err)) {
@@ -322,7 +340,7 @@ class Butterflies {
                     whole = false;
                     break;
                 }
-                if (c == kPink) yellowFromPink(&mo);
+                if (c == kYellow) yellowFromPink(&mo);
                 frames.push_back(std::move(mo));
             }
             if (!whole) continue;
@@ -330,7 +348,7 @@ class Butterflies {
             std::vector<int> ids;
             for (int f = 0; f < kFlyFrames; ++f) {
                 int sx = 0, sy = 0, sz = 0;
-                const std::string what = dir + "/" + kColours[c];
+                const std::string what = dir + "/" + kColours[folder] + (c == kYellow ? "@y" : "");
                 const int m = world.addFlyerModel(frames[size_t(f)], what, &sx, &sy, &sz, true);
                 if (m < 0) break;
                 // THE FRAMES SHARE A BOX or the body walks sideways as the
@@ -577,6 +595,21 @@ class Butterflies {
         return n;
     }
     int colourCount() const { return int(colours_.size()); }
+    // HOW MANY OF THE LIVE ONES WEAR EACH COLOUR. For the offline report: the
+    // cherry rule is invisible in a render (a butterfly is five voxels at
+    // twenty metres) and trivially checkable as a count.
+    void census(int *pink, int *yellow, int *other) const {
+        int p2 = 0, y = 0, o = 0;
+        for (const Fly &b : flies_) {
+            if (!b.live) continue;
+            if (b.colour == kPink) ++p2;
+            else if (b.colour == kYellow) ++y;
+            else ++o;
+        }
+        if (pink) *pink = p2;
+        if (yellow) *yellow = y;
+        if (other) *other = o;
+    }
 
     // -----------------------------------------------------------------------
     // THAT ONE IS DEAD -- the population's half of a kill.
@@ -722,8 +755,44 @@ class Butterflies {
     // WHICH OF THE COLOURS, by a spatial hash of the home cell. The JS engine's
     // exact mix, so adding a colour scatters it evenly with no other change.
     int colourOf(int cx, int cz) const {
+        // OVER THE SIX AUTHORED COLOURS, not over everything loaded. The
+        // seventh is the yellow, which is not a colour the world deals -- it is
+        // what pink becomes outside the blossom, chosen at the BIRTH (see
+        // cherryColour). Dealing it here would put yellow butterflies in the
+        // cherry wood and thin the pink everywhere.
+        const int n = mini(6, int(colours_.size()));
         const uint32_t h = (uint32_t(cx) * 374761393u) ^ (uint32_t(cz) * 668265263u);
-        return int(h % uint32_t(colours_.size()));
+        return int(h % uint32_t(n));
+    }
+
+    // ...AND PINK BELONGS TO THE CHERRY BLOSSOM AND NOWHERE ELSE (v1's rule,
+    // set by the user there on 2026-08-22 and asked for again here on
+    // 2026-09-19 as "the difference is the life"). Asked of the column the
+    // butterfly is born over, so a cherry wood is pink and its neighbours are
+    // not, with no second population and no gate on the scatter.
+    int cherryColour(const World &world, int col, float x) const {
+        if (int(colours_.size()) <= kYellow) return col;
+        // -- EVERY BUTTERFLY OVER THE BLOSSOM IS PINK --------------------
+        //
+        // (user 2026-09-19: "I saw a green butterfly in the cherry forest.
+        //  this is wrong, there should only be pink butterflies in the cherry
+        //  forrest".)
+        //
+        // THIS ONLY EVER SWAPPED ONE OF THE SIX. The rule it carried is v1's
+        // and it is about a PAIR -- the pink species shows as yellow outside
+        // the cherry band -- so a butterfly that rolled green, blue or orange
+        // was left exactly as authored and flew over the blossom wearing it.
+        // Correct about the pair, and not what "only pink in the cherry
+        // forest" asks for.
+        //
+        // The rest of the roster is untouched OUTSIDE the band, so the wood
+        // next door still has its six. This is the same shape the perched
+        // birds already had -- birds.h deals the pink bird by name over a
+        // cherry crown and nothing else -- and the two now agree.
+        if (world.terrain.cherryMix(x) >= 0.5f) return kPink;
+        // ...AND PINK BELONGS NOWHERE ELSE, which is the half that was always
+        // here: outside the band the pink species flies as the yellow one.
+        return (col == kPink) ? kYellow : col;
     }
 
     // -----------------------------------------------------------------------
@@ -848,6 +917,18 @@ class Butterflies {
                 // is 30, so there is a band 46 m wide to be born in. See
                 // kBirthMinM -- one number for every population in the engine.
                 if (!birth_.may(dd2)) continue;
+                // -- NOR OVER THE SAND ---------------------------------
+                //
+                // The same rule the songbird flock takes, on the same
+                // reasoning -- see kSongDesertOut. A butterfly's home is a
+                // fixed site rather than a ring roll, though, so there is
+                // nothing to recycle and nothing to flicker: one line at the
+                // halfway mark is enough, and the blend's own fade thins them
+                // toward the treeline before it.
+                //
+                // v1 keeps its butterfly out too. Its desert band flies the
+                // fly, the bee and the ladybug (DES_FLYER) and nothing else.
+                if (world.terrain.desertMix(hm.x) >= 0.5f) continue;
                 bool taken = false;
                 for (const Fly &b : flies_)
                     if (b.live && b.hcx == cx && b.hcz == cz) {
@@ -907,7 +988,7 @@ class Butterflies {
             b.hcx = hm.cx;
             b.hcz = hm.cz;
             b.rng = hashU32(uint32_t(hm.cx * 2654435761u), uint32_t(hm.cz * 2246822519u)) | 1u;
-            b.colour = colourOf(hm.cx, hm.cz);
+            b.colour = cherryColour(world, colourOf(hm.cx, hm.cz), hm.x);
             b.phase = rnd(&b.rng) * float(kFlyFrames);
             b.th = rnd(&b.rng) * TWO_PI;
             // Its height in the band, and the two swells it drifts through it

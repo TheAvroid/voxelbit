@@ -7,6 +7,101 @@
 //
 // Contents: planting, firing, killing, tilling, picking, breaking
 // -----------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHAT THE TWO BARS DID THIS FRAME.
+    //
+    // (user 2026-09-19: "import the damage/hunger mechanics from v1 into v2".)
+    //
+    // Vitals cannot reach the particle system or the world, so it COUNTS the
+    // points it spent and this spends them -- see the note at the top of
+    // player/vitals.h. Called once a frame, straight after Vitals::tick.
+    // -----------------------------------------------------------------------
+    void drainVitals() {
+        if (!vitHomeSet_) {
+            vitHome_ = player_.pos;
+            vitHomeSet_ = true;
+        }
+        // -- THE FLECKS COME OFF YOUR OWN BODY --------------------------
+        //
+        // v1's vitBodyBurst, and its argument for the distance: these are the
+        // same 10 cm voxels a struck creature throws, and at arm's reach
+        // perspective blows each one into a slab across the view. It authors
+        // them 2.2 voxels forward of the chest and 3.2 down from the eye --
+        // 22 cm and 32 cm here -- which puts them out where the eye reads them
+        // as coming off the player rather than hanging in front of the camera.
+        //
+        // THE SAME CALL A STRUCK CREATURE MAKES, aimed at the player instead.
+        // THE DITHER'S SEED, RE-ROLLED ON THE BLOW AND ONLY ON THE BLOW --
+        // see shaders/Vitals.ps.slang, where a per-frame hash would sizzle
+        // instead of fade.
+        if (vitals_.hp != vitLastHp_) {
+            if (vitals_.hp < vitLastHp_) vitSeed_ = (vitSeed_ * 1103515245 + 12345) & 0x7FFFFFF;
+            vitLastHp_ = vitals_.hp;
+        }
+        if (vitals_.redBursts > 0) {
+            const float cp = cosf(pitch_);
+            const Vec3 chest{pos_.x + sinf(yaw_) * cp * 0.22f, pos_.y - 0.32f,
+                             pos_.z + cosf(yaw_) * cp * 0.22f};
+            for (int i = 0; i < vitals_.redBursts; ++i) particles_.hitSparks(chest, simMs_, true);
+            vitals_.redBursts = 0;
+        }
+        // -- ...AND A HUNGER POINT THROWS THE SAME FOUR IN GOLD -----------
+        //
+        // (user 2026-09-19: "I also need a gold burst like the red voxels when
+        //  taking hunger damage.")
+        //
+        // NO NEW COLOUR WAS NEEDED, which is why this is one line. The spark
+        // pool already has two materials: kSparkRedRgb for blood and
+        // kSparkRgb -- (255, 208, 112) -- which is a warm GOLD and is what the
+        // burst uses whenever `red` is false. So v1's "render the same except
+        // gold" is literally the same call with the flag cleared, and the
+        // palette pays nothing ([[v2-palette-is-full]]).
+        //
+        // NO SOUND AND NO SCREEN KICK, which is v1's rule and its reason: a
+        // hunger point is a slow drain, not a blow -- there is no blow to hear.
+        if (vitals_.goldBursts > 0) {
+            const float cp = cosf(pitch_);
+            const Vec3 chest{pos_.x + sinf(yaw_) * cp * 0.22f, pos_.y - 0.32f,
+                             pos_.z + cosf(yaw_) * cp * 0.22f};
+            for (int i = 0; i < vitals_.goldBursts; ++i)
+                particles_.hitSparks(chest, simMs_, /*red=*/false);
+            std::printf("  vitals   hunger %d/%d%s\n", vitals_.food, kVitFoodMax,
+                        vitals_.food == 0 ? "  -- STARVING" : "");
+            std::fflush(stdout);
+            vitals_.goldBursts = 0;
+        }
+        // -- AND ONE DEATH, ONE THRESHOLD -------------------------------
+        //
+        // v1 hands this to a game-over screen. There is no such screen here, so
+        // death is the smallest honest thing: say what killed you, put the bars
+        // back, and stand the body up where the run began. Somewhere ELSE
+        // matters -- respawning on the spot would hand you straight back to
+        // whatever did it, which for a cobra is a loop.
+        // -- ...AND THE RUN ENDS ON A SCREEN, NOT INSTANTLY ---------------
+        //
+        // (user 2026-09-19: "create a game over screen on death.")
+        //
+        // The respawn used to happen on the frame the bar emptied, which gave
+        // the player no frame in which they were dead -- the world simply
+        // jumped. Now death opens the curtain (see drawGameOver) and the body
+        // gets up when it closes, kGameOverHoldMs later.
+        if (vitals_.deathWhy && deathAtMs_ < 0.0) {
+            std::printf("v2: you died -- %s\n", vitals_.deathWhy);
+            std::fflush(stdout);
+            deathWhy_ = vitals_.deathWhy;
+            deathAtMs_ = simMs_;
+            vitals_.deathWhy = nullptr;
+        }
+        if (deathAtMs_ >= 0.0 && simMs_ - deathAtMs_ >= kGameOverHoldMs) {
+            deathAtMs_ = -1.0;
+            deathWhy_.clear();
+            player_.placeOnGround(walkWorld(), vitHome_.x, vitHome_.z);
+            pos_ = player_.eyePosition();
+            vitals_.reset(player_.pos);
+            vitLastHp_ = kVitHpMax;
+        }
+    }
+
     void publishLife() {
         flock_.publish(world_);
         birds_.publish(world_);
@@ -120,12 +215,18 @@
     // The same consequences a killing blow has, in the same order, and reached
     // through the same two calls -- so an arrow cannot drift away from what an
     // axe does. What it does NOT share is the reach test: a melee swing asks
-    // what is under the crosshair within 5.3 m, and an arrow is simply AT the
-    // point it has flown to.
+    // what is under the crosshair within 5.3 m, and an arrow is simply WHERE IT
+    // HAS FLOWN TO.
+    //
+    // ...WHICH IS A SEGMENT AND NOT A POINT (user 2026-09-19: "Im shooting an
+    // arrow and its hitting the life but its not registering"). `from` is where
+    // the shaft was at the last integration step and `p` is where this one puts
+    // it; what it passed through in between is what it hit. See LifeHits::along
+    // and the note over Arrows::LifeF.
     // -----------------------------------------------------------------------
-    bool arrowKill(const Vec3 &p) {
+    bool arrowKill(const Vec3 &from, const Vec3 &p) {
         if (!world_.flyersLoaded()) return false;
-        const int slot = lifeHits_.at(world_, p);
+        const int slot = lifeHits_.along(world_, from, p);
         if (slot < 0) return false;
         const LifeKind kind = lifeKindAt(slot);
         if (!kind.alive()) return false;
@@ -133,6 +234,9 @@
         const LifeHits::Blow b = lifeHits_.strike(world_, slot, kind, /*oneBlow=*/true, simMs_);
         if (!b.landed) return false;
         particles_.hitSparks(b.at, simMs_, /*red=*/true);
+        // SWINGING IS HOW AN ACTIVE PLAYER GETS HUNGRY -- v1's vitOnAttack, on
+        // every landed blow. See player/vitals.h.
+        vitals_.onAttack();
         if (!b.killed) return true;
         lastPieces_ = world_.shatterFlyer(physics_, slot, p, simMs_);
         particles_.deathBurst(b.at, simMs_);
@@ -256,7 +360,42 @@
         return pistolTool_ >= 0 && held_.ready() && held_.selected() == pistolTool_ &&
                held_.carrying();
     }
-    bool holdingGun() const { return rifleInHand() || pistolInHand(); }
+    // -----------------------------------------------------------------------
+    // WHICH GUN IS IN THE HAND, as a kit slot, or -1 for none.
+    //
+    // (user 2026-09-18: "left clicking the pistol is not fireing bullets. fix
+    // that.")
+    //
+    // THE TRIGGER USED TO ASK rifleInHand() AND THAT IS WHY. Everything below
+    // this line -- the magazine, the cyclic rate, the reload, the badge -- was
+    // written against one gun and named after it, so the pistol arrived holding
+    // a model and nothing else. It is one question now and the four small
+    // lookups under it are the only places either gun is named.
+    //
+    // NOT AN ENUM AND NOT A TABLE. There are two guns; a `Guns[]` indexed by a
+    // second id would have to be kept in step with the kit slots that already
+    // identify them, and a slot IS the identity here -- it is what the wheel,
+    // the badge, standInLevel and snapshotKit all key on.
+    // -----------------------------------------------------------------------
+    int heldGun() const {
+        if (rifleInHand()) return rifleTool_;
+        if (pistolInHand()) return pistolTool_;
+        return -1;
+    }
+    bool holdingGun() const { return heldGun() >= 0; }
+    bool isGun(int tool) const {
+        return tool >= 0 && (tool == rifleTool_ || tool == pistolTool_);
+    }
+    int gunMagOf(int tool) const { return tool == pistolTool_ ? kPistolMag : kRifleMag; }
+    int gunAmmoOf(int tool) const { return tool == pistolTool_ ? pistolAmmo_ : rifleAmmo_; }
+    void setGunAmmo(int tool, int n) {
+        if (tool == pistolTool_) pistolAmmo_ = n;
+        else if (tool == rifleTool_) rifleAmmo_ = n;
+    }
+    // HOW OFTEN IT MAY GO OFF. See kPistolIntervalMs for why they differ.
+    double gunIntervalOf(int tool) const {
+        return tool == pistolTool_ ? kPistolIntervalMs : kBulletIntervalMs;
+    }
 
     // -----------------------------------------------------------------------
     // PUT A FRESH MAGAZINE IN. Returns true if a cycle actually started.
@@ -273,11 +412,31 @@
     // full magazine is 1800 ms of standing there with the gun unable to fire,
     // and the player's own keypress is the last thing they would suspect.
     // -----------------------------------------------------------------------
-    bool reloadRifle() {
-        if (rifleAmmo_ >= kRifleMag || held_.reloading()) return false;
-        if (!held_.startReload()) return false;
+    bool reloadGun() {
+        const int tool = heldGun();
+        if (tool < 0) return false;
+        if (gunAmmoOf(tool) >= gunMagOf(tool) || held_.reloading()) return false;
+        // -- HOW MANY TURNS OF THE STRIP THIS IS ---------------------------
+        //
+        // (user 2026-09-18: "it needs to play multiple times depending on how
+        // many shots have been powered. its a standard revolver with 6
+        // rounds.")
+        //
+        // ONE PER EMPTY CHAMBER for a gun whose strip loads rounds
+        // (Tool::reloadRounds), and exactly one for a gun whose strip is a
+        // magazine change. That is the only place the two kinds differ: the
+        // clock, the frames, the key and the badge are all the same code.
+        //
+        // COUNTED HERE, BEFORE THE FIRST TURN, so the animation and the
+        // magazine cannot disagree -- and so that reloading with two rounds
+        // left is two turns rather than six.
+        const int per = held_.tool(tool).reloadRounds;
+        const int missing = gunMagOf(tool) - gunAmmoOf(tool);
+        const int cycles = per > 0 ? (missing + per - 1) / per : 1;
+        if (!held_.startReload(cycles)) return false;
         if (opt_.swingLog) {
-            std::printf("v2: reload started -- %d of %d rounds left\n", rifleAmmo_, kRifleMag);
+            std::printf("v2: %s reload started -- %d of %d rounds left, %d turn(s)\n",
+                        held_.tool(tool).name, gunAmmoOf(tool), gunMagOf(tool), cycles);
             std::fflush(stdout);
         }
         return true;
@@ -286,7 +445,11 @@
     // Returns true if a round actually left the barrel -- false on an empty or
     // busy gun, which is what the trigger and the scripted burst both need to
     // know before they report a shot that never happened.
-    bool fireRifle() {
+    bool fireGun() {
+        // WHICH GUN, ASKED ONCE AT THE TOP. Everything below spends THIS
+        // slot's magazine, at this slot's rate -- see heldGun.
+        const int tool = heldGun();
+        if (tool < 0) return false;
         // -- NOTHING COMES OUT OF A GUN THAT IS BEING RELOADED ---------------
         //
         // FIRST, BEFORE THE AMMO TEST, because the magazine is still empty for
@@ -306,11 +469,11 @@
         // this function is the shot that EMPTIED it, which starts the cycle
         // straight away rather than making the player pull once more to
         // discover there is nothing left.
-        if (rifleAmmo_ <= 0) {
-            reloadRifle();
+        if (gunAmmoOf(tool) <= 0) {
+            reloadGun();
             return false;
         }
-        --rifleAmmo_;
+        setGunAmmo(tool, gunAmmoOf(tool) - 1);
         const Vec3 aim = forward();
         Vec3 from = pos_;
         // The same camera the frame is about to be drawn with, built the way
@@ -346,6 +509,12 @@
         if (lengthSq(dir) < 1e-6f) dir = aim;
         bullets_.launch(from, dir);
         held_.kick();
+        // THE BANG GOES WITH THE ROUND, on the frame it leaves the barrel and
+        // not with the click -- everything above this line can still refuse the
+        // shot (dry, reloading, inside the repeat interval), and a gun that
+        // cracked on a trigger pull that fired nothing would be the one way
+        // this could lie about what happened. See ToolSounds::gunFired.
+        toolSfx_.gunFired();
         // ONE LINE PER ROUND UNDER --swing-log, exactly as the arrow's flight
         // reports under the same flag. A tracer at 120 m/s is gone in a frame
         // or two, so this is the only way to see that the muzzle is where it
@@ -353,8 +522,8 @@
         if (opt_.swingLog) {
             std::printf("v2: round from (%.2f %.2f %.2f) eye (%.2f %.2f %.2f) %s  %d/%d left\n",
                         from.x, from.y, from.z, pos_.x, pos_.y, pos_.z,
-                        gotTip ? "MUZZLE" : "NO MUZZLE -- fell back to the eye", rifleAmmo_,
-                        kRifleMag);
+                        gotTip ? "MUZZLE" : "NO MUZZLE -- fell back to the eye",
+                        gunAmmoOf(tool), gunMagOf(tool));
             std::fflush(stdout);
         }
         // -- ...AND THE VIEW CLIMBS A LITTLE --------------------------------
@@ -375,7 +544,7 @@
         // AT THE BOTTOM, AFTER THE SHOT HAS BEEN FIRED AND REPORTED. The last
         // round is a round like any other -- it leaves the barrel, chips what
         // it hits and climbs the view -- and only then is the gun empty.
-        if (rifleAmmo_ <= 0) reloadRifle();
+        if (gunAmmoOf(tool) <= 0) reloadGun();
         return true;
     }
 
@@ -835,6 +1004,31 @@
             // v1's WORM band: one hit, and nothing left behind.
             case kMarchWorm:       return {"worm", false, true};
             case kMarchSnake:      return {"snake", true, false};
+            // -- ...AND THE FOUR THAT FELL THROUGH TO `default` -------------
+            //
+            // (user 2026-09-19: "the desert life is not killable. let it be
+            //  killable".)
+            //
+            // A DEFAULT THAT MEANS "NOT ALIVE" IS A TRAP FOR A NEW ROW. Every
+            // species added to kMarchSpec after this switch was written --
+            // the desert's three and the blossom's flamingo -- landed on
+            // `return {}`, and LifeKind::alive() is false for that, so an
+            // arrow passed straight through them. They were not tough, they
+            // were not life.
+            //
+            // MEAT, ALL FOUR. v1's DES_MEAT is
+            // `{desert_mouse, cobra, scorpion, gecko, grass_snake, frog}`, so
+            // the three desert rows are its own answer; the flamingo is not in
+            // that band over there at all -- it rides with the mammals, and
+            // every mammal on this switch drops meat.
+            //
+            // NOT FRAIL. `frail` is v1's one-hit rule and it belongs to the
+            // WORM, which is the row above and the only thing here small
+            // enough for it.
+            case kMarchGecko:      return {"gecko", true, false};
+            case kMarchCobra:      return {"cobra", true, false};
+            case kMarchScorpion:   return {"scorpion", true, false};
+            case kMarchFlamingo:   return {"flamingo", true, false};
             default:               return {};
         }
     }
@@ -900,6 +1094,9 @@
         // hit, wounding or killing. Fired here, before the wound/kill split, so
         // hits one, two and three all show it."
         particles_.hitSparks(b.at, simMs_, /*red=*/true);
+        // SWINGING IS HOW AN ACTIVE PLAYER GETS HUNGRY -- v1's vitOnAttack, on
+        // every landed blow. See player/vitals.h.
+        vitals_.onAttack();
         // -- AND THE SWARM ANSWERS -------------------------------------
         //
         // (user 2026-09-16: "when attacking a bee or the beehive, have all of
@@ -1098,6 +1295,41 @@
             return true;
         }
         selectOnArrive_ = slot;
+        // -- AND THE PRESS THAT PICKED IS NOT ALSO A BITE -----------------
+        //
+        // (user: "if Im holding an apple/orange in hand, then right click to
+        //  pick up another one from a tree, it eats the fruit.")
+        //
+        // BOTH CLAIMS LIVE ON THE RIGHT BUTTON and they are read in two
+        // different places: the pick is an EVENT (this function, off
+        // ButtonDown) and the bite is POLLED in processInput a moment later in
+        // the same frame. So one press reached both -- it picked the fruit off
+        // the tree AND started a 900 ms bite on the one already in the hand.
+        //
+        // spendEatPress is exactly the primitive for it: wantEat opens a bite
+        // on the RISING EDGE only, so marking the edge as already spent means
+        // this press cannot open one. Release and press again to eat, which is
+        // the behaviour a fruit in the hand should have had all along.
+        //
+        // -- AND IT HAS TO BE SPENT *HERE*, NOT ON ARRIVAL -----------------
+        //
+        // The arrival path in app_frame.inl already calls spendEatPress, and
+        // that is why this was thought fixed on 2026-09-17. It is not the same
+        // moment: grabFrom starts a 360 ms FLIGHT, so arrival is a third of a
+        // second after the button went down. Poll-time is now.
+        //
+        // With an EMPTY hand that gap is harmless -- there is no food to bite,
+        // wantEat falls out on holdingFood() and the press is spent by the time
+        // the fruit lands. With a fruit ALREADY IN HAND there is something to
+        // bite on the press frame, so the bite opens immediately and the
+        // arrival's spend lands 360 ms into a 900 ms mouthful it cannot stop.
+        // That is the whole difference between the two reports, and it is why
+        // the earlier fix looked complete.
+        //
+        // THE FALLBACK BRANCH ABOVE ALREADY DID THIS -- the instant hand-over
+        // taken when the drop band is full -- which is why this only showed
+        // with a drop slot free, i.e. very nearly always.
+        held_.spendEatPress();
         std::printf("v2: %s picked at (%.1f, %.1f, %.1f) -- in hand\n", t.name, at.x, at.y, at.z);
         std::fflush(stdout);
         return true;

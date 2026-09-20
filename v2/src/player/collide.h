@@ -538,9 +538,18 @@ inline bool solidColumnTop(const Solid &s, float wx, float wz, float voxel, floa
 // THE SURFACE UNDER A BODY THAT IS INSIDE THE MODEL -- the first solid voxel at
 // or below `ceilY`, rather than the top of the whole column.
 //
-// solidColumnTop above answers "how high is this model here", which is the only
-// question a rock can be asked: a boulder is convex from outside and there is
-// nothing under its skin to stand on. A BUILDING is the other case. Its column
+// solidColumnTop above answers "how high is this model here".
+//
+// THAT WAS ONCE CALLED "THE ONLY QUESTION A ROCK CAN BE ASKED", on the grounds
+// that a boulder is convex from outside and there is nothing under its skin to
+// stand on. THE ROCKS ARE NOT CONVEX. They have flared caps, arches and
+// overhangs, and under one of those the top of the column is three metres over
+// the head of anybody standing there -- so asked the old question the walk put
+// them on top of the rock, which is exactly what a building does in its lobby.
+// (user 2026-09-18: "I cant move the player underneath a big rock".) The walk
+// asks every standable solid this now; tests/rock_overhang_test.cpp pins it.
+//
+// A BUILDING was the first case, and its column
 // runs roof, air, upper floor, air, ground floor, and the top of that column is
 // eleven metres over the head of anybody standing in the lobby -- so asked the
 // old question the walk puts them on the roof, instantly, the first time they

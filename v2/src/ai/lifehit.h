@@ -205,68 +205,145 @@ struct Wound {
 // ---------------------------------------------------------------------------
 class LifeHits {
   public:
+    // =======================================================================
+    // THE HITBOX IS THE ANIMAL'S OWN BOX.
+    //
+    // (user 2026-09-19: "adjust the hitboxes of the life and make sure they
+    //  are accurate. I feel like Im shooting an arrow and its hitting the life
+    //  but its not registering.")
+    //
+    // WHAT WAS HERE was v1's sphere of the MEAN half-extent, centred on what
+    // World::flyerAt handed back. Three things were wrong with that and they
+    // compound:
+    //
+    //   1. THE CENTRE WAS THE MOTION ANCHOR, which for a rabbit is its FEET
+    //      and for a perched songbird is its toes. See World::flyerMid_ for
+    //      how that happened -- it is the 2026-09-14 anchor fix, which was
+    //      right, meeting a hit test that had always read the same field.
+    //      Half of every marcher's hitbox was underground.
+    //
+    //   2. A SPHERE OF THE MEAN HALF-EXTENT FITS ALMOST NOTHING. The grass
+    //      snake is 0.5 x 1.7 m and the mean gives a 0.37 m ball: it reaches
+    //      neither end of the animal and sticks out past both its sides. The
+    //      species it fits worst are the long thin ones you have to aim at.
+    //
+    //   3. AN ARROW ASKED AT A POINT, once per 5 ms step -- 0.24 m of flight
+    //      at full draw. A shaft can pass clean through a small animal between
+    //      two samples and neither sample be inside it. That is a hit that
+    //      does not register with nothing wrong at either end of it.
+    //
+    // So: the axis-aligned box the instance is actually drawn in (flyerBox),
+    // grown by kAimForgiveM, tested as a SEGMENT for anything that moves and
+    // as a ray for the crosshair. One slab routine, three entry points.
+    // =======================================================================
+
+    // The classic slab test, on a segment from a to b. Returns the parameter
+    // of the entry point in [0, 1], or -1. A start INSIDE the box returns 0,
+    // which is what makes the point test below a special case of this one
+    // rather than a second piece of arithmetic that can disagree with it.
+    static float hitBox(const Vec3 &a, const Vec3 &b, const Vec3 &mid, const Vec3 &half) {
+        float t0 = 0.0f, t1 = 1.0f;
+        const float o[3] = {a.x, a.y, a.z};
+        const float d[3] = {b.x - a.x, b.y - a.y, b.z - a.z};
+        const float c[3] = {mid.x, mid.y, mid.z};
+        const float h[3] = {half.x, half.y, half.z};
+        for (int k = 0; k < 3; ++k) {
+            const float lo = c[k] - h[k], hi = c[k] + h[k];
+            if (d[k] > -1e-9f && d[k] < 1e-9f) {
+                // Parallel to this pair of planes: it is either between them
+                // for the whole segment or it never was.
+                if (o[k] < lo || o[k] > hi) return -1.0f;
+                continue;
+            }
+            float ta = (lo - o[k]) / d[k], tb = (hi - o[k]) / d[k];
+            if (ta > tb) { const float sw = ta; ta = tb; tb = sw; }
+            if (ta > t0) t0 = ta;
+            if (tb < t1) t1 = tb;
+            if (t0 > t1) return -1.0f;
+        }
+        return t0;
+    }
+
     // -----------------------------------------------------------------------
     // WHAT IS UNDER THE CROSSHAIR -- v1's aimedCreature, on the band.
     //
     // A RAY AGAINST THE ANIMAL, NOT A CONE. v1 replaced its own 35-degree cone
     // with exactly this and said why: "proj = how far along the view it sits;
-    // perp = how far the view ray passes from it. A miss by more than its own
-    // radius is a miss."
+    // perp = how far the view ray passes from it." What has changed since is
+    // only the SHAPE being missed by: v1's own note calls a sphere round the
+    // box corners "far wider than the animal actually looks", and the box
+    // itself is narrower than that sphere on every axis while still covering
+    // the parts of the animal a sphere of the mean never reached.
     //
-    // THE RADIUS IS THE MEAN HALF-EXTENT, also v1's, also with its reason: "a
-    // sphere drawn around the corners of the box is far wider than the animal
-    // actually looks, and that generosity is the complaint being fixed."
-    // World::flyerAt hands it over, measured off the model the slot is actually
-    // drawing this frame.
+    // NEAREST ALONG THE RAY, not nearest by centre. Two animals overlapping the
+    // crosshair used to be settled by which middle was closer, which on a snake
+    // lying in front of a rabbit picks the rabbit.
     // -----------------------------------------------------------------------
     int aim(const World &w, const Vec3 &eye, const Vec3 &dir) const {
         int best = -1;
-        float bestD = 1e30f;
+        float bestT = 1e30f;
         for (int i = 0; i < kFlyerInstances; ++i) {
             if (!lifeAtSlot(i).alive()) continue;
-            Vec3 at{0.0f, 0.0f, 0.0f};
-            float r = 0.0f;
-            if (!w.flyerAt(i, &at, &r)) continue;   // not drawn: not there
-            const float dx = at.x - eye.x, dy = at.y - eye.y, dz = at.z - eye.z;
+            Vec3 mid{0.0f, 0.0f, 0.0f}, half{0.0f, 0.0f, 0.0f};
+            if (!w.flyerBox(i, &mid, &half)) continue;   // not drawn: not there
+            const float dx = mid.x - eye.x, dy = mid.y - eye.y, dz = mid.z - eye.z;
             const float dh = std::sqrt(dx * dx + dz * dz);
             const float d3 = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (dh > kLifeReachM || d3 > kLifeReach3dM || d3 < 0.2f) continue;
-            const float proj = dx * dir.x + dy * dir.y + dz * dir.z;
-            if (proj <= 0.0f) continue;   // behind the camera
-            const float rr = r + kAimForgiveM;
-            if (d3 * d3 - proj * proj > rr * rr) continue;   // the ray passes wide
-            if (d3 < bestD) {
-                bestD = d3;
-                best = i;
-            }
+            if (dh > kLifeReachM || d3 > kLifeReach3dM) continue;
+            // NO 0.2 m FLOOR ANY MORE. It was there because the centre could be
+            // inside the player and a zero-length vector has no direction; the
+            // box test needs no direction to the animal at all, and an animal
+            // standing on your boots is one you can hit.
+            // NOT `far`: windows.h still defines it as an empty macro from the
+            // near/far pointer days, so `const Vec3 far{...}` compiles to
+            // `const Vec3 {...}` and the error names neither the word nor the
+            // reason. The SIXTH time in this project -- app.h, poi.h, birds.h
+            // and lake.h all carry the same note.
+            const Vec3 tip{eye.x + dir.x * kLifeReach3dM, eye.y + dir.y * kLifeReach3dM,
+                           eye.z + dir.z * kLifeReach3dM};
+            const Vec3 grown{half.x + kAimForgiveM, half.y + kAimForgiveM,
+                             half.z + kAimForgiveM};
+            const float t = hitBox(eye, tip, mid, grown);
+            if (t < 0.0f || t >= bestT) continue;
+            bestT = t;
+            best = i;
         }
         return best;
     }
 
     // -----------------------------------------------------------------------
-    // ...AND WHAT IS AT A POINT, which is the question an ARROW asks.
+    // ...AND WHAT A SHAFT PASSED THROUGH BETWEEN TWO STEPS.
     //
-    // aim() above is a ray from an eye; a shaft is already where it is. Same
-    // band, same radius, no reach -- a bow's range is however far the arrow
-    // flies, which is the arrow's business and not this file's.
+    // aim() above is a ray from an eye; an arrow is a segment between where it
+    // was and where it is about to be. Same band, same box, no reach -- a bow's
+    // range is however far the arrow flies, which is the arrow's business and
+    // not this file's.
+    //
+    // THE SEGMENT IS THE WHOLE POINT. arrows.h steps at 5 ms, which is 0.24 m
+    // at a full draw, and a firefly is 0.3 m across: asked only at the sample
+    // points, a shaft dead through one could miss on both sides of it. Asked
+    // along the step, it cannot.
     // -----------------------------------------------------------------------
-    int at(const World &w, const Vec3 &p) const {
+    int along(const World &w, const Vec3 &from, const Vec3 &to) const {
         int best = -1;
-        float bestD = 1e30f;
+        float bestT = 1e30f;
         for (int i = 0; i < kFlyerInstances; ++i) {
             if (!lifeAtSlot(i).alive()) continue;
-            Vec3 a{0.0f, 0.0f, 0.0f};
-            float r = 0.0f;
-            if (!w.flyerAt(i, &a, &r)) continue;
-            const float dx = a.x - p.x, dy = a.y - p.y, dz = a.z - p.z;
-            const float d2 = dx * dx + dy * dy + dz * dz;
-            const float rr = r + kAimForgiveM;
-            if (d2 > rr * rr || d2 >= bestD) continue;
-            bestD = d2;
+            Vec3 mid{0.0f, 0.0f, 0.0f}, half{0.0f, 0.0f, 0.0f};
+            if (!w.flyerBox(i, &mid, &half)) continue;
+            const Vec3 grown{half.x + kAimForgiveM, half.y + kAimForgiveM,
+                             half.z + kAimForgiveM};
+            const float t = hitBox(from, to, mid, grown);
+            if (t < 0.0f || t >= bestT) continue;   // the first thing it reaches
+            bestT = t;
             best = i;
         }
         return best;
     }
+
+    // A shaft that is simply AT a point -- the same question with no travel in
+    // it, kept because --kill-test and the level's own probes ask it that way.
+    int at(const World &w, const Vec3 &p) const { return along(w, p, p); }
 
     // -----------------------------------------------------------------------
     // A BLOW LANDS.

@@ -65,6 +65,10 @@ inline constexpr float kSongWanderAlt = 3.4f;   // (JS altT 0..34)
 inline constexpr float kSongSoarLo = 1.8f, kSongSoarHi = 4.4f;   // (JS 18..44)
 inline constexpr float kSongSwoopSec = 3.2f;    // the dive-and-recover window
 inline constexpr float kSongLookM = 4.5f;       // terrain lookahead (JS 45 vox)
+// THE TWO ADMIT ENDS OF THE DESERT GATE, both v1's -- see the note in step().
+// Out is where a live bird is recycled, in is where a new one is refused.
+inline constexpr float kSongDesertOut = 0.85f;
+inline constexpr float kSongDesertIn = 0.35f;
 inline constexpr float kSongBobM = 0.30f;       // (JS sin(t*1.2) * 3.0)
 
 // -- HOW MANY, AND WHERE THEY COME FROM -------------------------------------
@@ -138,8 +142,29 @@ class BirdFlock {
     // other effect".
     // -----------------------------------------------------------------------
     bool load(World &world, const std::string &lifeDir) {
-        static const char *kNames[kBirdSpecies] = {"blue_bird", "robin", "cardinal"};
-        for (int s = 0; s < kBirdSpecies; ++s) {
+        // WHICH BAND A BIRD IS OVER -- see the desert gate in step(). Captured
+        // here rather than handed to update() because update() already takes a
+        // ground functor and a solids list, and this is the same kind of fact
+        // about the world that birds.h captures at exactly this point.
+        terrain_ = &world.terrain;
+        // -- THREE, WHICH IS WHAT THIS ARRAY ACTUALLY HOLDS ---------------
+        //
+        // It was sized kBirdSpecies with three initialisers. That was exact
+        // until the PINK BIRD took kBirdSpecies from 3 to 4 for the cherry
+        // wood, and then the fourth slot was a null pointer the loop below
+        // dutifully fed to snprintf -- every run of the engine printed
+        //
+        //   v2: flight .../life/(null)/flight/00.vox: cannot open -- skipped
+        //
+        // and carried on with three, which is why it was only ever noise.
+        //
+        // kBirdWoodSpecies is the count birds.h already keeps for exactly this
+        // question -- "every bird EXCEPT the pink one" -- so the flying flock
+        // asks it rather than holding a 3 of its own. The pink bird belongs to
+        // the blossom and is dealt by the PERCHED birds alone; a flock of them
+        // crossing every wood is the thing that constant exists to prevent.
+        static const char *kNames[kBirdWoodSpecies] = {"blue_bird", "robin", "cardinal"};
+        for (int s = 0; s < kBirdWoodSpecies; ++s) {
             std::vector<VoxModel> mo;
             mo.resize(size_t(kFlightFrames));
             bool whole = true;
@@ -286,6 +311,8 @@ class BirdFlock {
     }
 
   private:
+    const VoxelTerrain *terrain_ = nullptr;   // see load -- which band a bird is over
+
     struct Strip { std::vector<int> model; };
 
     struct Bird {
@@ -379,6 +406,28 @@ class BirdFlock {
         if (b->live) {
             const float dx = b->x - player.x, dz = b->z - player.z;
             if (dx * dx + dz * dz > kSongKeepM * kSongKeepM) b->live = false;
+            // -- FORESTS, NEVER THE DESERT ---------------------------------
+            //
+            // v1's own rule, and over there it is a direct instruction: "the
+            // birds should be oak and pine forests only. I only want them
+            // disabled in the desert". This file had no biome test at all, so
+            // nine songbirds circled Death Valley.
+            //
+            // RECYCLED at 0.85 rather than refused at the halfway line, which
+            // is v1's BIRD_OUT and its reasoning is worth keeping: a bird is
+            // the one creature that SHOULD be able to cross a treeline, and
+            // culling it on the 0.5 line would read as an invisible wall in
+            // open sky. It drifts out over the sand and is recycled once it is
+            // properly out.
+            if (terrain_ && terrain_->desertMix(b->x) >= kSongDesertOut) b->live = false;
+            // ...AND NOT OVER THE BLOSSOM EITHER, on the same pair of lines
+            // and for a reason v1 states twice: "pink belongs to the cherry
+            // blossom and nowhere else, and nothing else belongs there". A
+            // blue bird crossing a pink wood is the second half of that.
+            // (user 2026-09-19: "remove all life that isnt pink in the cherry
+            //  forest".) The PERCHED birds already knew -- birds.h deals the
+            // pink one by name over a cherry crown -- and this file did not.
+            if (terrain_ && terrain_->cherryMix(b->x) >= kSongDesertOut) b->live = false;
         }
         if (!b->live) {
             const float a = rnd(i, 0x81u) * 6.2831853f;
@@ -391,6 +440,17 @@ class BirdFlock {
             // round in front of you and leaves, which is the one arrival that
             // draws attention to itself.
             b->th = a + 3.14159265f + (rnd(i, 0x83u) - 0.5f) * 1.2f;
+            // ...AND THE OTHER HALF OF v1's PAIR: a SPAWN is refused at 0.35,
+            // tighter than the 0.85 recycle, so a fresh bird never appears
+            // already most of the way to being culled -- which would flicker
+            // the flock along the border. The slot simply stays empty and the
+            // ring is rolled again next frame, so a bird walking out of the
+            // wood loses its flock gradually rather than all at once.
+            if (terrain_ && (terrain_->desertMix(b->x) >= kSongDesertIn ||
+                             terrain_->cherryMix(b->x) >= kSongDesertIn)) {
+                b->live = false;
+                return;
+            }
             b->sp = int(i) % int(strips_.size());
             b->g = ground(b->x, b->z);
             b->y = b->g + kSongCruiseM;

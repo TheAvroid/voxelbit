@@ -45,12 +45,37 @@ struct VoxModel {
 // ordinary, and it was being refused as "implausible model dimensions", which
 // is the least helpful message it could have produced.
 //
-// 256 M is the new line: four times what any asset here has ever wanted, still
-// only a quarter of a gigabyte if something does allocate it, and still six
-// orders of magnitude below what a corrupt 32-bit SIZE chunk can claim. Raise
-// it again when a real asset gets close rather than leaving headroom for its
-// own sake -- the whole value of the check is that it is near the truth.
-inline constexpr long long kVoxMaxCells = 256LL << 20;
+// ...AND 256 M DOES NOT FIT THE ARCADE (user 2026-09-18: "put it next to the
+// depot map. move the maps 100 meters from one another"). Several maps in ONE
+// grid is mostly AIR: a hundred metres of gap between two of them, across a
+// 68 m frontage and 28 m of headroom, is 193 M cells of nothing on its own --
+// more than the maps either side of it. The arcade as it stands is 677 x 285 x
+// 2918 = 563 M.
+//
+// ...AND 768 M DOES NOT FIT IT EITHER, ONCE A MAP DOUBLES (user 2026-09-18:
+// "revoxelize the canyons map. make it twice as large"). A dense grid is a
+// BOX, so doubling one map costs eight times the cells AND doubles the
+// frontage the gap has to span AND pads every other map out to the new width.
+// Measured, the whole of it:
+//
+//     canyon at 2x   1355 x 473 x 1884   1207 M
+//     the 100 m gap  1355 x 473 x 1000    641 M
+//     nuketown       1355 x 473 x  977    626 M   (489 wide, padded to 1355)
+//                                        -------
+//                                        2475 M
+//
+// 3 G IS THE LINE NOW. What it costs is worth stating plainly, because the
+// count is the smallest of the three numbers: the engine holds the level TWICE
+// -- levelVol_ and the dressed levelDisplay_ -- so a grid this size is about
+// **5 GB of host memory**, and the meshed result is tens of millions of
+// triangles in the block BLAS. The .vox FILE does not grow with it (empty
+// pieces are never written) and neither does VRAM per empty cell, so the thing
+// to watch when this next moves is the TRIANGLE count the voxelizer prints,
+// not this constant.
+//
+// GAP_M IN THE VOXELIZER IS THE CHEAPEST THING TO TURN DOWN if it ever has to
+// come back: a quarter of this budget is a hundred metres of nothing.
+inline constexpr long long kVoxMaxCells = 3072LL << 20;
 
 // A model in WORLD layout: x and z horizontal, y vertical, indexed
 // x + z*sx + y*sx*sz -- the same indexing the voxel grid uses.

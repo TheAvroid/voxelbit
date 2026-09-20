@@ -41,6 +41,7 @@
 #include <cassert>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -51,6 +52,7 @@
 #include "core/vecmath.h"
 #include "world/cover.h"
 #include "world/dem.h"
+#include "world/inset.h"
 #include "voxel/vox.h"
 
 namespace v2 {
@@ -360,7 +362,32 @@ constexpr uint8_t GROUND_COUNT = 10;   // 62..71
 // static_asserts in world.h check both links of that chain.
 constexpr uint8_t SNOW_0 = 72;
 constexpr uint8_t SNOW_COUNT = 3;   // 72..74
-constexpr uint8_t TREE_BASE = 75;  // model palette entries are allocated from here up
+// -- THE CHERRY WOOD'S ONE PINK, 2026-09-19 --------------------------------
+//
+// (user: "have the moss on the rocks in the cherry biome pink", "make all the
+//  flowers in the cherry forest pink", "make the mushrooms in the cherry
+//  forest pink. keep the white base of the mushroom the same".)
+//
+// ONE RAMP FOR ALL THREE ASKS, and that is a decision rather than a shortcut.
+// Three separate pinks would be eighteen palette entries in a table that had
+// ONE free (see [[v2-palette-is-full]]) -- but the argument for sharing is not
+// only the budget. A biome reads as a place when its parts agree: the moss on
+// a boulder, the petals in the grass and the cap of a mushroom are the same
+// six shades here, the way the four blossom pinks are the same four in every
+// crown overhead.
+//
+// SIX, dark to light, matching GRASS_COUNT exactly -- growMoss fills a run of
+// that length and this is the run it fills in the cherry band, so the two
+// cannot drift. Flowers and mushrooms map onto it BY LUMINANCE, the rule
+// tools/cherry_from_oak.py uses on the crowns: a nearest-colour match collapses
+// a ramp onto its darkest step and throws the shading away.
+//
+// NOT BLOSSOM. The crowns' four pinks are declared through Palette::addBlossom,
+// which forces translucency and the foliage bit -- right for a leaf, wrong for
+// a boulder's moss and for the cap of a mushroom you can chop.
+constexpr uint8_t CPINK_0 = 75;
+constexpr uint8_t CPINK_COUNT = 6;   // 75..80
+constexpr uint8_t TREE_BASE = 81;  // model palette entries are allocated from here up
 constexpr uint8_t COUNT = 255;
 }  // namespace mat
 
@@ -395,6 +422,14 @@ inline float srgbToLinearF(float c) {
 // nine assets do not agree on where in the palette their needles live, and
 // hardcoding a split would put bark roughness on needles for most of them.
 // ---------------------------------------------------------------------------
+// HOW FAR A SHARED ENTRY'S HUE MAY BE FROM THE ONE ASKED FOR, in degrees --
+// see Palette::nearestModelColor, where the number is measured against the
+// cobra's tans and the olives they were landing on.
+inline constexpr float kModelHueDeg = 18.0f;
+// ...AND BELOW THIS MUCH SPREAD BETWEEN THE CHANNELS A COLOUR IS A GREY, whose
+// hue angle is two quantisation steps of noise and must not be compared.
+inline constexpr int kModelGreyDelta = 12;
+
 class Palette {
   public:
     Palette() { buildGround(); }
@@ -540,23 +575,86 @@ class Palette {
     // collider's wood/leaf classifier and it turns on translucency -- so a
     // rabbit snapped onto a leaf would go see-through and read as crown to
     // World::fellTree. Scenery may land on scenery; life may not.
+    // -- THE HUE, WHICH DISTANCE IS NOT ---------------------------------
+    //
+    // (user 2026-09-19: "the cobras color palete is wrong. fix it.")
+    //
+    // MEASURED. The cobra's body tans were landing on OLIVES:
+    //
+    //     authored (198,168,127) -> shared (179,179,131)
+    //     authored (198,162,114) -> shared (179,179,108)
+    //     authored (198,154, 94) -> shared (197,153, 94)   <- and this one is right
+    //
+    // 26 apart in sRGB, comfortably inside the desert species' tolerance of 44
+    // -- and the wrong COLOUR: r == g is a yellow-olive and the cobra is a tan
+    // snake. Seven of its twenty-one entries went that way and one did not,
+    // so the body came out banded olive-and-tan.
+    //
+    // THE NOTE UNDER nearestCanopyColor ALREADY MAKES THIS ARGUMENT for leaves
+    // -- "(180,180,108), 12 away and NOT GREEN ... the question is 'which leaf'
+    // and not 'which colour'" -- and solved it with a range restricted to
+    // canopies. The general search needed the same idea without a range to
+    // restrict to, and the thing being preserved is HUE.
+    //
+    // HUE ANGLE, NOT CHROMATICITY. Normalised rgb puts that tan 0.050 from the
+    // right answer and 0.054 from the wrong one, which no threshold separates.
+    // The hue angles are 34.6 deg, 34.4 deg and 60.0 deg -- an eighteen degree
+    // window keeps the tan and refuses the olive with room on both sides.
+    //
+    // GREYS ARE EXEMPT, because a grey has no hue to compare: below
+    // kModelGreyDelta the angle is noise off a couple of quantisation steps,
+    // and gating on it would stop a white sharing with an off-white.
+    //
+    // AND IT CAN ONLY EVER IMPROVE A MATCH, NEVER LOSE ONE. The unguarded
+    // nearest is kept as a fallback, so an entry that has no hue-true
+    // neighbour still shares exactly what it shares today. That matters more
+    // than the hue does: returning 0 here mints a new entry, and this table
+    // has none to give ([[v2-palette-is-full]]) -- a model that fails to mint
+    // renders as AIR, which is invisible and silent.
+    static float hueDeg(int r, int g, int b) {
+        const int mx = maxi(r, maxi(g, b)), mn = mini(r, mini(g, b));
+        const int d = mx - mn;
+        if (d <= 0) return -1.0f;
+        float h;
+        if (mx == r) h = 60.0f * float(g - b) / float(d);
+        else if (mx == g) h = 60.0f * (2.0f + float(b - r) / float(d));
+        else h = 60.0f * (4.0f + float(r - g) / float(d));
+        if (h < 0.0f) h += 360.0f;
+        return h;
+    }
+
     uint8_t nearestModelColor(const std::array<uint8_t, 4> &c, int tol,
                               bool avoidFoliage = false) const {
-        int best = tol * tol + 1;
-        uint8_t hit = 0;
+        int best = tol * tol + 1, bestAny = tol * tol + 1;
+        uint8_t hit = 0, hitAny = 0;
+        const int cmx = maxi(int(c[0]), maxi(int(c[1]), int(c[2])));
+        const int cmn = mini(int(c[0]), mini(int(c[1]), int(c[2])));
+        const bool cGrey = cmx - cmn < kModelGreyDelta;
+        const float cH = hueDeg(int(c[0]), int(c[1]), int(c[2]));
         for (int id = mat::TREE_BASE; id < int(next_); ++id) {
             if (avoidFoliage && foliage_[size_t(id)]) continue;
             const Vec3 a = look_[size_t(id)].albedo;
-            const int dr = srgbByte(a.x) - int(c[0]);
-            const int dg = srgbByte(a.y) - int(c[1]);
-            const int db = srgbByte(a.z) - int(c[2]);
+            const int r = srgbByte(a.x), g = srgbByte(a.y), b = srgbByte(a.z);
+            const int dr = r - int(c[0]), dg = g - int(c[1]), db = b - int(c[2]);
             const int d = dr * dr + dg * dg + db * db;
+            if (d < bestAny) {
+                bestAny = d;
+                hitAny = uint8_t(id);
+            }
+            if (!cGrey) {
+                const int mx = maxi(r, maxi(g, b)), mn = mini(r, mini(g, b));
+                if (mx - mn < kModelGreyDelta) continue;   // grey cannot wear a hue
+                float dh = hueDeg(r, g, b) - cH;
+                if (dh < 0.0f) dh = -dh;
+                if (dh > 180.0f) dh = 360.0f - dh;
+                if (dh > kModelHueDeg) continue;
+            }
             if (d < best) {
                 best = d;
                 hit = uint8_t(id);
             }
         }
-        return hit;
+        return hit ? hit : hitAny;
     }
 
     // -----------------------------------------------------------------------
@@ -584,6 +682,12 @@ class Palette {
         uint8_t hit = 0;
         for (int id = mat::TREE_BASE; id < int(next_); ++id) {
             if (!foliage_[size_t(id)]) continue;
+            // NOT A PETAL. Its one caller asks "which leaf should this stem
+            // wear", and a fruit's stem is authored a green: the nearest entry
+            // to it must be a crown green, not whichever pink happens to sit
+            // closer in RGB -- which is the identical trap this function was
+            // written for in the first place, one hue over.
+            if (blossomId_[size_t(id)]) continue;
             const Vec3 a = look_[size_t(id)].albedo;
             const int dr = srgbByte(a.x) - int(c[0]);
             const int dg = srgbByte(a.y) - int(c[1]);
@@ -596,6 +700,16 @@ class Palette {
         }
         return hit;
     }
+
+    // The exact authored colours that are petals -- see addBlossom. A set
+    // rather than a range because they are whatever the art carries, and a
+    // handful, and asked once per DISTINCT colour per model rather than per
+    // voxel.
+    std::set<uint32_t> blossom_;
+    // ...and the same answer per minted ENTRY, so a reader with an id in hand
+    // does not have to go back to the colour. One byte per entry, beside
+    // foliage_ and for the same reason.
+    std::array<uint8_t, 256> blossomId_{};
 
     // The inverse of what forModelColor stores. One place, so a comparison
     // against an authored colour cannot drift from the conversion that made it.
@@ -622,13 +736,89 @@ class Palette {
     // Zero for the world, which mints what it asks for; kModelMatch for the
     // flyer band, whose 158 distinct colours do not fit beside the world's 91.
     // See the note over kModelMatch for why this and not a coarser step.
+    // -----------------------------------------------------------------------
+    // THESE COLOURS ARE BLOSSOM, WHATEVER THEIR HUE.
+    //
+    // (user 2026-09-19: "create a cherry forest biome ... the trees leaves are
+    //  pink instead of green".)
+    //
+    // THE CLASSIFIER BELOW IS `c[1] > c[0] && c[1] > c[2]` -- green-dominant is
+    // foliage, anything else on a tree is wood -- and a pink petal is
+    // red-dominant by definition. Left alone, the cherry crowns would have been
+    // registered as BARK, and that is not a shading nicety:
+    //
+    //   * foliage carries the translucency that stops a backlit canopy reading
+    //     as a black cut-out, and the waxy roughness with it;
+    //   * Palette::isFoliage is what World::fellTree and makeLooseBody use to
+    //     decide a felled tree's COLLIDER -- "a tree's collider is its wood" --
+    //     and a crown counted as wood gives the fat cone that cannot lie down,
+    //     which is a measured dead end (a tree gaining spin until it tumbled
+    //     out of the world at 28 m/s).
+    //
+    // IT ALSO TAKES THEM OUT OF THE FOLD. A blossom is minted on an EXACT key
+    // and never matched against an existing entry: four shades ARE the art on a
+    // crown, and the table already holds pinks (the flowers, the steak) that a
+    // 30-unit tolerance or even a 10-unit quantisation bucket would happily
+    // collapse them onto -- silently, and wearing that other thing's material.
+    //
+    // Set once at load, before any model is read. See World::loadTrees.
+    // -----------------------------------------------------------------------
+    void addBlossom(uint8_t r, uint8_t g, uint8_t b) {
+        blossom_.insert((uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b));
+    }
+    bool isBlossomColor(const std::array<uint8_t, 4> &c) const {
+        return !blossom_.empty() &&
+               blossom_.count((uint32_t(c[0]) << 16) | (uint32_t(c[1]) << 8) | uint32_t(c[2])) != 0;
+    }
+
+    // `avoidFoliage` is passed straight to the share search -- see
+    // nearestModelColor. It costs nothing at the house tolerance and it is what
+    // makes a LOOSER one safe: the further a colour is allowed to travel to
+    // find a neighbour, the likelier that neighbour carries behaviour. v1's
+    // pink bird landed 5/255 from the cactus flower, inherited cactusTab and
+    // stung the player; here a foliage id is what the fell collider reads to
+    // tell wood from leaves.
     uint8_t forModelColor(const std::array<uint8_t, 4> &c, bool conifer = true,
-                          bool exact = false, int matchTol = 0) {
+                          bool exact = false, int matchTol = 0,
+                          bool avoidFoliage = false) {
+        // A BLOSSOM IS ITS OWN COLOUR AND NOTHING ELSE'S -- see addBlossom.
+        // Both halves of that are here: the exact key space, and no fold.
+        if (isBlossomColor(c)) {
+            exact = true;
+            matchTol = 0;
+        }
         const uint32_t qr = uint32_t(c[0] / kQuantStep), qg = uint32_t(c[1] / kQuantStep),
                        qb = uint32_t(c[2] / kQuantStep);
+        // -- THE CACHE REMEMBERS THE QUESTION, NOT ONLY THE COLOUR --------
+        //
+        // (user 2026-09-19: "the cobras color palete is wrong.")
+        //
+        // THIS KEY WAS THE QUANTISED COLOUR AND NOTHING ELSE, and the answer
+        // it caches depends on two more things the caller passes: how far the
+        // match may travel, and whether foliage is allowed. So the FIRST model
+        // to ask about a bucket decided it for every model after it.
+        //
+        // That is how the cobra's tans became olives. Its own tolerance and
+        // the hue guard below never got a say -- an earlier model had already
+        // claimed bucket (19,16,12) at ITS tolerance and cached the olive, and
+        // every cobra voxel in that bucket took the cached answer straight out
+        // of the map. Adding the hue guard changed nothing at all, which is
+        // what pointed here.
+        //
+        // IT IS ALSO A CORRECTNESS BUG AND NOT ONLY A COSMETIC ONE. The note
+        // over nearestModelColor says life may never land on an id that
+        // carries behaviour -- "a rabbit snapped onto a leaf would go
+        // see-through" -- and `avoidFoliage` is exactly that guard. Cached
+        // without it, a creature could inherit a foliage entry some piece of
+        // scenery had cached first, and the guard would never run.
+        //
+        // The tolerance is 0..255 and the flag is one bit; both go above the
+        // 24 bits the quantised colour uses and below kExactKeyBit's own.
+        const uint32_t ask = (uint32_t(matchTol > 0 ? (matchTol & 0xFF) : 0) << 25) |
+                             (avoidFoliage ? 0x2000000u : 0u);
         const uint32_t key = exact ? (kExactKeyBit | (uint32_t(c[0]) << 16) |
                                       (uint32_t(c[1]) << 8) | uint32_t(c[2]))
-                                   : ((qr << 16) | (qg << 8) | qb);
+                                   : (ask | (qr << 16) | (qg << 8) | qb);
         auto it = index_.find(key);
         if (it != index_.end()) return it->second;
         // NOT IN ITS OWN BUCKET, BUT NEAR SOMETHING. Cached under this key, so
@@ -640,7 +830,7 @@ class Palette {
         // `const uint8_t = ...` and the error names neither -- the FIFTH time
         // in this project. birds.h, app.h and lake.h all carry the same note.
         if (matchTol > 0) {
-            const uint8_t shared = nearestModelColor(c, matchTol);
+            const uint8_t shared = nearestModelColor(c, matchTol, avoidFoliage);
             if (shared) {
                 index_[key] = shared;
                 return shared;
@@ -703,8 +893,10 @@ class Palette {
         m.albedo = Vec3(srgbToLinearF(float(c[0]) / 255.0f), srgbToLinearF(float(c[1]) / 255.0f),
                         srgbToLinearF(float(c[2]) / 255.0f));
 
-        // Green-dominant is foliage; anything else on a conifer is wood.
-        const bool foliage = conifer && (c[1] > c[0] && c[1] > c[2]);
+        // Green-dominant is foliage; anything else on a conifer is wood -- or
+        // a petal, which is neither and is said so explicitly. See addBlossom.
+        const bool bloss = isBlossomColor(c);
+        const bool foliage = bloss || (conifer && (c[1] > c[0] && c[1] > c[2]));
         // ...AND THE ANSWER IS KEPT, because the physics wants it too. A felled
         // tree's collider is built from the wood and not from the crown -- see
         // World::fellTree -- and the only place in the engine that knows a
@@ -712,7 +904,25 @@ class Palette {
         // Recovering it later from the MaterialLook would be inferring a fact
         // that was already known and thrown away.
         foliage_[id] = foliage ? 1u : 0u;
-        if (foliage) {
+        // ...AND WHETHER IT IS A PETAL, which is a narrower fact than foliage
+        // and is needed by everything that reads the canopy to build something
+        // ELSE out of it. See deriveGroundFromTrees.
+        blossomId_[id] = bloss ? 1u : 0u;
+        if (bloss) {
+            // -- A PETAL IS A LEAF THAT IS ALREADY BRIGHT ------------------
+            //
+            // It wants the canopy SURFACE -- thin enough to pass light, waxy,
+            // and counted as foliage everywhere else in the engine -- and none
+            // of the lift below it. That lift and the blue floor exist because
+            // an authored needle green is very dark once linearised and a
+            // crown of it reads as a black mass; a blossom is the opposite
+            // problem. Measured: (248,168,195) linearises to about (0.93,
+            // 0.38, 0.54) and x1.7 puts red at 1.58 -- a surface that gains
+            // energy on every bounce, which kAlbedoCeil exists because of.
+            m.roughness = 0.50f;
+            m.specular = 0.045f;
+            m.translucency = 0.45f;
+        } else if (foliage) {
             // Needles are waxy and thin enough to pass light. That translucency
             // is what stops a backlit canopy from reading as a black cut-out --
             // the single most common way a rendered conifer looks wrong.
@@ -969,6 +1179,15 @@ class Palette {
         levelNext_ = int(levelLook_.size()) - 1;
         levelMinted_ = 0;
         levelOverflow_ = 0;
+        // -- WHICH ENTRIES ARE ACTUALLY THE LEVEL'S -- and it is NOT "all of
+        // them". levelLook_ starts as a COPY of the wood's table, so most of it
+        // is the wood's colours frozen at this instant, and a frozen copy is
+        // wrong for anything registered later that is drawn in BOTH places --
+        // the held kit above all. World::uploadMaterials reads this mask and
+        // takes the wood's LIVE entry wherever the level never minted one, so
+        // the only thing that differs between the two tables is what the level
+        // itself put there.
+        levelOwn_.assign(256, 0);
         haveLevel_ = true;
     }
 
@@ -997,6 +1216,7 @@ class Palette {
         m.specular = 0.020f;
         m.translucency = 0.0f;
         levelIndex_.emplace(key, id);
+        levelOwn_[id] = 1;
         ++levelMinted_;
         return id;
     }
@@ -1005,6 +1225,12 @@ class Palette {
     // glass, which is the tracer's emitter test and has to be one known id.
     const std::vector<MaterialLook> &levelTable() const { return levelLook_; }
     bool hasLevelTable() const { return haveLevel_; }
+    // Did the LEVEL mint this entry, as against inheriting it from the wood?
+    // See beginLevelTable, and World::uploadMaterials, which is the only
+    // caller and the reason this exists.
+    bool levelOwns(uint8_t id) const {
+        return haveLevel_ && id < levelOwn_.size() && levelOwn_[id] != 0;
+    }
     int levelMinted() const { return levelMinted_; }
     int levelOverflowed() const { return levelOverflow_; }
     // How many entries the level could still take. Printed at start-up so the
@@ -1298,6 +1524,28 @@ class Palette {
             // the birches alone carry land in theirs, which is exactly the
             // difference we want to draw.
             if (look_[i].translucency > 0.0f) {
+                // -- A PETAL IS NOT A GREEN AND IS NOT A FLOOR --------------
+                //
+                // (user 2026-09-19, on the first cherry build: the crowns were
+                //  right and the GRASS was pink.)
+                //
+                // This function is what makes a wood's ground its own colour:
+                // it reads the entries the trees minted and fills GRASS_0 and
+                // BGRASS_0 out of them, and everything else follows -- the
+                // floor scatter, the blades, the straw ramp the tall grass
+                // dries to, the flower stems. The test for "is this a leaf" is
+                // TRANSLUCENCY, which blossom has, and must have (see
+                // Palette::addBlossom for why it cannot simply be classified
+                // as bark instead). So the cherry band's four pinks walked
+                // straight into the broadleaf grass ramp and painted the whole
+                // wood -- lawn, tufts, wheat and flowers -- pink.
+                //
+                // The wood's floor is its LEAF LITTER and a cherry sheds the
+                // same green-to-brown as any other broadleaf; the petals are
+                // the one part of the tree that is not on the ground. Nothing
+                // else in the engine reads the ramp differently, so excluding
+                // them here is the whole of it.
+                if (blossomId_[size_t(i)]) continue;
                 if (i >= bstart) bfoliage.push_back(uint8_t(i));
                 else foliage.push_back(uint8_t(i));
                 continue;
@@ -1449,6 +1697,24 @@ class Palette {
         set(mat::ROCK, 0.42f, 0.41f, 0.39f, 0.88f);
         set(mat::DIRT, 0.29f, 0.22f, 0.15f, 0.95f);
         set(mat::MOSS, 0.24f, 0.34f, 0.16f, 0.92f);
+        // -- ...AND THE CHERRY WOOD'S SIX, dark to light. See mat::CPINK_0.
+        //
+        // LINEAR, like everything else in this table -- these are the sRGB
+        // ramp (198,104,134) .. (255,226,237) decoded once, which is the trap
+        // the note above this block exists for.
+        //
+        // THE DARK END IS THE MOSS END and the light end is the petal end,
+        // which falls out of the luminance mapping rather than being arranged:
+        // moss sits in shadow under a canopy and a flower is the brightest
+        // thing on the floor, so each one lands where it belongs on a ramp
+        // that was never told which was which.
+        {
+            static const float kPink[mat::CPINK_COUNT][3] = {
+                {0.55f, 0.13f, 0.22f}, {0.66f, 0.19f, 0.30f}, {0.75f, 0.27f, 0.39f},
+                {0.84f, 0.38f, 0.50f}, {0.92f, 0.55f, 0.65f}, {1.00f, 0.76f, 0.83f}};
+            for (int k = 0; k < int(mat::CPINK_COUNT); ++k)
+                set(uint8_t(mat::CPINK_0 + k), kPink[k][0], kPink[k][1], kPink[k][2], 0.92f);
+        }
         // v1'S SAND, CONVERTED. Its palette is sRGB (203, 183, 145); this
         // table is LINEAR (see the note above about decoding twice), so that
         // is (0.60, 0.47, 0.28).
@@ -1553,6 +1819,7 @@ class Palette {
     // levelNext_ walks toward TREE_BASE rather than away from it.
     std::vector<MaterialLook> levelLook_;
     std::vector<uint8_t> levelReserved_;
+    std::vector<uint8_t> levelOwn_;
     std::map<uint32_t, uint8_t> levelIndex_;
     int levelNext_ = 255;
     int levelMinted_ = 0;
@@ -1598,6 +1865,12 @@ inline bool isSand(uint8_t m) {
 }
 inline bool isSoil(uint8_t m) { return m >= mat::SOIL_0 && m < mat::SOIL_0 + mat::SOIL_COUNT; }
 inline bool isSnow(uint8_t m) { return m >= mat::SNOW_0 && m < mat::SNOW_0 + mat::SNOW_COUNT; }
+// THE BARE GROUND THE AERIAL IMAGERY PAINTS -- ten shades of decomposed
+// granite, dark olive to pale tan. See mat::GROUND_0. It had no predicate at
+// all, which is how it stayed out of every question a tool asks.
+inline bool isGround(uint8_t m) {
+    return m >= mat::GROUND_0 && m < mat::GROUND_0 + mat::GROUND_COUNT;
+}
 inline bool isLitter(uint8_t m) {
     return m >= mat::LITTER_0 && m < mat::LITTER_0 + mat::LITTER_COUNT;
 }
@@ -1856,22 +2129,37 @@ struct VoxMesh {
 // reads as noise rather than moss. The coarse term makes patches about half a
 // metre across and the fine one breaks up their edges.
 //
-// The colour is GRASS_0 + k, the same ramp the ground grass is built from, so
-// the moss is the wood's own green. Those materials need palette entries the
-// model does not already use -- hence the search for free ones, and the quiet
-// return if a model somehow uses all 255.
-inline void growMoss(VoxAsset *a, std::vector<uint8_t> *idOfEntry, uint32_t seed) {
+// The colour is `base` + k -- GRASS_0 by default, the same ramp the ground
+// grass is built from, so the moss is the wood's own green. Those materials
+// need palette entries the model does not already use -- hence the search for
+// free ones, and the quiet return if a model somehow uses all 255.
+//
+// -- ...AND THE CHERRY WOOD PASSES ITS OWN, 2026-09-19 --------------------
+//
+// (user: "have the moss on the rocks in the cherry biome pink".)
+//
+// A RAMP ARGUMENT RATHER THAN A BIOME TEST, because this function runs at LOAD
+// and a rock does not know where it will be put. The cherry band gets its pink
+// moss the way it gets its pink crowns: a SECOND COPY of the model set with a
+// different ramp written into it, and a scatter that picks the copy. See
+// mat::CPINK_0 and ChunkMesher::rockCherry0.
+//
+// The run is `count` long and both ramps are six, so the patchiness below --
+// which indexes shades 0..count-1 -- is identical in either wood.
+inline void growMoss(VoxAsset *a, std::vector<uint8_t> *idOfEntry, uint32_t seed,
+                     uint8_t base = mat::GRASS_0, uint8_t count = mat::GRASS_COUNT) {
     if (!seed || a->sx <= 0) return;
 
     std::vector<bool> used(256, false);
     for (uint8_t v : a->a) used[v] = true;
 
     uint8_t tintEntry[mat::GRASS_COUNT];
+    if (count > mat::GRASS_COUNT) count = mat::GRASS_COUNT;   // the buffer above
     int tints = 0;
-    for (int e = 1; e <= 255 && tints < int(mat::GRASS_COUNT); ++e)
+    for (int e = 1; e <= 255 && tints < int(count); ++e)
         if (!used[e]) {
             tintEntry[tints] = uint8_t(e);
-            (*idOfEntry)[e] = uint8_t(mat::GRASS_0 + tints);
+            (*idOfEntry)[e] = uint8_t(base + tints);
             ++tints;
         }
     if (tints == 0) return;
@@ -1957,6 +2245,85 @@ inline std::vector<int16_t> columnTops(const VoxAsset &a,
 // rather than as a bigger mushroom. It would also silently break every piece of
 // placement arithmetic in makeInstance, all of which assumes a model's voxels
 // are VOXEL_M across.
+// ---------------------------------------------------------------------------
+// REVOXELISE AT TWICE THE RESOLUTION -- which is not what upscale2x does.
+//
+// (user 2026-09-19: "you were supposed to revoxelize the cactus. not make the
+//  existing voxel one bigger. revoxelize the cactus at 2x the size of the
+//  original one".)
+//
+// upscale2x below turns every voxel into a 2x2x2 BLOCK. The model is twice the
+// size and has exactly the same silhouette, drawn in bricks twice as coarse --
+// a saguaro's arm gets blockier, not better. That is the right tool for the
+// big mushrooms, which want to be chunky, and the wrong one here.
+//
+// THIS RESAMPLES THE SHAPE. The coarse model is read as a continuous solid --
+// occupancy 1 inside a voxel and 0 outside -- and each fine voxel asks what
+// that solid is doing at ITS OWN CENTRE, trilinearly. A flat face stays flat, a
+// right angle comes back rounded over one fine voxel, and a stair step becomes
+// a half-step. The result has genuine detail at the finer grain instead of the
+// same detail drawn larger.
+//
+// THE THRESHOLD IS BELOW A HALF, and that is the one number worth explaining.
+// At exactly 0.5 a feature one coarse voxel thick samples 0.5 along its centre
+// line and survives only by rounding -- a cactus spine would come and go. 0.42
+// keeps anything a whole voxel thick while still cutting the corners off, which
+// is the trade this function exists to make.
+//
+// THE COLOUR IS THE NEAREST SOLID SOURCE VOXEL, never a blend: these palettes
+// are ramps with meaning (see Palette::forModelColor), and averaging two
+// entries gives a colour that is not in the model.
+// ---------------------------------------------------------------------------
+inline VoxAsset revoxel2x(const VoxAsset &a) {
+    VoxAsset o;
+    o.sx = a.sx * 2;
+    o.sy = a.sy * 2;
+    o.sz = a.sz * 2;
+    o.a.assign(size_t(o.sx) * size_t(o.sy) * size_t(o.sz), 0);
+    const auto solid = [&](int x, int y, int z) -> float {
+        if (x < 0 || y < 0 || z < 0 || x >= a.sx || y >= a.sy || z >= a.sz) return 0.0f;
+        return a.at(x, y, z) ? 1.0f : 0.0f;
+    };
+    for (int y = 0; y < o.sy; ++y)
+        for (int z = 0; z < o.sz; ++z)
+            for (int x = 0; x < o.sx; ++x) {
+                // The fine voxel's centre, in COARSE voxel-centre coordinates.
+                const float fx = (float(x) + 0.5f) * 0.5f - 0.5f;
+                const float fy = (float(y) + 0.5f) * 0.5f - 0.5f;
+                const float fz = (float(z) + 0.5f) * 0.5f - 0.5f;
+                const int x0 = int(std::floor(fx)), y0 = int(std::floor(fy)),
+                          z0 = int(std::floor(fz));
+                const float tx = fx - float(x0), ty = fy - float(y0), tz = fz - float(z0);
+                float occ = 0.0f;
+                for (int dy = 0; dy < 2; ++dy)
+                    for (int dz = 0; dz < 2; ++dz)
+                        for (int dx = 0; dx < 2; ++dx) {
+                            const float w = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty) *
+                                            (dz ? tz : 1.0f - tz);
+                            occ += w * solid(x0 + dx, y0 + dy, z0 + dz);
+                        }
+                if (occ < 0.42f) continue;
+                // ...and its colour from the nearest solid source voxel, with
+                // the eight corners as the fallback ring.
+                uint8_t v = a.at(mini(maxi(int(std::lround(fx)), 0), a.sx - 1),
+                                 mini(maxi(int(std::lround(fy)), 0), a.sy - 1),
+                                 mini(maxi(int(std::lround(fz)), 0), a.sz - 1));
+                if (!v)
+                    for (int dy = 0; dy < 2 && !v; ++dy)
+                        for (int dz = 0; dz < 2 && !v; ++dz)
+                            for (int dx = 0; dx < 2 && !v; ++dx) {
+                                const int cx = x0 + dx, cy = y0 + dy, cz = z0 + dz;
+                                if (cx < 0 || cy < 0 || cz < 0 || cx >= a.sx || cy >= a.sy ||
+                                    cz >= a.sz)
+                                    continue;
+                                v = a.at(cx, cy, cz);
+                            }
+                if (!v) continue;
+                o.a[size_t(x) + size_t(z) * o.sx + size_t(y) * size_t(o.sx) * size_t(o.sz)] = v;
+            }
+    return o;
+}
+
 inline VoxAsset upscale2x(const VoxAsset &a) {
     VoxAsset o;
     o.sx = a.sx * 2;
@@ -2390,6 +2757,7 @@ inline int floorMod(int a, int b) { const int m = a % b; return m < 0 ? m + b : 
 struct TerrainMemo {
     FbmMemo warpX, warpZ, roll, swell, basin, fine;  // heightM, the pine's own
     FbmMemo detail;  // the sub-metre roughness laid over measured ground
+    FbmMemo rough;   // ...and the PER-CLASS roughness, which is not the same thing
     // THE BIRCH'S ROLL AND SWELL ARE ITS OWN NOW, and only a column inside
     // the seam ever asks for them alongside the pine's -- see heightM. They
     // replace the ridge memo rather than adding to the struct, the ridged
@@ -2398,7 +2766,18 @@ struct TerrainMemo {
     // ...and the oak's, on the same terms: only a column inside a seam ever
     // asks for a second wood's field alongside its own.
     FbmMemo oakA, oakB;
+    // ...and the DESERT's two, on exactly those terms. Sharing the pine's roll
+    // and swell would have been free everywhere except the one place it
+    // matters: a column in the pine|desert seam asks BOTH fields at the same
+    // point, and an fbm memo is a cache keyed on nothing -- the second caller
+    // would be handed the first one's value.
+    FbmMemo duneA, duneB;
+    // ...and the RIPPLE that is laid over them -- see duneHeight. Its own for
+    // the same reason, and doubly so: it is the one octave in the terrain
+    // asked at a sub-metre stride, so a memo it shared would miss every time.
+    FbmMemo duneR;
     FbmMemo stand, litter, grassMask;                       // topMaterial
+    FbmMemo petal;   // ...and the fallen blossom, which is litter's twin
     // The tall-grass field had an FbmMemo here. It is a jittered site lattice
     // now (see tuftAt), which is hashes alone -- no noise, nothing to cache.
     FbmMemo bankGrain;                                      // bankShaped
@@ -2464,8 +2843,63 @@ struct ChunkScratch {
 inline constexpr uint8_t kWoodPine = 1u;
 inline constexpr uint8_t kWoodBirch = 2u;
 inline constexpr uint8_t kWoodOak = 4u;
-inline constexpr uint8_t kWoodBroad = kWoodBirch | kWoodOak;
-inline constexpr uint8_t kWoodAll = kWoodPine | kWoodBirch | kWoodOak;
+// THE CHERRY IS A BROADLEAF BAND AND IS IN kWoodBroad. It is the oak wood with
+// pink crowns and its own two species (see Butterflies and Birds), so anything
+// that lives in "the broadleaf woods" lives there too -- the mouse, the grass
+// snake and the frog all carry kWoodBroad and all belong in a cherry orchard
+// for exactly the reasons they belong in an oak one.
+inline constexpr uint8_t kWoodCherry = 8u;
+// ...AND THE DESERT, WHICH IS NOT A WOOD AND IS NOT IN kWoodBroad.
+//
+// Every other entry here names a stand of trees and the bits are read by life
+// tables meaning "which forest does this animal live in". The desert is the
+// first band that is none of them: nothing that gates on kWoodBroad or
+// kWoodPine belongs on open sand, and leaving it out of both is what makes
+// "the forest life is not here" the default rather than a list of exceptions.
+inline constexpr uint8_t kWoodDesert = 16u;
+inline constexpr uint8_t kWoodBroad = kWoodBirch | kWoodOak | kWoodCherry;
+inline constexpr uint8_t kWoodAll =
+    kWoodPine | kWoodBirch | kWoodOak | kWoodCherry | kWoodDesert;
+// -- ...AND "EVERY WOOD", WHICH IS NO LONGER THE SAME SET -------------------
+//
+// kWoodAll does double duty: it is the full mask AND the sentinel every life
+// gate tests for ("anywhere -- do not even ask the terrain"). Both readings
+// were the same set while every band was a forest. The desert broke that, and
+// broke it SILENTLY: the rows that say kWoodAll say it to mean "in any wood",
+// and on the day the sand appeared they went on meaning "and in the sand".
+//
+// The first render of Death Valley had five rabbits, five skunks and six worms
+// marching over it.
+//
+// So the two readings get two names. kWoodAll stays the full mask and the
+// sentinel; a population that lives in the trees says THIS, pays one call to
+// woodBit per candidate site, and is refused on the dunes.
+//
+// v1 has the same rule and states it the other way round -- every forest
+// creature takes the `dmS > BIO_FOREST` end of its spawn gate, which is
+// "refuse if there is any sand here at all".
+inline constexpr uint8_t kWoodForest = kWoodPine | kWoodBirch | kWoodOak | kWoodCherry;
+// -- ...AND "EVERY WOOD THAT IS NOT IN BLOSSOM", 2026-09-19 ----------------
+//
+// (user: "remove all life that isnt pink in the cherry forest. only the worm,
+//  pink bird, flamingos and pink butterflies should be in the cherry forest".)
+//
+// THE THIRD READING OF "all the woods", and it arrives for the same reason the
+// second did: a band appeared that the existing mask silently included. The
+// cherry wood is a forest, so kWoodForest is true of it and every rabbit,
+// skunk, firefly, ant and ladybug in the engine belonged there.
+//
+// The blossom's roster is a SHORT LIST rather than a long one, which is why
+// this is a mask and not four exclusions: four species are named in, and
+// everything else in the engine asks for this instead.
+//
+// v1 reaches the same place from its own side -- its cherry band is a
+// sub-region of the oak and every ground creature's spawn gate carries
+// `cherryM(sx, sz) < BIO_DESERT` to stay out of it.
+inline constexpr uint8_t kWoodGreen = kWoodPine | kWoodBirch | kWoodOak;
+// The two broadleaf woods WITHOUT the blossom -- the frog, the grass snake and
+// the mouse, which were kWoodBroad and so were in the cherry by inclusion.
+inline constexpr uint8_t kWoodBroadGreen = kWoodBirch | kWoodOak;
 
 enum class Biome : uint8_t {
     Pine,   // the original: high relief, ridges, basins, a needle floor
@@ -2485,6 +2919,41 @@ enum class Biome : uint8_t {
     // -- against birches that are 18 to 30 m of near-vertical trunk. A stand of
     // oaks closes overhead rather than striping the view.
     Oak,
+    // -- ...AND THE CHERRY, WHICH IS THE OAK IN BLOSSOM --------------------
+    //
+    // (user 2026-09-19: "create a cherry forest biome. have it be identical to
+    //  the oak forest biome. the difference is the life and the trees leaves
+    //  are pink instead of green", then "the cherry forest uses the same trees
+    //  as the oak forest, except recolor them to pink".)
+    //
+    // NOT A THIRD KIND OF PLACE, and that is the point of it. Every other entry
+    // here brings its own landform, its own waterline and its own floor; this
+    // one brings a palette and two species. VoxelTerrain::woodWeights folds its
+    // weight into the oak's, so the ground under a cherry orchard is the oak's
+    // ground by construction rather than by being tuned to match it.
+    //
+    // v1 keeps its cherries as a sub-region INSIDE its oak mask for the same
+    // reason. A band of its own is the one difference, and it buys somewhere
+    // for /locate to send you.
+    Cherry,
+    // -- ...AND THE DESERT, v1's OPEN SAND -------------------------------
+    //
+    // (user 2026-09-19: "import the desert assets from v1 ... basically create
+    //  the desert biome now.")
+    //
+    // THE ONE BAND THAT IS NOT A FOREST. Every other entry here is a stand of
+    // trees over the same broadleaf or conifer floor; this one has its own
+    // landform (dunes), its own floor (sand), no water at all and no forest
+    // life. v1 keeps it as a mask rather than a band and gates thirteen
+    // scatters on it one at a time -- ferns, mushrooms, pinecones, twigs,
+    // logs, boulders -- and the note on every one of them is the same
+    // sentence: this is pine-forest litter.
+    //
+    // HERE IT FALLS OUT OF THE WEIGHTS INSTEAD. woodWeights leaves the desert
+    // OUT of the three-way view, so through the sand the three wood weights
+    // sum to zero and every density that lerps on them is already zero. The
+    // forest thins into the rim and stops, with no gate written anywhere.
+    Desert,
 };
 
 // ---------------------------------------------------------------------------
@@ -2845,8 +3314,58 @@ inline bool isSoilMat(uint8_t m) {
     // and litter since the green paint was removed -- but it is the exact slot
     // this needed, and leaving it while adding the other ramp keeps the rule
     // honest: a green FLOOR is diggable ground whichever wood painted it.
-    return m == mat::DIRT || m == mat::SAND || m == mat::SILT || m == mat::TILLED ||
-           isSeed(m) || isGrass(m) || isBGrass(m) || isSoil(m) || isLitter(m);
+    // -- ...AND THE IMAGERY'S BARE GROUND, WHICH IS MOST OF A DEM WORLD ----
+    //
+    // (user 2026-09-19: "not all terrain is editable with the shovel. make all
+    //  terrain that is not rock be able to be edited with a shovel. I see sandy
+    //  terrain that is not editable.")
+    //
+    // THE SANDY TERRAIN IS mat::GROUND_0..9 and it was in no tool's list. Ten
+    // entries filled from the aerial imagery's own pixels -- "#383828 to
+    // #b8a878, dark olive to pale tan, which is what decomposed granite looks
+    // like" -- added when the mountains were still grey, and the predicates
+    // were never told. MEASURED with a census over the real terrain, share of
+    // what a swing RAY MEETS that answered to no tool at all:
+    //
+    //     window centre   15.50%      of which GROUND is 3.0 and SNOW 12.6
+    //     oak band        69.11%      GROUND, nearly all of it
+    //     pine band        0.31%
+    //
+    // Sixty-nine per cent of the oak band. It is invisible without a DEM
+    // loaded, which is why the bare terrain tests never saw it: the generator's
+    // own floor is grass, soil and litter, all of which were already here.
+    //
+    // SNOW GOES IN WITH IT. A shovel is the one tool in the world that is
+    // actually FOR snow, and the peaks are a twelfth of the ground you walk on.
+    //
+    // AND THE SAND RAMP, NOT JUST THE FAMILY ID. mat::SAND is one id the device
+    // spreads over SAND_0..3, so the terrain only ever stores the family -- but
+    // spawnDebris resolves it the moment a piece comes loose, and anything that
+    // writes a resolved shade back would land in the same hole GROUND was in.
+    // isSand() covers both by construction; this is the one place that matters.
+    //
+    // ROCK AND BEDROCK ARE STILL OUT, which is the instruction: everything that
+    // is not rock, and rock is the pick's.
+    return m == mat::DIRT || m == mat::MOSS || m == mat::SILT || m == mat::TILLED ||
+           isSand(m) || isSeed(m) || isGrass(m) || isBGrass(m) || isSoil(m) ||
+           isLitter(m) || isGround(m) || isSnow(m);
+}
+
+// ---------------------------------------------------------------------------
+// ...AND WHICH OF THAT A HOE CAN TURN INTO A SEED BED, WHICH IS LESS OF IT.
+//
+// v1 is explicit that sand is in its DIG table because the shovel moves it,
+// "which is a different question from whether a hoe can make a seed bed out of
+// a beach". That exception was written inline at the till, and the moment the
+// shovel's list grew it needed two more of exactly the same kind -- you cannot
+// sow decomposed granite and you cannot sow a snowfield.
+//
+// So it is a predicate rather than a growing `||` chain at one call site: the
+// next thing added to the ground has to answer BOTH questions, and a list that
+// lives beside the other one is the only way that stays obvious.
+// ---------------------------------------------------------------------------
+inline bool isTillableMat(uint8_t m) {
+    return isSoilMat(m) && !isSand(m) && !isGround(m) && !isSnow(m);
 }
 
 class VoxelTerrain {
@@ -2886,9 +3405,320 @@ class VoxelTerrain {
     float timberlineFadeM = kTimberlineFadeAslM;  // in world metres, set on load
     // Peak-to-peak roughness added over measured ground, in world metres.
     float demDetailM = 0.0f;   // 0 = the measurement and nothing added; see heightM
+    // -- AND THE OTHER KIND OF ROUGHNESS, WHICH IS NOT A GLOBAL AMPLITUDE ---
+    //
+    // demDetailM above is one noise at one amplitude over the whole world, and
+    // it is off because that is what "remove that noise from all terrain" was
+    // about: the same speckle on a talus slope and on a flat sand bank, where
+    // only one of them has any business being rough.
+    //
+    // demRoughM is a MULTIPLIER on a per-class table instead (see
+    // demRoughnessM). Water gets nothing, ever. Sand within a few metres of a
+    // waterline gets nothing. A meadow gets almost nothing. Rock gets the lot.
+    // So the thing that was complained about cannot come back on: it is not a
+    // smaller version of the same noise, it is noise that is absent from the
+    // places the complaint was about.
+    //
+    // 0 = off, and that is the DEFAULT, for the same reason demDetailM is off:
+    // every world built so far was tuned without it and must not change under
+    // anyone. 1 = the table as measured.
+    float demRoughM = 0.0f;
+
+    // -- A MEASURED 10 cm PATCH OVER THE DEM -------------------------------
+    // See src/world/inset.h for why this is a height and not a volume, and
+    // why only the deviation travels. Empty unless --inset is passed.
+    HeightInset inset;
     // How deep a mapped lake gets at its middle, world metres. 5 world m is
     // 30 real m at shrink 6, which is about Cheesman.
     float kLakeDepthM = 5.0f;
+    // -- AND HOW A SEA CARRIES ON PAST THAT ---------------------------------
+    //
+    // kLakeDepthM is where the shore ramp levels off; beyond it the bed falls
+    // away at this much per world metre of extra distance from shore, down to
+    // kSeaDepthM. See the carve in heightM for why a hard stop there was the
+    // whole of the "missing terrain on the ocean floor" report.
+    //
+    // THE GRADE IS TINY AND THAT IS THE POINT: 1.5 cm per metre is a 0.9
+    // degree slope, far too gentle to read as a hillside underwater, but over
+    // the few hundred metres of open water in a window it is the difference
+    // between a bed with form and one flat plane.
+    //
+    // kSeaDepthM IS A VISIBILITY BUDGET, not a guess at real bathymetry -- the
+    // DEM has none, because 3DEP maps still water as a level plane and the bed
+    // here is invented either way. Trace.cs.slang's waterSigma leaves 10% of
+    // blue at 5 m and 4% at 8 m over the round trip down and back, so past
+    // about eight metres a bed is academic: it is there, and nothing can see
+    // it. Deepening this further makes the sea darker, not more interesting.
+    float kSeaGradeW = 0.015f;
+    float kSeaDepthM = 8.0f;
+
+    // -----------------------------------------------------------------------
+    // THE CONTOUR IS WARPED, WHICH IS NOT THE SAME AS DITHERING THE HEIGHT.
+    //
+    // (user 2026-09-19: "there are also straight lines forming in the terrain",
+    // and the same thing on the lake bed in every underwater shot.)
+    //
+    // WHAT A TERRACE IS: quantising ANY smooth ramp onto 0.1 m voxels steps the
+    // column height a whole voxel at a time, so a constant grade gives treads of
+    // constant width and every tread edge lies exactly along a contour. Nothing
+    // in the data or the interpolation causes it; see dem.h for the smoothstep
+    // that was built, shipped and made no difference.
+    //
+    // WHAT WAS HERE was half a voxel of WHITE noise per column, and its
+    // geometry is worth stating because it is why it was not enough. A dither
+    // of amplitude A frays the tread edge over a band A/grade wide, and the
+    // tread itself is VOXEL_M/grade wide -- so the fray is the same FRACTION of
+    // a tread at every grade, and the dither is no weaker on gentle ground. It
+    // is only more OBVIOUS there, because that fraction of a 25 m tread is nine
+    // metres of randomly flipped columns, which reads as exactly the speckle
+    // "remove that noise from all terrain" was about. That is what the old
+    // grade gate was really protecting against, and it bought the protection by
+    // switching the fix off over the widest treads in the world -- the ones
+    // that show most. Measured over Ouachita: treads wider than 12.5 m got a
+    // mean weight of 0.06, i.e. nothing.
+    //
+    // SO THE NOISE IS SMOOTH INSTEAD OF WHITE, and that single change removes
+    // the trade. A value-noise field a few metres across, half a voxel peak to
+    // peak, displaces the CONTOUR sideways by amplitude/grade -- eleven metres
+    // on a 25 m tread, two and a half on the 5.5 m treads of the snowfield the
+    // rings were photographed on -- so the line stops being a line. And because
+    // the field is smooth, two neighbouring columns differ by the noise's own
+    // gradient (under 2 mm at this wavelength) rather than by a whole voxel, so
+    // it CANNOT speckle, on any grade, including none.
+    //
+    // It still cannot move a column further than the rounding already does, so
+    // the standing "no noise on terrain" rule holds for the same reason it did
+    // before: every column still lands within half a voxel of the measurement,
+    // which is strictly closer than a terrace, and half a voxel is two orders
+    // of magnitude under 3DEP's own vertical error.
+    // -----------------------------------------------------------------------
+    float kDitherFlat = 0.004f;    // under this the dither is speckle, not a fray
+    float kDitherSteep = 0.30f;    // over this a tread is already a voxel wide
+    float kDitherVox = 0.55f;      // peak to peak, voxels -- measured by eye
+    float kWarpFlat = 0.0012f;     // under this there is no step in view at all
+    float kWarpFull = 0.0036f;     // ...and by this the warp is at full strength
+    float kWarpVox = 0.90f;        // peak to peak, voxels
+    float kWarpCellM = 5.0f;       // wavelength, world metres
+
+    // -- THE DITHER, AND THE GATE THAT WAS ALREADY MEASURED BY EYE ----------
+    //
+    // 0.55 AND NOT 1.0, on the snowfield at (1050, 1275). At a full voxel every
+    // column can flip, so the whole slope becomes speckle and the terraces go
+    // with the smooth ground between them. At 0.55 only a column already near a
+    // voxel boundary moves: the TREAD stays flat and its EDGE frays. Unchanged.
+    float terraceDitherWeight(float grade) const {
+        if (grade <= kDitherFlat || grade >= kDitherSteep) return 0.0f;
+        const float up = minf(1.0f, (grade - kDitherFlat) / (4.0f * kDitherFlat));
+        const float dn = minf(1.0f, (kDitherSteep - grade) / (0.5f * kDitherSteep));
+        const float w = minf(up, dn);
+        return w * w * (3.0f - 2.0f * w);
+    }
+
+    // -- ...AND THE WARP, WHICH REACHES FURTHER DOWN THE GRADE ---------------
+    float terraceWarpWeight(float grade) const {
+        if (grade <= kWarpFlat || grade >= kDitherSteep) return 0.0f;
+        const float up = minf(1.0f, (grade - kWarpFlat) / (kWarpFull - kWarpFlat));
+        const float dn = minf(1.0f, (kDitherSteep - grade) / (0.5f * kDitherSteep));
+        const float w = minf(up, dn);
+        return w * w * (3.0f - 2.0f * w);
+    }
+
+    // -----------------------------------------------------------------------
+    // WHAT A COLUMN GETS ADDED TO BREAK ITS TERRACE, in world metres.
+    //
+    // TWO MECHANISMS THAT HAND OVER, AND THE HAND-OVER IS THE POINT. This was
+    // the dither alone, and an A/B rendered on the snowfield says that is the
+    // right tool where it is switched on and the wrong one where it is off:
+    //
+    //   dither  frays the tread EDGE into dashes. On the 5.5 m treads at
+    //           (1050, 1275) the fray is 3 m wide and the ring stops being a
+    //           line. Rendered both ways, the dashes beat anything smooth,
+    //           because a broken line is not a line.
+    //   warp    a smooth value-noise field, half a voxel deep and a few metres
+    //           across, that moves the CONTOUR sideways by amplitude/grade
+    //           instead of moving the column. It leaves the line CONTINUOUS --
+    //           measurably worse at 5.5 m, where it only makes the ring wavy --
+    //           but it cannot speckle at any grade, because two neighbours
+    //           differ by the field's own gradient rather than a whole voxel.
+    //
+    // So the dither keeps every grade it already had, and the warp is weighted
+    // by (1 - dither) so it appears only as the dither fades out. That fade is
+    // the whole complaint: the dither's fray is the same FRACTION of a tread at
+    // every grade, so on gentle ground it is not weaker, it is physically wider
+    // -- nine metres of randomly flipped columns on a 25 m tread, which is the
+    // speckle "remove that noise from all terrain" was about, and is why the
+    // gate is there. Measured over Ouachita, treads wider than 12.5 m were
+    // getting a mean dither weight of 0.06, i.e. nothing, and those are the
+    // widest and most visible bands in the world. (user 2026-09-19: "there are
+    // also straight lines forming in the terrain".)
+    //
+    // Neither can move a column further than the rounding already does, so the
+    // standing "no noise on terrain" rule holds: every column still lands
+    // within half a voxel of the measurement, which is strictly closer than a
+    // terrace -- a tread is a whole voxel of error held in a straight line.
+    // -----------------------------------------------------------------------
+    float terraceBreakM(float x, float z, float grade) const {
+        float out = 0.0f;
+        const float d = terraceDitherWeight(grade);
+        if (d > 0.0f) {
+            const int ci = int(std::floor(x / VOXEL_M));
+            const int cj = int(std::floor(z / VOXEL_M));
+            const float n = hashUnit(uint32_t(ci) * 2654435761u, uint32_t(cj) * 40503u);
+            out += (n - 0.5f) * (kDitherVox * VOXEL_M) * d;
+        }
+        const float w = terraceWarpWeight(grade) * (1.0f - d);
+        if (w > 0.0f) {
+            const float n =
+                vnoise(x * (1.0f / kWarpCellM) + 71.3f, z * (1.0f / kWarpCellM) + 19.7f);
+            out += (n - 0.5f) * (kWarpVox * VOXEL_M) * w;
+        }
+        return out;
+    }
+
+    // -----------------------------------------------------------------------
+    // ROUGHNESS THAT KNOWS WHAT IT IS STANDING ON.
+    //
+    // WHAT THIS IS FOR, and it is not terracing -- terraceBreakM above deals
+    // with that. A posting is the distance between two things that were
+    // MEASURED; everything between them is a curve somebody chose. At a 10.29 m
+    // posting and --dem-scale 1 that is 103 voxel columns of invented ground
+    // per measurement, and at a 1 m posting it is ten. No source that covers a
+    // 12 km window reaches 0.1 m -- the best lidar in the country is ~0.35 m
+    // between returns -- so the bottom of the scale is synthesis or it is a
+    // smooth ramp. It is currently a smooth ramp.
+    //
+    // THREE RULES KEEP THIS FROM BEING THE NOISE THAT WAS TAKEN OUT:
+    //
+    //  1. IT IS PER CLASS. Rock is rough because talus and bedding planes are
+    //     rough. A meadow is nearly flat because a meadow is nearly flat.
+    //     Water is EXACTLY zero. The complaint that retired the old octaves
+    //     was a speckle of single voxels on level sand, and sand near a
+    //     waterline is the one place this is hardest off.
+    //
+    //  2. IT SHRINKS AS THE DATA IMPROVES. Natural terrain is roughly fractal,
+    //     so the relief held in wavelengths below L goes as L^H with H about
+    //     0.75. The table is quoted at the 10.29 m posting every world was
+    //     built on, and scaled by (posting/10.29)^0.75 -- so feeding the same
+    //     world a 1 m source cuts the invented part to 18% of itself WITHOUT
+    //     anyone retuning a constant. Synthesis fills the band the measurement
+    //     does not reach, and no more than that.
+    //
+    //  3. IT IS IN REAL METRES, divided by the shrink, so --dem-scale changes
+    //     what it means on the ground and not how big it looks.
+    // -----------------------------------------------------------------------
+    struct RoughClass { float ampM, cellM; };   // REAL metres, peak to peak
+
+    // ONE ROW IS MEASURED AND THREE ARE NOT. Keep that distinction visible --
+    // a table where some entries are fitted and some are guessed is worse than
+    // one where none are, if nobody can tell which is which.
+    //
+    // FOREST: 0.55 -> 0.47 m, fitted 2026-09-19 against 14 FOR-instance plots
+    // of 4.5 cm UAV laser scanning, terrain-classified returns only
+    // (tools/pc_roughness.py). The structure function gives A = 10.6 cm at
+    // h = 1 m and H = 0.491, so at the 10.29 m posting the rms height
+    // DIFFERENCE is 33.2 cm; a difference of two independent samples is
+    // sqrt(2) times a single one, so single-point rms is 23.5 cm and
+    // peak-to-peak is 0.47 m.
+    //
+    // The intuition was within 15% of the measurement, which is worth saying
+    // plainly: the guess was good, and it is now a number rather than a guess.
+    //
+    // ROCK / MEADOW / SNOW ARE STILL INTUITION. FOR-instance is forest floor
+    // in managed boreal and temperate stands; it has no talus, no grazed
+    // meadow and no snowfield in it, and fitting those rows from it would be
+    // inventing a relationship between classes that was never measured. They
+    // need their own exemplar -- one patch of real sub-10 cm ground each.
+    //
+    // cellM IS NOT MEASURABLE and is not claimed to be. The fit's r2 sits near
+    // 1 over two decades of lag, which says the ground is self-affine with no
+    // characteristic scale; cellM only places the fbm's octaves.
+    static RoughClass roughFor(uint8_t cc) {
+        switch (cc) {
+            case CoverField::Rock:   return {1.20f, 3.0f};  // INTUITION: talus, blocks
+            case CoverField::Forest: return {0.47f, 5.0f};  // FITTED, 14 plots
+            case CoverField::Meadow: return {0.18f, 7.0f};  // INTUITION
+            case CoverField::Snow:   return {0.10f, 9.0f};  // INTUITION
+            case CoverField::Water:  return {0.00f, 1.0f};  // never
+            default:                 return {0.30f, 5.0f};  // no cover loaded
+        }
+    }
+
+    // How much of the scale the measurement does NOT reach, as a factor on the
+    // table above. postingM is the source's own spacing in REAL metres.
+    //
+    // 0.75 -> 0.49, MEASURED (2026-09-19). The exponent was asserted when this
+    // was written and is now fitted, against 14 plots of 4.5 cm UAV laser
+    // scanning from FOR-instance (tools/pc_roughness.py). It is the Hurst
+    // exponent of the ground's structure function D(h) = A*h^H, over lags of
+    // 0.1 to 11 m -- exactly the band between a voxel and a DEM posting:
+    //
+    //     H  median 0.491   p10 0.281   p90 0.579   (r2 mostly 0.93..0.998)
+    //
+    // WHAT WAS WRONG WITH 0.75. It shrank the synthesis too hard as the source
+    // improved. At a 1 m posting:
+    //
+    //     assumed  (1/10.29)^0.75 = 0.174
+    //     measured (1/10.29)^0.49 = 0.318
+    //
+    // so a 1 m .vbdem should invent 32% of what a 10.29 m one does, not 17%.
+    // The old number quietly removed nearly half the detail that a finer
+    // source is entitled to keep.
+    //
+    // THE FIT IS CLEAN AND THAT IS ITSELF A RESULT: r2 near 1 over two decades
+    // of lag means the ground really is self-affine there, with no
+    // characteristic scale -- which is why `cellM` in the table below is NOT a
+    // measurable property. It only decides where the fbm's octaves sit.
+    float roughPostingFactor(float postingM) const {
+        if (postingM <= 0.0f) return 1.0f;
+        return std::pow(postingM * (1.0f / 10.29f), 0.49f);
+    }
+
+    float demRoughnessM(float x, float z, TerrainMemo &memo, float grade) const {
+        if (demRoughM <= 0.0f) return 0.0f;
+        const uint8_t cc = cover_.ok() ? cover_.at(x, z) : uint8_t(CoverField::Unknown);
+        RoughClass rc = roughFor(cc);
+        if (rc.ampM <= 0.0f) return 0.0f;
+        // A SHORE IS FLAT AND IT IS WHERE THE OLD NOISE WAS REPORTED. Fade the
+        // whole thing out within a few metres of a waterline, whatever the
+        // class says, because a beach is the one surface whose smoothness is
+        // the thing you notice.
+        //
+        // shoreDistance IS SIGNED -- negative on land, positive in water, zero
+        // at the line (CoverField::buildShoreField runs the chamfer both ways
+        // and stores the difference biased by 128). The distance FROM the
+        // waterline is therefore its MAGNITUDE, and reading the raw value as a
+        // distance makes every land column -127, which through a t*t fade is a
+        // gain of 252 rather than a fade to nothing.
+        //
+        // That is not a subtle failure: it put 100 m of invented relief on a
+        // hillside, and it is exactly the kind of thing a screenshot would have
+        // shown as "the terrain looks wrong" with no way to say why.
+        // dem_rough_test caught it on its first run, at 35.96 m rms on rock
+        // against an expected 0.2.
+        if (cover_.ok()) {
+            const float nearM = std::fabs(cover_.shoreDistance(x, z));
+            if (nearM < 8.0f) {
+                const float t = clampf(nearM * (1.0f / 8.0f), 0.0f, 1.0f);
+                rc.ampM *= t * t;
+            }
+        }
+        if (rc.ampM <= 0.0f) return 0.0f;
+        const float shrink = dem_.ok() ? dem_.shrink() : 1.0f;
+        const float posting = dem_.ok() ? float(dem_.metresPerSampleX()) : 10.29f;
+        // World metres: the table is real metres, the world is shrink times
+        // smaller, and only the unmeasured part of the spectrum is invented.
+        const float amp = rc.ampM * roughPostingFactor(posting) / maxf(0.01f, shrink)
+                          * demRoughM;
+        const float cell = maxf(0.25f, rc.cellM / maxf(0.01f, shrink));
+        // STEEP ROCK IS ROUGHER THAN FLAT ROCK, and that is the one slope term
+        // here: a bench holds fines, a face sheds them. Bounded so it can never
+        // become the grade-driven speckle the old dither was gated against.
+        const float slopeK = (cc == CoverField::Rock)
+                                 ? (0.65f + minf(1.0f, grade * 2.5f) * 0.70f) : 1.0f;
+        const float n = fbm(memo.rough, x * (1.0f / cell) + 131.7f,
+                            z * (1.0f / cell) + 57.1f, 3);
+        return (n - 0.5f) * amp * slopeK;
+    }
 
     bool aboveTimberlineVox(int hVox) const {
         return timberlineWorldM >= 0.0f && hVox * VOXEL_M >= timberlineWorldM;
@@ -2999,6 +3829,22 @@ class VoxelTerrain {
     // -----------------------------------------------------------------------
     float snowDepthAt(float x, float z, float bareY) const {
         if (!dem_.ok()) return 0.0f;
+        // -- NOT ON THE DESERT'S MOUNTAINS (user 2026-09-19) ----------------
+        //
+        // Snow is decided by ALTITUDE alone, which was the whole world until a
+        // band arrived that is hot at every height. Death Valley's Panamint
+        // wall crosses the snowline exactly like a Colorado ridge does, so the
+        // sand ran up to a white summit.
+        //
+        // FADED ON THE WEIGHT, not cut on a threshold: the note above this
+        // function is that the snow's edge "comes out of the depth reaching
+        // zero, which is continuous by construction -- there is no threshold to
+        // be ragged or square", and a hard test here would put a straight
+        // north-south line of snow down the rim. Multiplying keeps that
+        // promise -- the drifts thin out across the blend and are gone by the
+        // time the cacti start.
+        const float dry = 1.0f - desertMix(x);
+        if (dry <= 0.0f) return 0.0f;
         const float asl = dem_.worldToAsl(bareY);
         float t = (asl - (kSnowlineAslM - kSnowFadeAslM)) / kSnowFadeAslM;
         if (t <= 0.0f) return 0.0f;      // the valleys, and this is the whole world
@@ -3015,7 +3861,7 @@ class VoxelTerrain {
         // ...and it drifts. 0.35 + 0.65 keeps a floor under it, so a snowfield
         // is uneven rather than moth-eaten.
         t *= 0.35f + 0.65f * snowNoise(x * 0.09f + 11.3f, z * 0.09f + 4.7f);
-        return t * kSnowDeepM;
+        return t * kSnowDeepM * dry;
     }
     float snowDepthM(float x, float z) const {
         if (!dem_.ok()) return 0.0f;
@@ -3060,8 +3906,35 @@ class VoxelTerrain {
     // true everywhere, which is the old behaviour exactly.
     bool coverAllowsTree(float x, float z) const {
         if (!cover_.ok()) return true;
+        // NOTHING GROWS IN THE LAKE, WHATEVER ELSE IS DOUBTED. The water
+        // class is trusted under --cover-water -- it is the half of the
+        // imagery that is right -- so it has to be asked BEFORE the gate
+        // opens, or every pond and the whole sea comes up planted with birch.
+        // Rendered: a flooded wood standing in blue, which is what this line
+        // being below the next one looks like.
+        if (cover_.at(x, z) == CoverField::Water) return false;
+        if (!coverGround) return true;
         return cover_.at(x, z) == CoverField::Forest;
     }
+
+    // -- TRUST THE PICTURE FOR THE WATER AND NOT FOR THE GROUND -----------
+    //
+    // (user 2026-09-18: "import the acadia national park dataset, and use our
+    // birch trees ontop of the terrain".)
+    //
+    // A .vbcov CARRIES TWO DIFFERENT CLAIMS and they are not equally good
+    // outside Colorado. Over Mount Desert Island the classifier gets the WATER
+    // right -- 13.0% of the window, half of it under 3 m, the rest clustered
+    // at 83 m where Eagle Lake and Jordan Pond actually are, mean grade 5% --
+    // and the ground badly wrong: 41.9% bare ROCK at a median of 64 m, on an
+    // island whose granite is all above 250 m. Rendered, that is a lavender
+    // waste with 2,867 trees on it against 8,018 with the imagery ignored.
+    //
+    // So this switch says WHICH HALF to believe. False keeps mappedWater,
+    // lakeLineAt and the shore distance -- the sea, the ponds and their banks
+    // -- and hands the trees, the ground colour and the timberline back to the
+    // engine. Without it Acadia has to choose between a forest and a coast.
+    bool coverGround = true;
 
     // ------------------------------------------- THIN ONLY THE THICKEST STANDS
     // (user 2026-09-18: "decrease the density by 50%, but only where the trees
@@ -3096,6 +3969,42 @@ class VoxelTerrain {
     //
     // Interpolated between zone midpoints so a hillside changes forest type
     // gradually, the way one does.
+    // -- THE 1800 m FLOOR IS NOW A DECISION, NOT AN EXTRAPOLATION ----------
+    //
+    // `if (aslM <= k[0].m) return k[0].stems;` means **every elevation at or
+    // below 1800 m gets 120 stems/ha**. That is the whole of Ouachita (tops
+    // out at 513 m) and the whole of Acadia (466 m) -- two worlds running on a
+    // single number extrapolated downward from PONDEROSA SAVANNA, which is an
+    // open woodland and the sparsest zone in the table. Only the three
+    // Colorado windows ever touch the curve above.
+    //
+    // MEASURED 2026-09-19 against 7 annotated plots of 4.5 cm UAV laser
+    // scanning (tools/pc_stems.py, FOR-instance): **median 243 stems/ha**,
+    // range 68..827. So for a closed canopy the floor is about 2x low.
+    //
+    // AND IT IS DELIBERATELY NOT CHANGED. Three reasons, in order of weight:
+    //
+    //  1. `stemFill = realStemsPerHa / kScatterStemsPerWorldHa`, and that
+    //     constant is 146 -- so at shrink 1 raising 120 to 243 takes stemFill
+    //     from 0.82 to 1.66 and roughly DOUBLES the offered sites. The oak
+    //     wood was halved by explicit request the same day (see
+    //     ChunkMesher::oakDensity, 1305 trees -> 652). Raising this would undo
+    //     that, and re-tuning oakDensity to compensate would leave the oak
+    //     wood pixel-identical while doubling ACADIA's birch, which nobody
+    //     asked for.
+    //  2. A measurement does not overrule a look. "Cut it in half" was a
+    //     judgement about the rendered world; 243 stems/ha is a fact about
+    //     Norwegian, Czech, Austrian and Australian research plots. The first
+    //     one decides what this engine draws.
+    //  3. Those plots are managed boreal and temperate stands. They are the
+    //     right ORDER for a closed canopy and NOT the right number for
+    //     Arkansas oak-hickory or Maine coastal spruce-birch. Nothing here has
+    //     an exemplar from either place.
+    //
+    // WHAT WOULD CHANGE THIS: a measured stems/ha for an actual oak-hickory or
+    // coastal birch stand, plus a decision about whether the woods should look
+    // real or look the way they currently do. Those are different goals and
+    // this table cannot serve both. tools/pc_stems.py re-runs the measurement.
     static float realStemsPerHa(float aslM) {
         struct P { float m, stems; };
         static const P k[] = {{1800.f, 120.f}, {2300.f, 175.f}, {2650.f, 550.f},
@@ -3208,27 +4117,194 @@ class VoxelTerrain {
     // and the bands are ignored. That is what makes a screenshot or a profile
     // run reproducible without having to also pin a position.
     // ---------------------------------------------------------------------
+    // WHERE THE SAND SITS AND HOW HIGH IT PILES -- see duneHeight.
+    //
+    // THE FLOOR IS ABOVE EVERY WATERLINE IN THE WORLD, deliberately: the pine's
+    // is 34 m and the broadleaf 5 m, and an interdune flat at 38 m cannot be
+    // flooded by either at the seam however the blend runs. v1 makes the same
+    // guarantee by keeping its dune term positive-only and its floor clear;
+    // this is the other half of it.
+    // HOW THICK THE FALLEN BLOSSOM LIES -- see the petal branch in
+    // topMaterial. The stand gate is the litter's own 0.44 lowered a little,
+    // because petals blow further than leaf litter falls; the openness is
+    // higher than the litter's 0.36 so the drifts are patches on the grass
+    // rather than a floor that has replaced it.
+    static constexpr float kPetalStand = 0.40f;
+
+    // -----------------------------------------------------------------------
+    // WHERE THE CHERRY TREES ACTUALLY STAND -- the tree lattice, mirrored.
+    //
+    // (user 2026-09-19: "make sure the pink petals are only located underneath
+    //  the tree".)
+    //
+    // THE STAND FIELD IS NOT A TREE. kPetalStand gates the petals on
+    // standDensity, which is a sixty-metre fbm saying "this is thick wood" --
+    // so petals covered every clearing, path and gap inside a stand as evenly
+    // as they covered the ground under a trunk. A petal falls off a tree; it
+    // belongs in the tree's own shadow and nowhere else.
+    //
+    // THE TREES ARE PLACED BY THE MESHER, WHICH THE TERRAIN CANNOT SEE.
+    // VoxelChunks::scatter owns the lattice and VoxelChunks::collectTrees
+    // already mirrors it once (so the rocks can keep out of trunks). The
+    // terrain needs the same answer and is built long before either, so the
+    // mesher PUBLISHES its lattice here at load and canopyNear replays it.
+    //
+    // WHAT IS MIRRORED AND WHAT IS NOT. The site geometry is exact -- the same
+    // stride, the same chunk anchoring, the same two jitter hashes, the same
+    // "a tree belongs to the chunk holding its own column" -- and so is the
+    // acceptance roll. The terrain gates the scatter also applies (slope,
+    // altitude, cover, the waterline) are NOT: each needs heights at the site
+    // rather than at this column, which is a gather per candidate cell in the
+    // hottest loop in the mesher. Leaving them out can only ever leave a pool
+    // of petals under a tree the scatter declined to plant on a steep bank --
+    // and the column itself has already had to be soil, dry and snow-free to
+    // get this far, which is most of what those gates were protecting.
+    // -----------------------------------------------------------------------
+    struct CanopyLattice {
+        bool ok = false;          // false until the mesher publishes -- see below
+        float strideM = 4.4f;     // VoxelChunks::birchStride, or treeStride
+        uint32_t seed = 0;        // VoxelChunks::seed
+        float density = 0.0975f;  // VoxelChunks::oakDensity -- the cherry IS the oak
+        float knee = 0.30f, span = 0.32f, gain = 1.20f, floorV = 0.262f;  // standGate
+        // HOW FAR A PETAL FALLS FROM THE TRUNK. Not the crown's full radius:
+        // these are 25 m oaks recoloured (see [[v2-cherry-forest]]) and their
+        // canopies touch, so the full span would put the petals back under the
+        // whole wood -- which is the bug. This is the drift a petal is worth,
+        // and it is a knob because it is a look rather than a measurement.
+        //
+        // -- DOUBLED, 3.2 -> 6.4 (user 2026-09-19: "the petals need to have
+        //    more spread to them. double the petal spread.") --------------
+        //
+        // THE RADIUS IS WHAT "SPREAD" IS HERE. The per-column odds decide how
+        // THICK a drift is and this decides how WIDE it lies, and the report is
+        // about the width -- a 3.2 m ring under a 25 m tree reads as a mat
+        // around the trunk rather than as blossom that has blown about.
+        //
+        // AREA GOES AS THE SQUARE, so this is 4x the ground, not 2x: measured
+        // by tests/petal_canopy_test, 5.2% of the band's floor becomes 16.9%,
+        // and the mean petal sits 4.29 m from its trunk rather than 2.15.
+        // Still well short of the 50.6% the stand field alone was covering,
+        // which is the number that made these petals wrong in the first place.
+        float radiusM = 6.4f;
+    } canopy;
+
+    // Is this column under a cherry tree? See CanopyLattice. `outX`/`outZ`
+    // take the TRUNK's position when there is one, which is what decides the
+    // petal's shade -- see bladeMaterial.
+    bool canopyNear(float x, float z, float fill, TerrainMemo &memo, float *outX = nullptr,
+                    float *outZ = nullptr) const {
+        if (!canopy.ok) return true;   // nothing published: the old behaviour
+        const float st = maxf(0.5f, canopy.strideM);
+        const float jit = st * 0.9f;   // the scatter throws a site +/- 0.9 stride
+        const float reach = canopy.radiusM + jit;
+        const int steps = int(CHUNK_M / st);
+        // THE ACCEPTANCE FIELDS ARE READ AT THE COLUMN, NOT AT EACH SITE.
+        // standDensity is a 60 m field and stemFill is a function of altitude;
+        // over a neighbourhood this size neither moves enough to change an
+        // answer, and asking them per candidate would be twenty fbm gathers a
+        // column in the mesher's hottest loop.
+        // `fill` IS THE STAND TABLE'S DEMAND AT THIS ALTITUDE and it belongs
+        // in the product -- see VoxelChunks::scatter, where acceptance is
+        // standGate(dens) * density * stemFill. Leaving it out is not a small
+        // approximation: it clamps to 16, so a band the table wants filled
+        // would have canopyNear believing in a fraction of the trees actually
+        // planted, and every tree it missed would be a tree with no petals
+        // under it. Passed in rather than read here because it is a function
+        // of the COLUMN's height, which the caller has and this does not.
+        const float sgate = saturate((standDensity(x, z, memo.stand) - canopy.knee) / canopy.span);
+        const float accept =
+            (sgate * sgate * canopy.gain + canopy.floorV) * canopy.density * fill;
+        const float lox = x - reach, hix = x + reach, loz = z - reach, hiz = z + reach;
+        const int cx0 = int(std::floor(lox / CHUNK_M)), cx1 = int(std::floor(hix / CHUNK_M));
+        const int cz0 = int(std::floor(loz / CHUNK_M)), cz1 = int(std::floor(hiz / CHUNK_M));
+        for (int cz = cz0; cz <= cz1; ++cz)
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                // THE LATTICE RESTARTS AT EVERY CHUNK, which is not a detail:
+                // CHUNK_M / stride is 5.8, so the cells do NOT tile the world
+                // evenly and a globally-anchored grid would be a different set
+                // of trees. See collectTrees, which walks it the same way.
+                const float baseX = float(cx) * CHUNK_M, baseZ = float(cz) * CHUNK_M;
+                const int I0 = cx * CHUNK_VOX, J0 = cz * CHUNK_VOX;
+                int i0 = int(std::ceil((lox - baseX) / st)), i1 = int((hix - baseX) / st);
+                int j0 = int(std::ceil((loz - baseZ) / st)), j1 = int((hiz - baseZ) / st);
+                i0 = maxi(i0, 0); j0 = maxi(j0, 0);
+                i1 = mini(i1, steps); j1 = mini(j1, steps);
+                for (int j = j0; j <= j1; ++j)
+                    for (int i = i0; i <= i1; ++i) {
+                        const float bx = baseX + float(i) * st, bz = baseZ + float(j) * st;
+                        const uint32_t cell = hashU32(uint32_t(int(bx * 16.0f)),
+                                                      uint32_t(int(bz * 16.0f)) ^ 0x9E37u);
+                        const float sx = bx + (hashUnit(canopy.seed + 11u, cell) - 0.5f) * st * 1.8f;
+                        const float sz = bz + (hashUnit(canopy.seed + 12u, cell) - 0.5f) * st * 1.8f;
+                        const float ex = x - sx, ez = z - sz;
+                        if (ex * ex + ez * ez > canopy.radiusM * canopy.radiusM) continue;
+                        // A TREE BELONGS TO THE CHUNK HOLDING ITS OWN COLUMN.
+                        // A site that jitters out of its cell's chunk is
+                        // dropped by the scatter and is not picked up by the
+                        // neighbour, whose lattice is its own.
+                        const int ci = int(std::floor(sx / VOXEL_M));
+                        const int cj = int(std::floor(sz / VOXEL_M));
+                        if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
+                            continue;
+                        if (hashUnit(canopy.seed + 13u, cell) > accept) continue;
+                        if (outX) *outX = sx;
+                        if (outZ) *outZ = sz;
+                        return true;
+                    }
+            }
+        return false;
+    }
+    // HOW MANY COLUMNS UNDER A CROWN CARRY ONE. A tenth is thick enough to
+    // read as fallen blossom from standing height and thin enough that the
+    // grass still shows through, which is what "scattered, not clumped" is.
+    static constexpr float kPetalOdds = 0.10f;
+    static constexpr float kDesertFloorM = 38.0f;
+    static constexpr float kDuneM = 22.0f;
+    // THE SAND RIPPLE, which is v1's DESREL and is there to break the terraces
+    // -- see the second half of duneHeight for the measurements.
+    static constexpr float kDuneRippleM = 0.70f;   // peak to peak
+    static constexpr float kDuneRippleF = 1.25f;   // 1/wavelength, so 80 cm
+    static constexpr float kDuneRippleA = 3.0f;    // ...stretched along the crest
     static constexpr float kBandW = 800.0f;    // metres of one band
     static constexpr float kBandBlend = 90.0f; // metres the two are mixed over
 
     // Where the centre of each band sits, so /locate has somewhere to send you.
-    static float bandCentre(Biome b) {
-        return (b == Biome::Birch)  ? kBandW * 0.5f
-               : (b == Biome::Oak)  ? kBandW * 1.5f
-                                    : -kBandW * 0.5f;
-    }
+    //
+    // DERIVED FROM bandIndex NOW, rather than three literals that had to be
+    // kept in step with it by hand. The pine's used to be written -kBandW*0.5,
+    // which is 2.5W modulo the OLD three-band period and 3.5W modulo the new
+    // four-band one -- i.e. it would have silently started pointing at the
+    // cherry the moment a band was appended. One expression cannot do that.
+    static float bandCentre(Biome b) { return (float(bandIndex(b)) + 0.5f) * kBandW; }
 
     // HOW MANY BANDS THE WORLD REPEATS OVER. One number, so nothing downstream
     // can hold a stale copy of the period: App::nearestBandX had `2.0f * kBandW`
     // written out and became silently wrong the moment the oak was inserted --
     // /locate would have walked you to a multiple of the OLD period, which lands
     // in whichever wood happens to be there.
-    static constexpr float bandCount() { return 3.0f; }
+    static constexpr float bandCount() { return 5.0f; }
 
-    // Which band index a biome occupies in [0, 3W). See the note above for why
-    // these three numbers and not some other three.
+    // Which band index a biome occupies in [0, 4W).
+    //
+    // THE CHERRY WAS APPENDED, NOT INSERTED, and that is the whole reason the
+    // order reads oddly. Inserting it at index 1 or 2 would have shifted the
+    // pine inside the FIRST period as well; appended, the three existing woods
+    // keep [0, 2400) exactly as they have had it since the oak landed, and only
+    // [2400, 3200) -- which used to wrap back to the birch -- is new.
+    //
+    // OUTSIDE THAT FIRST PERIOD EVERYTHING MOVES, and there is no way to add a
+    // band to a repeating tiling without it. The period is 2400 -> 3200, so any
+    // recorded coordinate outside [0, 2400) now lands in a different wood:
+    // x = -2800 was pine and is birch, and the /locate destinations shift from
+    // (-2800 pine, -2000 birch, -1200 oak) to (2000, 400, 1200) plus 2800 for
+    // the cherry. The oak's own arrival cost exactly this and its note says so;
+    // it is worth re-reading before pinning a spawn against a band again.
     static int bandIndex(Biome b) {
-        return (b == Biome::Birch) ? 0 : (b == Biome::Oak) ? 1 : 2;
+        return (b == Biome::Birch)    ? 0
+               : (b == Biome::Oak)    ? 1
+               : (b == Biome::Cherry) ? 3
+               : (b == Biome::Desert) ? 4
+                                      : 2;
     }
 
     // -----------------------------------------------------------------------
@@ -3247,30 +4323,82 @@ class VoxelTerrain {
     // A PURE FUNCTION OF x -- no noise, no memo -- so anything may ask it at
     // any time, which several callers rely on.
     // -----------------------------------------------------------------------
-    static void woodWeights(float x, float *pine, float *birch, float *oak) {
+    static void woodWeights(float x, float *pine, float *birch, float *oak, float *cherry,
+                            float *desert) {
+        const int n = int(bandCount());
         const float period = bandCount() * kBandW;
         float u = fmodf(x, period);
         if (u < 0.0f) u += period;
-        const int band = mini(2, int(u / kBandW));   // 0 birch, 1 oak, 2 pine
+        // 0 birch, 1 oak, 2 pine, 3 cherry, 4 desert
+        const int band = mini(n - 1, int(u / kBandW));
         const float within = u - float(band) * kBandW;
-        float w[3] = {0.0f, 0.0f, 0.0f};
+        float w[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         const float half = kBandBlend * 0.5f;
         if (within < half) {
             // Near the LOW edge: mixing with the band before this one.
             const float t = sstep(saturate(within / kBandBlend + 0.5f));
             w[band] = t;
-            w[(band + 2) % 3] = 1.0f - t;
+            w[(band + n - 1) % n] = 1.0f - t;
         } else if (within > kBandW - half) {
             // ...and near the HIGH edge, with the band after it.
             const float t = sstep(saturate((kBandW - within) / kBandBlend + 0.5f));
             w[band] = t;
-            w[(band + 1) % 3] = 1.0f - t;
+            w[(band + 1) % n] = 1.0f - t;
         } else {
             w[band] = 1.0f;
         }
         *birch = w[0];
         *oak = w[1];
         *pine = w[2];
+        *cherry = w[3];
+        *desert = w[4];
+    }
+    // THE THREE-WAY VIEW, AND IT FOLDS THE CHERRY INTO THE OAK.
+    //
+    // (user 2026-09-19: "have it be identical to the oak forest biome. the
+    //  difference is the life and the trees leaves are pink".)
+    //
+    // THIS ONE LINE IS THE WHOLE OF "IDENTICAL". Everything that shapes the
+    // ground reads these three -- the landform, the waterline, the sand band,
+    // the ground ramp, the grass, the flower and mushroom densities, the stand
+    // table -- and every one of them now answers in the cherry band with the
+    // number it would have given in the oak, by construction rather than by
+    // being tuned to match. There is no second set of constants to drift.
+    //
+    // v1 reaches the same place from the other side: its cherry is a sub-region
+    // living INSIDE oakM, so everything outside the crowns is simply the oak.
+    // The difference here is that it is a band of its own, which is what makes
+    // it somewhere /locate can send you.
+    //
+    // WHAT IS NOT FOLDED is cherryWeight below, and only two things ask it:
+    // which model the tree scatter plants, and which wood a species belongs to.
+    static void woodWeights(float x, float *pine, float *birch, float *oak) {
+        float ch = 0.0f, ds = 0.0f;
+        woodWeights(x, pine, birch, oak, &ch, &ds);
+        *oak += ch;
+    }
+    static float cherryWeight(float x) {
+        float p = 0.0f, b = 0.0f, o = 0.0f, c = 0.0f, d = 0.0f;
+        woodWeights(x, &p, &b, &o, &c, &d);
+        return c;
+    }
+    // ...AND THE DESERT, WHICH IS THE ONE WEIGHT THE THREE-WAY VIEW DROPS.
+    //
+    // THE THREE NO LONGER SUM TO 1 THROUGH THE SAND and that is the whole
+    // design. Every density in the engine is written as a lerp or a sum over
+    // those three -- the tree scatter, the grass, the flowers, the mushrooms,
+    // the stand table -- so through the desert they all evaluate to ZERO
+    // without a single one of them being told a desert exists. v1 writes the
+    // same rule thirteen times as `if (desertM(wx, wz) > 0.5) return null`.
+    //
+    // WHAT DOES HAVE TO BE TOLD is anything that SWITCHES rather than scales:
+    // the height field (it needs the dunes), the floor material (sand), the
+    // waterline (there is none) and the two scatters that are the desert's own.
+    // Four places, each of them named in its own note.
+    static float desertWeight(float x) {
+        float p = 0.0f, b = 0.0f, o = 0.0f, c = 0.0f, d = 0.0f;
+        woodWeights(x, &p, &b, &o, &c, &d);
+        return d;
     }
 
     // 0 in the pine band, 1 in the birch band, eased across the seam -- and 0
@@ -3314,13 +4442,23 @@ class VoxelTerrain {
     float birchMix(float x) const {
         return forced ? (biome == Biome::Birch ? 1.0f : 0.0f) : birchWeight(x);
     }
-    bool oakAt(float x) const { return forced ? (biome == Biome::Oak) : oakWeight(x) >= 0.5f; }
+    // NOT TRUE IN THE CHERRY BAND. oakWeight folds the cherry in, so this
+    // would answer yes there -- and its callers are the ones that mean "an oak
+    // wood as opposed to a cherry one": woodName, and the /locate reply.
+    bool oakAt(float x) const {
+        if (forced) return biome == Biome::Oak;
+        return oakWeight(x) >= 0.5f && cherryWeight(x) < 0.5f;
+    }
     // WHICH WOOD THIS IS, BY NAME. Five call sites asked `birchAt ? "birch" :
     // "pine"` and every one of them called the oak band a pine wood -- /locate
     // sent you to "the pine wood at 1200", which is the oak's own centre. One
     // function so a fourth wood cannot reintroduce that five times over.
     const char *woodName(float x) const {
-        return oakAt(x) ? "oak" : birchAt(x) ? "birch" : "pine";
+        return desertAt(x)   ? "desert"
+               : cherryAt(x) ? "cherry"
+               : oakAt(x)    ? "oak"
+               : birchAt(x)  ? "birch"
+                             : "pine";
     }
     // -----------------------------------------------------------------------
     // WHICH WOOD THIS IS, AS A BIT, FOR THE POPULATIONS THAT BELONG TO ONE.
@@ -3348,21 +4486,90 @@ class VoxelTerrain {
     // the same answer woodName gives, so a creature and the /locate line that
     // sends you to it cannot disagree about where it lives.
     uint8_t woodBit(float x) const {
+        // THE CHERRY IS ASKED FIRST because woodMix folds it into the oak --
+        // in the cherry band `wo` is 1 and reading it alone would call the
+        // place an oak wood, which is true of its ground and false of its
+        // trees and its life. This is the one question where the two bands
+        // must come apart.
+        if (desertMix(x) >= 0.5f) return kWoodDesert;
+        if (cherryMix(x) >= 0.5f) return kWoodCherry;
         float wp = 0.0f, wb = 0.0f, wo = 0.0f;
         woodMix(x, &wp, &wb, &wo);
         if (wo >= wb && wo >= wp) return kWoodOak;
         return (wb >= wp) ? kWoodBirch : kWoodPine;
     }
+    // HOW MUCH CHERRY THIS COLUMN IS. Not folded into anything -- see the note
+    // over the three-way woodWeights. Two callers: the tree scatter and the
+    // life gates.
+    // -----------------------------------------------------------------------
+    // IS THE CHERRY STANDING HERE THE PALE ONE?
+    //
+    // (user 2026-09-19: "place pink petals underneath the cherry trees. make
+    //  sure to have the corresponding petal colors to the light and regular
+    //  pink trees".)
+    //
+    // ONE FIELD, TWO READERS, and that is the whole point of it being here
+    // rather than in either caller. The tree scatter asks it to choose between
+    // the blossom and the pale blossom; topMaterial asks it to choose which
+    // petal is lying under that tree. A coin tossed in the scatter could not be
+    // reached by the ground, and a second coin tossed by the ground would
+    // disagree with the tree half the time -- pale petals under a dark crown,
+    // which is exactly what the ask is about.
+    //
+    // A LATTICE, NOT A HASH PER COLUMN, because the question is about a TREE:
+    // it has to give one answer over the whole of a crown's footprint or the
+    // litter under one tree comes out speckled in both shades. 14 m cells are
+    // wider than any crown this wood grows, so a tree and its own ground agree
+    // -- and a crown that straddles a cell boundary is the one case where the
+    // ground under its far edge belongs to the neighbour, which reads as two
+    // trees' litter meeting rather than as an error.
+    //
+    // It costs nothing when there is no cherry: every caller is already inside
+    // a `cherryMix >= 0.5` branch.
+    static constexpr float kCherryPaleCellM = 14.0f;
+    static bool cherryPale(float x, float z) {
+        const int cx = int(floorf(x / kCherryPaleCellM));
+        const int cz = int(floorf(z / kCherryPaleCellM));
+        return hashUnit(0xB10550u, hashU32(uint32_t(cx), uint32_t(cz))) < 0.5f;
+    }
+
+    float cherryMix(float x) const {
+        return forced ? (biome == Biome::Cherry ? 1.0f : 0.0f) : cherryWeight(x);
+    }
+    float desertMix(float x) const {
+        return forced ? (biome == Biome::Desert ? 1.0f : 0.0f) : desertWeight(x);
+    }
+    bool desertAt(float x) const {
+        return forced ? (biome == Biome::Desert) : desertWeight(x) >= 0.5f;
+    }
+    bool cherryAt(float x) const {
+        return forced ? (biome == Biome::Cherry) : cherryWeight(x) >= 0.5f;
+    }
     float oakMix(float x) const {
-        return forced ? (biome == Biome::Oak ? 1.0f : 0.0f) : oakWeight(x);
+        // THE CHERRY COUNTS AS OAK HERE, deliberately and everywhere -- see the
+        // note over the three-way woodWeights. Ask cherryMix for the other
+        // question.
+        return forced ? ((biome == Biome::Oak || biome == Biome::Cherry) ? 1.0f : 0.0f)
+                      : oakWeight(x);
     }
     // ...and all three at once, for the callers that genuinely need to weigh
     // them against each other rather than ask twice.
     void woodMix(float x, float *pine, float *birch, float *oak) const {
         if (forced) {
+            // A FORCED DESERT IS NO WOOD AT ALL -- all three zero, which is
+            // what the unforced path gives through the sand and is what makes
+            // every density in the engine come out empty there.
+            if (biome == Biome::Desert) {
+                *pine = *birch = *oak = 0.0f;
+                return;
+            }
             *pine = biome == Biome::Pine ? 1.0f : 0.0f;
             *birch = biome == Biome::Birch ? 1.0f : 0.0f;
-            *oak = biome == Biome::Oak ? 1.0f : 0.0f;
+            // ...AND A FORCED CHERRY IS A FORCED OAK HERE, which is the same
+            // fold the unforced path does. --cherry has to give the oak's
+            // ground or the flag would be a different world rather than the
+            // same one in blossom.
+            *oak = (biome == Biome::Oak || biome == Biome::Cherry) ? 1.0f : 0.0f;
             return;
         }
         woodWeights(x, pine, birch, oak);
@@ -3371,7 +4578,12 @@ class VoxelTerrain {
     // global: which model sets to LOAD, and whether the hive pass can run at
     // all. Both woods' trees are loaded whenever the bands are live.
     bool birch() const { return !forced || biome == Biome::Birch; }
-    bool oak() const { return !forced || biome == Biome::Oak; }
+    // ...AND A FORCED CHERRY STILL WANTS THE OAK MODELS LOADED, because the
+    // cherries ARE the oaks -- see tools/cherry_from_oak.py. Loading one set
+    // without the other would leave the scatter with a range it cannot index.
+    bool oak() const { return !forced || biome == Biome::Oak || biome == Biome::Cherry; }
+    bool cherry() const { return !forced || biome == Biome::Cherry; }
+    bool desert() const { return !forced || biome == Biome::Desert; }
 
     // -----------------------------------------------------------------------
     // THE WATERLINE, AND IT IS PER BAND. This is the single number that killed
@@ -4520,6 +5732,19 @@ class VoxelTerrain {
     // sinking only replaces the kNoWater case, which is the one that cut.
     // -----------------------------------------------------------------------
     float waterAt(float x) const {
+        // -- AND THE DESERT HAS NONE EITHER --------------------------------
+        //
+        // v1 guarantees this twice over -- its dune term is positive-only so
+        // the sand never drops toward a line, and every water pass is gated on
+        // the mask. Here the floor is kDesertFloorM, which is above the pine's
+        // 34 m and the broadleaf's 5 m by construction, so no line can reach
+        // it; this is the belt to that pair of braces, and it is what makes
+        // "no lakes in the desert" true at the SEAM as well, where the blend
+        // would otherwise carry a neighbour's line in under the dunes.
+        //
+        // kNoWater rather than a number: the sinking-line machinery below is
+        // for a band whose water ends, and the desert's never starts.
+        if (desertMix(x) >= 0.5f) return kNoWater;
         // -- A MEASURED WORLD HAS NO INVENTED SEA --------------------------
         //
         // (user 2026-09-18: "I would rather have larger terrain formations then
@@ -4762,6 +5987,141 @@ class VoxelTerrain {
 
     // `floorM` is where this field's lowest plain sits. The BIRCH passes
     // kOakFloorM and the OAK passes it less kOakDropM -- see the note there.
+    // -----------------------------------------------------------------------
+    // THE DESERT'S OWN LANDFORM: DUNES, AND THEY ARE v1's SHAPE.
+    //
+    // (user 2026-08-15 over there: "hilly, like with dunes".)
+    //
+    // v1's duneH, and every one of its four decisions is kept because each of
+    // them is the difference between dunes and noise:
+    //
+    //   * A SECOND, MUCH LONGER WAVELENGTH. v1 tried raising its fine relief
+    //     first and its note says what that gave -- "its wavelength is ~8 m, so
+    //     raising it just made the ripples taller and read as squiggly contour
+    //     noise. Dunes need distance between crests."
+    //   * A QUIET SECOND OCTAVE. 0.84 / 0.16, because the fine one "was the
+    //     part adding wobble to a crest instead of adding a crest".
+    //   * SMOOTHSTEPPED TWICE. sstep flattens a signal near 0 and 1 and
+    //     steepens it through the middle, so applying it to the height domes
+    //     the tops, flattens the interdune floors and rounds the shoulders.
+    //     fbm on its own is linear through its range, which is what reads as
+    //     lumpy rather than as sand.
+    //   * POSITIVE ONLY. Dunes are relief piled ON a plain. Nothing here ever
+    //     goes below the floor, which is half of why the desert has no water:
+    //     there is no hollow for any to sit in.
+    //
+    // THE SIZE IS NOT v1's, and that is the same correction the oak needed --
+    // see the note over oakHeight. v1 works in 10 cm units and its DESDUNE is
+    // 26 voxels, i.e. 2.6 m; at v2's scale that is a rumpled floor rather than
+    // a dune field. The amplitude is 22 m and the wavelengths are stretched to
+    // match, so a crest is something you walk up rather than over.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE SHAPE THE INVENTED LANDFORM WOULD HAVE HAD, WITHOUT ITS ALTITUDE.
+    //
+    // (user 2026-09-19, at -549, 168, 4504: "the desert terrain is completely
+    //  flat".)
+    //
+    // THAT SPOT IS 337 m PAST THE DEM's z EDGE and the ground there read
+    // 165.880 to the millimetre in every direction -- the exterior plain the
+    // window fades to. The plain was the right answer to infinite straight
+    // ridges and the wrong answer to standing on it: "the data stops here"
+    // should not look like a table.
+    //
+    // SO THE BAND'S OWN RELIEF GOES BACK ON, MINUS ITS FLOOR. Each landform
+    // function is a floor plus a shape; subtracting the floor leaves the shape,
+    // and adding that to the exterior gives dunes in the sand and hills in the
+    // wood at the altitude the measured ground left off. The alternative --
+    // handing over to the invented landform outright -- puts its floor against
+    // the DEM's, which here is a 130 m cliff at the window's edge.
+    //
+    // FADED IN ON THE SAME CURVE the plain fades on (DemField::outFraction), so
+    // inside the window this is exactly zero and the measured ground is
+    // untouched.
+    // -----------------------------------------------------------------------
+    float exteriorRelief(float x, float z, TerrainMemo &memo) const {
+        float r = 0.0f, used = 0.0f;
+        const float wDesert = desertMix(x);
+        if (wDesert > 0.001f) {
+            r += wDesert * (duneHeight(x, z, memo) - kDesertFloorM);
+            used += wDesert;
+        }
+        const float wOak = oakMix(x);   // the cherry counts as oak here, as everywhere
+        if (wOak > 0.001f) {
+            r += wOak * (oakHeight(x, z, memo) - kOakFloorM);
+            used += wOak;
+        }
+        // ...and whatever is left is pine or birch, which share the pine's
+        // roll. Its own expression minus its own base, on the same memo the
+        // measured path never touches.
+        const float rest = clampf(1.0f - used, 0.0f, 1.0f);
+        if (rest > 0.001f) {
+            const float roll =
+                warpedFbm(memo.warpX, memo.warpZ, memo.roll, x * 0.0130f, z * 0.0130f, 1.5f, 2);
+            const float swell = fbm(memo.swell, x * 0.0070f + 71.3f, z * 0.0070f + 29.7f, 2);
+            r += rest * (roll * 48.0f + swell * 21.5f);
+        }
+        return r;
+    }
+
+    static float duneHeight(float x, float z, TerrainMemo &memo) {
+        const float a = fbm(memo.duneA, x * 0.0060f + 61.3f, z * 0.0060f + 17.9f, 4);
+        const float b = fbm(memo.duneB, x * 0.0139f + 12.7f, z * 0.0139f + 73.1f, 3);
+        const float n = a * 0.84f + b * 0.16f;
+        const float dunes = kDesertFloorM + sstep(sstep(n)) * kDuneM;
+
+        // -- AND THE RIPPLE, WITHOUT WHICH THE SAND IS A CONTOUR MAP --------
+        //
+        // The dunes above are correct and, on their own, unshippable. Double
+        // smoothstep domes the crests and flattens the interdune floors, which
+        // is exactly what makes them read as dunes -- and a nearly horizontal
+        // surface quantised to 10 cm voxels is a STAIRCASE. The first render of
+        // this biome was a field of concentric contour steps.
+        //
+        // MEASURED, because "it looks stepped" is not a number. Walking eight
+        // 2 km transects a voxel at a time and measuring the run of each flat
+        // tread, against the two woods that look right:
+        //
+        //     pine            mean 0.47 m   p90 0.9   38 m of relief
+        //     oak             mean 0.61 m   p90 1.1
+        //     dunes, no ripple  mean 1.16 m   p90 2.2   -- and 38% of treads
+        //                                                 a METRE or wider
+        //     dunes + ripple    mean 0.51 m   p90 1.0   -- 12%
+        //
+        // SHORT IS THE WHOLE POINT, and it took a wasted sweep to learn it: a
+        // relief octave at v1's own 8 m wavelength, even at three metres of
+        // amplitude, only moved 38% to 29%. Any smooth field is flat at its own
+        // extrema, so a long octave just adds BIGGER flats. What breaks a tread
+        // is gradient at the tread's own scale, which is under a metre.
+        //
+        // 50 cm PEAK TO PEAK AT 80 CM: a mean slope near 0.6, which is just
+        // under sand's angle of repose (34 degrees, 0.67) -- so this is the
+        // steepest a ripple can be and still be sand rather than rubble, and it
+        // is 2.5 voxels of rise, which walks. Two octaves, not three: the third
+        // would sit at 20 cm, under the voxel, and buy nothing but noise.
+        //
+        // It costs the floor nothing: 38.0 - 0.25 is still clear of the pine's
+        // 34 m waterline, so kDesertFloorM's guarantee holds.
+        // STRETCHED ALONG THE CREST, and that is the difference between sand
+        // and gravel. The isotropic version of this measured beautifully and
+        // rendered as SPECKLE -- a field of loose one-voxel blocks, because
+        // every column was free to round up or down independently of the one
+        // beside it. Wind ripples do not do that: they are long crests at right
+        // angles to the wind, coherent over many times their spacing.
+        //
+        // So the noise is sampled in a frame rotated 30 degrees off the grid
+        // (or the crests would run down the chunk boundaries and read as a
+        // lattice) and 3x slacker along the crest than across it. The cost is
+        // on the books: the terraces break to a tread of 0.42 m ACROSS the
+        // crests and 0.59 m ALONG them, the second being the direction the
+        // ripple does least for -- still at the oak's 0.61 m, which is the bar.
+        const float c = 0.866f, sn = 0.5f;
+        const float u = (x * c - z * sn) * kDuneRippleF;
+        const float v = (x * sn + z * c) * (kDuneRippleF / kDuneRippleA);
+        const float r = fbm(memo.duneR, u + 41.7f, v + 55.3f, 2);
+        return dunes + (r - 0.5f) * kDuneRippleM;
+    }
+
     static float oakHeight(float x, float z, TerrainMemo &memo, float floorM = kOakFloorM) {
         const float a = fbm(memo.oakA, x * kOakF1 + 91.7f, z * kOakF1 + 33.1f, 3);
         const float b = fbm(memo.oakB, x * kOakF2 + 47.3f, z * kOakF2 + 8.9f, 3);
@@ -4873,7 +6233,8 @@ class VoxelTerrain {
             // calling it measurement. A couple of decimetres is under the
             // error bar, invisible on a profile, and the difference between
             // ground that looks poured and ground that looks walked on.
-            const float g = dem_.heightM(x, z);
+            float grade = 0.0f;
+            const float g = dem_.heightAndGrade(x, z, &grade);
             // ----------------------------------------------- A LAKE IS FLAT
             // AND THE NOISE MUST NOT TOUCH IT. 3DEP maps still water as a level
             // plane, so the DEM arrives perfectly flat here -- and then `fine`
@@ -4901,9 +6262,70 @@ class VoxelTerrain {
                 // so this is smooth and costs one lookup. Converted to world
                 // metres before it shapes the bed, or the lake is six times
                 // deeper than it should be.
-                const float toShoreW = cover_.shoreDistance(x, z) / dem_.shrink();
-                const float depth = minf(kLakeDepthM, 0.45f * toShoreW);
-                return g - maxf(0.20f, depth);
+                // THE PRECISE FIELD WHILE IT LASTS, THEN THE WIDE ONE. shore_
+                // saturates at 127 real metres (see CoverField::buildDeepField)
+                // and 55% of an ocean is past that, so the shallow ramp keeps
+                // its one-metre precision and the open water gets a distance
+                // that actually varies.
+                const float nearM = cover_.shoreDistance(x, z);
+                const float shoreM =
+                    nearM < 120.0f ? nearM : maxf(nearM, cover_.shoreDistanceFar(x, z));
+                const float toShoreW = shoreM / dem_.shrink();
+                // -- THE BED KEEPS GOING DOWN, IT DOES NOT STOP DEAD --------
+                //
+                // (user 2026-09-18: "the water has missing terrain on the
+                // ocean floor".) IT WAS NOT MISSING. It was
+                // `minf(kLakeDepthM, 0.45f * toShoreW)` -- a shore ramp and
+                // then a HARD CLAMP -- so every column more than about eleven
+                // world metres from any shore had exactly the same depth.
+                // Measured on acadia: 68% of all wet columns sat at 5.00 m,
+                // the bed was one dead-level plane across the whole bay, and
+                // the water's own extinction leaves 10% of blue at that depth.
+                // A featureless plane rendered at a tenth brightness is
+                // indistinguishable from nothing being there, which is exactly
+                // what it was reported as.
+                //
+                // That clamp is right for a LAKE, which is what it was written
+                // for -- a pond has a middle and the middle is as deep as it
+                // gets. An OCEAN has no middle inside the window, so the clamp
+                // is the entire sea.
+                //
+                // So the ramp continues past it at a gentler grade, and the
+                // shape comes from shoreDistance, which already knows where
+                // the bays and the headlands are: a cove stays shallow, open
+                // water falls away. SMOOTH, and deliberately no noise -- "we're
+                // looking for smooth terrain without noise" (user, same day) is
+                // about all terrain, and a sea bed is terrain.
+                const float knee = kLakeDepthM / 0.45f;   // where the ramp used to stop
+                const float depth =
+                    toShoreW <= knee
+                        ? 0.45f * toShoreW
+                        : minf(kSeaDepthM, kLakeDepthM + kSeaGradeW * (toShoreW - knee));
+                // -- AND THE BED TERRACES LIKE ANY OTHER SMOOTH RAMP --------
+                //
+                // This branch RETURNED here, so the anti-terracing below never
+                // ran on a single wet column and every lake bed in the engine
+                // kept its contour lines -- which is what an underwater shot is
+                // mostly made of. The open-water grade is kSeaGradeW, 1.5 cm a
+                // metre, so the treads are 6.7 m wide and lie in perfect rings
+                // round the shore distance field.
+                //
+                // THE GRADE IS THE CARVE'S AND IS HANDED IN, and the FADE
+                // comes off the depth. A carve's slope is CONSTANT within each
+                // half of the ramp -- 0.45 inshore, kSeaGradeW out -- so a
+                // weight derived from it would jump at the knee and again where
+                // the depth clamps, and a jump in the break-up is itself a line
+                // along a contour. Depth is smooth everywhere, so fading on it
+                // cannot draw one: in over the first metre past the knee, out
+                // over the last metre before the bed goes flat.
+                //
+                // The shallows are left alone deliberately. Inside the knee the
+                // bed falls at 0.45, so the treads are 22 cm and there is
+                // nothing to break; that strip is also where the sand band and
+                // the foam are measured from.
+                const float bedW = clampf(depth - kLakeDepthM, 0.0f, 1.0f) *
+                                   clampf(kSeaDepthM - depth, 0.0f, 1.0f);
+                return g - maxf(0.20f, depth) + bedW * terraceBreakM(x, z, kSeaGradeW);
             }
             // -- AND THE MEASURED GROUND IS SMOOTH -------------------------
             //
@@ -4936,10 +6358,57 @@ class VoxelTerrain {
             // to raise it, so the column grows by the depth and materialAt
             // fills what it grew by. Passing `g` keeps it one DEM lookup.
             const float snow = snowDepthAt(x, z, g);
-            if (demDetailM <= 0.0f) return g + snow;
+            // ---------------------------- THE STEPS ARE WARPED, NOT SMOOTHED
+            //
+            // (user 2026-09-18, with a picture of stepped ground: "can you
+            // build an ai to clean up abnormalities in the terrain like this:
+            // it should be able to detect and fix the terrain artifacts".)
+            //
+            // THE TERRACES ARE NOT IN THE DATA AND NOT IN THE INTERPOLATION.
+            // They are what happens when ANY smooth ramp is quantised onto a
+            // 0.1 m voxel grid: a column's height changes a whole voxel at a
+            // time, so a constant grade gives treads of constant width, every
+            // one of them lying along a contour. Measured on the snowfield at
+            // world (1050, 1275): a 1.83% grade, which is a step every 5.5
+            // world metres -- and photographed there as a set of concentric
+            // rings, because above the treeline nothing grows to break them.
+            //
+            // SMOOTHING THE INTERPOLANT DOES NOTHING, and that was not reasoned
+            // but built: a smoothstep DemField::heightM shipped, the ground was
+            // rendered through it, and the rings were unchanged. See the note
+            // in dem.h. Any curve between the postings is quantised just the
+            // same at the end.
+            //
+            // SO MOVE THE CONTOUR, DO NOT DITHER THE COLUMN. The argument, the
+            // measurement that retired the white-noise dither that used to be
+            // here, and the constants are all over terraceBreakM. The short
+            // version: a dither's fray is the same fraction of a tread at every
+            // grade, so it was never weaker on gentle ground -- it was only
+            // switched OFF there, because nine metres of randomly flipped
+            // columns is the speckle "remove that noise from all terrain" was
+            // about. A smooth field half a voxel deep displaces the contour
+            // instead, by amplitude/grade, and cannot speckle at any grade.
+            // The two are independent and compose: terraceBreakM moves a
+            // contour that quantising made straight, demRoughnessM adds the
+            // relief the posting is too coarse to have measured. Only the
+            // second one knows what the ground is made of.
+            // THE MEASURED PATCH GOES ON LAST, over the DEM's landform and
+            // under nothing. It is a deviation in REAL metres about its own
+            // mean, faded to zero at its border -- see world/inset.h.
+            const float insetM = inset.ok() ? inset.deviationM(x, z) : 0.0f;
+            const float rough = demRoughnessM(x, z, memo, grade);
+            if (demDetailM <= 0.0f)
+                return g + snow + terraceBreakM(x, z, grade) + rough + insetM +
+                       (dem_.outFraction(x, z) > 0.0f
+                            ? dem_.outFraction(x, z) * exteriorRelief(x, z, memo)
+                            : 0.0f);
             const float det =
                 (fbm(memo.detail, x * 0.90f + 17.3f, z * 0.90f + 41.7f, 4) - 0.5f) * demDetailM;
-            return g + snow + fine * (demDetailM * (1.0f / 0.45f)) + det;
+            // ...AND OUTSIDE THE WINDOW, THE BAND'S OWN SHAPE ON TOP OF THE
+            // PLAIN -- see exteriorRelief. Zero everywhere inside it.
+            const float outT = dem_.outFraction(x, z);
+            const float ext = outT > 0.0f ? outT * exteriorRelief(x, z, memo) : 0.0f;
+            return g + snow + fine * (demDetailM * (1.0f / 0.45f)) + det + rough + insetM + ext;
         }
         // -------------------------------------------------------------------
 
@@ -5105,6 +6574,15 @@ class VoxelTerrain {
         // again.
         if (wBirch > 0.001f) h += wBirch * oakHeight(x, z, memo);
         if (wOak > 0.001f) h += wOak * oakHeight(x, z, memo, kOakFloorM - kOakDropM);
+        // -- AND THE SAND, WHICH IS THE ONE BAND THE THREE DO NOT COVER ----
+        //
+        // See desertWeight: the three wood weights sum to 1 MINUS this one, so
+        // adding it here is what makes the whole blend sum to 1 again -- and a
+        // seam column gets a real crossfade between the last dune and the first
+        // trees rather than a step. Everything else about the desert falls out
+        // of those three being zero; this is the one term that has to be added.
+        const float wDesert = desertMix(x);
+        if (wDesert > 0.001f) h += wDesert * duneHeight(x, z, memo);
 
         // THE CARVE IS A FUNCTION OF THE WATERLINE AND EXISTS FOR NOTHING
         // ELSE. It pulls low ground down toward the line so that a lake has a
@@ -5586,7 +7064,11 @@ class VoxelTerrain {
             // bare rock at 4,000 m is under snow whatever colour the imagery
             // sampled off it. See snowAt.
             if (snowAt(i, j)) return snowShade(i, j);
-            const uint8_t cc = cover_.at(wxm, wzm);
+            // ...AND THE GROUND ITSELF IS ONLY THE PICTURE'S WHERE THE PICTURE
+            // IS TRUSTED FOR IT -- see coverGround. The water above this line
+            // is believed either way; what is gated here is the imagery's
+            // opinion that a column is bare.
+            const uint8_t cc = coverGround ? cover_.at(wxm, wzm) : uint8_t(CoverField::Forest);
             if (cc == CoverField::Rock || cc == CoverField::Snow || cc == CoverField::Water) {
                 const int ci = mini(int(mat::GROUND_COUNT) - 1, cover_.colourIndex(wxm, wzm));
                 // ------------------------- A WATER COLOUR IS NOT A GROUND ONE
@@ -5698,9 +7180,33 @@ class VoxelTerrain {
         if (h <= wl + sandRiseVoxAt(wx(i))) return mat::SAND;  // the shore band
 
         if (slope >= kRockSlope) return mat::ROCK;  // too steep to hold soil
-        if (aboveTimberlineVox(h) && !cover_.ok()) return mat::ROCK;  // alpine, no imagery
+        // alpine, and no imagery this trusts for the ground -- see coverGround
+        if (aboveTimberlineVox(h) && (!cover_.ok() || !coverGround)) return mat::ROCK;
 
         const float x = wx(i), z = wx(j);
+
+        // -- THE DESERT IS SAND, AND IT IS ONE OF THE FOUR THINGS THAT HAD
+        //    TO BE TOLD ------------------------------------------------------
+        //
+        // Everything else about the desert falls out of the three wood weights
+        // being zero there (see desertWeight). A floor cannot: it SWITCHES
+        // rather than scales, and a lerp of three woods' floors at weight zero
+        // is not sand, it is whichever one the code happens to fall through to.
+        //
+        // DITHERED ON THE WEIGHT ITSELF, which is v1's own trick at the rim --
+        // "the sand thins out into the forest floor across the whole rim
+        // instead of ending on a line". The hash is the column's, so the
+        // pattern is stable frame to frame and the boundary is a scatter of
+        // sand and litter rather than a drawn edge.
+        //
+        // AFTER the beach and the rock: a shore is sand already, and a cliff
+        // face too steep to hold soil is too steep to hold sand.
+        {
+            const float dm = desertMix(x);
+            if (dm > 0.0f &&
+                hashUnit(0xD35A1u, hashU32(uint32_t(i), uint32_t(j))) < dm)
+                return mat::SAND;
+        }
 
         // WHICH SHADE IS NOT DECIDED HERE ANY MORE.
         //
@@ -5771,6 +7277,7 @@ class VoxelTerrain {
         // test would draw a straight north-south line where the green meets the
         // soil -- the one shape nothing else in this terrain has -- and it is
         // the same trick, for the same reason, that bladeMaterial uses.
+
         if (oakMix(x) > hashUnit(0x6A1Cu, hashU32(uint32_t(i), uint32_t(j))))
             return mat::BGRASS_0;
 
@@ -5990,11 +7497,26 @@ class VoxelTerrain {
         //     steep ground        ->  25 m, which no small smear ever has
         //
         // Both fields are continuous, so the waterline is the contour of a
-        // continuous function and cannot be ragged. It cannot be square either:
-        // the shore plane is bilinear and the grade is a difference of bilinear
-        // samples. The same evidence decides the same cases as before -- a
-        // hillside smear still has nowhere near 25 m of shore distance -- but it
-        // decides them by degree instead of by a knife edge.
+        // continuous function and cannot be ragged. The same evidence decides
+        // the same cases as before -- a hillside smear still has nowhere near
+        // 25 m of shore distance -- but it decides them by degree instead of by
+        // a knife edge.
+        //
+        // -- AND IT WAS STILL SQUARE, WHICH THIS NOTE USED TO DENY ----------
+        //
+        // What stood here was "it cannot be square either: the shore plane is
+        // bilinear". That is true of the plane and false of the CONTOUR, and
+        // the difference cost a second report (user, later the same day: "make
+        // them smoother, not rounded squares"). The plane naip2cov baked was
+        // ONE-SIDED -- flat zero on every land cell, then 35 to 90 m one cell
+        // later -- so asking for the kShoreEdgeM contour of it picked a level
+        // one part in fifty up a cliff, and the waterline was pinned to the
+        // raster edge: a staircase with 17-voxel treads. Interpolating a field
+        // says nothing about where its contours land.
+        //
+        // CoverField::buildShoreField makes the plane signed, so the contour is
+        // a real crossing between two cells. Measured on Granby's south shore,
+        // the longest straight run of waterline went from 17.6 m to 3.0 m.
         const float sh = dem_.shrink();
         const float d = 8.0f / sh;
         const float h0 = dem_.heightM(x, z);
@@ -6203,7 +7725,59 @@ class VoxelTerrain {
     // grassMinRows and grassMaxRows are tuning knobs; STRAND_MAX_ROWS is a
     // format limit.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // IS THERE A FALLEN PETAL ON THIS COLUMN?
+    //
+    // (user 2026-09-19: "the petals should be one voxel sized, not clumped
+    //  together but scattered underneath the tree. It should not recolor the
+    //  terrain, but [be] on the terrain, similar to the grass strands".)
+    //
+    // THE FIRST VERSION PAINTED THE GROUND and that is what this replaces: it
+    // returned a pink material from topMaterial, so the SURFACE VOXEL itself
+    // became pink and the drifts read as a stained floor rather than as petals
+    // lying on one. A petal is a thing on the ground, so it is a thing on the
+    // ground -- one voxel, standing where a blade would, through exactly the
+    // machinery a blade uses.
+    //
+    // PER COLUMN AND SPARSE, which is the "scattered, not clumped" half. A
+    // hash per column at 10 cm gives single voxels with grass between them; the
+    // fbm that used to shape this made metre-wide patches, which is what
+    // "clumped" was. The stand gate stays, because the petals still have to
+    // fall UNDER the trees rather than across the whole band.
+    //
+    // ...AND IT IS ONE ROW, NEVER MORE -- see strandRows, which returns 1 here.
+    // A petal has no height to grade.
+    // -----------------------------------------------------------------------
+    bool petalColumn(int i, int j, uint8_t top, TerrainMemo &memo) const {
+        return petalColumn(i, j, top, memo, nullptr, nullptr);
+    }
+
+    bool petalColumn(int i, int j, uint8_t top, TerrainMemo &memo, float *treeX,
+                     float *treeZ) const {
+        if (!(woodBit(wx(i)) & kWoodCherry)) return false;
+        // Only where a blade could root -- a petal on bare rock or in a lake
+        // is not a petal, and this is the same floor test strandRows makes.
+        if (!isSoilMat(top) || isSand(top) || isSnow(top)) return false;
+        const float x = wx(i), z = wx(j);
+        if (standDensity(x, z, memo.stand) <= kPetalStand) return false;
+        // ...AND UNDER A TREE, WHICH THE LINE ABOVE DOES NOT ASK. Kept as the
+        // cheap first test -- it rejects most of the band for one fbm, and
+        // canopyNear is two dozen cells. See CanopyLattice.
+        // THE ALTITUDE TERM, ONCE FOR THE COLUMN. stemFill reads nothing but
+        // the height, and the height over a canopy's width does not move
+        // enough to change an answer -- so this is one gather, not one per
+        // candidate cell.
+        const float fill = stemFill(x, z, heightVox(i, j, memo));
+        if (!canopyNear(x, z, fill, memo, treeX, treeZ)) return false;
+        return hashUnit(0x9E7A13u, hashU32(uint32_t(i), uint32_t(j))) < kPetalOdds;
+    }
+
     uint8_t strandRows(int i, int j, uint8_t top, TerrainMemo &memo) const {
+        // A PETAL IS A ONE-ROW STRAND. Before the grass, because this column
+        // carries a petal INSTEAD of a blade -- one strand material per column
+        // is the shape of the cache (see voxel/columns.h), and a petal lying
+        // where a blade would have stood is the right picture anyway.
+        if (petalColumn(i, j, top, memo)) return 1;
         // ONLY ON THE DIRT FLOOR. This used to ask isGrass(top), which was the
         // surface paint; with the paint gone the question is whether this is
         // ground a blade could root in at all -- so sand, rock and a lake bed
@@ -6377,6 +7951,31 @@ class VoxelTerrain {
     // GRASS_0 (see fillWheatRamp), so a column that would have grown the
     // birches' green grows the birches' straw, and the two agree at the soil by
     // construction rather than by being tuned to.
+    // ...AND THE OVERLOAD THAT KNOWS ABOUT PETALS. It takes the `top` and
+    // the memo the caller already has, which is the whole reason it exists:
+    // petalColumn needs both, and a version that looked them up itself would
+    // put a heightVox and a topMaterial on every column of every brick -- the
+    // column cache calls this once per column (see voxel/columns.h, where the
+    // two sit on consecutive lines with exactly these values in scope).
+    uint8_t bladeMaterial(int i, int j, int rows, uint8_t top, TerrainMemo &memo) const {
+        // A ONE-ROW CHERRY COLUMN IS A PETAL, not a short blade. The same pure
+        // predicate strandRows used, so the two cannot disagree about a
+        // column; the shade is the tree's own, from cherryPale, so a pale
+        // crown drops pale petals.
+        // -- THE PETAL'S SHADE IS ITS OWN TREE'S -------------------------
+        //
+        // Asked at the TRUNK rather than at the petal. cherryPale is a 14 m
+        // lattice and a pool of petals is metres across, so a pool could
+        // straddle one of its seams and come up half pale -- under a single
+        // tree, which wears one shade or the other. The trunk is what
+        // canopyNear just found, and it is the same point the scatter asked
+        // this field at when it chose which model to plant.
+        float tx = 0.0f, tz = 0.0f;
+        if (rows == 1 && petalColumn(i, j, top, memo, &tx, &tz))
+            return uint8_t(mat::CPINK_0 + (cherryPale(tx, tz) ? 5 : 3));
+        return bladeMaterial(i, j, rows);
+    }
+
     uint8_t bladeMaterial(int i, int j, int rows) const {
         const uint8_t green = bladeMaterial(i, j);
         if (!tallStrand(rows)) return green;

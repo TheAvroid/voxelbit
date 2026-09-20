@@ -200,7 +200,13 @@ class Arrows {
     // metre per frame and a rabbit is a third of one, so a per-frame test
     // tunnels straight through the animal it was aimed at -- which is the same
     // reason the world test below is in here rather than outside.
-    using LifeF = std::function<bool(const Vec3 &)>;
+    // THE STEP, NOT THE POINT AT THE END OF IT (user 2026-09-19: "Im shooting
+    // an arrow and its hitting the life but its not registering"). A 5 ms step
+    // is 0.24 m at a full draw and a firefly is 0.3 m across, so a shaft dead
+    // through one could be outside it at both samples. The callback is handed
+    // where the shaft WAS and where it is going, and ai/lifehit.h tests the
+    // segment between them.
+    using LifeF = std::function<bool(const Vec3 &, const Vec3 &)>;
 
     void update(float dt, const WalkWorld &w, const LifeF &hitLife = nullptr) {
         if (!ready()) return;
@@ -230,7 +236,7 @@ class Arrows {
                 // THE ANIMAL FIRST. A creature standing against a trunk is
                 // nearer than the trunk, and a shaft that resolved the wood
                 // first would bury itself a voxel behind the thing it hit.
-                if (hitLife && hitLife(next)) {
+                if (hitLife && hitLife(a.pos, next)) {
                     a.live = false;
                     a.stuck = true;
                     a.age = 0.0f;

@@ -282,6 +282,74 @@
     // Here the ordinary blender does it, and the shader never has to read the
     // target it is writing to. See shaders/Crosshair.ps.slang.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE TWO BARS, AND THE END OF THE RUN.
+    //
+    // Both are FullScreenPasses over the window, made the way makeCrosshair
+    // makes its own -- but with an ORDINARY alpha blend rather than the
+    // crosshair's invert. The crosshair inverts because it must be visible
+    // against any backdrop; these two are colours that mean something (v1's
+    // reds and its badge gold) and inverting them would turn a red screen
+    // green over a green wood.
+    // -----------------------------------------------------------------------
+    void makeVitalsPasses() {
+        Falcor::BlendState::Desc bd;
+        bd.setRtBlend(0, true).setRtParams(0, Falcor::BlendState::BlendOp::Add,
+                                           Falcor::BlendState::BlendOp::Add,
+                                           Falcor::BlendState::BlendFunc::SrcAlpha,
+                                           Falcor::BlendState::BlendFunc::OneMinusSrcAlpha,
+                                           // The swapchain's alpha is not ours.
+                                           Falcor::BlendState::BlendFunc::Zero,
+                                           Falcor::BlendState::BlendFunc::One);
+        const auto blend = Falcor::BlendState::create(bd);
+        vitalsPass_ = Falcor::FullScreenPass::create(getDevice(), "v2/shaders/Vitals.ps.slang");
+        vitalsPass_->getState()->setBlendState(blend);
+        gameOver_ = Falcor::FullScreenPass::create(getDevice(), "v2/shaders/GameOver.ps.slang");
+        gameOver_->getState()->setBlendState(blend);
+    }
+
+    void drawVitals(Falcor::RenderContext *ctx, const Falcor::ref<Fbo> &target) {
+        if (!vitalsPass_ || quitting_) return;
+        // NOT WHILE THE MENU IS UP. The panel is read, not fought through, and
+        // a red rim over it is only in the way.
+        if (menuOpen_) return;
+        const int red = vitals_.redLevel(), gold = vitals_.goldLevel();
+        if (red <= 0 && gold <= 0) return;
+        auto var = vitalsPass_->getRootVar();
+        var["gVitCB"]["gSize"] = float2(float(target->getWidth()), float(target->getHeight()));
+        var["gVitCB"]["gRedLevel"] = float(red);
+        var["gVitCB"]["gGoldLevel"] = float(gold);
+        var["gVitCB"]["gHurtT"] = vitals_.hurtT;
+        var["gVitCB"]["gSeed"] = float(vitSeed_);
+        vitalsPass_->execute(ctx, target);
+    }
+
+    void drawGameOver(Falcor::RenderContext *ctx, const Falcor::ref<Fbo> &target) {
+        if (!gameOver_ || deathAtMs_ < 0.0) return;
+        const double age = simMs_ - deathAtMs_;
+        const float fade = float(age <= 0.0 ? 0.0
+                                 : age >= kGameOverFadeMs ? 1.0
+                                                          : age / kGameOverFadeMs);
+        auto var = gameOver_->getRootVar();
+        var["gOverCB"]["gSize"] = float2(float(target->getWidth()), float(target->getHeight()));
+        var["gOverCB"]["gFade"] = fade;
+        // TWO LINES, AND THE FONT IS THE WOOD'S OWN -- holoPackGlyph is what
+        // the signs in the world are lettered with, so the death screen is in
+        // the same hand as everything else. See shaders/GameOver.ps.slang.
+        const std::string l0 = "GAME OVER";
+        std::string l1 = deathWhy_;
+        for (char &c : l1) c = char(std::toupper((unsigned char)c));
+        const int n0 = mini(16, int(l0.size()));
+        const int n1 = mini(16, int(l1.size()));
+        var["gOverCB"]["gCount0"] = n0;
+        var["gOverCB"]["gCount1"] = n1;
+        for (int i = 0; i < 16; ++i)
+            var["gOverCB"]["gGlyph"][i] = i < n0 ? holoPackGlyph(l0[size_t(i)]) : 0u;
+        for (int i = 0; i < 16; ++i)
+            var["gOverCB"]["gGlyph"][16 + i] = i < n1 ? holoPackGlyph(l1[size_t(i)]) : 0u;
+        gameOver_->execute(ctx, target);
+    }
+
     void makeCrosshair() {
         crosshair_ = Falcor::FullScreenPass::create(getDevice(), "v2/shaders/Crosshair.ps.slang");
         Falcor::BlendState::Desc bd;
@@ -522,8 +590,26 @@
         std::fflush(stdout);
     }
 
-    void printHelp() const {
-        std::printf(
+    // -----------------------------------------------------------------------
+    // THE KEYS, AS ONE STRING, SO THE MENU AND THE CONSOLE CANNOT DISAGREE.
+    //
+    // (user 2026-09-19: "list all the keybinds in controls in the settings".)
+    //
+    // The settings panel had sliders and no keys, so the only place the
+    // bindings existed was F1 -- a console the player has to alt-tab to. The
+    // obvious fix is to type them into the panel as well, and the obvious fix
+    // is how a list of forty keys goes stale: [G] changed meaning earlier
+    // today and a second copy would still be calling it REFRESH.
+    //
+    // So there is one copy and two readers. printHelp prints it; the controls
+    // tab draws it verbatim in the same monospace the console uses, which is
+    // also why the columns line up there.
+    //
+    // NOT a table of {key, text} pairs: half these entries are three lines of
+    // prose about what the key does and why, and a two-column table would
+    // throw exactly the part worth reading.
+    static const char *keyHelpText() {
+        return
             "\ncontrols:\n"
             "  click the window first  -- it needs focus, the console steals it on launch\n"
             "\n"
@@ -547,7 +633,10 @@
             "                        are, /help lists them. ENTER runs, ESC cancels\n"
             "  I  or  U             ASSET EDITOR -- a deck in the sky, with the\n"
             "                        porcupine standing in the middle of it\n"
-            "  G                     REFRESH -- the wood as it was generated: every\n"
+            "  G                     RESPAWN -- drops you in the next biome, and\n"
+            "                        again for the one after that: pine, birch, oak,\n"
+            "                        cherry, sand, round again\n"
+            "  ctrl+G                REFRESH -- the wood as it was generated: every\n"
             "                        pit filled in, every tilled bed turned back,\n"
             "                        the life re-scattered. Not a rebuild -- a\n"
             "                        changed constant still wants one of those\n"
@@ -557,6 +646,7 @@
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
             "  P                     screenshot            F1   this help\n"
+            "  F3                    coordinates -- x y z at your feet\n"
             // The water panel had this line and no longer has a key at all --
             // it is `--water-ui` now. See onKeyEvent, where L used to be.
             "  O                     NUKETOWN -- a level in its own sky, and the\n"
@@ -564,7 +654,11 @@
             "                        press again to come back to the wood\n"
             "  ESC                   free the mouse -- again for the PAUSE BUTTONS,\n"
             "                        a third time to quit\n"
-            "                        red quits, green returns, purple is Discord\n\n");
+            "                        red quits, green returns, purple is Discord\n\n";
+    }
+
+    void printHelp() const {
+        std::printf("%s", keyHelpText());
         // THE EDITOR'S OWN, out of the class that binds them, so this list
         // cannot go on describing a key after it has moved.
         std::printf("  ...and on the asset editor\'s deck:\n");

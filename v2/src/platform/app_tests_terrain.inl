@@ -774,6 +774,17 @@
         // AN AXE, so one blow is one kill and the test is about the death
         // rather than about counting to three. The three-blow path is checked
         // on its own below.
+        // THE SAME TRAVEL THE HOE TEST MAKES, and for the same reason -- the
+        // spawn can land in the sand now, and there is nothing there to hunt.
+        // See the note over runHoeTest's copy.
+        if (world_.terrain.desertAt(pos_.x)) {
+            std::printf("  spawned in the sand -- travelling to the oak: %s\n",
+                        runCommand("/locate oak").c_str());
+            if (world_.terrain.desertAt(pos_.x)) {
+                std::printf("  SKIPPED -- this world is all desert\n");
+                return;
+            }
+        }
         for (int i = 0; i < held_.count(); ++i)
             if (held_.tool(i).takes == Takes::Wood) held_.select(i);
         // AND THE POPULATIONS HAVE TO HAVE RUN. The first version of this
@@ -792,7 +803,15 @@
         for (const LifeName &ln : lifeNames()) {
             // THE HIVE AND THE LILY PAD ARE NOT ALIVE. One is decor in a crown
             // and the other is a leaf; neither answers the band's life table.
-            if (ln.life == Life::Hive || ln.life == Life::LilyPad) continue;
+            //
+            // AND NEITHER IS THE CROP, which is the third time this exception
+            // has had to be made and the first one that cannot be forgotten:
+            // the apple and the orange are flagged on the row rather than
+            // named here, so a fourth fruit joins the skip by existing. An
+            // apple is decor too -- it has no flyer slot, so shooting at it
+            // would report "not drawn" about something that was never in the
+            // band to begin with.
+            if (ln.life == Life::Hive || ln.life == Life::LilyPad || ln.fruit) continue;
             Vec3 at{0, 0, 0};
             // NOT SILENT. A species this world has none of is an ordinary
             // outcome -- the frog is birch-only, the armadillo pine-only -- but
@@ -1173,7 +1192,7 @@
                     const int loose0 = world_.looseCount();
                     for (int f = 0; f < 30 && !arrowKilled; ++f) {
                         arrows_.update(1.0f / 60.0f, walkWorld(),
-                                       [this](const Vec3 &q) { return arrowKill(q); });
+                                       [this](const Vec3 &qa, const Vec3 &qb) { return arrowKill(qa, qb); });
                         // WHERE IT STOPPED, IF IT STOPPED SHORT -- captured in
                         // the loop because landedThisTick is cleared by the
                         // next update. A survivor is two different faults and

@@ -65,6 +65,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>    // the arcade's .maps sidecar -- see loadLevelMaps
+#include <sstream>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -135,7 +137,15 @@ static_assert(v2::mat::SEED_0 + v2::mat::SEED_COUNT == v2::mat::GROUND_0,
 // and nothing would have complained, because isWheat() tests the RANGE.
 static_assert(v2::mat::GROUND_0 + v2::mat::GROUND_COUNT == v2::mat::SNOW_0,
               "the snow band follows the ground ramp -- see mat::SNOW_0");
-static_assert(v2::mat::SNOW_0 + v2::mat::SNOW_COUNT == v2::mat::TREE_BASE,
+// ...AND THE CHERRY WOOD'S PINK SITS BETWEEN THEM NOW, so the chain gains a
+// link rather than losing one. The invariant these asserts exist for is that
+// the fixed families run UNBROKEN up to TREE_BASE and that the model palette
+// begins exactly where they stop -- a new family inserted without saying so
+// here would silently hand the models four ids the terrain is already using,
+// which is the wrong-colour-on-a-hillside failure the note above describes.
+static_assert(v2::mat::SNOW_0 + v2::mat::SNOW_COUNT == v2::mat::CPINK_0,
+              "the cherry pink follows the snow band -- see mat::CPINK_0");
+static_assert(v2::mat::CPINK_0 + v2::mat::CPINK_COUNT == v2::mat::TREE_BASE,
               "the model palette overlaps the terrain's own ids");
 static_assert(v2::mat::SOIL_0 == v2::kSoil0, "soil ramp disagrees with the shader");
 static_assert(v2::mat::SOIL_COUNT == v2::kSoilCount, "soil ramp disagrees with the shader");
@@ -384,7 +394,7 @@ constexpr int kBunnySlots = 10;   // >= kBunnyCount, and >= 4 for the editor
 // means is "an animal that walks a strip of frames along the ground", which is
 // exactly what both of them do.
 //
-// FORTY, AND THE POPULATION IS THIRTY-THREE. A reservation is not a population,
+// FORTY, AND THE POPULATION IS TWENTY-NINE. A reservation is not a population,
 // and raising a count must not cost a structure rebuild -- which is exactly
 // what it just did cost when the four mammals went from two to six (see the
 // note over kBunnyCount: at two, the median distance to the nearest one was
@@ -392,7 +402,18 @@ constexpr int kBunnySlots = 10;   // >= kBunnyCount, and >= 4 for the editor
 // the next raise without this number moving again. The relationship is checked
 // at compile time where the counts live -- see the static_assert over
 // Bunnies::publishSkunks.
-constexpr int kMarchSlots = 40;
+//
+// IT FELL FROM 33 TO 29 ON 2026-09-18 ("cut the land mammals across biomes by
+// 25%") and this number did NOT follow it down, for the reason in the first
+// half of this note: shrinking a band costs a structure rebuild to change your
+// mind, and a mammal count that has been 2, then 6, then 5 inside four days is
+// the clearest argument there is for leaving the margin where it is.
+//
+// ...AND IT ROSE TO 56 ON 2026-09-19, for the DESERT's own three. The table is
+// 44 now (gecko, cobra and scorpion at five apiece) and 40 would not hold it --
+// this is the first time the margin above was actually spent rather than
+// defended. Twelve spare, which is the same two-species headroom it had before.
+constexpr int kMarchSlots = 56;
 // ...AND THE BEES, which are the first thing in this band that belongs to a
 // PLACEMENT rather than to the ground: a bee exists because a beehive does, and
 // the hives are 5% of the birches. Ten is two hives' worth at v1's five to a
@@ -604,7 +625,21 @@ class Remesher {
 // A FIXED BAND, like the flyers above and for the same reason: a slot that
 // always exists is a refit, and a slot that appears is a rebuild.
 // ---------------------------------------------------------------------------
-constexpr int kDebrisInstances = 64;
+// 64 -> 128 (user 2026-09-19: "make the felled tree chunks smaller. do twice
+// as small"). THE CHUNK SIZE IS NOT SET BY kFellChunkVox, it is set by this:
+// a tree's piece count is min(voxels / kFellChunkVox, its share of the table)
+// and the SHARE has been the binding term for every tree in the game -- a pine
+// wants 98 pieces at the old target and gets 40. So halving the target alone
+// would have changed nothing, and the honest way to halve the pieces is to
+// double the slots they live in. v1 runs at 256 for the same reason.
+//
+// WHAT IT COSTS: 64 more instance descriptors (8 KB), and up to 64 more PhysX
+// bodies and BLASes while a felled tree is lying uncollected. Measured in
+// --oak --fell-test after the change; the tri pool is the number to watch.
+// 128 -> 192, because kFellSlotsShare is 160 now and `room` is the smaller of
+// that and the FREE slots -- at 128 the share could never be reached and the
+// pieces would have come out big again.
+constexpr int kDebrisInstances = 192;
 // How red a corpse piece stays once v1's half-second blink has run -- see
 // corpseFade. Not zero, because zero is a grey lump of an animal lying in the
 // wood, which is the one thing a corpse must never look like.
@@ -1255,7 +1290,166 @@ constexpr double kAbsorbFlyMs = 672.0;
 // Above this many voxels a piece is scenery rather than loot: it stays where it
 // landed until it is broken down. 600 in v1, measured against what a felled
 // pine actually yields.
+//
+// ...UNLESS IT IS A PIECE OF A TREE YOU FELLED, which carries Debris::loot and
+// is exempt. See shatterFelled for the argument -- it is v1's.
 constexpr int kAbsorbSize = 600;
+
+// ---------------------------------------------------------------------------
+// WHAT A FELLED TREE BREAKS INTO -- see World::shatterFelled.
+//
+// THE TARGET SIZE OF A PIECE, and it is v1's number twice over: 350, itself
+// halved from 700 ("we need smaller chunks to absorb by the player"), and then
+// measured against what a felled pine actually yields. It is a TARGET -- the
+// piece count is bounded by the free debris slots, so a big tree in a busy
+// scene comes apart into fewer, bigger pieces rather than losing any of itself.
+// HALVED 2026-09-19 with the pool doubling above -- both are needed, and
+// neither does anything on its own.
+constexpr int kFellChunkVox = 175;
+// ...AND HOW LONG A PIECE MAY BE, in voxels of its own bounding box.
+//
+// v1's, and its own report: "the birch is leaving these long trunks in tact".
+// A bole is a few voxels across, so the only direction a seed inside it can
+// grow is ALONG the trunk and the quota comes out as a rod -- measured 4 x 56 x
+// 7, aspect 14, against a median longest axis of 16. This is the FLOOR of the
+// bound; shatterFelled raises it with the cube root of the quota, because a
+// piece of a 460k-voxel oak has twenty times the volume v1's pieces had and 22
+// voxels of box cannot hold one at any density.
+constexpr int kFellChunkSpan = 22;
+// HOW NEAR YOU HAVE TO BE TO COLLECT ONE. v1's absorbR, 26 voxels -- "collected
+// by walking up to it, not from across the map", which is the reach a dropped
+// steak already has. A chip cut by a tool keeps kAbsorbAnywhere, because
+// swinging a tool puts you beside what you hit.
+constexpr float kFellLootReachM = 2.6f;
+// ...AND HOW MANY SLOTS ARE HELD BACK FROM THE BREAK. A tree takes every slot
+// it is offered, and a world in which nothing else can be cut loose until the
+// pieces are collected is a world where the NOTHING FLOATS rule quietly stops
+// being enforceable. Four is enough for a swing's spoil and a hanger or two.
+constexpr int kFellSlotsKeep = 4;
+// ...AND HOW MUCH OF THE POOL ONE TREE MAY TAKE.
+//
+// MEASURED, --fell-test: without this an oak came apart into SIXTY pieces and
+// there are sixty-four slots in the world. Every tree does, whatever its size,
+// because the piece count is `min(voxels / kFellChunkVox, free)` and even a
+// pine wants 115 -- so the first tree felled emptied the table and the second
+// could not break at all until its chunks were collected.
+//
+// v1 met none of this: it has 256 slots and its biggest tree is a fifth of
+// these oaks, so `free` was never the binding constraint there. Here it always
+// is, which makes it a SHARE rather than a limit -- a tree may have this many
+// and the rest of the world keeps the remainder. Two trees felled back to back
+// still both break (the second gets what is left, which is v1's own bargain:
+// fewer, bigger pieces rather than losing any of itself), and a third waits for
+// you to collect something, which is the honest answer and the one the player
+// can act on.
+// DOUBLED 80 -> 160 ("can you reduce the fellen tree chunk size in half").
+//
+// THE CHUNK SIZE IS NOT kFellChunkVox, which is a FLOOR. A felled oak is
+// 416,281 voxels and this is what actually caps the piece count, so the size
+// of a piece is count / this -- about 5,200 voxels at 80 and 2,600 at 160.
+// Halving the size is doubling the count, and the floor never binds on a tree
+// this size.
+//
+// IT PAYS FOR ITSELF IN THE SPREAD. Twice the pieces is twice the
+// makeLooseBody work, which was already half the 270 ms stall -- so this lands
+// together with the deferred emit (see shatterQueue_), which is what stops
+// that work happening on one frame.
+constexpr int kFellSlotsShare = 160;
+// -- WHEN IT BREAKS -------------------------------------------------------
+//
+// IMPACT IS THE FALL BEING ARRESTED and v1 spends sixty lines on detecting it
+// precisely. This engine does not have to: it already knows when the tree has
+// LANDED, because that is what arms the topple hinge (Debris::tipArmed, cleared
+// in updateDebris on the frame the descent stops). So the test here is the
+// cheap half -- the hinge has fired and the body has since gone quiet.
+//
+// A DWELL, NOT A FRAME. Contacts and velocity flicker on a trunk rolling to
+// rest, and one quiet frame mid-topple must not fire this.
+constexpr double kFellCalmMs = 400.0;
+// ===========================================================================
+// ...BUT THE BREAK IS THE IMPACT, AND GOING QUIET IS ONLY THE FALLBACK.
+//
+// (user 2026-09-19: "make it happen right on impact with the ground. it seems
+//  a bit delayed. it only seems to break when it is still. this is wrong. it
+//  needs to break the moment of impact.")
+//
+// v1 HAD ALREADY MEASURED THIS AND ITS NOTE READS LIKE THE REPORT: "AFTER that
+// the body creeps and rolls for another 10-15 s at 2-3.5 vox/s, which is why
+// waiting for it to go quiet broke the tree a quarter of a minute after the
+// player watched it land." Our own --fell-test trace says the same thing --
+// a pine that landed at 5.0 s slid 79 m down an RMNP slope and did not go
+// quiet until 11.4 s.
+//
+// AN IMPACT IS THE FALL BEING ARRESTED, expressed as a FRACTION of the body's
+// OWN peak fall speed rather than an absolute -- so the test scales with how
+// far the thing had to drop and a trunk resting on its stump never arms it.
+// v1's numbers, converted from its 10 cm units:
+//
+//     fellHitVy   8 vox/s   -> 0.8 m/s    it has to have really fallen
+//     fellHitFrac 0.4                     arrested = under 40% of its peak
+//     fellHitMs   60 ms                   "the arrest is ONE FRAME wide"
+//
+// v1 measured the arrest at one frame (-40.51 -> -2.91 m/s between consecutive
+// frames) and cut its own dwell from 200 ms to 60 for exactly this ask. It is
+// not zero only so a single glitched frame cannot fire it.
+constexpr float kFellHitVy = 0.8f;
+constexpr float kFellHitFrac = 0.4f;
+constexpr double kFellHitMs = 60.0;
+// ...AND WHAT SEPARATES THE TWO ARRESTS A FELLED TRUNK MAKES.
+//
+// It seats on its own CUT FACE while still bolt upright, and lands on the
+// TERRAIN once it has leaned over. Both are arrests and only the second is the
+// one the player watches. v1: "MEASURED first ground contact happens at up =
+// 0.41 on a tree that bounced and at -0.15 on one that did not -- both far
+// under 0.9." So while the trunk's own +Y is within ~26 degrees of vertical
+// the peak is thrown away and nothing can arm; past that it is off its stump
+// and whatever stops it now is the ground.
+//
+// v1 ALSO REQUIRES ITS TOPPLE DRIVE TO BE RUNNING and v2 has no drive -- the
+// hinge here is a single nudge applied on the frame it lands (see tipArmed).
+// The tilt alone is the part that carries the argument, and using it by itself
+// means a trunk the hinge never rolled is still covered.
+constexpr float kFellTiltUp = 0.9f;
+// ...AND v1's "AT LEAST ONE CONTACT" IS NOT NEEDED HERE, WHICH TOOK MEASURING.
+//
+// v1's impact test also requires a recent contact (its b.cT stamp) and v2 keeps
+// no such stamp on a debris body. Two gates were tried in its place and both
+// were dropped, because the thing they were written to exclude does not exist:
+//
+//     "the fall speed dips mid-topple, so the arrest fires in the air"
+//
+// IT DOES DIP, ENORMOUSLY -- traced, 2.96 -> 7.07 -> 2.08 -> 7.00 m/s over four
+// half-seconds -- AND THE BODY IS NOT IN THE AIR AT THOSE MOMENTS. Reading the
+// positions beside the speeds settles it: at the 2.08 the trunk had moved 6 cm
+// in half a second and stayed there for three more, hung up on its neighbours
+// at 42 degrees. A body in free fall under gravity only ever speeds UP, so an
+// arrest is a contact by construction and nothing else has to say so.
+//
+// THE GATE THAT WAS TRIED AND MEASURED WRONG was "how far the top still has to
+// come down, as a fraction of the tree's own height" -- clean on flat ground
+// (0.60 falling against 0.08 at rest) and useless on a slope, because a 25 m
+// trunk lying across a hillside spans nine metres of relief and still reads
+// 0.56 with every part of it resting. It blocked a real landing and pushed that
+// tree back onto the calm fallback at 13.6 s, which is the report it was meant
+// to fix. Recorded here so it is not re-derived.
+//
+// WHAT STOPS A FALSE ARREST AT THE START is what v1 uses: the peak has to reach
+// kFellHitVy before anything can arm, and kFellTiltUp throws the peak away for
+// as long as the trunk is still standing on its own cut face.
+// ===========================================================================
+// ...and a floor under the whole thing, so a tree cut at the base -- which has
+// nothing to fall and is quiet on frame two -- still goes over first.
+constexpr double kFellMinMs = 900.0;
+// THE BACKSTOP. A trunk wedged on its neighbours never settles and never
+// breaks; v1 hit exactly this ("I knocked down a birch tree and it did not
+// break") and its cover expired at 15 s. A tree that breaks late is a far
+// better answer than one that never does.
+constexpr double kFellBreakMs = 20000.0;
+// What counts as still, in m/s and rad/s. Above either of these the dwell
+// restarts. PhysX puts a settled body to sleep and then answers nothing at all,
+// which is the same fact by a shorter route -- see the velocityOf test.
+constexpr float kFellCalmLin = 0.30f;
+constexpr float kFellCalmAng = 0.35f;
 // The chunk arrives at the chest, not at the eye -- 12 voxels under it.
 constexpr float kAbsorbY = -1.2f;
 // -- HOW CLOSE YOU HAVE TO BE FOR A CHIP TO COME TO YOU ---------------------
@@ -1358,7 +1552,20 @@ constexpr double kDebrisLifeMs = 30000.0;
 // blinks out while you are looking at it is worse than scenery that was never
 // there. It still goes eventually: a debris slot is a fixed band of 64 and the
 // wood is endless.
-constexpr double kFelledLifeMs = 1800000.0;
+// -- ONE MINUTE, NOT HALF AN HOUR -----------------------------------------
+//
+// (user 2026-09-19: "double check that the fallen debris on the ground gets
+//  cleaned up and removed in 60 seconds after starting".)
+//
+// IT DID NOT. This was 1,800,000 ms -- thirty minutes -- so a felled log, the
+// eighty chunks it breaks into and every severed piece of scenery stayed where
+// they fell for the rest of the session. The chips have always been 30 s
+// (kDebrisLifeMs); this is the run that never expired in practice.
+//
+// It covers the FELLED tree, its chunks and `scenery` (a severed cap), which
+// is the whole of what "fallen debris on the ground" means -- see the two
+// reads of it, one in the chunk spawn and one in the sweep.
+constexpr double kFelledLifeMs = 60000.0;
 
 // ...AND WHAT HAS BEEN PUT DOWN. Eight, which is the JS engine's own cap on
 // dropped items, reserved for the same reason every other band here is: an
@@ -1646,6 +1853,15 @@ class World {
     std::string birchDir = "C:/voxelbit/game/assets/foilage/birch_trees";
     // ...and the oak wood's seven, from v1's own asset folder.
     std::string oakDir = "C:/voxelbit/game/assets/foilage/oak_trees";
+    // ...AND THE SAME THREE OAKS IN BLOSSOM. Written by
+    // tools/cherry_from_oak.py, which copies oak_N.vox and rewrites four
+    // palette entries -- byte-identical geometry, so a cherry and an oak have
+    // the same footprint, the same perches and the same collider. That is what
+    // "the cherry forest uses the same trees as the oak forest" means here.
+    std::string cherryDir = "C:/voxelbit/game/assets/foilage/cherry_trees";
+    // v1's desert scatters -- nine cacti and six scrub bushes. See loadDesert.
+    std::string cactusDir = "C:/voxelbit/game/assets/foilage/cactus";
+    std::string shrubDir = "C:/voxelbit/game/assets/foilage/desert_shrub";
     int viewChunks = 12;  // ring radius, in chunks -- app_load.inl sets it
 
     // HOW MANY CHUNKS A RADIUS ACTUALLY HOLDS, counted rather than approximated.
@@ -1678,6 +1894,11 @@ class World {
         return n;
     }
     float treeDensity = 0.3210f;
+    // The oak's own share of the lattice, kept separate because an oak_7 is
+    // seventeen metres across and the spacing rejection throws away far more of
+    // what this offers than the pine's does. app_load pushes Options::oakDensity
+    // in here; ChunkMesher::oakDensity is the default if nothing does.
+    float oakDensity = 0.0975f;
     float rockDensity = 0.010f;
     float flowerDensity = 0.45f;
     float mushroomDensity = 0.015f;
@@ -1696,6 +1917,17 @@ class World {
     const ref<Buffer> &triPool() const { return pool_.buffer(); }
     const ref<Buffer> &instanceBuffer() const { return instanceInfo_; }
     const ref<Buffer> &materialBuffer() const { return materials_; }
+
+    // -- THIS ENTRY IS WORN BY SOMETHING YOU CARRY THROUGH [O] --------------
+    //
+    // The mask World::buildLevelPalette reserves out of the ARCADE's own
+    // table: one id has to mean one thing in the wood and in a map, and the
+    // held kit is the only thing drawn in both. Called by
+    // HeldItem::prewarmColors as it mints, which is before the arcade asks for
+    // anything -- see the note there for what reading it too late looked like.
+    void noteHeldMtl(uint8_t id) {
+        if (id != mat::AIR) heldMtl_[size_t(id)] = 1;
+    }
 
     // What the kept volumes cost, per kind. Reported at load rather than
     // guessed: the rocks are upscaled twice and are the whole budget.
@@ -2016,6 +2248,11 @@ class World {
         // axe in your hand comes out wearing a wall. Recorded here, where the
         // ids are in hand, rather than inferred later from the models --
         // World::buildLevelPalette only has to read the mask.
+        // ...AND HeldItem::prewarmColors WRITES IT TOO, through noteHeldMtl,
+        // because THAT is what runs before the arcade mints. This loop is
+        // still right and still needed -- a model loaded outside the prewarm
+        // list lands here and nowhere else -- but it is no longer the only
+        // writer, and it is no longer the FIRST one.
         for (int e = 1; e <= 255; ++e)
             if (used[size_t(e)] && idOfEntry[size_t(e)] != mat::AIR)
                 heldMtl_[size_t(idOfEntry[size_t(e)])] = 1;
@@ -2211,8 +2448,43 @@ class World {
     // trimming each to its own occupied bounds would shift the body sideways
     // every time a wing came up.
     // -----------------------------------------------------------------------
+    // -- ...AND HOW HARD THIS ONE MAY SHARE -------------------------------
+    //
+    // kModelMatch is the house tolerance and the note over it is the argument
+    // for the number. It is not the argument for it being the SAME number for
+    // every animal: a gecko is seven voxels of one green ramp and a cobra
+    // eighteen shades of the same tan, and at arm's length neither shows a
+    // gradient at all. The table has 255 entries, the desert's three arrived
+    // into 255 of 255, and seven colours went to AIR.
+    //
+    // So a species that can afford to share says so, and pays the foliage
+    // guard for the privilege -- see Palette::forModelColor.
+    // -- THE DEFAULT IS THE LIFE BAND'S, NOT THE HOUSE NUMBER -------------
+    //
+    // Every caller of this function is an animal, a particle or an editor
+    // gizmo -- there is no terrain and no tree on this path -- and the note
+    // over the loop below already says what that band costs: "between them they
+    // wanted 158 of the ~194 entries this palette has to give, which is what
+    // put it at 255 of 255 and started handing AIR to whatever loaded last".
+    //
+    // kModelMatch is 16 and its own note argues for the NUMBER on the evidence
+    // of a SKUNK -- a 1.3 m animal whose neutral greys go blue if they are
+    // moved. That argument is about moving a colour, not about sharing one, and
+    // it gets weaker the smaller the animal: a butterfly is five voxels across
+    // and a minnow is three.
+    //
+    // 28 IS STILL WELL INSIDE "the same shade". It is 11% of the range in one
+    // channel, and the alternative was not a prettier duck -- it was the cherry
+    // wood's pinks rendering as AIR, because the table had one entry left. A
+    // caller that genuinely cannot share says so by passing 16.
+    //
+    // AND avoidFoliage COMES WITH IT, for the reason in Palette::forModelColor:
+    // the further a colour may travel to find a neighbour, the likelier that
+    // neighbour carries behaviour.
+    static constexpr int kLifeMatch = 28;
     int addFlyerModel(const VoxModel &mo, const std::string &what, int *sx, int *sy, int *sz,
-                      bool keepVoxels = false) {
+                      bool keepVoxels = false, int matchTol = kLifeMatch,
+                      bool avoidFoliage = true) {
         VoxAsset a = toWorldWhole(mo);
         if (a.sx <= 0) {
             std::fprintf(stderr, "v2: flyer %s is empty -- skipped\n", what.c_str());
@@ -2235,7 +2507,7 @@ class World {
                 // anything else is minted exactly as authored, which is what
                 // keeps a black animal black.
                 idOfEntry[size_t(e)] = palette.forModelColor(mo.pal[size_t(e) - 1], false, false,
-                                                             Palette::kModelMatch);
+                                                             matchTol, avoidFoliage);
         uploadMaterials();
 
         const VoxMesh mesh = meshAsset(a, idOfEntry, VOXEL_M);
@@ -2421,16 +2693,50 @@ class World {
         flyerModel_[size_t(slot)] = ok ? int16_t(model) : int16_t(-1);
         flyerR_[size_t(slot)] =
             ok ? (float(flyers_[mi].sx + flyers_[mi].sy + flyers_[mi].sz) * VOXEL_M / 6.0f) : 0.0f;
+        // -- ...AND THE BOX IT IS DRAWN IN, WHICH IS NOT THE ANCHOR ABOVE ---
+        //
+        // See flyerMid_. The same arithmetic place() does when nobody hands it
+        // an anchor -- the translation carried out through the transform by the
+        // model's own half box -- kept here because place() no longer does it
+        // for these callers and a hit test needs it.
+        //
+        // THE HALF EXTENT IS THE TURNED BOX'S, |m| * h, which is the AABB of an
+        // oriented box and is exact whenever the turn is a quarter one. It also
+        // carries whatever SCALE is in the matrix, which matters: a butterfly
+        // fades in by being drawn small, and a hitbox that ignored that would
+        // be a metre of thin air round a newborn one.
+        if (ok) {
+            const float hx = 0.5f * float(flyers_[mi].sx) * VOXEL_M;
+            const float hy = 0.5f * float(flyers_[mi].sy) * VOXEL_M;
+            const float hz = 0.5f * float(flyers_[mi].sz) * VOXEL_M;
+            flyerMid_[size_t(slot)] = Vec3{tx + m[0] * hx + m[1] * hy + m[2] * hz,
+                                           ty + m[3] * hx + m[4] * hy + m[5] * hz,
+                                           tz + m[6] * hx + m[7] * hy + m[8] * hz};
+            flyerHalf_[size_t(slot)] =
+                Vec3{fabsf(m[0]) * hx + fabsf(m[1]) * hy + fabsf(m[2]) * hz,
+                     fabsf(m[3]) * hx + fabsf(m[4]) * hy + fabsf(m[5]) * hz,
+                     fabsf(m[6]) * hx + fabsf(m[7]) * hy + fabsf(m[8]) * hz};
+        } else {
+            flyerMid_[size_t(slot)] = Vec3{0, 0, 0};
+            flyerHalf_[size_t(slot)] = Vec3{0, 0, 0};
+        }
         flyersDirty_ = true;
     }
 
     // -----------------------------------------------------------------------
     // WHERE A DRAWN FLYER IS AND HOW BIG IT IS.
     //
+    // `at` IS THE MIDDLE OF THE MODEL BOX, and it used to be `wasAt_` -- see
+    // flyerMid_ for what that field turned into and how far under a rabbit it
+    // put this answer. Everything that asks "where is this animal" gets the
+    // animal now: the aim test, the arrow, the corpse burst and /locate.
+    //
     // `r` is the MEAN half-extent, which is v1's own choice for its aim test
     // and it says why: "a sphere drawn around the corners of the box is far
     // wider than the animal actually looks, and that generosity is the
-    // complaint being fixed."
+    // complaint being fixed." It is kept for RANKING and for reach -- how near
+    // is the nearest bunny -- and is no longer what a hit is decided against.
+    // See flyerBox.
     //
     // A SLOT WITH MASK 0 ANSWERS FALSE. That is the whole of "is this animal
     // on the field" as far as anything outside the population is concerned --
@@ -2441,8 +2747,34 @@ class World {
         const size_t idx = size_t(flyerBase_ + slot);
         if (idx >= instanceDescs_.size() || !instanceDescs_[idx].instanceMask) return false;
         if (flyerModel_[size_t(slot)] < 0) return false;
-        if (at) *at = Vec3(wasAt_[idx].x, wasAt_[idx].y, wasAt_[idx].z);
+        if (at) *at = flyerMid_[size_t(slot)];
         if (r) *r = flyerR_[size_t(slot)];
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // ...AND THE BOX ITSELF, WHICH IS WHAT A HIT IS DECIDED AGAINST.
+    //
+    // A SPHERE OF THE MEAN HALF-EXTENT IS WRONG IN BOTH DIRECTIONS AT ONCE and
+    // the grass snake is the clearest case: 0.5 x 1.7 m drawn, so the mean is
+    // 0.37 m -- a ball that does not reach either end of the animal and sticks
+    // out past both its sides. Shooting the head or the tail of a snake missed;
+    // shooting the grass beside its middle hit. Measured over the band, the
+    // mean half-extent is 0.4 to 2.6 times the true half extent depending on
+    // the axis and the species, and the species it is WORST for are the long
+    // thin ones a player has to aim at carefully.
+    //
+    // The box is the honest shape and the caller tests against it directly --
+    // a point for an arrow, a segment for a shaft between two frames, a ray for
+    // the crosshair. See ai/lifehit.h, which does all three.
+    // -----------------------------------------------------------------------
+    bool flyerBox(int slot, Vec3 *mid, Vec3 *half) const {
+        if (slot < 0 || slot >= kFlyerInstances || flyerBase_ < 0) return false;
+        const size_t idx = size_t(flyerBase_ + slot);
+        if (idx >= instanceDescs_.size() || !instanceDescs_[idx].instanceMask) return false;
+        if (flyerModel_[size_t(slot)] < 0) return false;
+        if (mid) *mid = flyerMid_[size_t(slot)];
+        if (half) *half = flyerHalf_[size_t(slot)];
         return true;
     }
 
@@ -2670,7 +3002,8 @@ class World {
         if (idx >= instanceDescs_.size()) return;
         const Debris &d = debris_[slot];
         const bool own = d.blas.valid();
-        if (!d.live || (!own && !d.borrowAs)) {
+        // AN UNSEEN PIECE IS DRAWN THE WAY A DEAD SLOT IS -- see Debris::unseen.
+        if (!d.live || d.unseen || (!own && !d.borrowAs)) {
             instanceDescs_[idx].instanceMask = 0;
             debrisDirty_ = true;
             return;
@@ -2759,6 +3092,28 @@ class World {
         d.tint = float3(1.0f, 1.0f, 1.0f);
         d.felled = false;
         d.scenery = false;
+        // -- ...AND NEITHER MAY THESE THREE ------------------------------
+        //
+        // STATE THAT BELONGS TO THE LAST OCCUPANT AND MUST NOT OUTLIVE IT --
+        // the same class of bug as the corpse's hurtT0, which spawnPiece has a
+        // long note about: eight slots carried a stale flash from the last
+        // rabbit and the next chip of stone cut in one of them was retired at
+        // 500 ms, which looked like a completely different feature.
+        //
+        // `loot` waives kAbsorbSize and `lifeMs` overrides the kind's lifetime,
+        // and neither is cleared by the two spawn paths: makeLooseBody assigns
+        // a fresh `Debris{}` and is safe, but spawnPiece sets fields one at a
+        // time -- so a slot that had held a piece of a felled tree would hand
+        // the next chip of rock a half-hour life and a size exemption, and a
+        // slot that had held a level chip would hand it kLevelChipLifeMs.
+        // Clearing them at the one door every slot leaves by is what makes that
+        // impossible rather than merely unlikely.
+        d.loot = false;
+        d.noBreak = false;
+        d.lifeMs = -1.0;
+        d.calmT0 = -1e9;
+        d.fellPeak = 0.0f;
+        d.hitT0 = -1e9;
         // Structure and triangles both go back, once the device is done with
         // them -- a chunk that vanished this frame was still being drawn last
         // frame. See retireLoose.
@@ -2961,28 +3316,60 @@ class World {
         uploadMaterials();
     }
 
-    // -- WHICH TABLE THE DEVICE IS HOLDING ----------------------------------
+    // -- TWO TABLES IN ONE BUFFER, AND NOTHING IS EVER SWAPPED --------------
     //
-    // The wood's, or the level's -- see Palette::beginLevelTable. Swapped at
-    // the door by setLevel and nowhere else, because the two places are never
-    // in the acceleration structure together and one upload is 255 entries.
+    // (user 2026-09-18: "cant you give me seperate tables? one palete table
+    // for the sandbox world and one for the arcade with the fps maps".)
     //
-    // EVERY OTHER CALLER OF THIS STILL WORKS. A model loaded while the level is
-    // open would re-upload the level's table, which is correct: it is the table
-    // in force. Nothing loads models in there today.
+    // THE WOOD'S mat::COUNT ENTRIES ARE THE LOWER HALF AND THE LEVEL'S ARE THE
+    // UPPER HALF. Both go up together, every time, from every caller this
+    // function already had. Which half a ray reads is `V6Params::matBase` --
+    // 0 in the wood, mat::COUNT in the level -- one uint in a constant buffer
+    // that is rewritten every frame anyway. The material id in the mesh stays
+    // a uint8 and nothing about the geometry, the BLAS or the collider changes.
+    //
+    // THIS IS THE THIRD ATTEMPT AT A PER-PLACE TABLE AND THE FIRST THAT WORKS,
+    // for one reason: it does not do the thing the other two did. Both of
+    // those kept a single 255-entry buffer and SWAPPED ITS CONTENTS at the
+    // door -- once by rebuilding the buffer, once by updating it in place --
+    // and neither ever reached the screen. That was measured hard at the time:
+    // entry 243 was forced to pure magenta, the upload printed (1,0,1) going
+    // in, the level's mesh really did carry id 243 on 552,327 voxels, and the
+    // map still rendered in the WOOD's colours. Nobody found out why, and this
+    // does not need anybody to: THERE IS NO SWAP. The buffer is written with
+    // both tables in it by the same start-up calls that always wrote it, and
+    // the door does not touch it.
+    //
+    // WHY IT IS SAFE TO GIVE THE LEVEL A WHOLE TABLE: the wood is not in the
+    // acceleration structure while the level is open (see setLevel), so the
+    // two can never disagree on screen about what entry 243 means.
     void uploadMaterials() {
-        const std::vector<MaterialLook> &src =
-            (levelTableActive_ && palette.hasLevelTable()) ? palette.levelTable() : palette.table();
-        std::vector<V6Material> mats(src.size());
-        for (size_t i = 0; i < mats.size(); ++i) {
-            const MaterialLook &m = src[i];
-            mats[i].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
-            mats[i].roughness = m.roughness;
-            mats[i].specular = m.specular;
-            mats[i].translucency = m.translucency;
-            mats[i].alpha = m.alpha;
+        const std::vector<MaterialLook> &wood = palette.table();
+        const size_t half = wood.size();
+        std::vector<V6Material> mats(half * 2);
+        auto put = [&](size_t dst, const MaterialLook &m) {
+            mats[dst].albedo = float3(m.albedo.x, m.albedo.y, m.albedo.z);
+            mats[dst].roughness = m.roughness;
+            mats[dst].specular = m.specular;
+            mats[dst].translucency = m.translucency;
+            mats[dst].alpha = m.alpha;
             // See V6Material::ior -- 0 for everything that is not the smoke.
-            mats[i].ior = m.ior;
+            mats[dst].ior = m.ior;
+        };
+        const bool haveLevel = palette.hasLevelTable();
+        for (size_t i = 0; i < half; ++i) {
+            put(i, wood[i]);
+            // -- AN ENTRY THE LEVEL NEVER MINTED IS THE WOOD'S, AND LIVE -----
+            //
+            // Not the frozen copy beginLevelTable took. Everything drawn in
+            // BOTH places has to agree: the held kit that walks through the
+            // door with you, the fixed mat:: band the map borrows for its
+            // lawns, the wood's flower models that dressLevel stamps into it.
+            // Reading the wood's CURRENT entry wherever the level did not mint
+            // one makes all of that agree by construction, and leaves the two
+            // halves differing in exactly the places the level paid for.
+            put(half + i, (haveLevel && palette.levelOwns(uint8_t(i))) ? palette.levelTable()[i]
+                                                                       : wood[i]);
         }
         // -- IN PLACE IF IT CAN BE, AND IT ALWAYS CAN ------------------------
         //
@@ -2995,13 +3382,11 @@ class World {
         //
         // It went unnoticed for as long as it did because every previous caller
         // ran while the world was loading, before the tracer had bound
-        // anything. Swapping the level's table at the door is the first caller
-        // that does not, and the symptom was the map rendering in the WOOD's
-        // colours: concrete came out at the wood's entry 243, which is a red.
-        // The host print said the level's table had been uploaded, and it had.
+        // anything.
         //
-        // The table is mat::COUNT entries whichever place is open, so the
-        // capacity never changes and the update is a straight overwrite.
+        // The buffer is 2 * mat::COUNT entries from the first upload onward --
+        // the capacity never changes with what is in it, so the update is
+        // always a straight overwrite and the in-place branch always wins.
         const uint32_t n = uint32_t(mats.size());
         if (materials_ && materials_->getElementCount() == n) {
             ctx_->updateBuffer(materials_.get(), mats.data(), 0, n * sizeof(V6Material));
@@ -3708,6 +4093,42 @@ class World {
         Blas b = recordLooseBuild(mesh);
         if (!b.valid()) return false;
 
+        // -------------------------------------------------------------------
+        // THE BODY STANDS AT ITS OWN MIDDLE, NOT AT ITS PARENT'S ORIGIN.
+        //
+        // The caller hands over the parent's pose and an offset from it, which
+        // is the honest way to describe where these voxels ARE -- and it is not
+        // a place to put a body. Everything in updateDebris that asks a
+        // question about a piece asks it of `pos`: how near is the player, what
+        // is the ground under it, is it still inside the ring. A felled tree's
+        // origin is the model's base CORNER, so a crown chunk twelve metres up
+        // and eight metres along reported all three of those about the stump.
+        //
+        // MEASURED, --fell-test: 23 pieces of a felled pine, player standing
+        // 1.6 m from one of them with kFellLootReachM at 2.6 -- "19 pieces left
+        // of 19, WRONG, nothing was collected". Every piece was measuring its
+        // distance from the butt of the tree. The same field is the anchor the
+        // absorb FLIGHT lerps, so a piece that had been collected would have
+        // flown its own offset past the player's head.
+        //
+        // NOTHING MOVES. The origin steps to the box centre and the offset
+        // steps back by the same vector in the same frame, so the drawn mesh
+        // and the collider boxes -- which are built from the offset below --
+        // land exactly where they were. See breakDebris, whose log halves get
+        // this for free: their floor backstop was wrong in the same way and
+        // nobody could see it, because a chopped log is `felled` and a felled
+        // body is exempt from the clamp.
+        // -------------------------------------------------------------------
+        const float hxM = 0.5f * float(sx) * VOXEL_M, hyM = 0.5f * float(sy) * VOXEL_M,
+                    hzM = 0.5f * float(sz) * VOXEL_M;
+        const Vec3 mid{originOff.x + hxM, originOff.y + hyM, originOff.z + hzM};
+        float rot[9];
+        quatMat3(quat, rot);
+        const Vec3 at{pos.x + rot[0] * mid.x + rot[1] * mid.y + rot[2] * mid.z,
+                      pos.y + rot[3] * mid.x + rot[4] * mid.y + rot[5] * mid.z,
+                      pos.z + rot[6] * mid.x + rot[7] * mid.y + rot[8] * mid.z};
+        const Vec3 off{-hxM, -hyM, -hzM};
+
         // ---- ...and as a collider ------------------------------------------
         //
         // THE CELL IS HALVED WHEN IT IS TOO COARSE TO HOLD ANYTHING, which is
@@ -3722,7 +4143,7 @@ class World {
             const int cx = (sx + q - 1) / q, cy = (sy + q - 1) / q, cz = (sz + q - 1) / q;
             const int need = maxi(1, int(float(q * q * q) * kFellFillFrac));
             greedyBoxes(
-                cx, cy, cz, originOff, cell,
+                cx, cy, cz, off, cell,
                 [&](int i, int j, int k) {
                     // A TREE'S COLLIDER IS ITS WOOD -- fellTree's rule, and the
                     // same reason: a crown collider is a fat cone that cannot
@@ -3758,7 +4179,7 @@ class World {
         // IT IS BORN WEARING THE ROTATION ITS PARENT HAD. A half of a log that
         // was lying down has to be lying down -- see addCompoundBody's quat.
         const int phys =
-            ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()), pos, 0.0f,
+            ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()), at, 0.0f,
                                wood ? kTimberDensity : kStoneDensity, quat);
         if (phys < 0) {
             retireLoose(std::move(b), TriPool::kInvalid, 0);
@@ -3799,13 +4220,38 @@ class World {
         d.vsx = sx;
         d.vsy = sy;
         d.vsz = sz;
-        d.originOff = originOff;
-        d.halfM[0] = 0.5f * float(sx) * VOXEL_M;
-        d.halfM[1] = 0.5f * float(sy) * VOXEL_M;
-        d.halfM[2] = 0.5f * float(sz) * VOXEL_M;
-        d.pos = pos;
+        d.originOff = off;
+        d.halfM[0] = hxM;
+        d.halfM[1] = hyM;
+        d.halfM[2] = hzM;
+        d.pos = at;
         for (int k = 0; k < 4; ++k) d.quat[k] = quat[k];
-        d.winCentre = pos;
+        d.winCentre = at;
+        // -------------------------------------------------------------------
+        // ...AND IT IS A LONG BODY IF IT IS LONG, WHICH THIS PATH NEVER SAID.
+        //
+        // (user 2026-09-19: "felled items still glitch on the ground. this was
+        //  addressed with the light pole on the nuketown map.")
+        //
+        // AND IT IS THE SAME BUG, EXACTLY. kLongBodyM's own note lists the two
+        // ways a long body treated as a chip fails, and both of them apply to
+        // every piece this function has ever made:
+        //
+        //   * updateDebris re-centres a chip's collider on the FIXED 3.2 m cube
+        //     (buildWindow) the moment it drifts kWinRecentreM. The bounds
+        //     window built five lines below is correct at birth and is thrown
+        //     away on the first re-centre, so a 5.8 m chunk of oak ends up with
+        //     colliders under its middle and none under its ends.
+        //   * the floor backstop clamps its ORIGIN half its own height above
+        //     the ground -- 2.9 m for that chunk -- which holds it in the air
+        //     and leaves it fighting the solver there.
+        //
+        // spawnPiece has set this since the light poles were fixed; this
+        // function was written before it existed and was never told. A felled
+        // tree's own body is exempt by `felled`, which is why the whole thing
+        // only shows once the tree has BROKEN and the pieces stop being felled.
+        // -------------------------------------------------------------------
+        d.longBody = 2.0f * maxf(hxM, maxf(hyM, hzM)) > kLongBodyM;
         {
             Vec3 lo{0, 0, 0}, hi{0, 0, 0};
             if (ph.boundsOf(phys, &lo, &hi)) {
@@ -3817,6 +4263,782 @@ class World {
         setDebrisInstance(slot, d.pos, d.quat);
         debrisDirty_ = true;
         return true;
+    }
+
+    // =======================================================================
+    // A FELLED TREE BREAKS WHEN IT LANDS, AND THE PIECES ARE LOOT.
+    //
+    // (user 2026-09-19: "implement the mechanic from v1 where when the tree
+    //  lands on the ground it breaks up into smaller chunks that can then be
+    //  absorbed by the player".)
+    //
+    // v1's phShatterTree, which was itself written to the same instruction --
+    // "can you make the trees break in pieces when it falls over? not at the
+    // moment the player chomps the tree down, but the moment the tree hits the
+    // terrain. Then the player can just absorb the tree all in one go." Both
+    // halves are here: the break, and `loot`, which is what turns a felled
+    // trunk from scenery into something you can carry.
+    //
+    // ---- WHY THE PIECES ARE GROWN AND NOT DICED --------------------------
+    //
+    // A SPATIAL GRID CANNOT MAKE THEM THE SAME SIZE. A crown is dense in the
+    // middle and thin at the rim, so equal BOXES hold wildly unequal numbers of
+    // voxels -- v1 measured a 4x spread out of cells that were all the same
+    // shape. Counting is the only way to make the size the constant.
+    //
+    // A PIECE MUST ALSO BE ONE CONNECTED LUMP. v1: "make it where chunks voxels
+    // have to be touching eachother and cannot be seperated by air" -- a piece
+    // holding two blobs bound together only by the body transform leaves the far
+    // one hanging in mid air, which is a floating voxel by another name and this
+    // engine has a rule about those.
+    //
+    // So all K pieces grow AT ONCE from K seeds spread through a Morton
+    // ordering, claiming ONE cell each per round. v1 arrived at exactly this
+    // after two attempts that each got one of the two properties:
+    //
+    //   * growing pieces one at a time lets a greedy blob take its quota and
+    //     walk past cells that then have nobody to join;
+    //   * claiming a whole SHELL per round is not a fixed amount of growth --
+    //     a seed inside a solid trunk claims 26 cells in the round a seed out
+    //     on a one-voxel branch claims two, so the frontiers advance at the
+    //     same rate in ROUNDS and wildly different rates in VOXELS.
+    //
+    // One cell per piece per round makes the growth RATE the constant, so every
+    // piece still growing has the same count at every moment.
+    //
+    // ---- ...AND BOUNDED IN EXTENT, NOT ONLY IN COUNT ---------------------
+    //
+    // Also v1's, also measured: "the birch is leaving these long trunks in
+    // tact". A bole is a few voxels across, so the only direction a seed inside
+    // it can grow is ALONG the trunk and the same 300 voxels come out as a rod
+    // -- 4 x 56 x 7, against a median longest axis of 16. A cell that would push
+    // a piece's bounding box past `span` on any axis is refused; refusing is not
+    // discarding, because the fill pass below picks it up.
+    //
+    // THE SPAN SCALES WITH THE PIECE, which v1's fixed 22 did not have to. v1
+    // had 256 body slots and its biggest tree was 86k voxels; this engine has
+    // 64 and its oaks are 460k, so a piece here is up to twenty times the size
+    // and 22 voxels of box could not hold one however dense it was. The cube
+    // root of the quota is the honest scale for a lump of that many voxels, and
+    // 3x it is loose enough that a piece can be a log rather than a die.
+    //
+    // ---- WHAT THE SLOT TABLE COSTS ---------------------------------------
+    //
+    // K IS BOUNDED BY THE FREE SLOTS and that is the whole budget. A tree
+    // therefore comes apart into FEWER, BIGGER pieces in a busy scene rather
+    // than losing any of itself, and kFellSlotsKeep is held back so that felling
+    // a tree does not leave the world unable to cut anything else.
+    //
+    // ...AND EVERY PIECE IS COLLECTABLE WHATEVER ITS SIZE. kAbsorbSize is 600
+    // voxels and a piece of a 460k-voxel oak is thousands, so on size alone
+    // every one of them would be refused -- v1 hit this exactly ("I want the
+    // player to be able to absorb the entire tree that fell") and answered it
+    // the same way: the limit exists to stop someone pocketing a hillside, and
+    // a tree they have just felled is the one mass they are owed. Debris::loot
+    // is that exemption. It is NOT a licence to vacuum: the pieces also carry
+    // kFellLootReachM, so they are walked up to rather than drawn in from
+    // across the clearing.
+    // =======================================================================
+    // The worst shatter this run, so the console says what it cost rather
+    // than the player having to feel it. Only a new record prints.
+    // -----------------------------------------------------------------------
+    // CHUNKS WAITING TO BE BUILT -- the deferred half of a shatter.
+    //
+    // (user 2026-09-19: "can you continue to optimize the hitching caused by
+    //  the chunks breaking apart".)
+    //
+    // MEASURED, and the measurement is why the fix is a queue rather than a
+    // faster loop: a felled oak took 271 ms, of which the flood-fill partition
+    // was 110 ms and BUILDING THE BODIES was 135 -- a mesh and a BLAS each,
+    // 1.7 ms a piece, eighty times over. Three attempts to make the partition
+    // cheaper bought 9 ms between them (see [[v2-shatter-cost]]); the bodies
+    // are irreducible work, and there are twice as many of them now that a
+    // chunk is half the size.
+    //
+    // So they are not all built on the frame the tree lands. The partition
+    // still happens at once -- it has to, it is one pass over the whole volume
+    // -- and the pieces it produces are drained a few per frame. A tree comes
+    // apart over about a second instead of stopping the game for a sixth of
+    // one, and the player sees it break up rather than blink.
+    //
+    // EACH ENTRY CARRIES ITS PARENT'S MOTION, because by the time it is built
+    // the parent slot has been retired and there is nothing left to ask. That
+    // is also why the velocity is copied and not re-read: the pieces of one
+    // tree should fly apart as one tree did, not as whatever the physics is
+    // doing several frames later.
+    // -----------------------------------------------------------------------
+    struct PendingChunk {
+        std::vector<uint8_t> vox;
+        int sx = 0, sy = 0, sz = 0;
+        Vec3 off{0, 0, 0}, pos{0, 0, 0}, lin{0, 0, 0}, ang{0, 0, 0};
+        float3 tint{1.0f, 1.0f, 1.0f};
+        float quat[4] = {0, 0, 0, 1};
+        uint8_t takesAs = 0;
+        double bornMs = 0.0;
+    };
+    std::vector<PendingChunk> shatterQueue_;
+    // THE BODY STANDING IN FOR THE BATCH, and the birthday that proves it is
+    // still the same body -- a slot can be retired and reused by anything while
+    // the queue drains, and retiring an innocent stranger at the reveal would
+    // delete a piece of the world at random. -1 when nothing is coming apart.
+    int shatterParent_ = -1;
+    double shatterParentBorn_ = 0.0;
+    // ...and the same pair for the one frame between showing the pieces and
+    // retiring the tree they came out of -- see revealShatter.
+    int shatterRetire_ = -1;
+    double shatterRetireBorn_ = 0.0;
+    // The slots built so far for this batch, all of them unseen until the last.
+    std::vector<int> shatterShown_;
+
+    // HOW MANY A FRAME. The drain must never be the thing that hitches, so
+    // this is the only knob that matters now that the break frame itself
+    // builds nothing: 24 pieces at about 1.2 ms each is 29 ms, and 160 pieces
+    // come apart over seven frames.
+    //
+    // NOBODY SEES THOSE SEVEN FRAMES any more -- the tree stands in for its
+    // own pieces until the last one is ready (see revealShatter) -- so this is
+    // purely a question of how long the tree lies there whole after the cut.
+    // A tenth of a second reads as the blow landing; much longer would read as
+    // the tree ignoring it.
+    static constexpr int kShatterPerFrame = 24;
+    // HOW LONG A BATCH MAY SIT UNDRAINED before it is abandoned -- see the
+    // give-up in drainShatterQueue. Two seconds is far longer than the seven
+    // frames a healthy drain takes and far shorter than the minute a chunk
+    // holds its slot for, so it only ever fires on a genuinely full table.
+    static constexpr double kShatterGiveUpMs = 2000.0;
+
+    // Builds up to kShatterPerFrame of them. Called once a frame from update.
+    void drainShatterQueue(Physics &ph, double nowMs) {
+        // LAST FRAME'S TREE, whose pieces are already on screen.
+        if (shatterRetire_ >= 0) retireShatterParent(ph);
+        // -- A JAMMED BATCH MUST NOT FREEZE EVERY FUTURE TREE -----------
+        //
+        // (user 2026-09-19: "sometimes the tree doesnt even break into chunks.
+        //  audit that.")
+        //
+        // The one-batch rule in shatterFelled refuses a second tree while one
+        // is coming apart, on the argument that the caller asks every frame so
+        // it is a wait of a few frames. That holds only while the queue DRAINS,
+        // and it stops draining when the table has no free slot -- which is
+        // exactly the state a felled wood is in, because a chunk holds its slot
+        // for kFelledLifeMs. The queue then sits, `shatterParent_` stays set,
+        // and NOTHING in the world can break again until it clears. A tree you
+        // cut in that window simply lies there whole.
+        //
+        // So the batch gives up. Its parent is left standing as an unbroken
+        // felled tree -- which is a worse picture than chunks and a far better
+        // one than a wood where felling has silently stopped working -- and
+        // `noBreak` is lifted so the ordinary trigger can try it again once
+        // there is room.
+        if (!shatterQueue_.empty() && shatterParent_ >= 0 &&
+            nowMs - shatterQueue_.front().bornMs > kShatterGiveUpMs) {
+            std::printf("  shatter  GAVE UP on %d queued chunk(s) after %.1f s -- no free slots\n",
+                        int(shatterQueue_.size()), kShatterGiveUpMs * 0.001);
+            std::fflush(stdout);
+            shatterQueue_.clear();
+            for (int slot : shatterShown_)
+                if (slot >= 0 && slot < kDebrisInstances && debris_[slot].unseen)
+                    retireDebris(ph, slot);
+            shatterShown_.clear();
+            if (shatterParent_ >= 0 && shatterParent_ < kDebrisInstances &&
+                debris_[shatterParent_].live &&
+                debris_[shatterParent_].bornMs == shatterParentBorn_)
+                debris_[shatterParent_].noBreak = false;   // let it be asked again
+            shatterParent_ = -1;
+        }
+        int built = 0;
+        while (!shatterQueue_.empty() && built < kShatterPerFrame) {
+            PendingChunk &c = shatterQueue_.front();
+            int use = -1;
+            for (int i = 0; i < kDebrisInstances; ++i)
+                if (!debris_[i].live) { use = i; break; }
+            // NO SLOT: leave it queued and try again next frame. The pool
+            // drains on its own -- a chunk is gone in a minute now -- so this
+            // is a wait, not a loss.
+            if (use < 0) return;
+            // -- BORN WHERE THE TREE IS NOW, NOT WHERE IT WAS -----------
+            //
+            // (user 2026-09-19: "it seems you are teleporting the chunks from
+            //  the tree. the fellen tree chunks are very glitchy", then "the
+            //  existing object TURNS INTO chunks".)
+            //
+            // A QUEUED PIECE IS BORN LATE AND CARRIES THE POSE THE TREE HAD
+            // WHEN IT BROKE. That pose is several frames old by the time the
+            // piece is built, and a tree that has just come down is still
+            // settling -- rolling off its stump, dropping the last of its lean
+            // -- so pieces built from it materialise where the trunk used to
+            // be. That is the teleport.
+            //
+            // THE PARENT IS STILL HERE, so just ask it. It stands in for the
+            // whole batch until the reveal (see revealShatter), which means the
+            // authoritative answer to "where are these voxels" is live in the
+            // solver rather than something to extrapolate towards. An earlier
+            // version fast-forwarded the stored pose ballistically; that is a
+            // guess, it applies gravity to a tree that is already resting on
+            // the ground, and it cannot see a rotation at all.
+            //
+            // The stored pose is the fallback for the one case the parent
+            // cannot answer: it was retired under us while the queue drained.
+            Vec3 cp = c.pos, cl = c.lin, ca = c.ang;
+            float cq[4] = {c.quat[0], c.quat[1], c.quat[2], c.quat[3]};
+            if (shatterParent_ >= 0 && debris_[shatterParent_].live &&
+                debris_[shatterParent_].bornMs == shatterParentBorn_) {
+                const Debris &pd = debris_[shatterParent_];
+                cp = pd.pos;
+                for (int t = 0; t < 4; ++t) cq[t] = pd.quat[t];
+                if (pd.phys >= 0) ph.velocityOf(pd.phys, &cl, &ca);
+            }
+            if (makeLooseBody(ph, use, std::move(c.vox), c.sx, c.sy, c.sz, c.off, cp, cq,
+                              cl, ca, /*felled=*/false, /*scenery=*/false, c.takesAs,
+                              c.tint, c.bornMs, nowMs)) {
+                Debris &nb = debris_[use];
+                nb.loot = true;
+                nb.absorbR = kFellLootReachM;
+                nb.lifeMs = kFelledLifeMs;
+                nb.noBreak = true;   // see the copy in shatterFelled
+                // ...AND IT IS NOT DRAWN YET -- see Debris::unseen. The tree it
+                // came out of is still standing in for it.
+                nb.unseen = true;
+                setDebrisInstance(use, nb.pos, nb.quat);   // which hides it
+                shatterShown_.push_back(use);
+            }
+            shatterQueue_.erase(shatterQueue_.begin());
+            ++built;
+        }
+        if (shatterQueue_.empty() && shatterParent_ >= 0) revealShatter(ph);
+    }
+
+    // -----------------------------------------------------------------------
+    // THE SUBSTITUTION: the tree goes and its pieces arrive, in one frame.
+    //
+    // Called the moment the queue runs dry. Everything here is a flag flip and
+    // an instance write -- the expensive half was paid a few frames ago, spread
+    // out, which is the whole point of the arrangement.
+    //
+    // THE PARENT IS CHECKED, NOT ASSUMED. Its slot may have been retired and
+    // handed to something else while the queue drained (the ring unloaded its
+    // chunk, its life ran out, the player absorbed it), so the birthday has to
+    // match or the retire is skipped. Getting this wrong deletes a body chosen
+    // at random from the world.
+    // -----------------------------------------------------------------------
+    void revealShatter(Physics &ph) {
+        // -- THE PIECES FIRST, THE TREE NEXT FRAME ----------------------
+        //
+        // (user 2026-09-19: "when the tree breaks into chunks, right at the
+        //  moment of transition. it dissapears. prevent that from happening.")
+        //
+        // THIS USED TO RETIRE THE PARENT HERE, one line above showing the
+        // pieces. Both writes go into the same instance array and are uploaded
+        // together, so in principle there is no frame with neither -- but the
+        // TLAS is rebuilt from inside this function and the upload happens
+        // after it returns, and that is a window the size of exactly the
+        // artifact reported: one frame in which the tree is already gone and
+        // its chunks are not yet in the structure.
+        //
+        // So the two are SEPARATED BY A FRAME instead, in the safe direction.
+        // The pieces appear now; the parent is retired at the top of the next
+        // drain. For that one frame the tree and its chunks are both drawn --
+        // and they are the same voxels in the same places, because a chunk is
+        // born exactly where its part of the tree was, so the overlap reads as
+        // the tree rather than as a doubling.
+        //
+        // OVERLAP IS CHEAP AND A GAP IS NOT. A frame of the tree twice is
+        // invisible; a frame of nothing is the thing being complained about.
+        shatterRetire_ = shatterParent_;
+        shatterRetireBorn_ = shatterParentBorn_;
+        shatterParent_ = -1;
+        for (int slot : shatterShown_) {
+            if (slot < 0 || slot >= kDebrisInstances) continue;
+            Debris &nb = debris_[slot];
+            if (!nb.live || !nb.unseen) continue;
+            nb.unseen = false;
+            setDebrisInstance(slot, nb.pos, nb.quat);
+        }
+        shatterShown_.clear();
+        rebuildTlas();
+    }
+
+    // ...AND THE FRAME AFTER THAT, THE TREE GOES. See revealShatter: the two
+    // are deliberately a frame apart so there is never a frame with neither.
+    //
+    // THE BIRTHDAY IS CHECKED, NOT ASSUMED -- the slot may have been retired
+    // and handed to something else in the meantime, and retiring a stranger
+    // deletes a body chosen at random from the world.
+    void retireShatterParent(Physics &ph) {
+        const int p = shatterRetire_;
+        shatterRetire_ = -1;
+        if (p >= 0 && p < kDebrisInstances && debris_[p].live &&
+            debris_[p].bornMs == shatterRetireBorn_)
+            retireDebris(ph, p);
+    }
+
+    double shatterWorstMs_ = 0.0;
+    double shatterBodyMs_ = 0.0;
+    double shatterWalkMs_ = 0.0, shatterSortMs_ = 0.0, shatterFloodMs_ = 0.0;
+    int shatterCells_ = 0, shatterBox_ = 0;
+
+    int shatterFelled(Physics &ph, int slot, double nowMs) {
+        if (slot < 0 || slot >= kDebrisInstances) return 0;
+        // ONE TREE COMES APART AT A TIME. The queue is one list and the reveal
+        // is one moment, so a second tree breaking mid-drain would be revealed
+        // with the first one's pieces and would retire the wrong parent. The
+        // caller asks every frame, so this is a wait of a few frames, not a
+        // refusal -- the same contract `room` below has.
+        if (shatterParent_ >= 0) return 0;
+        Debris &d = debris_[slot];
+        if (!d.live || d.absorbing || d.vox.empty()) return 0;
+        const int nx = d.vsx, ny = d.vsy, nz = d.vsz;
+        if (nx <= 0 || ny <= 0 || nz <= 0) { d.noBreak = true; return 0; }
+        const size_t plane = size_t(nx) * size_t(nz);
+        auto ix = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(nx) + size_t(y) * plane;
+        };
+
+        // ---- HOW MANY PIECES THERE IS ROOM FOR, DECIDED BEFORE ANY WORK ---
+        //
+        // v1's own ordering note: this test used to sit after the bbox scan,
+        // the cell build and an n log n sort, all of which a refused break threw
+        // away and redid on the very next frame, forever, on a body of tens of
+        // thousands of cells. It needs the count and nothing else.
+        // -- ONE WALK OF THE VOLUME, NOT THREE --------------------------
+        //
+        // (user 2026-09-19: "theres hitching when a tree breaks into chunks.
+        //  optimize and fix it".)
+        //
+        // MEASURED FIRST, and the measurement is the whole reason this is the
+        // change that was made. A felled oak took 275 ms to come apart -- a
+        // sixteen-frame stall -- and the split was 129 ms building the eighty
+        // bodies against 146 ms in the partition below. Halving the chunk
+        // count to forty moved the total to 240: the bodies halved with it and
+        // THE PARTITION DID NOT MOVE. It is per-VOLUME, not per-chunk.
+        //
+        // AND THE VOLUME IS ALMOST ALL AIR. The load report says it: a tree
+        // model is 4% solid. This function walked the whole box three times --
+        // once to count, once for the lower bound, once to fill the cell list
+        // -- so it paid twenty-five cells of air for every voxel of wood, three
+        // times over.
+        //
+        // The three are one now. The bounds fall out of the same visit that
+        // collects the cell, and the Morton code moves to its own pass over
+        // the COMPACT list, which is 4% of the work it was. Three walks of the
+        // box become one walk plus one walk of the wood.
+        //
+        // RESERVED AT A SIXTEENTH, which is generous against the measured 4%
+        // and still four times smaller than the box; a tree denser than that
+        // costs one regrow, not twenty-five.
+        const auto pA = std::chrono::steady_clock::now();
+        std::vector<uint32_t> cells;
+        cells.reserve(d.vox.size() / 16 + 16);
+        int lox = nx, loy = ny, loz = nz;
+        for (int y = 0; y < ny; ++y)
+            for (int z = 0; z < nz; ++z)
+                for (int x = 0; x < nx; ++x) {
+                    const size_t i0 = ix(x, y, z);
+                    if (d.vox[i0] == mat::AIR) continue;
+                    cells.push_back(uint32_t(i0));
+                    if (x < lox) lox = x;
+                    if (y < loy) loy = y;
+                    if (z < loz) loz = z;
+                }
+        const int count = int(cells.size());
+        if (count < 2) { d.noBreak = true; return 0; }   // a lone voxel is not a chunk
+        // NO +1 ANY MORE. It used to count this body's own slot, which was
+        // about to be freed by the retire below; the parent now stands in until
+        // the batch is ready (see the note at the queue) and its slot is not
+        // available to its own pieces. Capped at one tree's SHARE of the table
+        // either way -- see kFellSlotsShare.
+        const int room = mini(debrisFree() - kFellSlotsKeep, kFellSlotsShare);
+        if (room < 2) return 0;   // no room yet: the caller asks again
+        const int K = maxi(2, mini((count + kFellChunkVox - 1) / kFellChunkVox, room));
+        const int cap = maxi(kFellChunkVox, (count + K - 1) / K);
+        const int span = maxi(kFellChunkSpan, 3 * int(std::cbrt(double(cap)) + 0.5));
+
+        // ---- THE CELLS, IN MORTON ORDER -----------------------------------
+        //
+        // Interleaving the bits keeps a run of the ordering spatially COMPACT,
+        // so seeds taken at even intervals along it are spread through the tree
+        // rather than bunched down one axis -- and a leftover grown in this
+        // order starts next to the last one. It is the reason to pay for a sort
+        // at all; sorting on one axis would give the same counts and terrible
+        // shapes. A 3-pass LSD radix on the 24-bit code: eight bits an axis is
+        // exact, because a model box is at most 256 voxels on a side.
+        // (the bounds and the cell list both came out of the single walk above)
+        // NOT `cells(size_t(count))`. That is the most vexing parse -- with
+        // `count` a variable, `size_t(count)` still reads as a parameter
+        // declaration, so the line declares a FUNCTION and every use of it
+        // afterwards is "subscript requires array or pointer type". A named
+        // size cannot be read that way.
+        shatterWalkMs_ = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - pA).count();
+        shatterCells_ = count;
+        shatterBox_ = int(d.vox.size());
+        const auto pB = std::chrono::steady_clock::now();
+        const size_t nCell = size_t(count), nK = size_t(K);
+        std::vector<uint32_t> code(nCell);
+        {
+            const auto mort = [](uint32_t x, uint32_t y, uint32_t z) {
+                uint32_t m = 0;
+                for (int q = 0; q < 8; ++q)
+                    m |= ((x >> q) & 1u) << (3 * q) | ((y >> q) & 1u) << (3 * q + 1) |
+                         ((z >> q) & 1u) << (3 * q + 2);
+                return m;
+            };
+            // OVER THE WOOD, not over the box -- see the walk above. `cells`
+            // is already in volume order, which is the order the box walk
+            // produced, so the Morton code is the only thing left to compute.
+            for (size_t q = 0; q < nCell; ++q) {
+                const uint32_t i0 = cells[q];
+                const int y = int(i0 / uint32_t(plane));
+                const uint32_t r = i0 - uint32_t(y) * uint32_t(plane);
+                const int z = int(r / uint32_t(nx));
+                const int x = int(r - uint32_t(z) * uint32_t(nx));
+                code[q] = mort(uint32_t(x - lox), uint32_t(y - loy), uint32_t(z - loz));
+            }
+            std::vector<uint32_t> tc(nCell), tm(nCell);
+            uint32_t *sc = cells.data(), *sm = code.data(), *dc = tc.data(), *dm = tm.data();
+            int cnt[256];
+            for (int sh = 0; sh < 24; sh += 8) {
+                for (int q = 0; q < 256; ++q) cnt[q] = 0;
+                for (int q = 0; q < count; ++q) ++cnt[(sm[q] >> sh) & 255u];
+                for (int q = 0, acc = 0; q < 256; ++q) { const int c = cnt[q]; cnt[q] = acc; acc += c; }
+                for (int q = 0; q < count; ++q) {
+                    const int p = cnt[(sm[q] >> sh) & 255u]++;
+                    dc[p] = sc[q];
+                    dm[p] = sm[q];
+                }
+                std::swap(sc, dc);
+                std::swap(sm, dm);
+            }
+            if (sc != cells.data()) std::copy(sc, sc + count, cells.begin());
+        }
+
+        // ---- THE GROW ------------------------------------------------------
+        //
+        // `own` is one int16 per voxel of the model box and is the whole of the
+        // bookkeeping: 0 unowned, q+1 for piece q. A flat array rather than a
+        // hash because the frontier probes it 26 times per claimed cell -- on a
+        // felled oak that is twelve million lookups inside one frame.
+        std::vector<int16_t> own(d.vox.size(), 0);
+        std::vector<std::vector<uint32_t>> bucket(nK), queue(nK);
+        // -- RESERVED, BECAUSE 160 VECTORS GROWING FROM EMPTY IS THE COST ---
+        //
+        // (user 2026-09-19: "theres hitching when a tree breaks into chunks.")
+        //
+        // MEASURED before anything was changed: 275 ms for eighty chunks, and
+        // 146 ms of that was this partition rather than the eighty meshes and
+        // BLASes it feeds (129 ms). A flood fill over a hundred thousand cells
+        // is not what costs -- growing a hundred and sixty heap vectors one
+        // push_back at a time is, and every regrow copies and re-faults the
+        // block.
+        //
+        // `cap` is the per-piece ceiling the loop below enforces, so a bucket
+        // never exceeds it and this is an exact reservation rather than a
+        // guess. The queue holds CANDIDATES and runs a little ahead of its
+        // bucket, so it gets the same figure with room over.
+        for (size_t k = 0; k < nK; ++k) {
+            bucket[k].reserve(size_t(cap) + 8);
+            queue[k].reserve(size_t(cap) + 32);
+        }
+        std::vector<size_t> head(nK, 0);
+        std::vector<int> bx0(size_t(K), 0), bx1(size_t(K), 0), by0(size_t(K), 0),
+            by1(size_t(K), 0), bz0(size_t(K), 0), bz1(size_t(K), 0);
+        const auto at = [&](uint32_t i, int *x, int *y, int *z) {
+            *y = int(size_t(i) / plane);
+            const size_t r = size_t(i) - size_t(*y) * plane;
+            *z = int(r / size_t(nx));
+            *x = int(r % size_t(nx));
+        };
+        uint32_t nb[26];
+        const auto nbrs = [&](uint32_t i) {
+            int x, y, z;
+            at(i, &x, &y, &z);
+            int m = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (!dx && !dy && !dz) continue;
+                        const int ax = x + dx, ay = y + dy, az = z + dz;
+                        if (ax < 0 || ay < 0 || az < 0 || ax >= nx || ay >= ny || az >= nz)
+                            continue;
+                        const size_t a = ix(ax, ay, az);
+                        if (d.vox[a] != mat::AIR) nb[m++] = uint32_t(a);
+                    }
+            return m;
+        };
+        for (int k = 0; k < K; ++k) {
+            const uint32_t start = cells[size_t(std::min<long long>(
+                count - 1, (long long)(k) * (long long)(count) / K))];
+            if (own[start]) continue;   // two seeds on one cell: the second waits
+            own[start] = int16_t(k + 1);
+            bucket[size_t(k)].push_back(start);
+            int x, y, z;
+            at(start, &x, &y, &z);
+            bx0[size_t(k)] = bx1[size_t(k)] = x;
+            by0[size_t(k)] = by1[size_t(k)] = y;
+            bz0[size_t(k)] = bz1[size_t(k)] = z;
+            const int m = nbrs(start);
+            for (int t = 0; t < m; ++t)
+                if (!own[nb[t]]) queue[size_t(k)].push_back(nb[t]);
+        }
+        // ONE CELL PER PIECE PER ROUND. The queue holds CANDIDATES, not owned
+        // cells -- a neighbour another piece claimed first is popped and thrown
+        // away, which is what lets the head pointer stay monotonic. v1 records
+        // that pushing a live candidate back is the defect behind the stalled
+        // queues this replaced.
+        shatterSortMs_ = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - pB).count();
+        const auto pC = std::chrono::steady_clock::now();
+        bool live = true;
+        while (live) {
+            live = false;
+            for (int k = 0; k < K; ++k) {
+                std::vector<uint32_t> &q = queue[size_t(k)];
+                if (bucket[size_t(k)].empty() || int(bucket[size_t(k)].size()) >= cap) continue;
+                uint32_t got = 0xffffffffu;
+                int gx = 0, gy = 0, gz = 0;
+                while (head[size_t(k)] < q.size()) {
+                    const uint32_t c = q[head[size_t(k)]++];
+                    if (own[c]) continue;
+                    int x, y, z;
+                    at(c, &x, &y, &z);
+                    if (maxi(bx1[size_t(k)], x) - mini(bx0[size_t(k)], x) >= span) continue;
+                    if (maxi(by1[size_t(k)], y) - mini(by0[size_t(k)], y) >= span) continue;
+                    if (maxi(bz1[size_t(k)], z) - mini(bz0[size_t(k)], z) >= span) continue;
+                    got = c;
+                    gx = x; gy = y; gz = z;
+                    break;
+                }
+                if (got == 0xffffffffu) continue;
+                bx0[size_t(k)] = mini(bx0[size_t(k)], gx);
+                bx1[size_t(k)] = maxi(bx1[size_t(k)], gx);
+                by0[size_t(k)] = mini(by0[size_t(k)], gy);
+                by1[size_t(k)] = maxi(by1[size_t(k)], gy);
+                bz0[size_t(k)] = mini(bz0[size_t(k)], gz);
+                bz1[size_t(k)] = maxi(bz1[size_t(k)], gz);
+                own[got] = int16_t(k + 1);
+                bucket[size_t(k)].push_back(got);
+                const int m = nbrs(got);
+                for (int t = 0; t < m; ++t)
+                    if (!own[nb[t]]) q.push_back(nb[t]);
+                live = true;
+            }
+        }
+
+        // ---- ...AND WHAT THE CAPPED PIECES WALKED PAST --------------------
+        //
+        // THIS IS WHERE THIS PARTS COMPANY WITH v1, DELIBERATELY. v1 seeds the
+        // leftovers as FURTHER pieces of the same quota, which is the better
+        // answer when there are 256 slots to put them in; here there are 64 and
+        // an oak is five times v1's biggest tree, so new pieces would run the
+        // table out and the code that catches that has to merge unrelated
+        // voxels into one body -- which is how a body ends up with a lump of
+        // itself hanging in the air.
+        //
+        // So the leftovers JOIN the piece that reached them: an unbounded
+        // 26-connected flood out of every frontier at once. Every cell it adds
+        // is adjacent to a cell the piece already owns, so a piece stays one
+        // lump; the quota and the span stop being honoured out here, which is
+        // the price of the count being exactly K.
+        {
+            std::vector<uint32_t> front;
+            front.reserve(size_t(count));
+            for (int k = 0; k < K; ++k)
+                for (uint32_t c : bucket[size_t(k)]) front.push_back(c);
+            for (size_t h = 0; h < front.size(); ++h) {
+                const uint32_t c = front[h];
+                const int16_t o = own[c];
+                const int m = nbrs(c);
+                for (int t = 0; t < m; ++t)
+                    if (!own[nb[t]]) {
+                        own[nb[t]] = o;
+                        bucket[size_t(o - 1)].push_back(nb[t]);
+                        front.push_back(nb[t]);
+                    }
+            }
+        }
+
+        // ---- ...AND WHAT NO PIECE COULD REACH AT ALL ----------------------
+        //
+        // A GENUINELY DETACHED ISLAND, and a pine has them: the canopy is a
+        // scatter of leaf clumps that touch the branches diagonally or not at
+        // all, and they have been travelling with the tree only because nothing
+        // ever asked. (breakDebris met the same fact from the other side -- one
+        // blow at the butt of a felled pine turned it into eighteen bodies.)
+        //
+        // An island gets a piece of its own while there are slots, because it
+        // IS a separate object. Past that it rides with the piece whose middle
+        // is nearest: a body with a leaf clump a metre off it is a poor answer
+        // and losing the clump is not an answer at all -- see the rule over
+        // kMinBodyVoxels.
+        for (int q = 0; q < count; ++q) {
+            // NOT `seed`: World has a member of that name and /WX turns C4458
+            // into an error. Same reason `start` above is not called one.
+            const uint32_t orphan = cells[size_t(q)];
+            if (own[orphan]) continue;
+            const bool fresh = int(bucket.size()) < room;
+            int k = int(bucket.size());
+            if (fresh) {
+                bucket.push_back({});
+            } else {
+                // Nearest bucket by centre of its own cells, measured once.
+                int x, y, z;
+                at(orphan, &x, &y, &z);
+                long long best = -1;
+                for (size_t b = 0; b < bucket.size(); ++b) {
+                    if (bucket[b].empty()) continue;
+                    long long sx = 0, sy = 0, sz = 0;
+                    const size_t step = 1 + bucket[b].size() / 256;
+                    long long n = 0;
+                    for (size_t t = 0; t < bucket[b].size(); t += step) {
+                        int ax, ay, az;
+                        at(bucket[b][t], &ax, &ay, &az);
+                        sx += ax; sy += ay; sz += az; ++n;
+                    }
+                    const long long dx = sx / n - x, dy = sy / n - y, dz = sz / n - z;
+                    const long long dd = dx * dx + dy * dy + dz * dz;
+                    if (best < 0 || dd < best) { best = dd; k = int(b); }
+                }
+                if (best < 0) return 0;   // no bucket at all: nothing to join
+            }
+            std::vector<uint32_t> st{orphan};
+            own[orphan] = int16_t(k + 1);
+            bucket[size_t(k)].push_back(orphan);
+            for (size_t h = 0; h < st.size(); ++h) {
+                const int m = nbrs(st[h]);
+                for (int t = 0; t < m; ++t)
+                    if (!own[nb[t]]) {
+                        own[nb[t]] = int16_t(k + 1);
+                        bucket[size_t(k)].push_back(nb[t]);
+                        st.push_back(nb[t]);
+                    }
+            }
+        }
+
+        // ---- CUT THE VOLUMES OUT WHILE THE PARENT STILL HAS THEM ----------
+        //
+        // Everything the new bodies inherit is read BEFORE the old one is
+        // retired, because retiring it clears all of it -- breakDebris' own
+        // note, and the same trap.
+        const Vec3 pos = d.pos, oOff = d.originOff;
+        const uint8_t takesAs = d.takesAs;
+        const float3 tint = d.tint;
+        float quat[4];
+        for (int k = 0; k < 4; ++k) quat[k] = d.quat[k];
+        Vec3 lin{0, 0, 0}, ang{0, 0, 0};
+        if (d.phys >= 0) ph.velocityOf(d.phys, &lin, &ang);
+
+        struct Cut {
+            std::vector<uint8_t> vox;
+            int sx = 0, sy = 0, sz = 0;
+            Vec3 off{0, 0, 0};
+            int n = 0;
+        };
+        shatterFloodMs_ = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - pC).count();
+        std::vector<Cut> cuts;
+        cuts.reserve(bucket.size());
+        for (const std::vector<uint32_t> &b : bucket) {
+            if (b.size() < 2) continue;   // a lone voxel is not a chunk
+            int gx0 = nx, gx1 = -1, gy0 = ny, gy1 = -1, gz0 = nz, gz1 = -1;
+            for (uint32_t c : b) {
+                int x, y, z;
+                at(c, &x, &y, &z);
+                gx0 = mini(gx0, x); gx1 = maxi(gx1, x);
+                gy0 = mini(gy0, y); gy1 = maxi(gy1, y);
+                gz0 = mini(gz0, z); gz1 = maxi(gz1, z);
+            }
+            Cut c;
+            c.sx = gx1 - gx0 + 1;
+            c.sy = gy1 - gy0 + 1;
+            c.sz = gz1 - gz0 + 1;
+            c.n = int(b.size());
+            c.off = Vec3{oOff.x + float(gx0) * VOXEL_M, oOff.y + float(gy0) * VOXEL_M,
+                         oOff.z + float(gz0) * VOXEL_M};
+            c.vox.assign(size_t(c.sx) * size_t(c.sy) * size_t(c.sz), mat::AIR);
+            for (uint32_t q : b) {
+                int x, y, z;
+                at(q, &x, &y, &z);
+                c.vox[size_t(x - gx0) + size_t(z - gz0) * size_t(c.sx) +
+                      size_t(y - gy0) * size_t(c.sx) * size_t(c.sz)] = d.vox[q];
+            }
+            cuts.push_back(std::move(c));
+        }
+        if (cuts.size() < 2) {
+            // NOTHING TO GAIN, AND IT WILL NOT CHANGE. See Debris::noBreak.
+            d.noBreak = true;
+            return 0;
+        }
+
+        // BIGGEST FIRST, so that if a slot goes missing between the count above
+        // and the build below it is the smallest offcut that is lost. Same rule
+        // breakDebris sorts by and for the same reason.
+        std::sort(cuts.begin(), cuts.end(),
+                  [](const Cut &a, const Cut &b) { return a.n > b.n; });
+
+        // TIMED AND REPORTED, in one line, because "sometimes it does not
+        // break" is only ever diagnosable from how often this runs and what it
+        // costs when it does -- v1 keeps the same tap and says the same thing.
+        // A felled tree coming apart is the single biggest frame in this game.
+        const auto t0 = std::chrono::steady_clock::now();
+        const double age = nowMs - d.bornMs;
+        // -------------------------------------------------------------------
+        // THE TREE IS NOT RETIRED HERE. IT STANDS IN FOR ITS OWN PIECES.
+        //
+        // (user 2026-09-19: "the existing object TURNS INTO chunks. not
+        //  destroyed then create".)
+        //
+        // This used to retire the body first and then build what it could
+        // afford on the frame, queueing the rest. Both halves of that are
+        // visible: the tree vanishes on the frame the axe lands, and its pieces
+        // then appear a couple of dozen at a time over the following seven --
+        // so for about a tenth of a second there is a partial tree made of
+        // chunks, filling in. That is the "grows from a tiny point".
+        //
+        // NOW NOTHING IS BUILT HERE AT ALL. Every cut is queued, the parent is
+        // left exactly as it was, and drainShatterQueue builds the pieces
+        // UNSEEN behind it. When the last one is ready the parent is retired
+        // and the whole batch is revealed in the same frame -- one substitution
+        // rather than a hundred and sixty arrivals.
+        //
+        // IT ALSO MAKES THE BREAK FRAME CHEAP, which is the other half of the
+        // ask this function has been carrying ("theres hitching when a tree
+        // breaks into chunks"): the frame that used to build twenty-four bodies
+        // now only moves the cut list into the queue.
+        //
+        // `noBreak` WHILE IT WAITS, or the caller -- which asks every frame of
+        // every felled wooden body -- walks straight back in and partitions the
+        // same tree again behind its own queue.
+        // -------------------------------------------------------------------
+        d.noBreak = true;
+        shatterParent_ = slot;
+        shatterParentBorn_ = d.bornMs;
+        shatterShown_.clear();
+        int made = 0;
+        for (size_t k = 0; k < cuts.size(); ++k) {
+            PendingChunk q;
+            q.vox = std::move(cuts[k].vox);
+            q.sx = cuts[k].sx;
+            q.sy = cuts[k].sy;
+            q.sz = cuts[k].sz;
+            q.off = cuts[k].off;
+            q.pos = pos;
+            q.lin = lin;
+            q.ang = ang;
+            q.tint = tint;
+            for (int t = 0; t < 4; ++t) q.quat[t] = quat[t];
+            q.takesAs = takesAs;
+            q.bornMs = nowMs;
+            shatterQueue_.push_back(std::move(q));
+            ++made;
+        }
+        std::printf("  fell     broke into %d pieces of ~%d voxels on %s, %.0f ms after the cut"
+                    "  (%.1f ms)\n",
+                    made, made ? count / made : 0, fellWhy_, age,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count());
+        std::fflush(stdout);
+        return made;
     }
 
     // -----------------------------------------------------------------------
@@ -5665,6 +6887,12 @@ class World {
 
         // How many collision windows may be rebuilt this frame -- see the
         // re-centre block below for why there is a ceiling on it at all.
+        // ...AND A FEW OF THE CHUNKS A SHATTER LEFT WAITING -- see
+        // shatterQueue_. Before the sweep below, so a piece built this frame is
+        // live for the rest of it; and once per frame, so the cost is a known
+        // eight bodies rather than however many a tree happened to make.
+        drainShatterQueue(ph, nowMs);
+
         int winBudget = kWinRebuildsPerFrame;
         for (int i = 0; i < kDebrisInstances; ++i) {
             Debris &d = debris_[i];
@@ -5924,6 +7152,190 @@ class World {
                         }
                     }
                 }
+
+                // ---- AND WHEN IT HAS COME DOWN, IT COMES APART ------------
+                //
+                // (user 2026-09-19: "when the tree lands on the ground it
+                //  breaks up into smaller chunks that can then be absorbed by
+                //  the player".)
+                //
+                // THE BREAK CLOCK LIVES IN THIS SWEEP AND NOT IN THE SOLVER
+                // STEP, which is v1's own correction: a severed trunk resting
+                // on its own stump is asleep inside a second, and a test that
+                // only ran for a moving body could never fire on the one case
+                // it exists for. Every body is visited here whatever its state.
+                //
+                // NOT WHILE IT IS STILL GOING OVER. tipArmed means the hinge
+                // has not fired yet -- the tree has dropped onto its cut face
+                // and is about to be rolled over -- so the dwell restarts while
+                // it is set. v1 spent a long note on detecting impact from the
+                // velocity trace because it had nothing better; here the engine
+                // already knows, because landing is exactly what clears this.
+                //
+                // WOOD ONLY. fellTree gives `felled` to anything it brings down
+                // including an undercut boulder, and a boulder that shatters
+                // into collectable chunks when it lands is a different feature
+                // nobody asked for.
+                // -- ...AND A CUT MUSHROOM BREAKS UP THE SAME WAY --------
+                //
+                // (user 2026-09-19: "when the mushroom break from its stem
+                //  have it follow the break apart rule like a felled tree".)
+                //
+                // kDebrisSoft IS THE MUSHROOM -- see the swing that spawns it,
+                // where `soft` picks that id and --kill-test prints it as
+                // "mushroom -- either tool takes it". It is the one severed
+                // thing in the engine that is small and still scenery, and it
+                // was excluded from this branch by the takesAs test alone.
+                //
+                // NOT `felled`, WHICH IS THE PART TO BE CAREFUL WITH. That
+                // flag means "this was a standing tree that came down" and it
+                // drives the tilt tracking below -- fellPeak, tipArmed, the
+                // uprightness test. A cap has none of that history, so it is
+                // admitted on the material instead and simply never trips the
+                // tilt branch; what carries it into the shatter is `byCalm`
+                // (it came to rest) or `byTime` (the backstop), which is the
+                // felled tree's own rule minus the one clause about falling.
+                //
+                // IT CAN REACH REST because a mushroom is already exempt from
+                // the auto-collect -- see the note over that exemption, which
+                // is the ask that stopped caps being flown into your hands.
+                // -- ...BUT A CORPSE IS ALREADY IN PIECES ---------------
+                //
+                // (user 2026-09-19: "when killing life in the desert, the red
+                //  peices upon death turn back into the lifes former voxels
+                //  instead of dissapearing. are the desert life on different
+                //  mechanics then the rest of the world?")
+                //
+                // THEY ARE NOT, AND IT IS NOT THE DESERT. --kill-test in the
+                // PINE prints it: "broke into 2 pieces of ~4 voxels", four
+                // times, on bodies that are corpse pieces of a rabbit. The
+                // desert is where it was seen because the sand is open and its
+                // animals are small, not because anything there is special.
+                //
+                // WHAT GOES WRONG. shatterFlyer already breaks a killed animal
+                // into eight octants, and those octants are kDebrisSoft -- so
+                // the branch above admitted them and broke each one AGAIN. The
+                // pieces of a piece are built by makeLooseBody, which starts
+                // from a fresh Debris{}, and that resets `hurtT0`. hurtT0 is
+                // what draws the red (see corpseFade) AND what routes a body to
+                // the corpse expiry a few hundred lines down -- so the new
+                // pieces lose the blood, come back wearing the animal's own
+                // palette, and inherit a felled chunk's SIXTY SECOND life
+                // instead of retiring half a second after they settle. That is
+                // "turn back into the lifes former voxels instead of
+                // dissapearing", exactly.
+                //
+                // It also undid markScenery: the chunks are born `loot`, which
+                // is v1's "the player seems to absorb the life when it breaks
+                // into chunks" all over again.
+                //
+                // hurtT0 IS THE WHOLE TEST -- the same words the corpse branch
+                // uses, and the same field. A mushroom has none and goes on
+                // breaking; an animal has one and is already as broken as it
+                // gets.
+                const bool wood = d.felled && d.takesAs == kDebrisWood;
+                const bool corpse = d.hurtT0 > -1e8;
+                if ((wood || (d.takesAs == kDebrisSoft && !corpse)) && !d.noBreak) {
+                    Vec3 lv{0, 0, 0}, av{0, 0, 0};
+                    // A BODY THE SOLVER WILL NOT ANSWER FOR IS NOT MOVING --
+                    // PhysX sleeps a settled body, and asleep is the state this
+                    // is waiting for. Same reading the corpse rest test takes.
+                    const bool got = ph.velocityOf(d.phys, &lv, &av);
+                    // -- THE IMPACT, WHICH IS THE ANSWER -------------------
+                    //
+                    // See kFellHitVy. The trunk's own +Y out of its quaternion:
+                    // while that is within kFellTiltUp of vertical the tree is
+                    // still on its stump and any arrest is the cut face, not
+                    // the ground -- so the peak is thrown away rather than
+                    // merely ignored, or the seat would leave a peak behind
+                    // that the first frame of the real fall reads as an arrest.
+                    const float uy =
+                        1.0f - 2.0f * (d.quat[0] * d.quat[0] + d.quat[2] * d.quat[2]);
+                    const float down = (got && lv.y < 0.0f) ? -lv.y : 0.0f;
+                    if (uy > kFellTiltUp) {
+                        d.fellPeak = 0.0f;
+                        d.hitT0 = -1e9;
+                    } else {
+                        if (down > d.fellPeak) d.fellPeak = down;
+                        const bool arrested = d.fellPeak > kFellHitVy &&
+                                              down < d.fellPeak * kFellHitFrac;
+                        if (!arrested) d.hitT0 = -1e9;
+                        else if (d.hitT0 < -1e8) d.hitT0 = nowMs;
+                    }
+                    // -- ...AND GOING QUIET, WHICH IS ONLY THE FALLBACK ----
+                    //
+                    // For a tree that never falls fast enough to arm the test
+                    // above -- one cut flush with the ground has nothing to
+                    // drop and topples without ever leaving its own footprint.
+                    const bool moving =
+                        got && (lv.x * lv.x + lv.y * lv.y + lv.z * lv.z >
+                                    kFellCalmLin * kFellCalmLin ||
+                                av.x * av.x + av.y * av.y + av.z * av.z >
+                                    kFellCalmAng * kFellCalmAng);
+                    if (moving || d.tipArmed || d.calmT0 < -1e8) d.calmT0 = nowMs;
+                    const double age = nowMs - d.bornMs;
+                    const bool byHit = d.hitT0 > -1e8 && nowMs - d.hitT0 > kFellHitMs;
+                    // -- ...AND IT HAS TO BE DOWN ----------------------
+                    //
+                    // (user 2026-09-19: "sometimes the tree breaks into chunks
+                    //  too early ... the fellen tree should break upon impact
+                    //  with the terrain.")
+                    //
+                    // `byCalm` asked two questions -- is it a second old, has
+                    // it been still for four hundred milliseconds -- and NOT
+                    // the one that matters, which is whether it has fallen. A
+                    // trunk that hangs up on its neighbour, or that is cut and
+                    // merely settles back onto its own stump, satisfies both
+                    // within 1.3 seconds while it is still standing in the air.
+                    // That is the early break.
+                    //
+                    // uy is the trunk's own +Y and the tilt test above already
+                    // computes it: over kFellTiltUp the tree is still upright
+                    // and every other branch here treats it as not yet fallen.
+                    // The quiet fallback now agrees with them.
+                    //
+                    // THE BACKSTOP KEEPS ITS OWN RULE. byTime is there for the
+                    // cases nothing else catches -- a tree wedged upright for
+                    // twenty seconds is not going to fall, and leaving it whole
+                    // forever is worse than breaking it where it stands.
+                    const bool over = uy <= kFellTiltUp;
+                    const bool byCalm =
+                        over && age > kFellMinMs && nowMs - d.calmT0 > kFellCalmMs;
+                    const bool byTime = age > kFellBreakMs;
+                    if (byHit || byCalm || byTime) {
+                        // WHICH OF THE THREE FIRED, kept because a tree that
+                        // broke on IMPACT and one that sat there until the
+                        // backstop look identical from outside and only the
+                        // second is the report this answers. v1 keeps the same
+                        // tap for the same reason.
+                        fellWhy_ = byHit ? "impact" : (byCalm ? "it went quiet" : "backstop");
+                        // A REFUSAL IS A WAIT, NOT A FAILURE. shatterFelled
+                        // returns 0 when there is no room for the pieces; the
+                        // dwell is restarted so it is asked again rather than
+                        // every frame, and the tree stays whole in the meantime.
+                        {
+                            shatterBodyMs_ = 0.0;
+                            const auto st0 = std::chrono::steady_clock::now();
+                            const int made = shatterFelled(ph, i, nowMs);
+                            const double sms = std::chrono::duration<double, std::milli>(
+                                                   std::chrono::steady_clock::now() - st0)
+                                                   .count();
+                            if (sms > shatterWorstMs_) {
+                                shatterWorstMs_ = sms;
+                                std::printf("  shatter  %.1f ms for %d chunk(s)  "
+                                            "walk %.1f  sort %.1f  flood %.1f  "
+                                            "bodies %.1f   %d cells of %d\n",
+                                            sms, made, shatterWalkMs_, shatterSortMs_,
+                                            shatterFloodMs_, shatterBodyMs_,
+                                            shatterCells_, shatterBox_);
+                                std::fflush(stdout);
+                            }
+                            if (made > 0) continue;
+                        }
+                        d.calmT0 = nowMs;
+                        d.hitT0 = -1e9;
+                    }
+                }
                 // THE BACKSTOP THAT WAS HERE BEFORE, AND THE TRACE IS WHY NOT.
                 //
                 // There was one: six points down the trunk axis, lift the body
@@ -5982,7 +7394,10 @@ class World {
             const bool inReach = d.absorbR >= kAbsorbAnywhere ||
                                  (d.absorbR >= 0.0f &&
                                   adx * adx + adz * adz <= d.absorbR * d.absorbR);
-            if (!d.absorbing && inReach && !d.felled && !d.scenery && d.voxels <= kAbsorbSize &&
+            // ...AND SIZE MUST NOT REFUSE A PIECE OF A TREE YOU FELLED. See
+            // Debris::loot, which is the whole of that exemption.
+            const bool carryable = d.voxels <= kAbsorbSize || d.loot;
+            if (!d.absorbing && inReach && !d.felled && !d.scenery && carryable &&
                 nowMs - d.bornMs > kAbsorbWaitMs) {
                 d.absorbing = true;
                 d.absorbT0 = nowMs;
@@ -7213,7 +8628,10 @@ class World {
                 // turned, and turning it again would bury the seed and start
                 // a second record for ground that is already in one.
                 if (top == mat::TILLED || isSeed(top)) continue;
-                if (!isSoilMat(top) || top == mat::SAND || isSand(top)) continue;
+                // A BEACH IS NOT A SEED BED, and neither is bare granite or a
+                // snowfield -- see isTillableMat, which is where that list
+                // lives now that the shovel's has grown past it.
+                if (!isTillableMat(top)) continue;
                 // ...and there has to be something under it to turn into.
                 const uint8_t below = probe.material(i, j, h - 1);
                 if (below == mat::AIR) continue;
@@ -8748,49 +10166,35 @@ class World {
             if (levelBlocks_.empty()) return false;   // nothing to travel to
         }
         level_ = on;
-        // -- A PER-PLACE MATERIAL TABLE WAS TRIED HERE AND DOES NOT WORK YET --
+        // -- THE PER-PLACE MATERIAL TABLE IS LIVE, AND THIS IS NOT WHERE IT --
         //
         // (user 2026-09-17: "surely we can have multiple color paletes for
-        // multiple worlds?" -- and the idea is right. The wood is not in the
-        // acceleration structure while the level is open, so the two can never
-        // disagree on screen about what entry 243 means.)
+        // multiple worlds?", then 2026-09-18: "cant you give me seperate
+        // tables? one palete table for the sandbox world and one for the
+        // arcade with the fps maps".)
         //
-        // WHAT WAS BUILT: Palette::beginLevelTable / forLevelColor, a second
-        // 255-entry table allocated top-down over the entries the level does
-        // not share, with the fixed mat:: band, the held kit and the wood's
-        // flower models reserved out of it. World::buildLevelPalette still
-        // builds it -- that half works and the numbers were right: 13 colours
-        // into the level's own table with 121 free, and the WOOD dropped from
-        // 255 of 255 (the wheat losing two of its colours) to 245.
+        // TWO ATTEMPTS BEFORE THIS ONE SWAPPED THE DEVICE'S TABLE HERE, at the
+        // door, and neither ever reached the screen -- see uploadMaterials,
+        // which carries what was measured. The third does not swap anything:
+        // the buffer holds BOTH tables at once and `World::matBase()` picks a
+        // half. So there is nothing to do here, and that is the fix.
         //
-        // WHAT DOES NOT WORK is getting the device to read it. Swapping
-        // materials_ here -- by in-place update AND by rebuilding the buffer --
-        // changes nothing on screen. MEASURED, so nobody has to measure it
-        // again:
+        // What DOES still have to happen at the door is the TLAS rebuild, and
+        // matBase is read from `level_` by the tracer every frame -- so this
+        // assignment above is the whole of the switch.
         //
-        //   * the level's mesh really does carry the level's ids: id 243 is
-        //     552,327 voxels of it (histogram in buildLevelBlas).
-        //   * the table really is uploaded: entry 243 was forced to pure
-        //     MAGENTA and uploadMaterials printed (1.000,0.000,1.000) going in.
-        //   * nothing on screen was magenta, and the map kept rendering in the
-        //     WOOD's colours at those ids.
-        //
-        // AND THE STRONGEST CLUE CAME AFTERWARDS, from a different bug: the
-        // level's entries were ALSO invisible on the shared table until
-        // buildLevelPalette was made to call uploadMaterials itself (see the
-        // note there). So an upload from buildLevelPalette LANDS and an upload
-        // from here, one call later in the same start-up, does NOT. That is
-        // where to start -- not in the palette, but in what is different about
-        // this call site. gMaterials is bound per frame from materialBuffer()
-        // at three sites in tracer.h.
-        //
-        // UNTIL THEN THE LEVEL ALLOCATES OUT OF THE WOOD'S TABLE, as it always
-        // did -- see buildLevelPalette, which is one call away from switching
-        // back the moment the above is understood.
         rebuildTlas();
         return level_;
     }
     bool levelOn() const { return level_; }
+    // -- WHICH HALF OF gMaterials THIS PLACE READS --------------------------
+    //
+    // 0 in the wood, mat::COUNT in the level. Read by V2Tracer once a frame
+    // into V6Params::matBase; see uploadMaterials for why the two tables live
+    // in one buffer and nothing is swapped. It is derived from `level_` rather
+    // than stored, so there is no state that can disagree with which place the
+    // acceleration structure is holding.
+    uint32_t matBase() const { return level_ ? uint32_t(mat::COUNT) : 0u; }
     bool levelReady() const { return levelLoaded_; }
     static Vec3 levelOrigin() { return Vec3(kLevelAtX, kLevelAtY, kLevelAtZ); }
 
@@ -8846,6 +10250,26 @@ class World {
     // asset has no open ground anywhere near the end of it, which would mean
     // the level is not what this function was written for -- and a spawn that
     // is merely wrong is better than one that returns nothing.
+    // WHAT ROW THE ARCADE'S FLOOR IS ON -- the most common column top, because
+    // a map is mostly floor. Factored out of levelSpawn when levelMapSpawn
+    // needed the same answer: it is the one question both arrivals ask, and two
+    // copies of a histogram is two things to get wrong.
+    int levelGroundRow() const {
+        std::vector<int> hist;
+        for (int16_t v : levelColTop_) {
+            if (v <= 0) continue;
+            if (size_t(v) >= hist.size()) hist.resize(size_t(v) + 1, 0);
+            ++hist[size_t(v)];
+        }
+        int best = 0, ground = 0;
+        for (size_t i = 1; i < hist.size(); ++i)
+            if (hist[i] > best) {
+                best = hist[i];
+                ground = int(i);
+            }
+        return ground;
+    }
+
     Vec3 levelSpawn() const {
         const float spanX = float(levelAsset_.sx) * VOXEL_M;
         const float spanZ = float(levelAsset_.sz) * VOXEL_M;
@@ -8873,21 +10297,7 @@ class World {
         // the most common column top is the floor of the place, because a map
         // is mostly floor -- and "open" is that plus a metre of clutter. It is
         // right at any scale because it is not a height.
-        int ground = 0;
-        {
-            std::vector<int> hist;
-            for (int16_t v : levelColTop_) {
-                if (v <= 0) continue;
-                if (size_t(v) >= hist.size()) hist.resize(size_t(v) + 1, 0);
-                ++hist[size_t(v)];
-            }
-            int best = 0;
-            for (size_t i = 1; i < hist.size(); ++i)
-                if (hist[i] > best) {
-                    best = hist[i];
-                    ground = int(i);
-                }
-        }
+        const int ground = levelGroundRow();
         constexpr float kOpenM = 1.0f;
         const int top = ground + int(kOpenM / VOXEL_M);
         const int cx = int((idealX - kLevelAtX) / VOXEL_M);
@@ -8933,10 +10343,129 @@ class World {
     // than a guess -- App::teleportToLife is the one place that inverts it and
     // this is that line read forwards. Worth stating because the sign is not
     // obvious and the first version of this spawn faced the empty sky.
+    // -- ...AT THE MIDDLE OF THE MAP YOU LANDED IN, NOT OF THE GRID --------
+    //
+    // These were the same point while one slab filled the grid and the maps
+    // were laid along it. With the maps as ISLANDS the grid's middle is a
+    // hundred metres of open air between them, and aiming at it is aiming at
+    // nothing -- it happens to still point down nuketown today, which is
+    // exactly the kind of accident that stops being true when a map is added
+    // or the order changes. levelMapAt is the same question clampToLevel asks.
+    //
+    // The grid is still the fallback, for the one case that has no maps in it:
+    // a level asset with no .maps sidecar beside it. That is the old layout,
+    // and the old answer was right for it.
     float levelSpawnYaw() const {
         const Vec3 s = levelSpawn();
-        const float cx = kLevelAtX + float(levelAsset_.sx) * VOXEL_M * 0.5f;
-        const float cz = kLevelAtZ + float(levelAsset_.sz) * VOXEL_M * 0.5f;
+        const LevelMap *m = levelMapAt(s.x, s.z);
+        const float cx = m ? (levelMapMinX(*m) + levelMapMaxX(*m)) * 0.5f
+                           : kLevelAtX + float(levelAsset_.sx) * VOXEL_M * 0.5f;
+        const float cz = m ? (levelMapMinZ(*m) + levelMapMaxZ(*m)) * 0.5f
+                           : kLevelAtZ + float(levelAsset_.sz) * VOXEL_M * 0.5f;
+        return atan2f(cx - s.x, -(cz - s.z)) * 180.0f / PI;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE MAPS INSIDE THE ARCADE, AND WHERE EACH ONE STARTS
+    //
+    // (user 2026-09-18: "I want to be able to type /locate (map name) for
+    // example.")
+    //
+    // THE ARCADE IS ONE GRID WITH SEVERAL MAPS LAID OUT IN IT -- the engine has
+    // exactly one level asset and that has not changed -- so "which map" is a
+    // RECTANGLE of that grid and nothing more. The voxelizer knows those
+    // rectangles because it placed them, and it writes them beside the .vox as
+    // a three-line text file rather than anybody restating them here.
+    //
+    // WHY IT IS A SIDECAR AND NOT A CONSTANT: every number that describes where
+    // a map sits is decided by tools/voxelize_arcade.py -- how many maps, how
+    // big each source model came out, how far apart they stand. A constant here
+    // is a second description of that, and the two drift the first time a map
+    // is re-voxelised. The .maps file is written by the same run that writes
+    // the voxels, so it cannot be stale unless the .vox is too.
+    struct LevelMap {
+        std::string name;
+        int x0 = 0, z0 = 0, x1 = 0, z1 = 0;   // voxel bounds, half-open
+    };
+    const std::vector<LevelMap> &levelMaps() const { return levelMaps_; }
+    const LevelMap *findLevelMap(const std::string &name) const {
+        for (const LevelMap &m : levelMaps_)
+            if (m.name == name) return &m;
+        return nullptr;
+    }
+
+    // -- WHICH MAP A POSITION IS STANDING IN, OR NOTHING -------------------
+    //
+    // (user 2026-09-18: "the grey platform that shares both maps is still
+    //  there. remove it.")
+    //
+    // The maps used to sit on one slab that ran the length of the grid, so
+    // "outside a map" was still somewhere -- it was the paved walk between
+    // them. tools/voxelize_arcade.py cuts the foundation to each map's own
+    // rectangle now, so the answer here is genuinely nullptr for everything
+    // between them, and that is the air an island has around it.
+    //
+    // ASKED BY POSITION AND NOT REMEMBERED. A "current map" would have to be
+    // set by both doors ([O] and /locate), kept right across a teleport, and
+    // would be wrong for exactly as long as it was stale. The rectangles are
+    // disjoint and the fence keeps you inside the one you are in, so the
+    // position IS the answer and there is nothing to keep in step.
+    const LevelMap *levelMapAt(float wx, float wz) const {
+        const int x = int(floorf((wx - kLevelAtX) / VOXEL_M));
+        const int z = int(floorf((wz - kLevelAtZ) / VOXEL_M));
+        for (const LevelMap &m : levelMaps_)
+            if (x >= m.x0 && x < m.x1 && z >= m.z0 && z < m.z1) return &m;
+        return nullptr;
+    }
+    // ...and its edges in world metres, so no caller repeats the conversion.
+    float levelMapMinX(const LevelMap &m) const { return kLevelAtX + float(m.x0) * VOXEL_M; }
+    float levelMapMaxX(const LevelMap &m) const { return kLevelAtX + float(m.x1) * VOXEL_M; }
+    float levelMapMinZ(const LevelMap &m) const { return kLevelAtZ + float(m.z0) * VOXEL_M; }
+    float levelMapMaxZ(const LevelMap &m) const { return kLevelAtZ + float(m.z1) * VOXEL_M; }
+
+    // WHERE YOU ARRIVE IN ONE OF THEM -- levelSpawn's ring search, over that
+    // map's own rectangle instead of the whole grid. Same test for what counts
+    // as open ground and the same reason for it: see levelSpawn, which is the
+    // place that argument is written down, and which this deliberately does not
+    // duplicate any of beyond the loop itself.
+    Vec3 levelMapSpawn(const LevelMap &m) const {
+        const int cx = (m.x0 + m.x1) / 2, cz = (m.z0 + m.z1) / 2;
+        const float fx = kLevelAtX + (float(cx) + 0.5f) * VOXEL_M;
+        const float fz = kLevelAtZ + (float(cz) + 0.5f) * VOXEL_M;
+        if (levelColTop_.empty()) return Vec3(fx, kLevelAtY, fz);
+        const int ground = levelGroundRow();
+        const int top = ground + int(1.0f / VOXEL_M);
+        auto colAt = [&](int x, int z) {
+            return int(levelColTop_[size_t(x) + size_t(z) * size_t(levelAsset_.sx)]);
+        };
+        const int maxR = std::max(m.x1 - m.x0, m.z1 - m.z0) / 2;
+        for (int r = 0; r <= maxR; ++r)
+            for (int dz = -r; dz <= r; ++dz)
+                for (int dx = -r; dx <= r; ++dx) {
+                    if (r > 0 && std::abs(dx) != r && std::abs(dz) != r) continue;
+                    const int x = cx + dx, z = cz + dz;
+                    // INSIDE THIS MAP and two voxels off the grid's own edge --
+                    // the second is App::clampToLevel's fence, the first is
+                    // what makes this "locate the canyon" and not "locate
+                    // somewhere near the canyon".
+                    if (x < m.x0 + 1 || z < m.z0 + 1 || x >= m.x1 - 1 || z >= m.z1 - 1) continue;
+                    if (x < 2 || z < 2 || x >= levelAsset_.sx - 2 || z >= levelAsset_.sz - 2)
+                        continue;
+                    const int t = colAt(x, z);
+                    if (t < ground || t > top) continue;
+                    return Vec3(kLevelAtX + (float(x) + 0.5f) * VOXEL_M,
+                                kLevelAtY + float(t) * VOXEL_M,
+                                kLevelAtZ + (float(z) + 0.5f) * VOXEL_M);
+                }
+        return Vec3(fx, kLevelAtY + float(maxi(ground, 1)) * VOXEL_M, fz);
+    }
+    // ...AND FACING THE MIDDLE OF THAT MAP, on levelSpawnYaw's argument: two
+    // descriptions of one aim drift apart, so the aim is derived from the
+    // arrival rather than written beside it.
+    float levelMapYaw(const LevelMap &m) const {
+        const Vec3 s = levelMapSpawn(m);
+        const float cx = kLevelAtX + (float(m.x0 + m.x1) * 0.5f) * VOXEL_M;
+        const float cz = kLevelAtZ + (float(m.z0 + m.z1) * 0.5f) * VOXEL_M;
         return atan2f(cx - s.x, -(cz - s.z)) * 180.0f / PI;
     }
 
@@ -9464,6 +10993,12 @@ class World {
         loadRocks();
         loadFlowers();
         loadMushrooms();
+        loadDesert();
+        // AFTER loadDesert, which is what puts the red set in front of it --
+        // see loadCherryBush. In a world with no desert the pink set simply
+        // starts at zero and is the whole array, which the scatter's
+        // `shrubCherry0 > 0` guard reads correctly.
+        loadCherryBush();
         loadPinecones();
         loadHives();
         loadFruit();
@@ -9479,6 +11014,7 @@ class World {
 
         mesher_.seed = seed;
         mesher_.treeDensity = treeDensity;
+        mesher_.oakDensity = oakDensity;
         mesher_.rockDensity = rockDensity;
         mesher_.flowerDensity = flowerDensity;
         mesher_.mushroomDensity = mushroomDensity;
@@ -9492,6 +11028,10 @@ class World {
             mesher_.mushroomFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : pinecones_)
             mesher_.pineconeFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
+        for (const ModelTemplate &t : cacti_)
+            mesher_.cactusFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
+        for (const ModelTemplate &t : shrubs_)
+            mesher_.shrubFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : hives_)
             mesher_.hiveFoot.push_back({t.sx, t.sz, t.sy, t.col.baseX, t.col.baseZ, t.col.baseCX, t.col.baseCZ});
         for (const ModelTemplate &t : fruit_)
@@ -9506,6 +11046,32 @@ class World {
             mesher_.oakFruitPerch.push_back(fruitAnchors(t.perches, t.sx, t.sz));
         mesher_.pineconesPerTree = pineconesPerTree;
         mesher_.mushroomBig0 = mushroomBig0;
+
+        // -- ...AND WHERE THOSE TREES WILL STAND, FOR THE PETALS ----------
+        //
+        // (user 2026-09-19: "make sure the pink petals are only located
+        //  underneath the tree".)
+        //
+        // The terrain decides where a fallen petal lies and is built before
+        // any tree exists, so the mesher hands it the lattice it is about to
+        // plant on. See VoxelTerrain::CanopyLattice, which replays it, and
+        // collectTrees, which is the other mirror of the same grid.
+        //
+        // PUBLISHED BEFORE start(), because start COPIES the terrain into the
+        // worker threads -- a field set after it would be live on World's own
+        // copy and absent from every chunk the mesher builds, which is the
+        // kind of split-brain that looks like a random half of the wood being
+        // wrong.
+        terrain.canopy.ok = true;
+        terrain.canopy.strideM = (mesher_.birchBase < int(mesher_.pineFoot.size()))
+                                     ? mesher_.birchStride
+                                     : mesher_.treeStride;
+        terrain.canopy.seed = mesher_.seed;
+        terrain.canopy.density = mesher_.oakDensity;   // the cherry IS the oak
+        terrain.canopy.knee = mesher_.standKnee;
+        terrain.canopy.span = mesher_.standSpan;
+        terrain.canopy.gain = mesher_.standGain;
+        terrain.canopy.floorV = mesher_.standFloor;
 
         const int hw = int(std::thread::hardware_concurrency());
         mesher_.start(terrain, meshThreads > 0 ? meshThreads : maxi(2, hw - 2));
@@ -10296,6 +11862,65 @@ class World {
             }
     }
 
+    // -----------------------------------------------------------------------
+    // THE NEAREST APPLE, OR THE NEAREST ORANGE.
+    //
+    // (user 2026-09-19: "give me a /locate apple command along with the orange
+    // too" -- "teleports me to the nearest apple".)
+    //
+    // decorNear's sibling rather than a call to decorNear, and the two
+    // differences are both about a fruit in particular:
+    //
+    //   * KIND 6 IS BOTH FRUITS. Which one it is lives in DecorAt::index --
+    //     0 apple, 1 orange, loadFruit's own order, the same number
+    //     takeFruitAlong returns and pickFruit turns into a kit slot. decorNear
+    //     filters on the kind alone, so asking it would answer "an apple or an
+    //     orange, whichever is nearer", which is not the question.
+    //   * decorNear ANSWERS WITH THE CORNER, which its own note warns about.
+    //     /locate AIMS at what it finds, and a fruit is 40 cm hanging in a
+    //     crown: the corner puts the crosshair off its edge and, worse, at its
+    //     BASE, which is a metre of leaves. The same fix takeFruitAlong makes
+    //     -- midX/midZ, and half the model up.
+    //
+    // XZ ONLY, like every nearest() the life tables call: a fruit eight metres
+    // up the tree you are standing under must not rank behind one at head
+    // height across the clearing.
+    //
+    // A PICKED FRUIT IS NOT THERE. takeFruitAlong clears the instance mask and
+    // hiddenScatter_ keeps it clear across a re-mesh, so the mask is the one
+    // place that knows -- exactly as it is for a felled tree's hive above.
+    // -----------------------------------------------------------------------
+    bool nearestFruit(int index, const Vec3 &p, float reach, Vec3 *at) const {
+        if (fruit_.empty()) return false;
+        float best = 1e30f;
+        const float r2 = reach * reach;
+        const float span = reach + 8.0f;
+        const int x0 = floorDiv(int(floorf((p.x - span) / VOXEL_M)), CHUNK_VOX);
+        const int x1 = floorDiv(int(floorf((p.x + span) / VOXEL_M)), CHUNK_VOX);
+        const int z0 = floorDiv(int(floorf((p.z - span) / VOXEL_M)), CHUNK_VOX);
+        const int z1 = floorDiv(int(floorf((p.z + span) / VOXEL_M)), CHUNK_VOX);
+        for (int cz = z0; cz <= z1; ++cz)
+            for (int cx = x0; cx <= x1; ++cx) {
+                auto it = chunks_.find(chunkKey(cx, cz));
+                if (it == chunks_.end()) continue;
+                const Chunk &c = it->second;
+                for (size_t i = 0; i < c.decorAt.size() && i < c.decorDesc.size(); ++i) {
+                    const DecorAt &q = c.decorAt[i];
+                    if (q.kind != 6 || int(q.index) != index) continue;
+                    if (!c.decorDesc[i].instanceMask) continue;
+                    const float dx = q.midX() - p.x, dz = q.midZ() - p.z;
+                    const float d = dx * dx + dz * dz;
+                    if (d > r2 || d >= best) continue;
+                    best = d;
+                    if (at) {
+                        const ModelTemplate &mt = templateFor(6, int(q.index));
+                        *at = Vec3(q.midX(), q.y + 0.5f * float(mt.sy) * VOXEL_M, q.midZ());
+                    }
+                }
+            }
+        return best < 1e29f;
+    }
+
     // Block until the ring around the camera is fully resident. Used once at
     // startup so the first frame is not a hole in the ground.
     // -----------------------------------------------------------------------
@@ -10440,6 +12065,8 @@ class World {
     Remesher remesh_;
 
     std::vector<ModelTemplate> pines_, rocks_, flowers_, mushrooms_, pinecones_;
+    // v1's desert, imported 2026-09-19 -- see ChunkMesher::cactusFoot.
+    std::vector<ModelTemplate> cacti_, shrubs_;
     // The beehives. One model, and only the birch wood plants it -- see
     // loadHives and the hive pass in scene/chunks.h.
     std::vector<ModelTemplate> hives_;
@@ -10556,15 +12183,18 @@ class World {
     // CORNER is the right place to photograph a building from and the wrong
     // place to stand in a map. See its own note.
     //
-    // THE ASSET IS THE WHOLE .fbx voxelised at the engine's own 10 cm by
-    // tools/voxelize_nuketown.py -- 164 x 99 x 327 voxels, about 519 k
-    // triangles once meshed, seventeen colours. That tool's header carries the
-    // two decisions worth knowing about: the map is 1,374 solid boxes rather
-    // than a shell, so the cavity rule is separating a BOX's inside from a room
-    // rather than a wall seam from one; and the model has no ground outside its
-    // painted slabs, so the tool lays a foundation under the whole footprint.
-    // Without that last one this is a level you fall out of.
-    static constexpr const char *kLevelVox = "C:/voxelbit/game/assets/level/nuketown.vox";
+    // THE ASSET IS THE ARCADE, and it is more than one map now: several FPS
+    // maps laid out in ONE grid with a hundred metres of apron between them,
+    // voxelised at the engine's own 10 cm by tools/voxelize_arcade.py. Which
+    // maps, and where each one sits in the grid, is read from the .maps sidecar
+    // beside it -- see loadLevelMaps and the LevelMap struct. Nothing in the
+    // engine knows a map's name until it reads that file.
+    //
+    // That tool's header carries the decisions worth knowing about: how the
+    // cavity rule tells a solid box's inside from a room, and that these models
+    // bring no ground with them, so the tool lays a foundation under the whole
+    // footprint. Without that last one this is a level you fall out of.
+    static constexpr const char *kLevelVox = "C:/voxelbit/game/assets/level/arcade.vox";
     static constexpr float kLevelAtX = -4096.0f;
     static constexpr float kLevelAtY = 640.0f;
     static constexpr float kLevelAtZ = -4096.0f;
@@ -10575,6 +12205,8 @@ class World {
     VoxAsset levelAsset_;
     std::vector<uint8_t> levelVol_;     // global material ids, VoxAsset layout
     std::vector<int16_t> levelColTop_;
+    // The maps laid out inside that one grid -- see LevelMap and loadLevelMaps.
+    std::vector<LevelMap> levelMaps_;
     // -- THE PENDANT IN THE DARK ROOMS -- see loadLevelBulb and dressLevel ---
     //
     // The pause room's own lamp, at the path its buildRoom used.
@@ -10608,18 +12240,43 @@ class World {
     // array, and this list starts empty and is MEANT to. An initializer list
     // may be empty, so the braces below take a paste of nought entries or forty
     // without the shape of the declaration changing.
-    static std::vector<Vec3> levelBulbSeed() {
+    // -- ...AND THEY ARE RELATIVE TO THEIR MAP, NOT TO THE WORLD -------------
+    //
+    // (user 2026-09-18: "also remove the lightbulbs from the canyons map".)
+    //
+    // THEY WERE ABSOLUTE WORLD METRES AND THAT BROKE THE MOMENT A SECOND MAP
+    // ARRIVED. These eight are nuketown's house lamps, placed by hand when
+    // nuketown WAS the level and sat at the grid's own origin. Laying the
+    // arcade out moved nuketown 194 m down the grid -- and left the bake where
+    // it was, which is now the middle of the CANYON. Eight lightbulbs hanging
+    // in a desert, and nothing anywhere said so.
+    //
+    // So an entry names its MAP and gives metres from that map's own corner,
+    // at its own ground. `dressLevel` resolves it through findLevelMap, so a
+    // re-layout carries the lamps with the map they belong to and an entry for
+    // a map that is not in the arcade is simply skipped.
+    //
+    // THE PASTE STILL WORKS: App's CTRL+C writes absolute world metres, which
+    // is what the running engine knows. Convert on the way in -- subtract the
+    // map's origin -- or the next re-layout strands them again.
+    struct BulbSeed {
+        const char *map;
+        float x, y, z;      // metres from that map's corner, y above its ground
+    };
+    static std::vector<BulbSeed> levelBulbSeed() {
         return {
             // PLACED BY HAND 2026-09-17 and pasted back in from CTRL+C. Two
             // lamps a room, on two floors, in each of the two houses.
-            { -4071.75f, 645.05f, -4059.85f },
-            { -4073.05f, 645.05f, -4067.65f },
-            { -4073.45f, 649.85f, -4069.15f },
-            { -4073.05f, 649.85f, -4060.05f },
-            { -4078.25f, 645.15f, -4035.75f },
-            { -4077.85f, 650.05f, -4028.85f },
-            { -4077.55f, 650.05f, -4035.95f },
-            { -4078.05f, 645.15f, -4028.85f },
+            // Converted to map-local 2026-09-18 by subtracting the level
+            // origin and nuketown's own ground row (11 voxels = 1.10 m).
+            { "nuketown", 24.25f, 3.95f, 36.15f },
+            { "nuketown", 22.95f, 3.95f, 28.35f },
+            { "nuketown", 22.55f, 8.75f, 26.85f },
+            { "nuketown", 22.95f, 8.75f, 35.95f },
+            { "nuketown", 17.75f, 4.05f, 60.25f },
+            { "nuketown", 18.15f, 8.95f, 67.15f },
+            { "nuketown", 18.45f, 8.95f, 60.05f },
+            { "nuketown", 17.95f, 4.05f, 67.15f },
         };
     }
     // v1's FLWPATCH: how far one flower species runs before the next takes
@@ -10672,9 +12329,6 @@ class World {
     size_t levelTris_ = 0;
     bool level_ = false;
     bool levelLoaded_ = false;
-    // Whether the device is holding the LEVEL's material table rather than the
-    // wood's. Only setLevel writes it; uploadMaterials reads it.
-    bool levelTableActive_ = false;
 
     std::map<long long, Chunk> chunks_;
 
@@ -10733,6 +12387,26 @@ class World {
         uint32_t borrowTri = TriPool::kInvalid;
         float3 tint{1.0f, 1.0f, 1.0f};
         bool felled = false;
+        // -------------------------------------------------------------------
+        // BUILT, BUT NOT YET SHOWN.
+        //
+        // (user 2026-09-19: "when the chunks break, they seem to grow from a
+        //  tiny point ... the existing object TURNS INTO chunks. not destroyed
+        //  then create".)
+        //
+        // A tree's pieces cost more than one frame to build (see
+        // drainShatterQueue), so they arrive over about seven. Shown as they
+        // arrive, the tree is gone on frame one and its pieces accumulate --
+        // which is exactly the "grows from a point" that was reported, and it
+        // is the DESTROYED-THEN-CREATED the user is objecting to.
+        //
+        // So a piece waits. It is live, it is simulated, it simply is not
+        // drawn, and the whole batch is revealed on the frame the last one is
+        // ready -- with the parent tree still standing in until then. One flag
+        // and one line in setDebrisInstance; every other loop over debris_ goes
+        // on treating it as the ordinary live body it is.
+        // -------------------------------------------------------------------
+        bool unseen = false;
         // Too long for a chip's fixed window and clamp -- see kLongBodyM.
         // Not the same thing as `felled`: a light pole is neither a tree
         // nor a chip, and before this there was no third answer.
@@ -10760,6 +12434,42 @@ class World {
         // knows which of the two this one is.
         // -------------------------------------------------------------------
         bool scenery = false;
+        // -------------------------------------------------------------------
+        // IT IS A PIECE OF A TREE THE PLAYER FELLED, AND IT IS OWED TO THEM.
+        //
+        // The one thing this says is that kAbsorbSize does not apply. v1's own
+        // words for why: "PH.absorbSize is 200 voxels and a crown chunk is
+        // thousands, so every piece was being marked tooBig and left as scenery
+        // however finely it was cut ... the limit exists to stop someone
+        // pocketing a hillside, and a tree they have just felled is the one
+        // mass they are OWED -- so the pieces of a fell carry an exemption
+        // instead of the number being lowered for everything."
+        //
+        // NOT `scenery` INVERTED and not `felled` cleared: those two already
+        // mean other things (a mushroom cap, and KIND_TREE shading with a
+        // per-frame static window). This is the one bit that was meant. It is
+        // set where the piece is BORN -- see shatterFelled.
+        //
+        // It does NOT waive the reach. The piece also carries kFellLootReachM,
+        // so it is walked up to like a dropped steak.
+        // -------------------------------------------------------------------
+        bool loot = false;
+        // ...AND THE OTHER ANSWER shatterFelled CAN GIVE, which is that this
+        // body is not worth breaking -- a severed twig of two voxels, or a
+        // partition that came back as one lump. That is a fact about the SHAPE
+        // and it will be just as true in four hundred milliseconds, so without
+        // somewhere to write it down the break clock re-sorts the same voxels
+        // every dwell for the body's whole half-hour life. Distinct from "no
+        // room", which is a fact about the world and does want re-asking.
+        bool noBreak = false;
+        // WHEN THIS BODY LAST HAD ANY SPEED IN IT, for the break clock above --
+        // see kFellCalmMs. The sentinel means "it has not been still yet".
+        double calmT0 = -1e9;
+        // THE FASTEST THIS BODY HAS EVER FALLEN, and when its fall was
+        // arrested -- the impact test, see kFellHitVy. The peak is the body's
+        // OWN so the threshold scales with how far it had to come down.
+        float fellPeak = 0.0f;
+        double hitT0 = -1e9;
         // THE FELLING HINGE, HELD UNTIL THE PIECE LANDS. v1's tipArm/tipAx:
         // the topple is ARMED at the cut and applied on the frame the trunk
         // has actually come down on its own stump, so it drops square instead
@@ -11051,6 +12761,45 @@ class World {
     // setFlyerInstance, where both are written, and flyerAt, which is why.
     std::vector<int16_t> flyerModel_ = std::vector<int16_t>(size_t(kFlyerInstances), -1);
     std::vector<float> flyerR_ = std::vector<float>(size_t(kFlyerInstances), 0.0f);
+    // -----------------------------------------------------------------------
+    // ...AND WHERE THE ANIMAL ACTUALLY IS, WHICH wasAt_ STOPPED BEING.
+    //
+    // (user 2026-09-19: "adjust the hitboxes of the life and make sure they
+    //  are accurate. I feel like Im shooting an arrow and its hitting the life
+    //  but its not registering.")
+    //
+    // flyerAt read `wasAt_`, and the note over it still says "place() already
+    // records the model's world centre there, because a motion vector needs
+    // exactly that". THAT STOPPED BEING TRUE on 2026-09-14, when place() grew
+    // an `anchor` -- a point fixed to the ANIMAL, passed so a bird whose pose
+    // strip changes footprint does not report 15 cm of phantom travel a frame.
+    // Seven of the band's callers pass one, and for three of them the anchor
+    // is deliberately NOT the middle of anything:
+    //
+    //     perched birds   the perch, plus this frame's lift -- its FEET
+    //     the flock       the model's CORNER, no half-box subtracted at all
+    //     bunnies         the animal's position with the vertical half NOT
+    //                     taken off, because a rabbit stands on the ground
+    //
+    // So the sphere every hit test in the game is built on was centred at a
+    // rabbit's feet and at a songbird's toes, with a radius of the model's
+    // MEAN half-extent -- and half of it was underground. An arrow through the
+    // animal's body passed above the sphere entirely and reported a miss,
+    // which is the report. (shatterFlyer reads the same field and its comment
+    // says "the model, centred in an n-cube": the corpse of every one of those
+    // species was born half a body low, and the birth-lift added afterwards
+    // was covering for this.)
+    //
+    // The motion anchor is right for what it is for and must not move. This is
+    // the OTHER question, asked separately and written at the same moment: the
+    // world-space box the instance is actually drawn in. Mid is its centre and
+    // half is the half extent of the AABB of the turned model -- so for
+    // anything drawn with a yaw, which is every walker, it is exact.
+    // -----------------------------------------------------------------------
+    // WHICH TRIGGER BROKE THE LAST TREE -- see the break clock in updateDebris.
+    const char *fellWhy_ = "?";
+    std::vector<Vec3> flyerMid_ = std::vector<Vec3>(size_t(kFlyerInstances), Vec3{0, 0, 0});
+    std::vector<Vec3> flyerHalf_ = std::vector<Vec3>(size_t(kFlyerInstances), Vec3{0, 0, 0});
     bool flyersDirty_ = false;  // anything written since the last flush
     int dropBase_ = -1;         // ...and the same pair for what has been put down
     bool dropsDirty_ = false;
@@ -11686,7 +13435,45 @@ class World {
                       // and it is not a default: a shared entry carries the
                       // MATERIAL of whatever minted it, so a set that folds is
                       // a set that has agreed to wear another's surface.
-                      int matchTol = Palette::kModelMatch) {
+                      int matchTol = Palette::kModelMatch,
+                      // -- ...AND THE OTHER HALF OF stemId, 2026-09-19 -----
+                      //
+                      // (user: "make all the flowers in the cherry forest
+                      //  pink", "make the mushrooms in the cherry forest pink.
+                      //  keep the white base of the mushroom the same".)
+                      //
+                      // stemId catches a model's GREEN and hands it to a ramp.
+                      // This catches its COLOUR -- the bloom of a flower, the
+                      // cap of a mushroom -- and hands it to another, so the
+                      // cherry wood's decorations are pink with no second set
+                      // of .vox files existing anywhere.
+                      //
+                      // WHAT IT LEAVES ALONE IS THE POINT. The test is
+                      // "chromatic, and not green", so a mushroom's white stem
+                      // and a flower's grey are exactly as authored -- which is
+                      // the ask in the user's own words.
+                      //
+                      // BY LUMINANCE over the set, the rule the crowns use --
+                      // see tools/cherry_from_oak.py. A nearest-colour match
+                      // would collapse every petal onto one pink.
+                      //
+                      // APPENDED, NOT INSERTED. See the two notes above about
+                      // what putting a parameter in the middle of this list
+                      // did to the rock loaders.
+                      uint8_t bloomBase = mat::AIR,
+                      uint8_t bloomCount = mat::CPINK_COUNT,
+                      // ...AND WHICH RAMP THE MOSS ON THESE ROCKS IS GROWN
+                      // FROM. See growMoss: the cherry wood's copy of the rock
+                      // set passes mat::CPINK_0 and is otherwise the same load.
+                      uint8_t mossBase = mat::GRASS_0,
+                      // WHICH KIND OF 2x `upscale` MEANS. False duplicates
+                      // every voxel into a 2x2x2 block (upscale2x) -- the same
+                      // shape drawn coarser, which is what the big mushrooms
+                      // want. True RESAMPLES the shape at the finer grain
+                      // (revoxel2x), which is what "revoxelise it at 2x" means
+                      // and what the cacti take. Appended, never inserted --
+                      // see the two notes above about this list.
+                      bool revoxel = false) {
         // -- TOLERANCE REUSE IS THE DEFAULT NOW --------------------------
         //
         // (user 2026-09-17, on adding the cherry forest and the desert:
@@ -11748,7 +13535,7 @@ class World {
                 // pass is the large mushrooms and the mid stones; two is the
                 // big five, which are meant to read as landmarks rather than
                 // as rocks you walk past.
-                for (int u = 0; u < upscale; ++u) a = upscale2x(a);
+                for (int u = 0; u < upscale; ++u) a = revoxel ? revoxel2x(a) : upscale2x(a);
 
                 // ONLY THE ENTRIES THE MODEL USES. Registering all 255 of a
                 // file's palette floods the shared table, and past 255
@@ -11756,6 +13543,12 @@ class World {
                 std::vector<uint8_t> idOfEntry(256, mat::AIR);
                 std::vector<bool> used(256, false);
                 for (uint8_t v : a.a) used[v] = true;
+                // The entries a bloom ramp will claim -- see bloomBase. Filled
+                // by the loop below and ranked after it, because the rank of a
+                // colour is a fact about the whole SET and not about the
+                // colour: the darkest petal in this model is shade 0, and
+                // which colour that is cannot be known until they are all in.
+                std::vector<uint8_t> bloomWanted;
                 // THE BIRCHES BEGIN HERE. loadPines() fills one vector with
                 // both species -- pines below birchBase, birches at and above
                 // it -- so this is the only moment the palette can be told
@@ -11766,21 +13559,62 @@ class World {
                     if (used[e]) {
                         const std::array<uint8_t, 4> &pc = mo.pal[e - 1];
                         // Green-dominant is the stem and its leaves; the bloom
-                        // is not, and keeps its authored colour.
-                        // Green-dominant is the stem and its leaves; the bloom
-                        // is not, and keeps its authored colour.
-                        if (stemId != mat::AIR && pc[1] > pc[0] && pc[1] > pc[2])
+                        // is not, and keeps its authored colour -- unless a
+                        // bloom ramp was handed in, which is the cherry wood.
+                        const bool green = pc[1] > pc[0] && pc[1] > pc[2];
+                        // CHROMATIC, by the same span test the stone ramp uses:
+                        // a colour whose channels are close together is a grey,
+                        // however light or dark, and a mushroom's stem is a
+                        // grey. Anything under a third of its own maximum stays
+                        // as authored, which is what keeps the white base white.
+                        const int mx = maxi(maxi(pc[0], pc[1]), pc[2]);
+                        const int mn = mini(mini(pc[0], pc[1]), pc[2]);
+                        const bool chromatic = mx > 0 && (mx - mn) > mx / 3;
+                        if (stemId != mat::AIR && green)
                             idOfEntry[e] = stemId;
+                        else if (bloomBase != mat::AIR && chromatic && !green)
+                            bloomWanted.push_back(uint8_t(e));
                         else
                             idOfEntry[e] =
                                 palette.forModelColor(pc, /*conifer=*/true, /*exact=*/false,
                                                       matchTol);
                     }
 
+                // -- ...AND THE BLOOMS, RANKED DARK TO LIGHT ---------------
+                //
+                // The ramp is walked in the same order the colours are, which
+                // is the rule tools/cherry_from_oak.py states for the crowns:
+                // "the leaves are ranked by LUMINANCE and the ramp is walked in
+                // the same order, dark to light, so the crown keeps its own
+                // shading". A flower is three petal shades and a mushroom cap
+                // is four; matching them by hue instead would put all of them
+                // on one pink and flatten the model.
+                //
+                // FEWER COLOURS THAN SHADES IS THE COMMON CASE and it must not
+                // bunch them at the dark end: three petals over six shades take
+                // 0, 2 and 5, so a small model still spans the whole ramp.
+                if (bloomBase != mat::AIR && !bloomWanted.empty() && bloomCount > 0) {
+                    std::sort(bloomWanted.begin(), bloomWanted.end(),
+                              [&mo](uint8_t x, uint8_t y) {
+                                  const auto &p0 = mo.pal[x - 1];
+                                  const auto &p1 = mo.pal[y - 1];
+                                  return (p0[0] * 2 + p0[1] * 5 + p0[2]) <
+                                         (p1[0] * 2 + p1[1] * 5 + p1[2]);
+                              });
+                    const int n = int(bloomWanted.size());
+                    for (int k = 0; k < n; ++k) {
+                        const int shade =
+                            (n == 1) ? int(bloomCount) / 2
+                                     : (k * (int(bloomCount) - 1)) / (n - 1);
+                        idOfEntry[size_t(bloomWanted[size_t(k)])] =
+                            uint8_t(bloomBase + shade);
+                    }
+                }
+
                 // The moss goes into the ASSET, before anything reads it, so
                 // the mesh and the collider below cannot disagree about where
                 // the rock's surface is.
-                growMoss(&a, &idOfEntry, mossSeed);
+                growMoss(&a, &idOfEntry, mossSeed, mossBase);
                 // BEFORE the moss, in spirit: only entries the file itself
                 // used, so an unused palette slot cannot tint the ramp.
                 if (colourSink)
@@ -11942,13 +13776,121 @@ class World {
         // compromise". Both halves of this set now share, for two different
         // reasons that happen to agree.
         mesher_.oakBase = int(pines_.size());
-        if (!terrain.forced || terrain.biome == Biome::Oak) {
+        // terrain.oak() rather than the biome test that was here: a forced
+        // CHERRY wants the oaks loaded too, because the cherries are built out
+        // of exactly these three models and the scatter indexes both ranges.
+        if (terrain.oak()) {
+            // -- THREE OAKS, ALL THE SAME HEIGHT, AND THAT IS A DECISION -----
+            //
+            // (user 2026-09-19: "wipe the current oak trees on the field ...
+            // voxelize those files into our 10cm voxel format and put the 3
+            // trees in the oak forest biome. make sure when you voxelize oak
+            // trees, they are around 17 meters tall.")
+            //
+            // What was here was SEVEN models and they were a size LADDER --
+            // oak_1 was 3.4 x 3.2 x 2.1 m, a sapling, and oak_7 was 25.5 x 25 x
+            // 25.6 m. The picker below is a uniform hash over a species' range,
+            // so the ladder was the only source of height variety in the wood
+            // and there is no per-instance scale to replace it with. Three
+            // models cut at one height means a stand of trees that are all
+            // 17.1 m, distinguished by crown shape and the four yaws. That is
+            // what was asked for; if the wood wants saplings back, the answer
+            // is more entries in this list voxelised at other heights, not a
+            // scale in the scatter.
+            //
+            // The models come out of tools/fbx2vox.cpp; the three FBX sources
+            // are source/fbx/oak_trees/oak_tree_{1,2,3}.fbx -- same order as
+            // these .vox, and originally Oak-tree0301/0302/0303_Corona2016 --
+            // and the set they replace is parked in the asset folder beside
+            // them.
             std::vector<std::string> oaks;
-            for (int i = 1; i <= 7; ++i)
+            for (int i = 1; i <= 3; ++i)
                 oaks.push_back(oakDir + "/oak_" + std::to_string(i) + ".vox");
             loadModelSet(oaks, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
                          /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true,
                          /*matchTol=*/30);
+        }
+
+        // -- AND THE CHERRIES, WHICH ARE THOSE OAKS WITH PINK CROWNS -------
+        //
+        // (user 2026-09-19: "create a cherry forest biome ... the trees leaves
+        //  are pink instead of green", "the cherry forest uses the same trees
+        //  as the oak forest, except recolor them to pink".)
+        //
+        // A FOURTH RANGE IN THE SAME ARRAY, appended exactly as the oaks were
+        // appended to the birches, so pine [0, birchBase), birch [birchBase,
+        // oakBase), oak [oakBase, cherryBase), cherry [cherryBase, size) stays
+        // one positional rule. The scatter does not roll a fourth species -- it
+        // rolls an oak and then shifts the index by this offset, which is what
+        // makes a cherry wood the same wood with a different palette in it.
+        //
+        // THE FOUR PINKS ARE DECLARED BLOSSOM FIRST AND THAT IS NOT OPTIONAL.
+        // forModelColor classifies green-dominant as foliage and everything
+        // else on a tree as bark, so without this the crowns would register as
+        // WOOD: no translucency, and -- far worse -- Palette::isFoliage is what
+        // builds a felled tree's collider, and a crown counted as wood is the
+        // fat cone that cannot lie down. See Palette::addBlossom, which also
+        // takes them out of the fold so a flower's pink cannot swallow them.
+        //
+        // THE BARK STILL FOLDS. It is the pines' five browns already (see
+        // tools/oak_bark_ramp.py), so at matchTol 30 every one of them is an
+        // exact bucket hit and the whole set costs four entries, not nine.
+        mesher_.cherryBase = int(pines_.size());
+        if (terrain.cherry() && mesher_.cherryBase > mesher_.oakBase) {
+            static const uint8_t kBlossom[4][3] = {
+                {208, 110, 143}, {220, 126, 159}, {238, 150, 183}, {248, 168, 195}};
+            for (const auto &c : kBlossom) palette.addBlossom(c[0], c[1], c[2]);
+            std::vector<std::string> cherries;
+            for (int i = 1; i <= 3; ++i)
+                cherries.push_back(cherryDir + "/cherry_" + std::to_string(i) + ".vox");
+            loadModelSet(cherries, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
+                         /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true,
+                         /*matchTol=*/30);
+            std::printf("  cherry   %d models, the oaks in blossom (4 pink entries)\n",
+                        int(pines_.size()) - mesher_.cherryBase);
+
+            // -- AND THE PALER HALF OF THE WOOD ---------------------------
+            //
+            // (user 2026-09-19: "create a light pink variant of half the
+            //  cherry trees".)
+            //
+            // A FIFTH RANGE on the same positional rule, loaded the same way
+            // and for the same reasons -- blossom first so the crowns are not
+            // bark, matchTol 30 so the bark itself folds into the pines'
+            // browns. Four more pink entries, and no geometry: these are the
+            // same three oaks again.
+            //
+            // MISSING IS NOT FATAL. loadModelSet warns per file, so a tree tree
+            // that has not been generated yet leaves cherryLightBase equal to
+            // the array size and the scatter quietly plants an ordinary cherry
+            // -- which is the wood this was before today.
+            mesher_.cherryLightBase = int(pines_.size());
+            {
+                static const uint8_t kBlossomLight[4][3] = {
+                    {240, 182, 203}, {246, 196, 214}, {251, 212, 226}, {255, 226, 237}};
+                for (const auto &c : kBlossomLight) palette.addBlossom(c[0], c[1], c[2]);
+                std::vector<std::string> light;
+                for (int i = 1; i <= 3; ++i)
+                    light.push_back(cherryDir + "/cherry_light_" + std::to_string(i) + ".vox");
+                loadModelSet(light, &pines_, false, false, 0u, /*perches=*/true, /*upscale=*/0,
+                             /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/true,
+                             /*matchTol=*/30);
+                std::printf("  cherry   %d of them the PALE blossom (4 more pink entries)\n",
+                            int(pines_.size()) - mesher_.cherryLightBase);
+            }
+        }
+        // -- ...AND A DESERT HAS NO TREES, WHICH IS NOT A FAILURE ---------
+        //
+        // Every other pinned world loads one set and this one loads none, so
+        // the guard below -- written when "no trees" could only mean a missing
+        // asset -- would refuse to start. It is still right for every other
+        // case: an empty set anywhere else IS a missing folder, and starting
+        // into a bald world is a worse answer than saying so.
+        if (pines_.empty() && terrain.forced && terrain.biome == Biome::Desert) {
+            mesher_.birchBase = mesher_.oakBase = mesher_.cherryBase = 0;
+            mesher_.cherryLightBase = 0;
+            loadedPines = 0;
+            return true;
         }
         if (pines_.empty()) {
             std::fprintf(stderr, "v2: no pine models loaded from %s -- pass --pines\n",
@@ -12024,7 +13966,75 @@ class World {
         std::vector<std::array<uint8_t, 4>> rockCols;
         loadModelSet(big, &rocks_, false, false, 0x4D055EEDu, false, 0, &rockCols);
         loadModelSet(mid, &rocks_, false, false, 0x4D055EEDu, false, 0, &rockCols);
+        // WHERE THE BOULDERS STOP AND THE PEBBLES START -- the desert halves
+        // the big ones and this is the line it halves at. Recorded rather than
+        // written as an 11, because the three lists above are named by size
+        // and a model added to any of them moves it.
+        mesher_.rockSmall0 = int(rocks_.size());
         loadModelSet(rest, &rocks_, false, false, 0x4D055EEDu, false, 0, &rockCols);
+
+        // -- ...AND THE SAME STONES AGAIN, MOSSED PINK ---------------------
+        //
+        // (user 2026-09-19: "have the moss on the rocks in the cherry biome
+        //  pink".)
+        //
+        // A TRAILING RANGE, which is the rule the cherry TREES already follow:
+        // everything before rockCherry0 is the ordinary set, everything from it
+        // is the same models with mat::CPINK_0 grown on them instead of the
+        // grass ramp, and the scatter shifts the index by exactly that when the
+        // column is cherry. One positional rule, and a k that was valid before
+        // the shift is valid after it because this is a FULL duplicate.
+        //
+        // WHY A SECOND COPY AT ALL: growMoss runs at LOAD and writes the moss
+        // into the VoxAsset as real voxels, before the mesh and the collider
+        // are built off it -- that is the whole design, and its note says why.
+        // A rock therefore cannot decide its moss when it is placed, so the
+        // wood that wants different moss needs a different rock.
+        //
+        // IT COSTS GEOMETRY, NOT PALETTE. The pinks are mat::CPINK_0, which the
+        // flowers and the mushrooms are already paying for; this is ~32 MB of
+        // duplicated volume against a 7 GB budget.
+        //
+        // NO colourSink. rockCols feeds Palette::setStoneBand, and these are
+        // the same stones -- handing them in twice would weight the stone ramp
+        // toward whatever the rocks happen to be made of, for no new colour.
+        if (terrain.cherry()) {
+            mesher_.rockCherry0 = int(rocks_.size());
+            for (const std::vector<std::string> *g : {&big, &mid, &rest})
+                loadModelSet(*g, &rocks_, false, /*quiet=*/true, 0x4D055EEDu, false, 0,
+                             /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/false,
+                             /*matchTol=*/Palette::kModelMatch, /*bloomBase=*/mat::AIR,
+                             /*bloomCount=*/mat::CPINK_COUNT, /*mossBase=*/mat::CPINK_0);
+            std::printf("  cherry   %d stones again, mossed pink\n",
+                        int(rocks_.size()) - mesher_.rockCherry0);
+        }
+
+        // -- ...AND A THIRD SET WITH NO MOSS AT ALL, FOR THE SAND ----------
+        //
+        // (user 2026-09-19: "remove the moss from the rocks in the desert".)
+        //
+        // `mossSeed` 0 is growMoss's own early return -- there is no separate
+        // switch and no branch inside the grower, the seed simply is not there.
+        // Everything else about the load is the ordinary set's.
+        //
+        // THE THIRD COPY IS THE PRICE OF BAKING MOSS INTO THE ASSET. growMoss
+        // writes it as real voxels before the mesh and the collider are built,
+        // which is the design and its note says why; the cost is that "which
+        // moss" is decided at LOAD and a placed stone cannot change its mind.
+        // Three woods want three answers, so three sets: green, pink, none.
+        //
+        // AND IT ONLY LOADS WHERE IT CAN BE REACHED. terrain.desert() is false
+        // in a world pinned to any other band, and there this would be 32 MB
+        // of duplicated volume for ground you cannot stand on.
+        if (terrain.desert()) {
+            mesher_.rockDesert0 = int(rocks_.size());
+            for (const std::vector<std::string> *g : {&big, &mid, &rest})
+                loadModelSet(*g, &rocks_, false, /*quiet=*/true, /*mossSeed=*/0u, false, 0,
+                             /*colourSink=*/nullptr, /*stemId=*/mat::AIR, /*solidify=*/false,
+                             /*matchTol=*/Palette::kModelMatch);
+            std::printf("  desert   %d stones again, bare\n",
+                        int(rocks_.size()) - mesher_.rockDesert0);
+        }
         palette.setStoneBand(rockCols);
         std::printf("v2: stone ramp from %zu rock colours (%d usable)\n",
                     rockCols.size(), palette.stoneSampleCount());
@@ -12041,6 +14051,27 @@ class World {
         mesher_.flowerBirch0 = int(flowers_.size());
         loadModelSet({decorDir + "/flowers.vox"}, &flowers_, true, false, 0u, false, 0, nullptr,
                      mat::BGRASS_0);
+        // -- ...AND A THIRD SET, IN BLOSSOM --------------------------------
+        //
+        // (user 2026-09-19: "I want you to make all the flowers in the cherry
+        //  forest pink. recolor the flowers in the cherry forest pink".)
+        //
+        // ALL of them, which is why this is a ramp and not a species filter:
+        // every bloom in the file, whatever it was authored, lands on
+        // mat::CPINK_0..5 by luminance. The stem stays the broadleaf grass it
+        // already was -- a cherry wood's ground is the oak's by construction
+        // and its flowers stand in the same green.
+        //
+        // A FULL DUPLICATE of both halves above, so the scatter's shift is the
+        // trees' one-line rule: any k that was valid is valid plus this base.
+        // The pine-stemmed half is unreachable in a cherry band and is copied
+        // anyway, because a set that is a duplicate needs no arithmetic and a
+        // set that is half a duplicate needs some.
+        mesher_.flowerCherry0 = int(flowers_.size());
+        for (uint8_t stem : {mat::GRASS_0, mat::BGRASS_0})
+            loadModelSet({decorDir + "/flowers.vox"}, &flowers_, true, /*quiet=*/true, 0u, false, 0,
+                         nullptr, stem, /*solidify=*/false,
+                         /*matchTol=*/Palette::kModelMatch, /*bloomBase=*/mat::CPINK_0);
         loadedFlowers = int(flowers_.size());
     }
 
@@ -12072,7 +14103,131 @@ class World {
         mushroomBig0 = int(mushrooms_.size());
         loadModelSet({decorDir + "/mushroom.vox"}, &mushrooms_, true, false, 0u, false,
                      /*upscale=*/1, nullptr, mat::AIR, /*solidify=*/true);
+        // -- ...AND BOTH SIZES AGAIN WITH PINK CAPS ------------------------
+        //
+        // (user 2026-09-19: "make the mushrooms in the cherry forest pink. keep
+        //  the white base of the mushroom the same".)
+        //
+        // THE SECOND HALF OF THAT ASK IS WHY bloomBase TESTS FOR CHROMA rather
+        // than simply "not green". A mushroom is a red cap on a white stem, and
+        // a rule of "recolour what is not the stem material" would have taken
+        // the stem too -- it is not green, so stemId never claimed it, and it
+        // would have fallen through to the ramp and come out pink. The test is
+        // `(max - min) > max / 3`, so the cap is chromatic and claimed and the
+        // white base is a grey and left exactly as authored.
+        //
+        // A FULL DUPLICATE OF BOTH SIZES, so the scatter's shift stays the
+        // trees' one line -- and so the big/small draw above it keeps working
+        // unchanged inside the cherry copy, at the same offsets.
+        mesher_.mushroomCherry0 = int(mushrooms_.size());
+        loadModelSet({decorDir + "/mushroom.vox"}, &mushrooms_, true, /*quiet=*/true, 0u, false, 0,
+                     nullptr, mat::AIR, /*solidify=*/true,
+                     /*matchTol=*/Palette::kModelMatch, /*bloomBase=*/mat::CPINK_0);
+        loadModelSet({decorDir + "/mushroom.vox"}, &mushrooms_, true, /*quiet=*/true, 0u, false,
+                     /*upscale=*/1, nullptr, mat::AIR, /*solidify=*/true,
+                     /*matchTol=*/Palette::kModelMatch, /*bloomBase=*/mat::CPINK_0);
         loadedMushrooms = int(mushrooms_.size());
+    }
+
+    // -----------------------------------------------------------------------
+    // v1's DESERT: NINE CACTI AND SIX SCRUB BUSHES.
+    //
+    // (user 2026-09-19: "import the desert assets from v1".)
+    //
+    // The same files that engine reads, out of the same folders -- they have
+    // been sitting in game/assets/foilage beside the pines since the asset tree
+    // was shared, and nothing in v2 had ever loaded them.
+    //
+    // /*solidify=*/true, for the mushroom's reason: a tool can cut into these,
+    // so the inside has to be something. A sealed voxel takes the commonest
+    // palette entry among its solid neighbours, so a cactus fills with cactus.
+    //
+    // ONLY WHEN THERE IS A DESERT TO PUT THEM IN. --pine and --birch pin the
+    // world and these would be fifteen model sets and their colours registered
+    // for a band that cannot be reached. terrain.desert() is true unless
+    // something else is pinned, which is the same test the oaks take.
+    //
+    // A MISSING FILE IS A WARNING, NOT A FAILURE -- loadModelSet's own rule. A
+    // desert with six cacti instead of nine is a desert.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // v1's BUSH, IN BLOSSOM -- the cherry wood's own scrub.
+    //
+    // (user 2026-09-19: "in the cherry forest I want you to load in the bush.
+    //  make the color in the push pink. I believe they are currently blue or
+    //  red, double check. they are located in the v1 oak forest".)
+    //
+    // CHECKED, AND THEY ARE RED. The six models under foilage/desert_shrub
+    // wear one bloom ramp -- (227,61,89) through (243,130,153), with a single
+    // (255,203,127) highlight -- and 5.vox and 6.vox have no bloom at all,
+    // they are pure green. Not blue.
+    //
+    // THE SAME SIX FILES THE DESERT ALREADY LOADS, and that is v1's own
+    // arrangement rather than a saving: over there one set of shrub models is
+    // dealt two colour ramps (SHRUBC and SHRUBF in assets/bow.js -- "the first
+    // four are the GREEN ramp and the last six the FLOWER ramp"), so the bush
+    // in the oak wood and the scrub in the sand are the same plant painted
+    // differently. This is that idea with the blossom's palette.
+    //
+    // bloomBase DOES THE RECOLOUR AND NOTHING ELSE IS NEEDED: it claims the
+    // chromatic non-green entries -- which is exactly the bloom -- and maps
+    // them onto mat::CPINK_0.. by luminance, leaving all eight greens as
+    // authored. The leaves stay leaves and the flowers turn.
+    //
+    // APPENDED AFTER the desert's copy, so shrubs_ is [0, shrubCherry0) red
+    // and [shrubCherry0, size) pink; the scatter shifts by that base in the
+    // blossom exactly as it does for the stones.
+    // -----------------------------------------------------------------------
+    void loadCherryBush() {
+        if (!terrain.cherry()) return;
+        mesher_.shrubCherry0 = int(shrubs_.size());
+        std::vector<std::string> bush;
+        for (int i = 1; i <= 6; ++i)
+            bush.push_back(shrubDir + "/" + std::to_string(i) + ".vox");
+        loadModelSet(bush, &shrubs_, true, /*quiet=*/true, 0u, false, 0, nullptr, mat::AIR,
+                     /*solidify=*/true, /*matchTol=*/Palette::kModelMatch,
+                     /*bloomBase=*/mat::CPINK_0);
+        std::printf("  cherry   %d bushes, the scrub in blossom\n",
+                    int(shrubs_.size()) - mesher_.shrubCherry0);
+    }
+
+    void loadDesert() {
+        if (!terrain.desert()) return;
+        std::vector<std::string> cacti, shrubs;
+        for (int i = 1; i <= 9; ++i)
+            cacti.push_back(cactusDir + "/cactus_" + std::to_string(i) + ".vox");
+        for (int i = 1; i <= 6; ++i)
+            shrubs.push_back(shrubDir + "/" + std::to_string(i) + ".vox");
+        // -- ...AND THE CACTI ARE REVOXELISED AT TWICE THE SIZE ----------
+        //
+        // (user 2026-09-19: "revoxelize the cactus in the desert. make them
+        //  2x bigger".)
+        //
+        // `upscale` 1 is one pass of upscale2x -- the same machinery the big
+        // mushrooms use. Every voxel becomes eight, so the saguaro grows in
+        // world metres without the art being redrawn and without a second set
+        // of files. It is a REVOXELISATION and not a scale on the instance:
+        // the model really is twice as many voxels, so it meshes, collides and
+        // can be cut at the same 10 cm grain as everything else.
+        //
+        // AFTER solidify, which is the order loadModelSet already runs in and
+        // is the cheap way round -- filling the authored model floods an
+        // eighth of the voxels, and upscaling a solid interior keeps it solid.
+        //
+        // ITS FOOTPRINT DOUBLES WITH IT, and the scatter reads that footprint
+        // both for its own spacing and for the rock keep-out, so a 2x cactus
+        // takes 2x the clearance without anything here saying so.
+        // NO UPSCALE ANY MORE, AND THAT IS THE POINT. The nine .vox files ARE
+        // the 2x set now -- revoxelised from source/glb/cactus.glb by
+        // tools/glb2vox at twice the original height (4.4 m -> 8.8 m for the
+        // tallest, the rest in proportion). Doubling them again here would
+        // give 17 m cacti built out of 2x2x2 blocks, which is both halves of
+        // what the ask was against.
+        loadModelSet(cacti, &cacti_, true, false, 0u, false, /*upscale=*/0, nullptr, mat::AIR,
+                     /*solidify=*/true, /*matchTol=*/Palette::kModelMatch);
+        loadModelSet(shrubs, &shrubs_, true, false, 0u, false, 0, nullptr, mat::AIR,
+                     /*solidify=*/true, /*matchTol=*/Palette::kModelMatch);
+        std::printf("  desert   %d cacti, %d shrubs\n", int(cacti_.size()), int(shrubs_.size()));
     }
 
     // The beehive. Birch only -- see the hive pass in scene/chunks.h, which
@@ -12090,24 +14245,44 @@ class World {
     // OAK ONLY, and the gate is the same one loadHives uses: no model set
     // means no pass, with no second flag to keep in step.
     //
-    // THE LEAF WEARS THE OAK'S OWN CANOPY, WHICH IS WHAT stemId IS FOR.
-    // Each fruit is 19 voxels of flesh and 3 to 5 of stem and leaf, and the
-    // leaf is authored (171,178,100) -- a green that belongs to the bake
-    // rather than to this wood. Handed to stemId it is replaced by the
-    // crown's own entry instead of minting a fourth green, which is exactly
-    // what the browser engine does with `near(fj.pal[fj.nbody], OAKLEAF)`,
-    // and exactly what a flower's stem already does with the grass ramp.
+    // A FRUIT'S CROWN IS TWO THINGS: a BLADE and a STALK, and they are not
+    // the same colour. Each fruit is 19 voxels of flesh and 3 to 5 of crown;
+    // of those the apple's (1,1,3) and (0,1,4) are the stalk, authored
+    // (143,95,74), and the rest is blade, authored (178,199,107).
     //
-    // SO THE FRUIT COSTS TWO PALETTE ENTRIES, one red and one orange, and
-    // those two are the whole point of it: they are minted at tolerance 0
-    // rather than folded, because a fruit that shares an entry with
-    // something near it is a fruit you cannot see in a crown.
+    // THE BLADE WEARS THE OAK'S OWN CANOPY, WHICH IS WHAT stemId IS FOR.
+    // That green belongs to the bake rather than to this wood; handed to
+    // stemId it is replaced by the crown's own entry instead of minting a
+    // fourth green, which is exactly what the browser engine does with
+    // `near(fj.pal[fj.nbody], OAKLEAF)`, and exactly what a flower's stem
+    // already does with the grass ramp.
+    //
+    // THE STALK DOES NOT, AND THAT IS THE POINT (user 2026-09-18: "the
+    // apples stem is not brown but green"). stemId only claims a model's
+    // GREEN-DOMINANT colours, so a brown walks past it into forModelColor
+    // and mints an entry of its own -- and forModelColor classifies a
+    // non-green as bark, which is the look a stalk wants: rough, opaque, no
+    // canopy translucency. Two voxels is far under the fell collider's
+    // kFellFillFrac (9 of 64 in a 0.4 m cell), so calling them wood there
+    // cannot add a box, which is the one thing the foliage bit decides.
+    //
+    // THE SPLIT IS NOT VISIBLE FROM fruit.json -- the bake pools stalk and
+    // blade into one voxel-weighted mean and three greens outvote two
+    // browns, so it arrives olive. tools/vox_from_fruit_json.py recovers it
+    // from apple/00.vox, the same way and by the same hue rule the browser
+    // engine's assets/bow.js does. If a stem ever goes green again, that is
+    // the tool to run, not this function to change.
+    //
+    // SO THE FRUIT COSTS THREE PALETTE ENTRIES: one red, one orange, one
+    // brown. All three are minted at tolerance 0 rather than folded,
+    // because a fruit that shares an entry with something near it is a
+    // fruit you cannot see in a crown.
     void loadFruit() {
         if (!terrain.oak()) return;
-        // THE NEAREST CANOPY entry to the bake's leaf green -- not the
+        // THE NEAREST CANOPY entry to the blade's authored green -- not the
         // nearest entry, which is a different question and gave a wrong
         // answer here. See Palette::nearestFoliage for the measurement.
-        const uint8_t leaf = palette.nearestFoliage({171, 178, 100, 255});
+        const uint8_t leaf = palette.nearestFoliage({178, 199, 107, 255});
         loadModelSet({decorDir + "/fruit_apple.vox", decorDir + "/fruit_orange.vox"},
                      &fruit_, false, true, 0u, /*perches=*/false, /*upscale=*/0,
                      /*colourSink=*/nullptr, /*stemId=*/leaf ? leaf : mat::AIR,
@@ -12232,9 +14407,59 @@ class World {
     // runs never press the key. buildLevelBlas does that on arrival.
     //
     // A MISSING FILE IS A WARNING, NOT A FAILURE. The .fbx it is voxelised from
-    // is gitignored, so a fresh clone has no map until tools/voxelize_nuketown.py
+    // is gitignored, so a fresh clone has no map until tools/voxelize_arcade.py
     // is run, and refusing to start the wood over that would be absurd.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // WHICH MAPS ARE IN THE ARCADE -- read beside the .vox, never named here.
+    //
+    // See the LevelMap struct for why this is a sidecar. The format is one map
+    // a line, "name x0 z0 x1 z1" in VOXELS of the level grid, '#' to end of
+    // line is a comment. Written by tools/voxelize_arcade.py in the same run
+    // that writes the voxels.
+    //
+    // A MISSING FILE IS NOT AN ERROR. It means an asset built before this
+    // existed, or by hand -- /locate then has no map names to offer and
+    // everything else works exactly as it did. Saying so once is worth more
+    // than failing to load a level over it.
+    // -----------------------------------------------------------------------
+    void loadLevelMaps() {
+        levelMaps_.clear();
+        std::string path(kLevelVox);
+        const size_t dot = path.find_last_of('.');
+        if (dot != std::string::npos) path.resize(dot);
+        path += ".maps";
+        std::ifstream in(path);
+        if (!in) {
+            std::printf("  level    no %s -- /locate has no map names\n", path.c_str());
+            return;
+        }
+        std::string line;
+        while (std::getline(in, line)) {
+            const size_t hash = line.find('#');
+            if (hash != std::string::npos) line.resize(hash);
+            std::istringstream ls(line);
+            LevelMap m;
+            if (!(ls >> m.name >> m.x0 >> m.z0 >> m.x1 >> m.z1)) continue;
+            // A RECTANGLE THAT IS NOT INSIDE THE GRID IS A STALE SIDECAR, which
+            // is the one way these two files can disagree: the .maps was
+            // written for a bigger asset than the .vox beside it. Clamped and
+            // reported rather than trusted -- an out-of-range column index is
+            // a read past the end of levelColTop_.
+            m.x0 = maxi(0, mini(m.x0, levelAsset_.sx));
+            m.x1 = maxi(m.x0, mini(m.x1, levelAsset_.sx));
+            m.z0 = maxi(0, mini(m.z0, levelAsset_.sz));
+            m.z1 = maxi(m.z0, mini(m.z1, levelAsset_.sz));
+            for (char &c : m.name) c = char(tolower((unsigned char)c));
+            if (m.x1 > m.x0 && m.z1 > m.z0) levelMaps_.push_back(m);
+        }
+        std::printf("  level    %d map(s):", int(levelMaps_.size()));
+        for (const LevelMap &m : levelMaps_)
+            std::printf(" %s (%.0f x %.0f m)", m.name.c_str(), float(m.x1 - m.x0) * VOXEL_M,
+                        float(m.z1 - m.z0) * VOXEL_M);
+        std::printf("\n");
+    }
+
     bool loadLevel() {
         if (levelLoaded_) return true;
         VoxModel mo;
@@ -12249,6 +14474,7 @@ class World {
             std::fprintf(stderr, "v2: level %s composed to nothing\n", kLevelVox);
             return false;
         }
+        loadLevelMaps();
 
         // -- THE COLOURS ARE NOT ALLOCATED HERE ANY MORE ---------------------
         //
@@ -12265,22 +14491,23 @@ class World {
         // they were freed at the end of this function before.
         levelPal_ = mo.pal;
         levelLoaded_ = true;
-        // -- AND ITS COLOURS ARE TAKEN NOW, NOT AFTER THE KIT ----------------
+        // -- AND ITS COLOURS ARE TAKEN AFTER THE KIT, NOT HERE ---------------
         //
-        // This was deferred to App start-up while the level had a palette TABLE
-        // of its own: that table may not reuse an entry the held kit wears, and
-        // the kit's ids are not known until it has loaded. The table is gone
-        // (see World::setLevel) and the reason went with it.
+        // THIS HAS BEEN BOTH WAYS AND THE TABLE IS WHAT DECIDES IT. While the
+        // level allocated out of the WOOD's 255 entries it had to mint here,
+        // early, because colours are served first-come and deferring made the
+        // level the last thing in the program to ask: the moment the rifle went
+        // byte-exact and took three more, the level overran the table, 204,021
+        // voxels came back AIR, and the bulb's glass went with them -- which
+        // silently skipped every lamp in the map, because
+        // `levelGlassMtl_ != mat::AIR` guards that whole pass.
         //
-        // MOVING IT BACK MATTERS, it is not tidying. Deferred, the level was the
-        // LAST thing in the program to ask for colours -- after the trees, the
-        // animals, the flyer band and the kit -- and colours are served
-        // first-come. The moment the rifle went byte-exact and took three more,
-        // the level overran the table: 204,021 voxels came back AIR, and the
-        // bulb's glass came back AIR with them, which silently skipped every
-        // lamp in the map (`levelGlassMtl_ != mat::AIR` guards the whole pass).
-        // One overflow, two features gone, and the log only mentioned one.
-        buildLevelPalette();
+        // The arcade has a table OF ITS OWN now (see buildLevelPalette), so
+        // being last costs nothing -- it is not competing with anybody. And it
+        // has to be last, because the one thing that table may not reuse is an
+        // entry the HELD KIT wears, and the kit's ids do not exist until it has
+        // loaded. App start-up calls prepareLevelPalette straight after the
+        // kit; that is the only caller and the order is the whole point.
         std::printf("  level    %d x %d x %d voxels (%.1f x %.1f x %.1f m), colours deferred\n",
                     levelAsset_.sx, levelAsset_.sy, levelAsset_.sz,
                     float(levelAsset_.sx) * VOXEL_M, float(levelAsset_.sy) * VOXEL_M,
@@ -12322,6 +14549,47 @@ class World {
         for (uint8_t v : levelAsset_.a) used[v] = true;
         int asked = 0;
         int greens = 0;
+
+        // -- THE ARCADE GETS ITS OWN 255 ENTRIES, AND THIS IS WHERE IT STARTS -
+        //
+        // (user 2026-09-18: "cant you give me seperate tables? one palete table
+        // for the sandbox world and one for the arcade with the fps maps".)
+        //
+        // WHAT MAY NOT MOVE is anything drawn in BOTH places, because one id
+        // has to mean one thing in each. Three things qualify and they are the
+        // whole of `reserved`:
+        //
+        //   * the fixed mat:: band, 0 .. TREE_BASE. The map borrows BGRASS_0
+        //     for its lawns and ROCK for the bulb's flex, and every ramp
+        //     groundShade() spreads lives down there.
+        //   * every entry the HELD KIT wears. You carry the axe, the rifle and
+        //     the pistol through the door -- see the note beside heldMtl_,
+        //     which is recorded at load time for exactly this.
+        //   * every entry the WOOD'S FLOWER MODELS wear, because dressLevel
+        //     stamps those voxels into the map: wood art standing in a level.
+        //
+        // EVERYTHING ELSE THE WOOD OWNS IS FREE HERE -- every tree, rock,
+        // animal, butterfly, bird and fish is invisible from inside a map, so
+        // the ~130 entries they hold are ~130 entries the arcade may reuse for
+        // its own. That is the difference between a table that is full and one
+        // that is not, and it is why this runs AFTER the kit: the kit's ids are
+        // not known until it has loaded. See World::prepareLevelPalette.
+        std::vector<uint8_t> reserved(256, 0);
+        for (int i = 0; i <= int(mat::TREE_BASE); ++i) reserved[size_t(i)] = 1;
+        int kitIds = 0, flowerIds = 0;
+        for (int i = 0; i < 256; ++i)
+            if (heldMtl_[size_t(i)]) {
+                reserved[size_t(i)] = 1;
+                ++kitIds;
+            }
+        for (size_t fi = size_t(maxi(0, mesher_.flowerBirch0)); fi < flowers_.size(); ++fi)
+            for (uint8_t v : flowers_[fi].volume)
+                if (v && !reserved[size_t(v)]) {
+                    reserved[size_t(v)] = 1;
+                    ++flowerIds;
+                }
+        palette.beginLevelTable(reserved);
+
         const int before = palette.used();
         for (int e = 1; e <= 255; ++e)
             if (used[size_t(e)]) {
@@ -12356,7 +14624,11 @@ class World {
                     ++greens;
                     continue;
                 }
-                idOfEntry[size_t(e)] = palette.forModelColor(c, false);
+                // OUT OF THE ARCADE'S TABLE, NOT THE WOOD'S -- see the
+                // reservation above. forLevelColor falls back to the wood's
+                // allocator on its own if no level table was begun, so the
+                // single-table behaviour is still one early-return away.
+                idOfEntry[size_t(e)] = palette.forLevelColor(c);
                 ++asked;
             }
 
@@ -12396,12 +14668,27 @@ class World {
         // were. Nothing in the log was wrong, which is what cost the time.
         uploadMaterials();
         // MINTED, NOT ASKED, and the difference is the point: the level
-        // registers with exact=false, so a colour within kQuantStep of one the
-        // wood already owns costs NOTHING. "asked" made the level look like it
-        // was spending fifteen entries out of the scarcest thing in this
-        // engine, and it is not.
-        std::printf("  level    %d colours asked, %d minted, %d greens on the grass ramp\n", asked,
-                    palette.used() - before, greens);
+        // registers with exact=false, so a colour within kQuantStep of one it
+        // already owns costs NOTHING. "asked" made the level look like it was
+        // spending fifteen entries out of the scarcest thing in this engine,
+        // and it is not.
+        //
+        // AND THE WOOD'S OWN COUNT IS PRINTED BESIDE IT, unchanged, so the one
+        // number that matters is visible in one line: what the arcade spends
+        // no longer comes out of what the sandbox has.
+        std::printf("  level    %d colours asked, %d minted into the ARCADE's own table "
+                    "(%d free), %d greens on the grass ramp\n",
+                    asked, palette.levelMinted(), palette.levelFree(), greens);
+        std::printf("  level    reserved %d held-kit and %d flower entries, plus the fixed "
+                    "band; the wood is untouched at %d of %d\n",
+                    kitIds, flowerIds, palette.used(), int(mat::COUNT));
+        if (palette.levelOverflowed())
+            std::fprintf(stderr,
+                         "v2: the ARCADE's palette is full -- %d colour(s) refused. It has "
+                         "%d entries of its own; raise what it reserves or fold the map's "
+                         "shades in the voxelizer.\n",
+                         palette.levelOverflowed(), int(mat::COUNT));
+        (void)before;
         if (lost)
             std::fprintf(stderr,
                          "v2: PALETTE FULL -- %d level voxels came back AIR and will not draw\n",
@@ -12436,7 +14723,7 @@ class World {
         // no lamp in the wood and this entry would be dead weight in the wood's
         // 255. loadLevelBulb is called from buildLevelPalette, after
         // beginLevelTable, so forLevelColor is live by the time this runs.
-        levelGlassMtl_ = palette.forModelColor({255, 246, 214, 255}, false);
+        levelGlassMtl_ = palette.forLevelColor({255, 246, 214, 255});
         // -- THE CAP AND THE FLEX COST NOTHING, AND THAT IS THE POINT --------
         //
         // mat::ROCK rather than a colour of their own. The table was FULL when
@@ -12639,7 +14926,25 @@ class World {
         // would put the baked set back and throw the edit away.
         if (levelGlassMtl_ != mat::AIR && !levelBulbsSeeded_) {
             levelBulbsSeeded_ = true;
-            for (const Vec3 &baked : levelBulbSeed()) levelBulbs_.push_back(baked);
+            const int ground = levelGroundRow();
+            int placed = 0, orphan = 0;
+            for (const BulbSeed &b : levelBulbSeed()) {
+                // NAMED AT ITS OWN MAP -- see levelBulbSeed for what absolute
+                // coordinates did the moment a second map moved the first one.
+                const LevelMap *m = findLevelMap(b.map);
+                if (!m) {
+                    ++orphan;
+                    continue;
+                }
+                levelBulbs_.push_back(Vec3(kLevelAtX + float(m->x0) * VOXEL_M + b.x,
+                                           kLevelAtY + float(ground) * VOXEL_M + b.y,
+                                           kLevelAtZ + float(m->z0) * VOXEL_M + b.z));
+                ++placed;
+            }
+            if (orphan)
+                std::printf("  level    %d baked bulb(s) name a map this arcade does not "
+                            "have -- skipped\n", orphan);
+            (void)placed;
         }
         for (const Vec3 &bulb : levelBulbs_) stampBulbWorld(a, bulb);
         std::printf("  level    dressed: %d grass blades, %d flowers, %zu bulbs\n", blades,
@@ -12824,7 +15129,7 @@ class World {
     //
     // SO THE QUESTION IS ASKED PROPERLY: CAN THIS REACH THE GROUND. The
     // voxeliser lays a solid foundation under the entire footprint (see
-    // tools/voxelize_nuketown.py, BASE_M, and its note about there being no
+    // tools/voxelize_arcade.py, BASE_M, and its note about there being no
     // ground outside the painted slabs), so grounded has an exact meaning here
     // that it does not have in the terrain: the flood reaches y == 0. Anything
     // that cannot is severed, whatever shape it is.
@@ -13646,6 +15951,38 @@ class World {
                 c.blas = recordChunkBuild(b.mesh, key);
                 const auto tp = std::chrono::steady_clock::now();
                 c.triOffset = pool_.upload(ctx_, b.mesh.tri);
+                // -- AND A FAILED UPLOAD MUST NOT BE SILENT -----------------
+                //
+                // (user 2026-09-18, with a picture looking down on terrain with
+                // background showing through it: "theres missing terrain
+                // squares: investigate and fix".)
+                //
+                // upload returns kInvalid when the pool cannot find or grow a
+                // run for this chunk, and nothing here looked. The chunk was
+                // then marked resident carrying 0xFFFFFFFF as its offset, which
+                // draws NOTHING -- a chunk-shaped hole with the sky behind it,
+                // permanent until something else makes that chunk rebuild, and
+                // with not one line of output to say so.
+                //
+                // THIS IS NOT A REPRODUCTION, IT IS A TRIPWIRE. The report
+                // could not be reproduced: static renders at that spot are
+                // whole, the pool was at 270 of 420 MB, and grow() always hands
+                // back a contiguous block so take() cannot fail after it. So
+                // this does not claim to be the cause -- it makes the one
+                // failure that produces exactly that symptom announce itself
+                // instead of being invisible, and leaves the chunk CONSISTENT
+                // (no triangles, rather than triangles at an impossible
+                // offset) so nothing downstream reads the sentinel as an
+                // address.
+                if (c.triOffset == TriPool::kInvalid) {
+                    std::printf("v2: CHUNK %d,%d DROPPED -- the tri pool refused "
+                                "%zu units (%.1f of %.1f MB used). This is a hole "
+                                "in the world; please report it.\n",
+                                b.cx, b.cz, b.mesh.tri.size(),
+                                double(pool_.usedUnits() * sizeof(uint16_t)) / 1048576.0,
+                                double(pool_.capacityUnits() * sizeof(uint16_t)) / 1048576.0);
+                    c.tris = 0;
+                }
                 prof_.poolMs +=
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp)
                         .count();
@@ -13769,6 +16106,8 @@ class World {
             : (kind == 1) ? rocks_
             : (kind == 2) ? flowers_
             : (kind == 3) ? mushrooms_
+            : (kind == 7) ? cacti_
+            : (kind == 8) ? shrubs_
             : (kind == 5) ? hives_
             : (kind == 6) ? fruit_
                           : pinecones_;

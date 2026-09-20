@@ -64,7 +64,27 @@ namespace v2 {
 // The three that go in the pine and birch woods. The fourth the JS engine has,
 // the pink bird, is deliberately not here -- it is being kept for the cherry
 // forest (user 2026-09-07).
-inline constexpr int kBirdSpecies = 3;
+// FOUR SINCE 2026-09-19, and the fourth belongs to one wood.
+//
+// (user: "create a cherry forest biome ... the difference is the life".)
+//
+// v1 calls it "the cherry forest's own perched songbird" and gives it the
+// cardinal's own eleven-frame rotate strip, so it costs no new geometry rule
+// here either -- assets/life/pink_bird/rotate/00-10.vox is the same layout the
+// other three ship. What is new is that the species draw is no longer uniform:
+// see kBirdWoodSpecies.
+inline constexpr int kBirdSpecies = 4;
+// ...AND HOW MANY OF THEM THE ORDINARY WOODS DEAL. The pink bird is the last
+// entry, so a roll over [0, kBirdWoodSpecies) is every bird EXCEPT it, and the
+// cherry band asks for it by name. One constant rather than a literal 3, so
+// adding a fifth ordinary species is one number.
+inline constexpr int kBirdWoodSpecies = 3;
+// HOW CLOSE TWO PERCHED BIRDS MAY SIT -- see tryPerch. A crown is a couple of
+// metres across at the trunk and the perch walk pushes a bird out along a
+// branch, so this is measured from the TRUNK and has to cover the reach: 3 m
+// puts one bird in a tree without refusing the tree beside it.
+inline constexpr float kBirdOneTreeM = 3.0f;
+inline constexpr int kBirdPink = 3;
 // rotate/00..10. Eleven, and they are a QUARTER turn -- see the header.
 inline constexpr int kBirdFrames = 11;
 
@@ -102,7 +122,20 @@ inline constexpr float kBirdStepMs = kBirdFrameMs + kBirdRestMs;
 //           and "is my branch still there" is a question we have the data to
 //           answer. This is the one that was really broken.
 // -----------------------------------------------------------------------
-inline constexpr float kBirdPlaceM = 42.0f;
+// -- WIDENED 42 -> 66, BECAUSE ONE BIRD TO A TREE NEEDS TREES ----------
+//
+// (user 2026-09-19: "even and spread them out among the trees".)
+//
+// A candidate has to be inside this AND outside the 30 m birth floor, so what
+// tryPerch actually draws from is an ANNULUS -- and at 42 that annulus holds
+// about seventeen tall crowns. Ninety-six slots over seventeen trees is how
+// the flock ended up five to a crown, and the occupancy test alone would have
+// turned that into seventeen birds and eighty empty slots.
+//
+// 66 m roughly triples the annulus (66^2 - 30^2 against 42^2 - 30^2), so the
+// slots have somewhere to go. Still well inside kBirdKeepM, so nothing is
+// placed that is about to be recycled.
+inline constexpr float kBirdPlaceM = 66.0f;
 inline constexpr float kBirdDropM = 100.0f;
 inline constexpr float kBirdKeepM = 115.0f;   // the GATHER -- see above
 // ...and no two closer than this, or two models intersect on one branch.
@@ -154,7 +187,12 @@ class Birds {
     // wood at all.
     // -----------------------------------------------------------------------
     bool init(World &world, const std::string &dir) {
-        static const char *kNames[kBirdSpecies] = {"blue_bird", "robin", "cardinal"};
+        static const char *kNames[kBirdSpecies] = {"blue_bird", "robin", "cardinal",
+                                                  "pink_bird"};
+        // WHERE THE WOOD IS, kept so tryPerch can ask which band a perch is in
+        // -- it is handed trees and a player and has never needed the terrain
+        // before. World outlives every population in it.
+        terrain_ = &world.terrain;
 
         for (int s = 0; s < kBirdSpecies; ++s) {
             std::vector<VoxModel> frames;
@@ -669,6 +707,13 @@ class Birds {
         bool live = false;
         int species = 0;
         Vec3 p{0, 0, 0};
+        // WHICH TRUNK IT IS SITTING IN, not where it ended up sitting -- see
+        // the occupancy test in tryPerch. The perch walk pushes a bird out
+        // along a branch by up to the model's own diagonal, so its position is
+        // not a reliable way to say which tree it is in: the first version of
+        // that test compared p against the candidate trunk and let a second
+        // bird into a tree whose occupant had simply walked a few metres out.
+        float tx = 0.0f, tz = 0.0f;
         float phase = 0.0f;    // ...and where in the cycle it is, so a wood does not pulse as one
         // The animation clock.s output -- see tick().
         // Placed on the editor's deck rather than perched in a wood -- see the
@@ -738,15 +783,82 @@ class Birds {
     // no per-species radius, and it follows whatever shape the crown has at
     // that height.
     // -----------------------------------------------------------------------
+  public:
+    // -- HOW SPREAD OUT THE PERCHED FLOCK IS -----------------------------
+    //
+    // (user 2026-09-19: "they are all in one tree and not in any others".)
+    //
+    // THE CLOSEST PAIR IS THE MEASUREMENT, because "all in one tree" is a pair
+    // statement: a wood with two birds in one crown has a closest pair under a
+    // metre whatever the other six are doing, and an average would hide it.
+    // Reported beside the count so the offline census can show both.
+    int census(float *closestM, float *meanM) const {
+        int n = 0;
+        float best = 1e9f;
+        double sum = 0.0;
+        long pairs = 0;
+        for (size_t i = 0; i < birds_.size(); ++i) {
+            if (!birds_[i].live) continue;
+            ++n;
+            for (size_t j = i + 1; j < birds_.size(); ++j) {
+                if (!birds_[j].live) continue;
+                const float dx = birds_[i].p.x - birds_[j].p.x;
+                const float dz = birds_[i].p.z - birds_[j].p.z;
+                const float d = std::sqrt(dx * dx + dz * dz);
+                if (d < best) best = d;
+                sum += double(d);
+                ++pairs;
+            }
+        }
+        if (closestM) *closestM = (best > 1e8f) ? 0.0f : best;
+        if (meanM) *meanM = pairs ? float(sum / double(pairs)) : 0.0f;
+        return n;
+    }
+
+  private:
     void tryPerch(Bird *b, const std::vector<Solid> &trees, const Vec3 &player, uint32_t salt,
                   bool displaced = false) {
         if (trees.empty()) return;
         const uint32_t seed = hashU32(salt * 2654435761u, uint32_t(int(nowMs_ * 0.001)));
 
-        for (int attempt = 0; attempt < 6; ++attempt) {
+        // -- ...AND NOT INTO A TREE THAT IS ALREADY TAKEN ----------------
+        //
+        // (user 2026-09-19: "can you even out the perched song birds more.
+        //  they are all in one tree and not in any others".)
+        //
+        // NOTHING HERE HAD EVER ASKED. Each bird rolled a tree out of the
+        // gathered list and took the first that passed, and two birds rolling
+        // the same tree was simply allowed -- so the flock piled up.
+        //
+        // AND THE LIST IS SHORTER THAN IT LOOKS, which is why it piles up
+        // rather than merely overlapping now and then. A candidate has to be
+        // inside kBirdPlaceM and OUTSIDE the birth floor, so the usable trees
+        // are a thin annulus round the player -- thirty to forty-odd metres --
+        // and a stand only puts a handful of tall crowns in it. Six rolls over
+        // a handful of trees land on the same one often.
+        //
+        // TWENTY ATTEMPTS, NOT SIX, for the same reason: with most of the
+        // annulus already claimed, six rolls is not enough to find the one
+        // free crown, and a bird that fails simply does not perch this frame.
+        for (int attempt = 0; attempt < 20; ++attempt) {
             const uint32_t h = hashU32(seed, uint32_t(attempt));
             const Solid &s = trees[size_t(h % uint32_t(trees.size()))];
             if (!s.col || s.msx <= 0 || s.msz <= 0) continue;
+            // THE TRUNK'S OWN CENTRE identifies the tree -- the same pair the
+            // perch is measured from below. A bird already sitting within
+            // kBirdOneTreeM of this trunk IS in this tree.
+            {
+                bool taken = false;
+                for (const Bird &o : birds_)
+                    if (o.live && &o != b) {
+                        const float ox = o.tx - s.cx, oz = o.tz - s.cz;
+                        if (ox * ox + oz * oz < kBirdOneTreeM * kBirdOneTreeM) {
+                            taken = true;
+                            break;
+                        }
+                    }
+                if (taken) continue;
+            }
             // NEAR THE PLAYER. The gather is 115 m wide so that a live bird's
             // own tree is always in it (see the radii note); a NEW perch must
             // not use that width, or the flock spreads itself over eight
@@ -766,6 +878,20 @@ class Birds {
             // A TRUNK, NOT A ROCK. `standable` is what tells them apart: a rock
             // you can climb, a trunk carries a canopy far over your head.
             if (s.standable) continue;
+            // -- ...AND NOT A CACTUS ----------------------------------------
+            //
+            // `standable` is the only thing separating a trunk from anything
+            // else tall, and a saguaro is tall and not standable -- so the
+            // desert, which has no trees at all, grew a population of perched
+            // songbirds sitting in cacti. --locate-test found it from the
+            // other end: a songbird 40 m away, 450 m deep in the sand, in a
+            // row that says forests.
+            //
+            // The band, not the model, for the reason the flock's gate gives
+            // (see kSongDesertOut): this is v1's rule and v1 states it about
+            // WHERE, not about what -- "the birds should be oak and pine
+            // forests only. I only want them disabled in the desert".
+            if (terrain_ && terrain_->desertMix(s.cx) >= 0.5f) continue;
             const float tall = s.top - s.baseY;
             if (tall < kBirdMinTreeM) continue;
 
@@ -849,12 +975,27 @@ class Birds {
             const float px = lastX - player.x, pz = lastZ - player.z;
             if (px * px + pz * pz > kBirdDropM * kBirdDropM) continue;
 
-            int sp = int(h >> 8) % kBirdSpecies;
-            for (int k = 0; k < kBirdSpecies && !species_[size_t(sp)].ok; ++k)
-                sp = (sp + 1) % kBirdSpecies;
+            // -- WHICH SONGBIRD, AND THE CHERRY WOOD HAS ITS OWN ---------
+            //
+            // v1's rule for its pink bird, which is the same rule it gives the
+            // pink butterfly: it belongs to the blossom and nowhere else, and
+            // nothing else belongs there. Asked of the PERCH rather than of the
+            // player, so a bird in a cherry at the edge of the band is pink and
+            // one in the oak forty metres away is not.
+            const bool bloss = terrain_ && terrain_->cherryMix(lastX) >= 0.5f;
+            int sp;
+            if (bloss && species_[size_t(kBirdPink)].ok) {
+                sp = kBirdPink;
+            } else {
+                sp = int(h >> 8) % kBirdWoodSpecies;
+                for (int k = 0; k < kBirdWoodSpecies && !species_[size_t(sp)].ok; ++k)
+                    sp = (sp + 1) % kBirdWoodSpecies;
+            }
             if (!species_[size_t(sp)].ok) return;
 
             b->live = true;
+            b->tx = s.cx;
+            b->tz = s.cz;
             b->species = sp;
             // ITS FEET ON THE CROWN, so the model sits on the needle rather
             // than half inside it: the perch is the TOP of that column and the
@@ -878,6 +1019,7 @@ class Birds {
 
     std::vector<Bird> birds_;
     Species species_[kBirdSpecies];
+    const VoxelTerrain *terrain_ = nullptr;   // see init -- which wood a perch is in
     double nowMs_ = 0.0;
     int loaded_ = 0;
     bool ready_ = false;

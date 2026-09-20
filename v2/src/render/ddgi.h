@@ -325,7 +325,9 @@ class Ddgi {
             Falcor::float2(float(kProbeDistTexels), float(kProbeDistInterior));
         c.irradianceGamma = g.probeIrradianceEncodingGamma;
         c.viewBias = g.probeViewBias;
-        c.ddgiPad0 = 0.0f;
+        // Which material table -- V2Tracer overwrites this from World::matBase
+        // just before the dispatch, because ddgi.h has no world to ask.
+        c.matBase = 0u;
         c.ddgiPad1 = 0.0f;
         return c;
     }

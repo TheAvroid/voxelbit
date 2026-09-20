@@ -11,3 +11,6 @@ build/
 # take against upstream.
 external/
 build-rtxgi/
+
+# Python bytecode from the asset tools -- generated, never shipped.
+__pycache__/

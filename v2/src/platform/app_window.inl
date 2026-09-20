@@ -200,6 +200,16 @@
     Tracer tracer_;
     Dlss dlss_;
     Player player_;
+    // HEALTH AND HUNGER -- v1's two bars, see player/vitals.h. Beside the
+    // player because every one of its inputs is the player's: where the body
+    // is, whether it is in the air, whether it is in a lake.
+    Vitals vitals_;
+    // WHERE A DEAD PLAYER GETS UP. Taken on the first frame the body has a
+    // position rather than from the spawn code, because the spawn roll mutates
+    // opt_.camX/camZ as it steps clear of cover and there is no other record of
+    // where the run began.
+    Vec3 vitHome_{0.0f, 0.0f, 0.0f};
+    bool vitHomeSet_ = false;
     // What is in the hand, and the state of the button that swings it. The
     // button is POLLED into a flag rather than read from the input state at
     // use, because a swing is armed on a press and repeats while it is held --
@@ -254,6 +264,19 @@
     ArrowOffset arrowWant_;
     bool arrowDirty_ = false;
     Falcor::ref<Falcor::FullScreenPass> crosshair_;
+    // THE TWO BARS AND THE END OF THE RUN -- see shaders/Vitals.ps.slang and
+    // shaders/GameOver.ps.slang. Both draw on the WINDOW after the blit, the
+    // same position the crosshair takes and for the same three reasons.
+    Falcor::ref<Falcor::FullScreenPass> vitalsPass_;
+    Falcor::ref<Falcor::FullScreenPass> gameOver_;
+    // Seeded per HIT, never per frame: a per-frame hash re-rolls every block
+    // sixty times a second and sizzles instead of fading.
+    int vitSeed_ = 1;
+    int vitLastHp_ = kVitHpMax;
+    // WHEN THE RUN ENDED, or a sentinel. The screen fades in over
+    // kGameOverFadeMs and the body gets up at kGameOverHoldMs.
+    double deathAtMs_ = -1.0;
+    std::string deathWhy_;
     DayNight clock_;  // owns the sun; sunAz_/sunEl_ are its output
     bool placedTwice_ = false;
     std::vector<Solid> solids_;
@@ -277,6 +300,34 @@
     bool holdLook_ = false;  // ...because the right button is held
     bool moving_ = false;
     bool menuOpen_ = false;
+    // -- WHERE YOU ARE, ON F3 --------------------------------------------
+    //
+    // (user 2026-09-19: "give me a toggle for coords. x, y, and z coords.")
+    //
+    // OFF BY DEFAULT, and not baked -- it is a readout you turn on to answer a
+    // question and off again, not a preference you set once. F3 toggles it.
+    //
+    // F3 because that is where two decades of voxel games have put it, and
+    // because the settings checkbox is the discoverable half -- a toggle with
+    // no key is a trip to the menu every time, and a key with no checkbox is a
+    // feature nobody finds.
+    // OFF unless --coords asked for it. The flag exists so this can be SEEN
+    // without a keystroke: every other setting in this engine can be reached
+    // from the command line, and a readout that only appears after someone
+    // presses F3 is one no headless shot can check.
+    // WHICH BIOME [G] TAKES YOU TO NEXT -- an index into biomeNames(), or -1
+    // for "none yet", which makes the FIRST press land in the band after the
+    // one you are standing in rather than in pine every time. See
+    // respawnToNextBiome.
+    int respawnBiome_ = -1;
+    // How many times it has been pressed -- the salt that moves the drop, so a
+    // lap of the cycle comes back to the same WOOD and not the same clearing.
+    uint32_t respawnHops_ = 0;
+    // ...and how far along z one press may move you. Big enough that the next
+    // lap is a different piece of forest, small enough that the band hop is
+    // still the thing you notice.
+    static constexpr float kRespawnRoamM = 450.0f;
+    bool showCoords_ = false;
     // The water panel, its own capture memory, and one bool per term. All on:
     // the panel subtracts, it does not build the water up from nothing.
     bool waterPanelOpen_ = false;
@@ -512,6 +563,29 @@
     // owns the reload's CLOCK and knows nothing about what it is reloading.
     static constexpr int kRifleMag = 20;
     int rifleAmmo_ = kRifleMag;
+    // -- ...AND THE PISTOL'S SIX -------------------------------------------
+    //
+    // (user 2026-09-18: "there should only be 6 bullets fired until the pistol
+    // has to reload.")
+    //
+    // A SECOND NUMBER RATHER THAN A SHARED ONE, which is the whole of what
+    // makes the two guns different to hold: same trigger, same reload key, same
+    // badge, and a magazine a third the size. Kept beside the rifle's for the
+    // reason that one is not on the Tool -- see above.
+    static constexpr int kPistolMag = 6;
+    int pistolAmmo_ = kPistolMag;
+    // -- THE LAST RELOAD FRAME --swing-log REPORTED ------------------------
+    //
+    // (user 2026-09-18: "the reload needs to stay open as it cycles through
+    // the bullets.")
+    //
+    // A CYCLE IS ONLY WRONG IN ITS ORDER, and an order is not something a
+    // screenshot can hold: the complaint above is the strip's first frames
+    // coming back between rounds, which is four frames out of forty-four and
+    // is over in 180 ms. So the log prints the strip frame each time it
+    // CHANGES -- once per drawn frame rather than once per engine frame -- and
+    // the whole cycle is then one readable column. -2 so the first one prints.
+    int lastReloadStrip_ = -2;
     // The wheel as the wood left it -- see standInLevel. Empty while in the
     // wood, which is also what says "there is nothing to put back".
     std::vector<std::pair<bool, int>> woodKit_;

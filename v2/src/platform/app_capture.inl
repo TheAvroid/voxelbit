@@ -352,6 +352,21 @@
         tickButtons(dt);
         pos_ = player_.eyePosition();
 
+        // -- THE TWO BARS -------------------------------------------------
+        //
+        // (user 2026-09-19: "import the damage/hunger mechanics from v1 into
+        //  v2".)
+        //
+        // AFTER the move and AFTER the two clamps, because the drain is
+        // charged off the REAL position delta -- being shoved, sliding or
+        // swimming all count honestly, and a clamp that pushed the body back
+        // is ground it did not cover. Unconditionally, never inside a movement
+        // branch: v1's own note says its tick once sat inside `if (P.fly)` and
+        // silently stopped the moment fly mode engaged.
+        vitals_.tick(dt, player_.pos, player_.onGround, player_.fly, player_.swimming(),
+                     sprint);
+        drainVitals();
+
         // -- the swing -------------------------------------------------------
         //
         // POLLED, NOT LATCHED FROM THE EVENT, for the reason the X modifier on
@@ -384,7 +399,8 @@
             //
             // EITHER GUN SUPPRESSES THE SWING; only the rifle pulls a trigger
             // below. See holdingGun for why those are two questions.
-            const bool gunInHand = holdingGun();
+            const int gun = heldGun();
+            const bool gunInHand = gun >= 0;
             // -- THE LAMP IN HAND EDITS THE MAP, IT DOES NOT SWING ----------
             //
             // (user 2026-09-17: "left click to remove the bulb and right click
@@ -440,19 +456,18 @@
             // flag means "the left button is down" for every other tool in the
             // kit, and it is the only way to photograph a thing that happens
             // while a mouse button is held. See its note beside opt_.swingHold.
-            // THE RIFLE, NOT `gunInHand`. The pistol suppresses the swing (see
-            // above) and has no trigger of its own yet: its magazine, its fire
-            // rate and its recoil are all the rifle's if this is widened, and
-            // pulling a rifle round out of a pistol is worse than a gun that
-            // does not fire. It is the asset, the slot and the wheel today.
-            if (rifleInHand() && lmb && (looking_ || opt_.swingHold) && !menuOpen_ &&
-                simMs_ - lastShotMs_ >= double(kBulletIntervalMs)) {
+            // EITHER GUN, AT ITS OWN RATE (user 2026-09-18: "left clicking the
+            // pistol is not fireing bullets. fix that"). This used to name the
+            // rifle, which is why the pistol held a model and nothing else --
+            // see heldGun, which is the one place either of them is named now.
+            if (gun >= 0 && lmb && (looking_ || opt_.swingHold) && !menuOpen_ &&
+                simMs_ - lastShotMs_ >= gunIntervalOf(gun)) {
                 // THE CLOCK IS STAMPED BY A ROUND LEAVING, not by the trigger
                 // being pulled. fireRifle refuses while the gun is reloading,
                 // and stamping anyway would hold the first shot of the fresh
                 // magazine back by another whole interval -- for no reason the
                 // player could see, on the one press that has been waited for.
-                if (fireRifle()) lastShotMs_ = simMs_;
+                if (fireGun()) lastShotMs_ = simMs_;
             }
             // THE RIGHT BUTTON DRAWS, and only while the pointer is ours --
             // the same gate the swing has, and the JS engine's `locked`.
@@ -485,7 +500,15 @@
             if (swallowed) {
                 // ONE MOUTHFUL, PAID ON THE FRAME IT FINISHES. wantEat has
                 // already taken it off the stack; this is the report.
-                std::printf("v2: ate one\n");
+                //
+                // ...AND NOW IT IS WORTH SOMETHING. Until vitals.h this branch
+                // printed a line and dropped the food on the floor -- there was
+                // no bar for it to fill. One point of health and one of hunger,
+                // v1's flat number for both; see Vitals::eat for why the
+                // refusal is "nothing to gain" rather than "hunger is full".
+                const bool used = vitals_.eat(1);
+                std::printf("v2: ate one -- hp %d/%d, food %d/%d%s\n", vitals_.hp, kVitHpMax,
+                            vitals_.food, kVitFoodMax, used ? "" : "  (nothing to gain)");
                 std::fflush(stdout);
             }
             float draw = 0.0f;
@@ -504,11 +527,54 @@
             // it was: scrolling off the rifle cancels the cycle outright
             // (HeldItem::cancelReload), which is the one thing that has to be
             // true for this line to be safe.
+            // -- THE CYCLE, ONE LINE PER DRAWN FRAME ----------------------
+            //
+            // BEFORE reloadDone SO THE PHASE IS THE ONE THAT WAS ON SCREEN
+            // this frame, and not the one the boundary has just moved to.
+            // See App::lastReloadStrip_ for why an order needs a log at all.
+            if (opt_.swingLog) {
+                const int st = held_.reloadStrip();
+                if (st != lastReloadStrip_) {
+                    lastReloadStrip_ = st;
+                    if (st >= 0) {
+                        std::printf("v2: reload frame %02d  %s  (%d round(s) left)\n", st,
+                                    held_.reloadPhaseName(), held_.reloadLeft());
+                        std::fflush(stdout);
+                    }
+                }
+            }
             if (held_.reloadDone()) {
-                rifleAmmo_ = kRifleMag;
-                if (opt_.swingLog) {
-                    std::printf("v2: reloaded -- %d rounds\n", rifleAmmo_);
-                    std::fflush(stdout);
+                // WHICHEVER GUN IS IN THE HAND -- and it cannot be a different
+                // one from the gun that started the cycle, because changing
+                // hands cancels it (HeldItem::cancelReload).
+                //
+                // ONCE PER TURN OF THE STRIP, not once per reload: a revolver
+                // gets a round per turn and the badge steps 1, 2, 3 as the
+                // chambers fill, which is the animation being the mechanic
+                // rather than a picture of one. A magazine gun's strip turns
+                // once and loads the lot. See Tool::reloadRounds.
+                // A ROUND IS IN THE GUN. Before the count, because this is
+                // the same moment whichever gun it is and does not depend on
+                // any of the bookkeeping below -- and once per ROUND, so the
+                // revolver ticks six times and the rifle once. See
+                // ToolSounds::gunLoaded for why it is the pickup's own voice.
+                toolSfx_.gunLoaded();
+                const int back = heldGun();
+                if (back >= 0) {
+                    const int per = held_.tool(back).reloadRounds;
+                    const int now = per > 0 ? mini(gunMagOf(back), gunAmmoOf(back) + per)
+                                            : gunMagOf(back);
+                    setGunAmmo(back, now);
+                    if (opt_.swingLog) {
+                        // reloadLeft() RATHER THAN reloading(): the gun is still
+                        // busy on the last round -- the cylinder has yet to swing
+                        // shut -- but no more rounds are coming, and that is what
+                        // this line is reporting. See HeldItem::reloadLeft.
+                        std::printf("v2: %s loaded -- %d of %d%s\n", held_.tool(back).name, now,
+                                    gunMagOf(back),
+                                    held_.reloadLeft() > 0 ? "" : "  (reload done)");
+                        std::fflush(stdout);
+                    }
                 }
             }
             // THE STRING STARTS CREAKING WITH THE PULL, and is cut the instant
@@ -846,6 +912,12 @@
                             dug = world_.dig(lastSwing_.point, kDigRadiusVox, &spoilVol_,
                                              &spoilN_, &spoilAt_);
                         }
+                        // ...AND DIGGING COSTS, THE WAY SWINGING DOES. v1's
+                        // vitOnMine, a twentieth of a blow's charge -- see
+                        // player/vitals.h. Every carve, not only the ones that
+                        // took something: a swing at rock you cannot break is
+                        // still work.
+                        vitals_.onMine();
 
                         // ...AND IF THAT BLOW WAS THE ONE THAT CUT THROUGH, THE
                         // TREE COMES DOWN. Asked of the instance the carve just

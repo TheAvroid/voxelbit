@@ -237,6 +237,30 @@ class ChunkMesher {
     int bigRockFlatVox = 12;
     float maxBuryFrac = 0.55f;
     std::vector<Footprint> pineFoot, rockFoot, flowerFoot, mushroomFoot, pineconeFoot;
+    // -- THE DESERT'S TWO SCATTERS, WHICH ARE v1's ------------------------
+    //
+    // (user 2026-09-19: "import the desert assets from v1 ... create the
+    //  desert biome now.")
+    //
+    // Nine cacti and six scrub bushes, out of the same asset folders v1 reads
+    // (game/assets/foilage/cactus and desert_shrub). They go through
+    // scatterSmall like the flowers and the mushrooms rather than through the
+    // tree scatter: v1 calls them "the desert's second and third scatter" and
+    // they are decorations with a footprint, not a stand with a canopy and a
+    // spacing rejection.
+    //
+    // THE DENSITY IS THE GATE. scatterSmall multiplies by desertMix for these
+    // two kinds, so they simply do not exist outside the sand and thin out
+    // across the rim with it -- the same dither the floor uses. v1 gates them
+    // on `desertM >= 0.85` and its note calls that "an ADMIT test, not a
+    // reject"; a weight IS that test, with a soft edge for free.
+    std::vector<Footprint> cactusFoot, shrubFoot;
+    // HALVED 2026-09-19 ("reduce the cactus population by 50%. this includes
+    // the shrubs as well"), from 0.055 and 0.10. The cacti are also twice the
+    // size they were, so the sand reads fuller at half the count than it did
+    // at the full one.
+    float cactusDensity = 0.0275f;
+    float shrubDensity = 0.05f;
     // The beehive's footprint. Empty in the pine wood, which is what turns the
     // hive pass off there -- no flag needed.
     std::vector<Footprint> hiveFoot;
@@ -251,23 +275,76 @@ class ChunkMesher {
     // [oakBase, size) -- see loadPines. Equal to the array size means no oak
     // models were loaded, which is what --pine and --birch produce.
     int oakBase = 0;
+    // ...AND WHERE THE CHERRIES BEGIN, which is the same three models again in
+    // blossom -- see tools/cherry_from_oak.py. Oaks are [oakBase, cherryBase)
+    // and cherries [cherryBase, size). Equal to the array size means no cherry
+    // models loaded and the cherry band plants ordinary oaks, which is the
+    // right failure: a green wood rather than a bald strip.
+    //
+    // THE SCATTER DOES NOT DRAW FOR IT. There is no fourth species roll, on
+    // purpose: a cherry wood IS an oak wood -- same footprints, same spacing,
+    // same yaws, same everything -- so the draw stays three-way and the CHOSEN
+    // oak is shifted into this range afterwards. That is what makes "identical
+    // to the oak forest" true by construction instead of by two tables being
+    // kept in step.
+    int cherryBase = 0;
+    // -- ...AND THE PALER HALF OF THE BLOSSOM ---------------------------
+    //
+    // (user 2026-09-19: "create a light pink variant of half the cherry trees.
+    //  half the cherry trees are regular pink and the other half is lighter
+    //  pink".)
+    //
+    // A FIFTH range, [cherryLightBase, size), holding the same three models a
+    // third time under a paler ramp -- see tools/cherry_from_oak.py --variant
+    // light. Equal to the array size means no light set was loaded, and the
+    // whole wood is the ordinary blossom.
+    int cherryLightBase = 0;
     // How much of the lattice the oak fills. Well under the birch's 0.84: an
     // oak_7 is seventeen metres across and the spacing rejection below keeps
     // 0.30 of a footprint clear, so a high roll here would be spent almost
     // entirely on candidates that are then thrown away for standing in each
     // other. Sparse and large is what an oak wood is.
     //
-    // 0.42 -> 0.21 (user 2026-09-17: "reduce the oak trees in half"). This is
-    // the share of lattice cells that OFFER a candidate; the spacing rejection
-    // below then culls from that, so halving it does not halve the headcount
-    // exactly. MEASURED over one wood at --spawn 7:
+    // HALVED BY HEADCOUNT, NOT BY KNOB (user 2026-09-19: "cut the oak tree
+    // density by 50%", then "actually cut it in half").
     //
-    //     3079 trees -> 1355   (44%, so slightly MORE than half removed)
+    // 0.21 -> 0.0975. THE TWO ARE NOT THE SAME THING and that is the whole
+    // reason this number looks arbitrary. This knob is the share of lattice
+    // cells that OFFER a candidate; the spacing rejection then culls from that,
+    // so the headcount does not track it one for one. Measured over --ouachita,
+    // which is all oak, so the printed tree count IS the oak count:
     //
-    // Slightly more rather than slightly less, and the rebaked oaks are why:
-    // they are half again as wide as the set this number was first tuned for,
-    // so each one that does stand keeps more ground clear of the next.
-    float oakDensity = 0.21f;
+    //     density   trees    of baseline
+    //     0.21      1305     100%     <- baseline
+    //     0.117      758      58.1%
+    //     0.105      688      52.7%   <- "half the knob" is NOT half the wood
+    //     0.0993     661      50.6%
+    //     0.0975     652      49.96%  <- half of 1305 is 652.5
+    //
+    // That is count ~ density^0.93, i.e. SUBLINEAR: halving the knob removes
+    // slightly LESS than half the trees, because the ground freed by each tree
+    // that goes is partly re-offered to its neighbours. The note this replaces
+    // recorded the opposite (0.42 -> 0.21 giving 44%, an exponent of 1.18) and
+    // it is not wrong -- the oaks were rebaked half again as wide since, and a
+    // wider tree spends more of the knob on candidates that are then rejected
+    // for standing in each other. So the exponent is a property of the CURRENT
+    // models and must be re-measured whenever they change. Do not carry it.
+    //
+    // The count is spawn-independent here -- --spawn 7 and --spawn 42 both give
+    // 1305 and 661 -- because --ouachita scores its own spawn and this total is
+    // the whole world's decor rather than a view ring. That makes it a better
+    // measurement than the per-spawn one the old note used.
+    //
+    // To re-measure:
+    //   v2.exe --background --ouachita --oak-density <d> --out x.png | grep trees
+    //
+    // WAS 0.42 -> 0.21 (user 2026-09-17: "reduce the oak trees in half"), whose
+    // measurement over one wood at --spawn 7 was 3079 trees -> 1355 (44%).
+    //
+    // THIS DEFAULT IS NOW OVERWRITTEN by World::oakDensity, which app_load
+    // pushes from Options (--oak-density). It stays as the value a mesher built
+    // without a World would use.
+    float oakDensity = 0.0975f;
     // The subset of those wide enough to hang a beehive from -- empty in the
     // pine wood, which is one of the two things that turns the hive pass off.
     std::vector<std::vector<Perch>> pineHivePerch;
@@ -300,6 +377,58 @@ class ChunkMesher {
     // flower's stem is the same green as the blade it is standing in. Same
     // shape as mushroomBig0 above.
     int flowerBirch0 = 0;
+    // -- THE CHERRY WOOD'S COPY OF EACH DECORATION SET, 2026-09-19 --------
+    //
+    // (user: pink moss, pink flowers, pink mushrooms.)
+    //
+    // THE TREES' POSITIONAL RULE, three more times: everything before the base
+    // is the ordinary set and everything from it is the same models wearing
+    // mat::CPINK_0. Each copy is a FULL duplicate of what precedes it, which is
+    // what lets the scatter shift be one line -- an index that was valid is
+    // valid plus the base, so the big/small mushroom draw and the pine/birch
+    // flower split both keep working inside the copy at the same offsets.
+    //
+    // Zero, or equal to the set's size, means no copy was loaded and the
+    // cherry band gets the ordinary decoration -- which is the wood this was
+    // before today.
+    int rockCherry0 = 0;
+    // ...AND THE SAND'S, WHICH IS THE SAME STONES WITH NO MOSS ON THEM. It
+    // follows the cherry copy, so the ordinary set is [0, rockCherry0), the
+    // pink one [rockCherry0, rockDesert0) and the bare one [rockDesert0, size).
+    int rockDesert0 = 0;
+    // WHERE THE BOULDERS STOP within one rock set -- big and mid are
+    // [0, rockSmall0) and the pebbles run from it. See the desert's size cut
+    // in scatterSmall, and World::loadRocks, which records it.
+    int rockSmall0 = 0;
+    // The mismatch report above runs on mesher threads, so its counter is
+    // atomic and capped -- a wrong band would otherwise print per stone.
+    mutable std::atomic<int> rockWarn_{0};
+
+    // -- HOW MANY OF rockFoot ARE THE ORDINARY SET ------------------------
+    //
+    // The copies are appended, so the ordinary (green-moss) stones are
+    // [0, FIRST COPY). Both places that pick a rock have to draw from that
+    // range and then shift -- and for a while only one of them did:
+    // collectRocks kept rolling over the whole list, so the disc it reserved
+    // for a boulder was a DIFFERENT boulder's disc, and the flowers and
+    // mushrooms it is there to keep out of the stone went back to growing
+    // inside it.
+    //
+    // THE FIRST COPY, not the cherry one: a world pinned to the desert loads
+    // the bare set and no pink one, so rockCherry0 is zero there and the bare
+    // set is the first.
+    int rockOrdinary() const {
+        const int first = (rockCherry0 > 0 && rockDesert0 > 0)
+                              ? mini(rockCherry0, rockDesert0)
+                              : maxi(rockCherry0, rockDesert0);
+        return (first > 0 && first < int(rockFoot.size())) ? first : int(rockFoot.size());
+    }
+    int flowerCherry0 = 0;
+    int mushroomCherry0 = 0;
+    // ...AND THE BLOSSOM'S BUSH, which is the desert's scrub with its flowers
+    // turned pink -- see World::loadCherryBush. [0, shrubCherry0) is the red
+    // one and [shrubCherry0, size) the pink.
+    int shrubCherry0 = 0;
     // Density INSIDE a colony now, not over the whole wood: the patches cover
     // a fifth of the ground, so the old 0.22 spread over everything is about
     // this much concentrated into them. A bed wants to look like a bed.
@@ -682,11 +811,31 @@ class ChunkMesher {
     // there is a great deal now -- at 1.0 every cell the stand-density field
     // admits would take a tree and the clumping would flatten out into an even
     // field, which is the thing that gate exists to prevent.
+    // -- HALVED, AND HALVED MEANS THE TREES, NOT THE KNOB ----------------
+    //
+    // (user 2026-09-18: "can you reduce the frequency of the birch forest
+    // trees by 50%".)
+    //
+    // 0.3317 -> 0.1467, which is a 56% cut to the number and a 50.07% cut to
+    // the wood. Those differ because this is a probability per CANDIDATE and
+    // the spacing test below rejects fewer of the survivors as the stand
+    // thins, so offering half as many sites never gives half as many trees --
+    // the quarter-cut above measured 17% for exactly this reason.
+    //
+    // MEASURED with the engine's own ring count at (400, 0), --birch pinned:
+    //
+    //     0.3317   12054 trees     the wood as it was
+    //     0.1400    5792 trees     -51.95%, overshot
+    //     0.1467    6019 trees     -50.07%
+    //
+    // The two trials fit trees proportional to density^0.85 to four figures,
+    // which is what picked 0.1467 rather than a third bisection step.
+    //
     // 0.3317: 0.363 x 0.914, which is 1 / 1.0945 -- the factor by which
     // squaring standGate raised its own mean. The birch wood was not asked to
     // change, and it shares the gate, so its density is scaled back to hold
     // its tree count where it was.
-    float birchDensity = 0.3317f;
+    float birchDensity = 0.1467f;
 
     // TWICE AS MANY BIRCHES, AS AN EXTRA SWEEP RATHER THAN A BIGGER NUMBER.
     //
@@ -1057,6 +1206,33 @@ class ChunkMesher {
 
                         const int h = terrain_.heightVox(ci, cj, memo);
                         if (h <= wl + 8) continue;
+                        // -- AND THE LAKES THE PHOTOGRAPH FOUND ------------
+                        //
+                        // (user 2026-09-18, looking down on a lake: "the water
+                        // is missing ... looks like the terrain under the water
+                        // is missing".)
+                        //
+                        // `wl` is the per-BAND procedural line, and on a DEM
+                        // world waterVoxAt returns kNoWaterVox -- so `h <= wl +
+                        // 8` falls through and there is NO WATER GATE AT ALL.
+                        // Trees, rocks and flowers were being scattered across
+                        // every mapped lake in the window, standing on the bed
+                        // with five metres of water over them, which from above
+                        // reads as a dark speckled pit where the lake should be.
+                        //
+                        // It was always wrong and it used to be nearly
+                        // invisible: the imagery only had a lake where it
+                        // happened to classify one. The DEM water pass in
+                        // naip2cov.py then added 136,367 samples of lake to this
+                        // window, and what had been a few boulders became the
+                        // report.
+                        //
+                        // mappedWater is the SAME DOOR heightM carves the bed
+                        // through and lakeLineAt puts the surface back through,
+                        // so a site this rejects is exactly a site that is under
+                        // water. It costs one bilinear read on dry land, which
+                        // is where all but 1.6% of these calls land.
+                        if (terrain_.mappedWater(x, z)) continue;
 
                         const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
                                                     terrain_.heightVox(ci - 1, cj, memo)),
@@ -1095,6 +1271,25 @@ class ChunkMesher {
                         // --birch and --oak each load one set and the other two
                         // weights then have nowhere to go. Without this a forced
                         // run plants nothing through most of the world.
+                        // -- NOTHING GROWS IN THE SAND -------------------
+                        //
+                        // The three wood weights sum to 1 MINUS the desert's
+                        // (see VoxelTerrain::desertWeight), so they carry the
+                        // thinning for every density in the engine -- but NOT
+                        // for this one, and the reason is three lines down: if
+                        // the three sum to nothing this scatter still picks a
+                        // species ("plant whatever there IS rather than leaving
+                        // a bald strip") and then reads a CONSTANT density for
+                        // it. Correct for a world pinned to one wood, and in
+                        // the desert it would plant a pine forest on the dunes.
+                        //
+                        // So this is the one place the desert is named. It is
+                        // also the shape v1 uses at every one of its thirteen
+                        // scatters -- `if (desertM(wx, wz) > 0.5) return null`
+                        // -- and the halfway point is its rule too, so the
+                        // treeline thins across the rim rather than stopping on
+                        // a line.
+                        if (terrain_.desertMix(x) >= 0.5f) continue;
                         float wPine = 0.0f, wBirch = 0.0f, wOak = 0.0f;
                         terrain_.woodMix(x, &wPine, &wBirch, &wOak);
                         const bool haveP = birchBase > 0;
@@ -1148,11 +1343,35 @@ class ChunkMesher {
 
                         // The model comes from that species' own range.
                         const int lo = isBirch ? birchBase : isOak ? oakBase : 0;
-                        const int hi = isBirch  ? oakBase
-                                       : isOak  ? int(pineFoot.size())
-                                                : birchBase;
+                        const int hi = isBirch ? oakBase : isOak ? cherryBase : birchBase;
                         const int span = maxi(1, hi - lo);
-                        const int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
+                        int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
+                        // ...AND IN THE CHERRY BAND IT IS THE SAME TREE IN
+                        // BLOSSOM. See cherryBase: the roll above already chose
+                        // WHICH oak, and this only changes which palette it is
+                        // wearing, so the two woods are the same wood.
+                        if (isOak && cherryBase < int(pineFoot.size()) &&
+                            terrain_.cherryMix(x) >= 0.5f) {
+                            k += cherryBase - oakBase;
+                            // ...AND HALF OF THEM ARE THE PALE ONE. Its own
+                            // hash, not a reuse of the species roll: that one
+                            // picks WHICH of the three models and is already
+                            // spoken for, so sharing it would tie shade to
+                            // shape -- every cherry_2 pale, every cherry_1
+                            // dark, in a wood of three trees. A separate salt
+                            // over the same cell is an independent coin, so
+                            // the two halves interleave.
+                            // THE FIELD THE GROUND READS TOO -- see
+                            // VoxelTerrain::cherryPale. This was a coin tossed
+                            // on the tree's own cell, which nothing outside
+                            // this function could reproduce; the petals under
+                            // the tree have to agree with it, so the answer
+                            // moved somewhere both can ask.
+                            if (cherryLightBase > cherryBase &&
+                                cherryLightBase < int(pineFoot.size()) &&
+                                VoxelTerrain::cherryPale(x, z))
+                                k += cherryLightBase - cherryBase;
+                        }
                         const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
                         const Footprint &f = pineFoot[size_t(k)];
                         const float footX = float((yaw & 1) ? f.sz : f.sx) * VOXEL_M;
@@ -1319,6 +1538,19 @@ class ChunkMesher {
         // which is one candidate per 182 columns against v1's 64.
         scatterSmall(b, 2, flowerFoot, flowerDensity, flowerStrideM, true, &solid);
         scatterSmall(b, 3, mushroomFoot, mushroomDensity, 1.3f, true, &solid);
+        // -- AND THE DESERT'S OWN TWO -----------------------------------
+        //
+        // grassOnly FALSE, which is the one argument that matters here: that
+        // flag asks for a forest floor (soil, litter, the broadleaf green) and
+        // the whole point of these is that they stand on SAND. Everything else
+        // is the flower scatter's -- a lattice, a stride, and the solids
+        // already placed in this chunk to keep out of.
+        //
+        // The cactus stride is wider than the shrub's because a saguaro is a
+        // metre across and a scrub bush is a third of that; two kinds on one
+        // stride would put every cactus in a bush.
+        scatterSmall(b, 7, cactusFoot, cactusDensity, 3.2f, false, &solid);
+        scatterSmall(b, 8, shrubFoot, shrubDensity, 1.8f, false, &solid);
     }
 
   private:
@@ -1573,7 +1805,10 @@ class ChunkMesher {
                             if (ci < I0 || ci >= I0 + CHUNK_VOX || cj < J0 || cj >= J0 + CHUNK_VOX)
                                 continue;
                             const int h = terrain_.heightVox(ci, cj, memo);
+                            // The band line, then the mapped lakes -- see the
+                            // note in the first sweep.
                             if (h <= wl + 8) continue;
+                            if (terrain_.mappedWater(x, z)) continue;
                             const int slope = maxi(absi(terrain_.heightVox(ci + 1, cj, memo) -
                                                         terrain_.heightVox(ci - 1, cj, memo)),
                                                    absi(terrain_.heightVox(ci, cj + 1, memo) -
@@ -1588,6 +1823,13 @@ class ChunkMesher {
                             // are not there and stand in ones that are, and the
                             // oak is the widest thing in the world to stand a
                             // boulder inside of.
+                            // THE SAME GATE scatter's twin makes -- see the
+                            // note there. collectTrees mirrors that function
+                            // deliberately, to keep rocks out of trunks, and a
+                            // trunk it believes in that the scatter never
+                            // planted is exactly the disagreement it exists to
+                            // prevent.
+                            if (terrain_.desertMix(x) >= 0.5f) continue;
                             float wPine = 0.0f, wBirch = 0.0f, wOak = 0.0f;
                             terrain_.woodMix(x, &wPine, &wBirch, &wOak);
                             const bool haveP = birchBase > 0;
@@ -1632,11 +1874,33 @@ class ChunkMesher {
                             if (hashUnit(seed + 13u, cell) > standGate(dens) * tDensity * fill)
                                 continue;
                             const int lo = isBirch ? birchBase : isOak ? oakBase : 0;
-                            const int hi = isBirch  ? oakBase
-                                           : isOak  ? int(pineFoot.size())
-                                                    : birchBase;
+                            const int hi = isBirch ? oakBase : isOak ? cherryBase : birchBase;
                             const int span = maxi(1, hi - lo);
-                            const int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
+                            int k = lo + (int(hashUnit(seed + 15u, cell) * float(span)) % span);
+                            // THE SAME SHIFT collectTrees' twin makes. This
+                            // function mirrors scatter deliberately -- its own
+                            // note says letting the two disagree is the bug it
+                            // exists to fix -- and a cherry that is a different
+                            // MODEL from the oak the other pass placed would be
+                            // exactly that disagreement, because the footprint
+                            // is what keeps rocks out of trunks.
+                            if (isOak && cherryBase < int(pineFoot.size()) &&
+                                terrain_.cherryMix(x) >= 0.5f) {
+                                k += cherryBase - oakBase;
+                                // THE SAME COIN scatter's twin flips -- see the
+                                // note there. These two functions are mirrored
+                                // on purpose and a model they disagree about is
+                                // exactly the fault that mirroring prevents:
+                                // the footprint is what keeps rocks out of
+                                // trunks, so a light cherry here and a dark one
+                                // there is a boulder inside a tree.
+                                // THE SAME FIELD scatter's twin reads -- see
+                                // VoxelTerrain::cherryPale.
+                                if (cherryLightBase > cherryBase &&
+                                    cherryLightBase < int(pineFoot.size()) &&
+                                    VoxelTerrain::cherryPale(x, z))
+                                    k += cherryLightBase - cherryBase;
+                            }
                             const int yaw = int(hashUnit(seed + 16u, cell) * 4.0f) & 3;
                             const Footprint &f = pineFoot[size_t(k)];
                             // THE TRUNK, not the crown. baseX/baseZ is what meets
@@ -1727,10 +1991,34 @@ class ChunkMesher {
                 if (hashUnit(seed + 41u, c) >= rockDensity) continue;
                 const float x = bx + (hashUnit(seed + 42u, c) - 0.5f) * kRockStride;
                 const float z = bz + (hashUnit(seed + 43u, c) - 0.5f) * kRockStride;
-                const int k =
-                    int(hashUnit(seed + 44u, c) * float(rockFoot.size())) % int(rockFoot.size());
+                // THE ORDINARY SET, exactly as the scatter draws it -- see
+                // rockOrdinary(). Rolling over the whole list here picked a
+                // different stone from the one that will be PLACED, so the
+                // disc reserved at this site was the wrong size.
+                const int ord = rockOrdinary();
+                const int k = int(hashUnit(seed + 44u, c) * float(ord)) % ord;
                 const Footprint &f = rockFoot[size_t(k)];
-                out->push_back({x, z, 0.25f * float(f.sx + f.sz) * VOXEL_M});
+                // -- THE WHOLE STONE, NOT A CIRCLE THROUGH ITS MIDDLE ------
+                //
+                // (user 2026-09-19: "I saw a cactus clip into a rock. it was
+                //  spawned that way".)
+                //
+                // This pushed a disc of the MEAN half-extent and left hx/hz
+                // zero, so Disc::reaches tested a circle. A boulder is not a
+                // circle: one three metres long and one wide has a mean radius
+                // of one, and everything from the middle of that stone out to
+                // its ends was ground the scatter believed was free. A cactus
+                // dropped there is inside the rock on the frame it is born.
+                //
+                // A SQUARE OF THE LONGER SIDE, which is deliberately more than
+                // the stone needs. The model is YAWED at the placing site (see
+                // the `yaw & 1` swap in scatterSmall) and this function does
+                // not draw that roll, so an exact hx/hz pair would be exact
+                // for one orientation in two. The square encloses the stone
+                // whichever way it lands, and the cost is decor kept a little
+                // further off a long rock's short side.
+                const float hm = 0.5f * float(maxi(f.sx, f.sz)) * VOXEL_M;
+                out->push_back({x, z, 0.0f, hm, hm});
             }
     }
 
@@ -1965,6 +2253,12 @@ class ChunkMesher {
                    int treeExtraSink) {
         if (fruitFoot.empty() || oakFruitRate <= 0.0f) return;
         if (treeIndex < oakBase || size_t(treeIndex) >= oakFruitPerch.size()) return;
+        // ...AND NOT ON A TREE THAT IS IN FLOWER. The cherry models share the
+        // oaks' perch lists by construction, so without this every cherry in
+        // the band would hang apples and oranges. A crop of cherries is its own
+        // model and its own palette entry and nobody has asked for one; blossom
+        // and fruit are different seasons anyway.
+        if (cherryBase < int(pineFoot.size()) && treeIndex >= cherryBase) return;
 
         const Footprint &pf = pineFoot[size_t(treeIndex)];
         // THE BUSH TIER, AS A HEIGHT. The oak set is a size ladder -- 2.1 m,
@@ -2065,7 +2359,9 @@ class ChunkMesher {
         // A DISTINCT SALT PER KIND, so the hash streams do not line up. Two
         // kinds sharing a salt land on exactly the same cells and every
         // mushroom grows out of the middle of a flower.
-        const uint32_t salt = (kind == 1)   ? kRockSalt
+        const uint32_t salt = (kind == 7)   ? 0x51F3A7C5u
+                              : (kind == 8) ? 0x2D9B4E11u
+                              : (kind == 1) ? kRockSalt
                               : (kind == 3) ? 0x9E3779B1u
                                             : 0x27D4EB2Fu;
 
@@ -2094,6 +2390,34 @@ class ChunkMesher {
         // material and slope tests per neighbour would cost far more than the
         // scatter itself, and being wrong in this direction only ever drops a
         // stone that a rejected neighbour would have left room for.
+        // -- HOW MANY OF THESE ARE THE ORDINARY SET -----------------------
+        //
+        // The cherry wood's copies are APPENDED (see rockCherry0), so the list
+        // handed in is twice as long as the one this scatter is meant to draw
+        // from. Rolling over the whole of it is wrong twice over:
+        //
+        //   * it puts PINK-MOSSED STONES IN THE PINE WOOD, which is the copy
+        //     being reachable from a band that is not the cherry;
+        //   * and it changes the roll itself. `int(hash * n) % n` with n
+        //     doubled picks a different model at every site in the world, so
+        //     the first build of this moved every rock in every biome -- the
+        //     clip test found geckos standing in trees in the DESERT, four
+        //     bands away from anything that had been edited.
+        //
+        // So the draw is over the ordinary set and the cherry shift is applied
+        // afterwards, which also makes the shift free to be a single `+=`.
+        // THE FIRST COPY IS THE CEILING, whichever it is: a pinned world may
+        // load the bare set without the pink one, so this cannot assume the
+        // cherry base is the boundary.
+        const int ordinary =
+            (kind == 8 && shrubCherry0 > 0 && shrubCherry0 < int(foot.size())) ? shrubCherry0
+            : (kind == 1) ? rockOrdinary()
+                             : (kind == 2 && flowerCherry0 > 0 && flowerCherry0 < int(foot.size()))
+                                 ? flowerCherry0
+                             : (kind == 3 && mushroomCherry0 > 0 &&
+                                mushroomCherry0 < int(foot.size()))
+                                 ? mushroomCherry0
+                                 : int(foot.size());
         const bool spaced = (kind == 1 || kind == 3);
         float maxRad = 0.0f;
         if (spaced)
@@ -2111,11 +2435,15 @@ class ChunkMesher {
             if (hashUnit(seed + 41u, c) >= density) return false;
             *ox = bx + (hashUnit(seed + 42u, c) - 0.5f) * stride;
             *oz = bz + (hashUnit(seed + 43u, c) - 0.5f) * stride;
-            int kk = int(hashUnit(seed + 44u, c) * float(foot.size())) % int(foot.size());
-            if (kind == 3 && mushroomBig0 > 0 && mushroomBig0 < int(foot.size())) {
+            // OVER THE ORDINARY SET, and this lambda only wants the RADIUS --
+            // the cherry copy is the same geometry, so it never needs the
+            // shift the placing site applies. What it does need is to draw the
+            // SAME index that site draws, which is what `ordinary` guarantees.
+            int kk = int(hashUnit(seed + 44u, c) * float(ordinary)) % ordinary;
+            if (kind == 3 && mushroomBig0 > 0 && mushroomBig0 < ordinary) {
                 const bool big = hashUnit(seed + 0x8B1Du, c) < 0.25f;
                 const int lo = big ? mushroomBig0 : 0;
-                const int hi = big ? int(foot.size()) : mushroomBig0;
+                const int hi = big ? ordinary : mushroomBig0;
                 kk = lo + (int(hashUnit(seed + 0x3C7Fu, c) * float(hi - lo)) % (hi - lo));
             }
             const Footprint &f = foot[size_t(kk)];
@@ -2135,7 +2463,12 @@ class ChunkMesher {
                 // every flower in a patch answers from the same colony.
                 Colony col;
                 if (kind == 2) {
-                    col = colonyAt(bx, bz, int(foot.size()), wobMemo);
+                    // THE ORDINARY SET, for the reason written over it: a
+                    // colony picks a SPECIES, and the cherry copies are the
+                    // same species in a different palette. Counting them would
+                    // both double the roll and let a pine meadow draw a pink
+                    // one.
+                    col = colonyAt(bx, bz, ordinary, wobMemo);
                     if (col.w <= 0.0f) continue;
                 }
                 float w = (kind == 2) ? col.w : 1.0f;
@@ -2150,6 +2483,72 @@ class ChunkMesher {
                 // 1.3 m and a band is 800, so the difference cannot change the
                 // answer, and asking here keeps it before the gate it feeds.
                 if (kind == 3) w *= lerpf(1.0f, birchMushroomScale, terrain_.birchMix(bx));
+                // THE DESERT'S TWO EXIST ONLY IN THE SAND. Multiplying by the
+                // weight rather than testing it is what gives the rim its
+                // fade: a cactus at the treeline is rare, one a hundred metres
+                // in is ordinary, and nothing here has to know where the edge
+                // is. See cactusFoot for why this is a density and not a gate.
+                // -- ...AND NOT ONE STEP OUT OF IT ---------------------
+                //
+                // (user 2026-09-19: "I found a cactus in the cherry forest.
+                //  remove it across the biome. make sure to keep the
+                //  respective biomes assets within their biome.")
+                //
+                // THE FADE IS WHY IT LEAKED. desertMix does not stop at the
+                // seam, it tapers through it -- that is the whole point of the
+                // note above, and it is right about the rim looking better for
+                // it. What it is wrong about is the OTHER side: a weight of
+                // 0.3 two hundred metres inside the blossom is a real cactus
+                // standing under a cherry tree, and no amount of rarity makes
+                // that the right picture.
+                //
+                // So the fade stays and a GATE goes in front of it: woodBit is
+                // the engine's one answer to "which wood is this column", the
+                // same answer /locate and the moss on the boulder give, so the
+                // sand's plants stop exactly where the sand stops being what
+                // this place is called. Inside the desert nothing changes --
+                // the taper toward the rim is the same taper it always was.
+                if (kind == 7)
+                    w *= (terrain_.woodBit(bx) & kWoodDesert) ? terrain_.desertMix(bx) : 0.0f;
+                // THE BUSH GROWS IN TWO BANDS NOW. The sand has it as scrub
+                // and the blossom has it as a flowering bush -- same models,
+                // different bloom (see World::loadCherryBush) -- so the weight
+                // is whichever of the two this column is, and it still thins
+                // to nothing through every other wood.
+                // ...AND THE BUSH IS GATED THE SAME WAY, ON WHICHEVER OF ITS
+                // TWO BANDS THIS IS. Same argument as the cactus above: the
+                // scrub taper belongs inside the sand and the flowering one
+                // inside the blossom, and neither belongs in the pine between
+                // them. Asked once, because woodBit is a single bit.
+                if (kind == 8) {
+                    const uint8_t bw = terrain_.woodBit(bx);
+                    w *= (bw & kWoodDesert)   ? terrain_.desertMix(bx)
+                         : (bw & kWoodCherry) ? terrain_.cherryMix(bx)
+                                              : 0.0f;
+                }
+                // -- HALF THE STONE IN THREE OF THE FIVE BANDS -------------
+                //
+                // (user 2026-09-19: "reduce the rock density in the desert by
+                //  half", and "in the cherry forest, cut down the rocks by
+                //  50%. if the oak forest matches the density of the cherry
+                //  forest, then reduce it by 50% as well".)
+                //
+                // THE OAK AND THE CHERRY DO MATCH, and not by coincidence --
+                // the cherry band's weight folds into the oak's, so every
+                // density in the engine answers in the cherry with the number
+                // it gives in the oak, by construction. That is the whole of
+                // [[v2-cherry-forest]]'s fold, and it is why the second half
+                // of the ask is a yes: they are the same number, so halving
+                // one halves the other whether you meant it or not. oakMix
+                // covers both bands for exactly that reason.
+                //
+                // A WEIGHT, NOT A TEST, like everything else on this line: the
+                // stone thins across the rim instead of halving on a line, and
+                // a column that is half oak and half pine gets three quarters.
+                if (kind == 1)
+                    w *= 1.0f - 0.5f * clampf(maxf(terrain_.oakMix(bx),
+                                                   terrain_.desertMix(bx)),
+                                              0.0f, 1.0f);
                 if (hashUnit(seed + 41u, cell) >= density * w) continue;
 
                 const float x = bx + (hashUnit(seed + 42u, cell) - 0.5f) * stride;
@@ -2172,7 +2571,10 @@ class ChunkMesher {
                 const float px = float(ci) * VOXEL_M, pz = float(cj) * VOXEL_M;
 
                 const int h = terrain_.heightVox(ci, cj, memo);
+                // The band line, then the mapped lakes -- see the note in the
+                // tree sweep. Asked at px/pz, where the model actually lands.
                 if (h <= wl + 2) continue;
+                if (terrain_.mappedWater(px, pz)) continue;
                 const uint8_t top = terrain_.topMaterial(ci, cj, h, memo);
                 // ---------------------------------------------------------
                 // A FLOWER STANDS IN THE GRASS, so it asks whether there IS
@@ -2209,10 +2611,12 @@ class ChunkMesher {
 
                 // The species is the COLONY's, not this cell's: that is the
                 // whole point of the patch.
+                // OVER THE ORDINARY SET, never the cherry copy -- see the
+                // note over `ordinary`. The shift into the copy is applied
+                // below, after the wood's own half-pick has had its say.
                 int k = (kind == 2)
                             ? col.species
-                            : int(hashUnit(seed + 44u, cell) * float(foot.size())) %
-                                  int(foot.size());
+                            : int(hashUnit(seed + 44u, cell) * float(ordinary)) % ordinary;
                 // WHICH WOOD'S STEM. The colony picked a species out of the
                 // first half; the second half is the same flowers wearing the
                 // birch's green. Dithered on the column hash exactly as
@@ -2222,15 +2626,128 @@ class ChunkMesher {
                     terrain_.bladeMaterial(ci, cj) == mat::BGRASS_0)
                     k += flowerBirch0;
 
+                // -- ...AND IN THE CHERRY BAND IT IS THE PINK COPY ---------
+                //
+                // AFTER the birch half above and BEFORE the mushroom size draw
+                // below, and both orderings are load-bearing. The half above
+                // decides WHICH flower and this only decides which palette it
+                // wears, so running it first would shift into the copy and then
+                // the half-adjust would shift straight back out of it. The draw
+                // below picks from foot.size(), which includes this copy, so it
+                // has to do its own shift rather than inherit one.
+                if (ordinary < int(foot.size()) && k < ordinary) {
+                    // -- ASK WHICH WOOD THIS IS, ONCE -----------------------
+                    //
+                    // (user 2026-09-19: "I see rocks in the desert that have
+                    //  pink moss".)
+                    //
+                    // THIS TESTED cherryMix >= 0.5 AND THEN desertMix >= 0.5,
+                    // and at the cherry|desert seam BOTH ARE EXACTLY 0.5 --
+                    // measured at x = 3200. Cherry was asked first, so a two
+                    // hundred metre strip of ground that is already half sand,
+                    // and that woodName and /locate both call DESERT, was
+                    // getting the pink-mossed stones.
+                    //
+                    // woodBit is the engine's one answer to "which wood is
+                    // this": it returns a SINGLE bit, picked by the largest
+                    // weight, so two bands can no longer both claim a column.
+                    // Using it also means the stone agrees with the name --
+                    // whatever /locate calls the ground you are standing on is
+                    // the moss on the boulder beside you.
+                    const uint8_t wood = terrain_.woodBit(px);
+                    // -- HALF THE BIG STONES IN THE SAND ------------------
+                    //
+                    // (user 2026-09-19: "reduce the desert big/med rocks in
+                    //  half".)
+                    //
+                    // NOT a second density: the count is already halved out
+                    // here and halving it again would empty the dunes. This is
+                    // about the MIX -- a big or a mid rock is sent to the
+                    // pebble range half the time, so the sand keeps its stones
+                    // and loses half its boulders.
+                    //
+                    // Its own hash stream, so the swap cannot correlate with
+                    // which model was drawn: sharing seed+44 would send the
+                    // same four boulders every time and keep the other one.
+                    if (kind == 1 && (wood & kWoodDesert) && rockSmall0 > 0 &&
+                        rockSmall0 < ordinary && k < rockSmall0 &&
+                        hashUnit(seed + 0x5A17u, cell) < 0.5f) {
+                        const int span = ordinary - rockSmall0;
+                        k = rockSmall0 + (int(hashUnit(seed + 0x5A18u, cell) * float(span)) % span);
+                    }
+                    if (kind == 1 && (wood & kWoodDesert) && rockDesert0 > ordinary &&
+                        rockDesert0 < int(foot.size()))
+                        k += rockDesert0;
+                    // Only kind 1 has a third range -- the flowers and the
+                    // mushrooms do not grow out in the sand at all.
+                    // -- ...AND PINK MOSS NEEDS BLOSSOM OVERHEAD ---------
+                    //
+                    // (user 2026-09-19, reported three times: "pink moss rocks
+                    //  are still spawning outside the cherry forest".)
+                    //
+                    // THE BAND WAS NEVER THE WHOLE QUESTION. A diagnostic on
+                    // every placed stone found ZERO columns where the range
+                    // disagreed with woodBit, in five bands and in the measured
+                    // world -- the rule was being followed exactly. What it was
+                    // being asked was wrong: the cherry BAND runs up the
+                    // mountain, and above the timberline it has no cherries in
+                    // it. So the pink stones were real, correct by the rule,
+                    // and sitting on bare alpine grass under snow with not a
+                    // blossom in sight. That is what the report is.
+                    //
+                    // Petals already ask this question (see petalColumn) and
+                    // they ask it of the stand field, so the two now agree
+                    // about what "under the trees" means: where there is no
+                    // canopy there is no fallen blossom and no pink moss.
+                    else if ((wood & kWoodCherry) &&
+                             (kind != 1 ||
+                              terrain_.standDensity(px, pz, memo.stand) >
+                                  VoxelTerrain::kPetalStand) &&
+                             (kind != 1 || (rockCherry0 > 0 && rockCherry0 < int(foot.size()))))
+                        k += (kind == 1) ? rockCherry0 : ordinary;
+                }
+
+                // -- A STONE MUST WEAR THE WOOD IT STANDS IN -------------
+                //
+                // (user 2026-09-19, third report: "pink moss rocks are still
+                //  spawning outside the cherry forest".)
+                //
+                // Twice now the logic has read correctly and the world has
+                // disagreed, so this stops arguing and MEASURES: every placed
+                // stone checks the range it landed in against the wood under
+                // it, and a mismatch names its coordinate. If it never fires,
+                // the pink stones are inside the blossom and the report is
+                // about the seam; if it does, it says where.
+
                 // TWO SIZES OF MUSHROOM, one in four of them the big one. The
                 // draw is a separate hash stream from the species pick above:
                 // sharing one would tie "which mushroom" to "how big", so every
                 // big one would always be the same model.
                 if (kind == 3 && mushroomBig0 > 0 && mushroomBig0 < int(foot.size())) {
+                    // THE CHERRY COPY IS NOT PART OF THE SIZE DRAW. `hi` used
+                    // to be the whole array, which was the whole array while
+                    // the array was small-then-big; with a pink duplicate on
+                    // the end that range spans the seam, so a "big" draw could
+                    // land on a small pink one. The ceiling is the copy's base
+                    // when there is one -- and the shift back into the copy is
+                    // re-applied below, because this assignment overwrites the
+                    // k the block above had already shifted.
+                    const int capTop =
+                        (mushroomCherry0 > mushroomBig0 && mushroomCherry0 < int(foot.size()))
+                            ? mushroomCherry0
+                            : int(foot.size());
                     const bool big = hashUnit(seed + 0x8B1Du, cell) < 0.25f;
                     const int lo = big ? mushroomBig0 : 0;
-                    const int hi = big ? int(foot.size()) : mushroomBig0;
+                    const int hi = big ? capTop : mushroomBig0;
                     k = lo + (int(hashUnit(seed + 0x3C7Fu, cell) * float(hi - lo)) % (hi - lo));
+                    // THE SAME QUESTION EVERY OTHER DECORATION ASKS. This
+                    // read `cherryMix >= 0.5`, which is a second opinion about
+                    // where the blossom is -- and a chain of `mix >= 0.5` tests
+                    // is exactly what put pink moss in the sand at the
+                    // cherry|desert seam, where both are exactly a half. See
+                    // the shift block above, and woodBit.
+                    if (capTop < int(foot.size()) && (terrain_.woodBit(px) & kWoodCherry))
+                        k += capTop;
                 }
                 const int yaw = int(hashUnit(seed + 45u, cell) * 4.0f) & 3;
                 // ON TOP OF THE BLADE. yOff is exactly this mechanism -- see
@@ -2405,10 +2922,75 @@ class ChunkMesher {
                         refuse = true;
 
                     if (refuse) {
-                        const int nSmall = int(foot.size()) - kRockBigMidEnd;
+                        // -- INTO THE ORDINARY SMALL STONES, AND ONLY THOSE --
+                        //
+                        // (user 2026-09-19, the FOURTH report: "there are STILL
+                        //  pink moss rocks outside the cherry forest".)
+                        //
+                        // THIS IS WHERE THEY CAME FROM, AND IT IS WHY THREE
+                        // FIXES ABOVE ALL READ CORRECTLY. The band shift two
+                        // hundred lines up chooses the range for the wood and
+                        // gets it right; this re-roll then throws that away and
+                        // draws from `foot.size()`, which is the WHOLE list --
+                        // the ordinary stones, the cherry wood's pink copies
+                        // and the desert's bare ones, end to end.
+                        //
+                        // So any boulder in any wood that was refused a site --
+                        // for steepness, or by either of the two halving
+                        // dithers, or by the oak's -- was re-rolled across all
+                        // three sets. In the pine that is a pink stone under
+                        // green trees a hundred metres outside the blossom,
+                        // which is precisely the report.
+                        //
+                        // THE DIAGNOSTIC MISSED IT BY TWO HUNDRED LINES. The
+                        // ROCK MISMATCH check that reported zero sat ABOVE this
+                        // and measured the k the band shift had just set -- the
+                        // value that was always right. It is below now.
+                        //
+                        // THE CEILING IS `ordinary`, which is the base of the
+                        // first copy (see rockOrdinary). No band shift has to
+                        // be re-applied afterwards: this block only runs when
+                        // `k < kRockBigMidEnd`, and any shift would have put k
+                        // far above that -- so a column that reaches here is
+                        // one the shift declined.
+                        //
+                        // The mushroom draw has the same note for the same
+                        // reason, one screen down: "with a pink duplicate on
+                        // the end that range spans the seam".
+                        const int smallTop =
+                            (ordinary > kRockBigMidEnd && ordinary <= int(foot.size()))
+                                ? ordinary
+                                : int(foot.size());
+                        const int nSmall = smallTop - kRockBigMidEnd;
                         if (nSmall <= 0) continue;
                         k = kRockBigMidEnd +
                             (int(hashUnit(seed + 0x5A17u, cell) * float(nSmall)) % nSmall);
+                    }
+                }
+
+                // -- A PINK STONE MUST BE IN THE BLOSSOM ------------------
+                //
+                // BELOW EVERYTHING THAT PICKS A MODEL, which is the whole
+                // lesson of the fourth report: the first version of this check
+                // sat above the boulder re-roll, measured the one value that
+                // was always correct, printed nothing, and was read as proof
+                // the placement was right.
+                //
+                // ONE-DIRECTIONAL, and that is not laziness. A PLAIN stone in
+                // the cherry band is legitimate -- above the timberline the
+                // band has no cherries in it and the pink is gated on the stand
+                // field (see the shift above) -- so only the other direction is
+                // a fault.
+                if (kind == 1 && rockCherry0 > 0 && rockCherry0 < int(foot.size())) {
+                    const bool pink =
+                        k >= rockCherry0 && (rockDesert0 <= rockCherry0 || k < rockDesert0);
+                    if (pink && !(terrain_.woodBit(px) & kWoodCherry) &&
+                        rockWarn_.fetch_add(1) < 8) {
+                        std::printf("  ROCK MISMATCH  k %d of %d at (%.0f, %.0f) -- "
+                                    "pink stone in the %s wood\n",
+                                    k, int(foot.size()), double(px), double(pz),
+                                    terrain_.woodName(px));
+                        std::fflush(stdout);
                     }
                 }
 

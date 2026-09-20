@@ -1,0 +1,6 @@
+# the maps in arcade.vox, in grid VOXELS: name x0 z0 x1 z1
+# written by tools/voxelize_arcade.py -- World::loadLevelMaps reads it, and
+# /locate <name> is what it is for. Do not hand-edit: the next run of the
+# tool overwrites it, and a stale rectangle is a /locate that lands you in
+# somebody else's map.
+nuketown 0 0 489 977

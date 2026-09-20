@@ -1352,7 +1352,11 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // the position hash again would re-roll them every frame it moves.
     const uint shade =
         (inst.kind == KIND_LOOSE) ? triMaterial(packed) : groundShade(packed, h.p, ng);
-    const V6Material L = gMaterials[shade];
+    // ...OUT OF THIS PLACE'S HALF OF THE TABLE. gMaterials holds the sandbox's
+    // entries and then the arcade's; gParams.matBase says which set this frame
+    // is standing in. See V6Params::matBase. `shade` itself is NOT offset --
+    // h.mtl below is the neural cache's surface identity and must not move.
+    const V6Material L = gMaterials[gParams.matBase + shade];
     h.mtl = shade;
     h.mat.type = MAT_OPAQUE;
     h.mat.albedo = L.albedo;
@@ -1378,6 +1382,55 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
         // would otherwise show their repeat; this is enough to break it without
         // making the stand look like a paint chart.
         h.mat.albedo *= inst.tint;
+
+        // -- ...AND EVERY LEAF IS ITS OWN LEAF ---------------------------
+        //
+        // (user 2026-09-19: "could you just randomize the current oak tree
+        //  foilage colors? dont touch the wood colors. I want you to do the
+        //  same for the cherry trees as well".)
+        //
+        // THE TINT ABOVE IS PER TREE, and that was the only variation a crown
+        // had: three models over a thousand trees, each wearing four authored
+        // greens in fixed places, so two oaks of the same model were the same
+        // oak twice. The ground has never worked that way -- groundShade picks
+        // a shade per VOXEL out of the family's ramp, which is why a hillside
+        // does not tile -- and this is that grammar applied to a canopy.
+        //
+        // TRANSLUCENCY IS WHAT A LEAF IS. The palette sets it on foliage and
+        // on blossom and on nothing else on a tree, and it is already the test
+        // deriveGroundFromTrees uses to tell a leaf from bark. So the bark is
+        // untouched by construction rather than by a material list that would
+        // need keeping in step -- which is the ask's second half, "dont touch
+        // the wood colors".
+        //
+        // IT IS THE CURRENT COLOURS, SCATTERED, NOT NEW ONES. A multiply about
+        // 1.0 keeps each shade's own hue and moves its VALUE, so the crown
+        // still reads as the ramp it was authored in and the four steps stop
+        // being four flat regions. +-11% is roughly the gap between two
+        // neighbouring steps of the oak's own ramp, which is the most it can
+        // move without inventing a fifth.
+        //
+        // ...AND A LITTLE HUE WITH IT, half the amplitude and on its own
+        // stream, because real foliage varies in more than brightness and a
+        // pure value jitter reads as noise on one colour. The cherry gets both
+        // for free: a blossom is translucent too.
+        //
+        // THE VOXEL, NOT THE POINT. Same derivation groundShade uses -- step
+        // half a voxel back along the face normal so both sides of a face
+        // agree on which voxel they belong to, or a leaf changes colour as the
+        // ray crosses its own edge.
+        if (h.mat.translucency > 0.0f)
+        {
+            const int3 lv = int3(floor((h.p - ng * (0.5f * kVoxelM)) / kVoxelM));
+            const uint lh = hashVoxel(lv);
+            const float val = 1.0f + (float(lh & 1023u) * (1.0f / 1023.0f) - 0.5f) * 0.22f;
+            const float hue = (float((lh >> 10) & 1023u) * (1.0f / 1023.0f) - 0.5f) * 0.11f;
+            h.mat.albedo *= val;
+            // Opposed channels, so the shift is a HUE and not a second value:
+            // what leaves red it takes from blue and the luminance holds.
+            h.mat.albedo.r *= 1.0f + hue;
+            h.mat.albedo.b *= 1.0f - hue;
+        }
     }
 
     // -- ...AND AN ANIMAL THAT HAS JUST BEEN HIT IS RED ---------------------
@@ -2864,7 +2917,34 @@ void main(uint3 tid: SV_DispatchThreadID)
         // goes on taking the sun, the sky and its own shadow, and the red is
         // laid over that. Returning here instead would flatten a dying animal
         // into a silhouette.
-        if (h.hurt > 0.0f && depth == 0)
+        // =====================================================================
+        // EVERY EMITTER BELOW PAYS OUT ON A DELTA PATH TOO, NOT ONLY AT DEPTH 0.
+        //
+        // (user 2026-09-19: "in the water, sparks are black. fix this.")
+        //
+        // THEY WERE BLACK, NOT DIM, AND THIS WAS THE WHOLE OF IT. `depth == 0`
+        // is the standard guard against double counting -- an emitter reached
+        // by an ordinary bounce has already been paid for by the light sampler
+        // at the vertex before it, so adding it again would count it twice.
+        // What that guard forgets is the case where NO light sampler ran.
+        //
+        // WATER IS A DELTA SURFACE AND SAYS SO: the refraction branch sets
+        // specularBounce and zeroes skyPdfPrev precisely because "no light
+        // sampler drew this". So a spark under the surface -- or seen through
+        // it from above -- is reached at depth 1 with nothing having sampled
+        // it, the branch pays nothing, and the path terminates on a light
+        // carrying zero radiance. Black, at the one moment the effect is
+        // supposed to be at its most dramatic.
+        //
+        // THE SKY ALREADY HAD THIS RIGHT and is the model for the fix: its MIS
+        // weight is 1 when specularBounce, which is the same statement in the
+        // other direction. `emissiveHere` is that rule once, for all four.
+        //
+        // It is not only water. A spark seen in a reflection, or through any
+        // future glass, was equally black and for the same reason.
+        // =====================================================================
+        const bool emissiveHere = (depth == 0) || specularBounce;
+        if (h.hurt > 0.0f && emissiveHere)
         {
             const float3 he = kHurtRed * (kHurtNits * h.hurt);
             L += beta * he;
@@ -2872,7 +2952,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         }
         if (h.mtl == gParams.glowMtl && gParams.glowMtl != kNoBulb)
         {
-            if (depth == 0)
+            if (emissiveHere)
             {
                 L += beta * gParams.glowRadiance;
                 Lemit += beta * gParams.glowRadiance;
@@ -2889,7 +2969,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         {
             if (gParams.emitters[em].w < 0.0f) break;
             if (h.mtl != (uint)(gParams.emitters[em].w + 0.5f)) continue;
-            if (depth == 0)
+            if (emissiveHere)
             {
                 L += beta * gParams.emitters[em].xyz;
                 Lemit += beta * gParams.emitters[em].xyz;
@@ -2900,7 +2980,7 @@ void main(uint3 tid: SV_DispatchThreadID)
         if (emitHit) break;
         if (h.mtl == gParams.bulbMtl && gParams.bulbMtl != kNoBulb)
         {
-            if (depth == 0)
+            if (emissiveHere)
             {
                 L += beta * gParams.bulbRadiance;
                 Lemit += beta * gParams.bulbRadiance;
