@@ -63,16 +63,18 @@ only reason. Publishing it grants no licence to use it.
    ── procedural-clouds ──────────────────────────────────────────────────────
    The cloud density function is a port of jeantimex/procedural-clouds
    (https://github.com/jeantimex/procedural-clouds), used under the MIT licence.
-   It now appears TWICE -- ported once into the browser game, and again into the
-   native engine -- and both copies are covered:
+   It was ported first into the browser engine and then again into the native
+   one. The browser engine was retired in September 2026 and its copy went with
+   it; what remains is the Slang port, which the engine in v1/ still evaluates
+   every frame and which the shipped voxelbit.exe therefore carries:
 
-     src/render/wgsl/cloudgen.js      the original WGSL port
-     v7/shaders/Clouds.slang          the Slang port of that port
-     v7/shaders/CloudFill.cs.slang    the pass that evaluates it
+     v1/shaders/Clouds.slang          the Slang port of the original WGSL port
+     v1/shaders/CloudFill.cs.slang    the pass that evaluates it
 
    The MIT licence requires its notice to travel with substantial portions of
-   the work, so naming only the first file would have left the second uncovered.
-   The licence text below applies to all three:
+   the work, including in binary form -- which is why a copy of this file ships
+   inside voxelbit.exe and is unpacked beside the game. The licence text below
+   applies to both files:
 
      MIT License
 
@@ -105,6 +107,28 @@ only reason. Publishing it grants no licence to use it.
    The file has been renamed; the font itself is unmodified. CC BY 4.0 permits
    commercial use and redistribution provided the creator is credited, and this
    notice is that credit.
+
+   -- THE COMPONENTS voxelbit.exe REDISTRIBUTES --------------------------------
+   The packaged build is not source. It carries third-party BINARIES, and each
+   of them travels under its own licence, which this one does not override:
+
+     NVIDIA         DLSS and DLSS Ray Reconstruction, Streamline (frame
+                    generation and Reflex), NGX, PhysX 5, NRD, the RTXGI
+                    libraries, NVAPI and the CUDA runtime -- under the NVIDIA
+                    licences accepted when those SDKs were obtained.
+     Falcor         NVIDIA's rendering framework, BSD-3-Clause. Its notice is
+                    at v1/external/falcor/LICENSE.md in this repository and
+                    travels with the framework it covers.
+     Slang          the shader compiler and its runtime, Apache-2.0.
+     CPython        the embedded interpreter Falcor initialises at startup,
+                    under the PSF licence. Its own package notices are shipped
+                    beside it in app/pythondist/PACKAGE-LICENSES.
+     Others         FreeImage, OpenEXR/Imath, assimp, OpenVDB and the D3D12
+                    Agility SDK, each under its own terms.
+
+   This section is a statement of what is in the file, not a grant. Section 3
+   still applies to voxelbit itself: being handed a copy of the game does not
+   licence you to redistribute it.
 
 7. CONTACT
 

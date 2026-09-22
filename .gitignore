@@ -2,16 +2,18 @@
 #   game/    EXACTLY what deploys. Upload this folder and nothing else.
 #   source/  authoring originals (.glb sculpts, the music library). NOT shipped,
 #            and mostly NOT tracked — see below. Back this up separately.
-#   tools/   build scripts + the local dev server.
+#   tools/   the voxelisers, bakers and build scripts.
 #   docs/    plans and notes.
-#   src/     the browser engine as ordered fragments -- see src/manifest.txt.
-#            game/index.html is BUILT from these and is never hand-edited.
-#   v2/      the native engine: the voxel pine forest, path traced on Falcor.
+#   engine/  THE engine: the voxel forest, path traced on Falcor.
+#   launcher/  the self-extracting launcher that becomes voxelbit.exe.
+#   dist/    what package.py builds. Never committed -- see below.
 #
 # 2026-09-06: v4, v5, v6 and the old OptiX v2 were deleted, and the Falcor
-# engine that had been v7 took the name v2. Two engines remain -- start.bat
-# for the browser one, v2.bat for the native one -- and the rules below were
-# pruned to match, so nothing here names an engine that no longer exists.
+# engine that had been v7 took the name v2.
+# 2026-09-21: the BROWSER engine was retired -- src/ and game/index.html are
+# gone -- and the Falcor engine is simply the engine now.
+# One launcher, run.bat, and one shipped artifact, voxelbit.exe. Nothing
+# here names an engine that no longer exists.
 #
 # git here is for the CODE and the RUNTIME assets that make it run. Source art is
 # binary, effectively static, does not need per-line history, and makes every git
@@ -84,17 +86,51 @@ q.png
 v2_take_*.mp4
 *.mp4
 
-# Terrain data built by v2/tools/dem2raw.cpp and v2/tools/naip2cov.py.
+# Terrain data built by engine/tools/dem2raw.cpp and engine/tools/naip2cov.py.
 # DERIVED, and large: a 60 km window is 130 MB, which is past GitHub's
 # 100 MB hard limit and would have the push refused outright. Both files
-# are rebuilt from the USGS tiles in minutes -- see v2/assets/dem/README.md.
-v2/assets/dem/*.vbdem
-v2/assets/dem/*.vbcov
+# are rebuilt from the USGS tiles in minutes -- see engine/assets/dem/README.md.
+engine/assets/dem/*.vbdem
+engine/assets/dem/*.vbcov
 
 # Built by hand from tools/*.cpp; not a deliverable.
-v2/tools/*.exe
+engine/tools/*.exe
+
+# ── 2026-09-21: the shipped build ────────────────────────────────────────────
+# tools/package.py lays a 1.4 GB staging tree into dist/stage and compresses it
+# into voxelbit.exe AT THE ROOT, beside the run script, where a player expects
+# to double-click it. Both are DERIVED from this repository in a couple of
+# minutes and both are far past GitHub's 100 MB per-file limit, so a commit
+# that caught either would simply be refused -- after uploading most of a
+# gigabyte first. Ship the exe from a release, not from the tree.
+dist/
+/voxelbit.exe
+# ...AND THE COPY STAGED FOR UPLOAD. The rule above is anchored to the root, so
+# the 522 MB installer the website folder carries for deploy was not covered by
+# it -- and GitHub hard-rejects any single file over 100 MB, so this is a push
+# that fails rather than a repo that grows. website/ itself is SOURCE and is
+# tracked; only the artifact is not.
+website/voxelbit.exe
+
+# The launcher's own build output. launcher.cpp and launcher/build.bat are the
+# source and ARE tracked; the exe, the object and the compiled icon are not.
+launcher/launcher.exe
+launcher/*.obj
+launcher/*.res
+launcher/icon.rc
+
+# The crash reports the engine writes beside itself -- see engine/src/platform/
+# crashlog.h. They are evidence from one run on one machine, and a .dmp is
+# tens of megabytes. Attach one to an issue; do not commit it.
+v2-crash.log
+v2-crash-*.dmp
 
 # Scratch backups taken before a destructive asset regeneration. The originals
 # they hold are the committed versions of the same files, so git already has
 # them and a second copy is only noise in the tree.
 game/assets/**/_pre-revoxel-*/
+
+# MagicaVoxel's own settings, dropped here because the editor gets run from
+# this directory. Its fonts, its .ui layouts and a workspace full of absolute
+# paths off one machine -- nothing in this project reads any of it.
+/config/

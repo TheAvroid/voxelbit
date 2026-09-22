@@ -1,7 +1,15 @@
 # voxelbit
 
-A voxel game that ships as one self-contained HTML file the player double-clicks. That
-has not changed. What changed is that the 16,226-line file is no longer what you edit.
+A voxel game path traced on NVIDIA Falcor, in C++ and Slang. It ships as ONE file a
+player double-clicks: `voxelbit.exe`, a self-extracting launcher with the whole
+game appended to it.
+
+**This document was rewritten on 2026-09-21.** Until that day voxelbit was a WebGPU
+renderer in a browser tab, `src/` held 78 JavaScript fragments and `game/index.html`
+was the build artifact -- and half of this file was about how to work on them. That
+engine has been retired and deleted. The sections that described it are gone rather
+than left to send a future session editing files that do not exist; what remains is
+the part that was never about the browser.
 
 ## Do not use sub-agents
 
@@ -21,160 +29,90 @@ Two reasons it matters here, both observed:
   570 ms with impact at 250 ms, and the test was re-arming it every 150 ms so no chop ever
   landed. Catching that needed the person who wrote the test to distrust it.
 
-## Edit `src/`, never `game/index.html`
-
-`game/index.html` is a **build artifact**. `tools/bundle.py` overwrites it from the 78
-ordered fragments in `src/`. An edit made directly to it is destroyed by the next build,
-silently, and will not be in the game.
+## The engine is `engine/`, and the shipped exe is not it
 
 ```
-src/manifest.txt        the build order. This file IS the architecture.
-src/<area>/<name>.js    a fragment
-tools/bundle.py         src/ -> game/index.html
-tools/lint-vb.py        the 11 checks that catch a black screen before the browser does
-tools/vbtest.py         boots the real game and diffs it against a baseline
-tools/vbharness.py      keeps ONE booted game alive; queries it in ~0.2s instead of ~10s
-tools/where.py          an index.html line -> the fragment that wrote it, and back
-docs/architecture.md    what lives in which fragment
+engine/src/        the engine: C++ headers and .inl, compiled as one TU
+engine/shaders/    Slang. Deployed to build/bin/Release/shaders/v1/
+engine/build.bat   build it            run.bat   run it (--help for every option)
+game/assets/       the art the engine loads -- .vox, sound, the pixel font
+tools/             the voxelisers and bakers that produced the art
+launcher/          the self-extracting launcher
+voxelbit.exe       THE SHIPPED GAME -- built by tools/package.py, never by hand
 ```
 
-## Asking the running game a question
+### Keep `voxelbit.exe` in step with the code
 
-`tools/vbharness.py` keeps one booted game alive and answers queries against it. Use it
-whenever you need more than one look at the game — which is nearly always. Booting a
-browser per question costs ~10 s each and, in practice, far more in scaffolding; a query
-against a live instance costs ~0.2 s.
+**Rule (repo owner, 2026-09-21): the shipped exe must match the codebase.** It is a
+SNAPSHOT, not a link -- it does not track the engine, and a stale one is the worst
+kind of wrong, because it launches and plays perfectly while being last week's build.
+A bug you just fixed is still in it.
 
-```
-python tools/vbharness.py start --win 1792x865     # ~10 s, once
-python tools/vbharness.py eval "__vb.badgeDbg()"   # ~0.2 s, as often as you like
-python tools/vbharness.py eval --file probe.js     # multi-line / async probes
-python tools/vbharness.py shot out.png
-python tools/vbharness.py reset                    # undo the last test's leftovers
-python tools/vbharness.py reset --at 4096 4096     # …and wipe the WORLD (full regen, ~7 s)
-python tools/vbharness.py reload                   # re-read src/, fresh page (no bundle.py)
-python tools/vbharness.py errors                   # non-404 errors on this page
-python tools/vbharness.py slots                    # live harnesses — check before dispatching an agent
-python tools/vbharness.py stop
-```
-
-Four things about it that are not guessable:
-
-- **`reload` re-bundles from `src/` in memory** (it serves through `serve-nocache.py`), so
-  the edit → look → edit loop never runs `tools/bundle.py`. Run that before committing, not
-  before looking. Note a reload re-randomises the spawn, so probe absolute coordinates.
-- **Read a uniform only after a frame has ticked.** `__vb.badgeDbg()` and friends report
-  what the render loop last wrote, so a probe that sets a value and reads it back in the
-  same synchronous block gets the stale number and looks like a broken feature. `await` a
-  couple of `requestAnimationFrame`s between the write and the read, and settle ~120 frames
-  after a `giveIt`/teleport before trusting anything — the swap animation moves the model
-  for about a second, and it will swamp a small effect.
-- **Storms are held off by default.** `__vb.snow(0)` — which every older script in `tools/`
-  calls — only cancels the storm in progress; the next one still arrives 120 s after load
-  and every 5 minutes after that, and snow writes into the world. The harness calls
-  `__vb.snowHold(false)` at boot and after every reload. Pass `start --snow` if you are
-  actually testing snow.
-- **One world answers every query.** `eval` is free for read-only probes; anything that
-  chops, fells, stamps, teleports or drops leaves the world changed for the next test.
-  `reset` clears what a teleport does not (felled bodies, editor, camera, counters);
-  `reset --at X Z` additionally zeroes the world, because a teleport further than 200
-  voxels triggers a full regen and worldgen is a pure function of world coordinates.
-
-`--slot NAME` (or `VB_SLOT`) gives each agent its own instance, so concurrent agents never
-collide — but the machine still only takes 2–3 booted games, so treat a slot as a resource
-you claim, not one you spawn per task. An idle instance reaps itself after 30 minutes, and
-killing the daemon by any means takes its Chrome with it.
-
-`tools/vbharness.py reap` deletes Chrome profiles from finished runs (never one in use).
-`tools/cdp.py` has never removed them, and they reach tens of GB.
-
-## The loop
+Refresh it with:
 
 ```
-python tools/serve-nocache.py     # or double-click start.bat
+engine\build.bat               # 1. the engine first -- package.py copies a binary
+python tools\package.py    # 2. restamp dist\voxelbit.exe
 ```
 
-The dev server builds `src/` in memory on every request, so **edit a fragment and hit
-refresh** — there is no build step while you work. Run `python tools/bundle.py` before
-committing, so the artifact in git matches the source.
+**THE RULE, stated by the repo owner on 2026-09-21: repackage at the end of
+every batch.** Not when it feels significant, not when asked -- every time a
+batch of work is finished and handed back. The reason is what kept happening
+without it: a fix was reported as done, the owner double-clicked the exe, and
+got a build from several fixes ago. A stale exe does not fail, it lies.
 
-Before you commit:
-
-```
-python tools/bundle.py       # refresh the artifact
-python tools/lint-vb.py      # 11 static checks; exit 1 on any problem
-```
-
-**This is enforced, not remembered.** `tools/hooks/pre-commit` runs both of the above and
-stages the rebuilt `game/index.html` into the commit; a failing lint aborts the commit.
-`tools/hooks/pre-push` re-checks and refuses to push a bundle that disagrees with `src/`.
-`tools/hooks/post-merge` covers the one commit the other two cannot: git does not run
-`pre-commit` for an automatic merge, and `game/index.html` carries `merge=ours`, so a
-merge keeps THIS side's bundle and the branch you just merged is missing from the
-artifact - the game then runs without the work you merged. It rebuilds, stages, and asks
-you for a `git commit --amend --no-edit`.
-Both are verified to fire: a deliberately stale artifact is rejected with the first
-differing line. So the rule is simply **edit `src/`, commit, push** — never run
-`bundle.py` by hand and never edit `game/index.html`.
-
-Hooks live in the repo but `core.hooksPath` is local config, so **a fresh clone or a new
-worktree must run this once**:
+So the last two actions of any batch that touched the engine are:
 
 ```
-git config core.hooksPath tools/hooks
+engine\build.bat               # the engine first -- package.py copies a binary
+python tools\package.py    # then restamp dist\voxelbit.exe
 ```
 
-The hook FILES are tracked, so a worktree created before they landed still has none —
-`hooksPath` then points at a directory that is not there and git runs nothing, silently,
-with a clean exit code. Merge `main` into each existing worktree once; `lint-vb.py`
-check 11 is what tells you a worktree is in that state.
+and the reply says the new stamp. Also run it:
 
-`git commit --no-verify` skips them. Do that only when you already rebuilt by hand — the
-pre-push backstop will catch you if you did not. One caveat: the pre-commit hook builds
-from the **working tree**, so a partial commit (`git commit <paths>`) can stage an
-artifact built from fragments the commit does not include. Commit `src/` wholesale.
+* before telling the owner the exe is updated, whenever that is not the batch end;
+* before a commit intended to ship from.
 
-If you changed anything the linter cannot reason about - worldgen, the frame loop, a
-shader, the uniform buffer - boot the real game and compare against a baseline:
+**When it must NOT be run: on every build.** Packaging reads 530 MB, writes 780 MB
+and takes minutes, against a relink of a few seconds -- automatic repackaging would
+make a one-line iteration cost a full package, and this loop is iterated dozens of
+times an hour. That is why it is a rule and a check rather than a build step.
+
+The tree will tell you when it is overdue: `python tools/package.py --check` answers
+in one line (exit 0 fresh, 1 stale, 2 absent), and `engine\build.bat` runs that check
+itself and prints the result whenever a `dist/` already exists.
+
+**Every new package unpacks to a new folder** under `%LOCALAPPDATA%\voxelbit\<stamp>`,
+because the stamp is a hash of the payload. The old one is dead weight -- delete it.
+
+### Verifying a change
+
+The engine carries headless diagnostics. They need a GPU but no window, and they are
+the fastest way to find out whether something structural broke:
 
 ```
-python tools/vbtest.py --against pre-phase-a
+v1.exe --background --float-test    # nothing severed is left hanging in the air
+v1.exe --background --dig-test      # every bite comes out of ground that was there
+v1.exe --background --fell-test     # a felled tree comes apart and settles
+v1.exe --background --wheat-test    # the crop pays out and is absorbed
+v1.exe --background --clip-test     # no creature stands inside a solid
+v1.exe --background --kill-test     # every species dies correctly
 ```
 
-It runs offscreen on its own port, so it neither touches your cursor nor fights the game
-you are playing on 8080. It checks: the page boots, nothing threw, all 267 `__vb` keys
-are present, the screen is not black, the generator is bit-exact (`deepHash`), the worker
-pool and main thread still agree (`gtest`), and the frame time has not regressed.
+**`--background` is not optional.** It opens the window straight to the taskbar and
+refuses the cursor, so a test cannot take the screen away from whoever is at the
+keyboard. Pin the world with `--spawn <n>` when comparing two runs -- the spawn point
+is random per launch, and a large swing in anything measured is usually that.
 
-Two things about it are worth knowing before you trust a red result:
+**The first run after a build is cold**: Falcor compiles shaders at startup and charges
+that time to the first frame. A 9x regression that vanishes on the second run was never
+there.
 
-- **17 console 404s are normal.** The frame loaders walk `00, 01, 02 …` until one 404s -
-  that is how they find the sequence length. Only an *uncaught exception* is a failure.
-- **`worldHash` is not stable across boots and the gate does not check it.** Snow and
-  grid-stamped creatures are real writes into `W`, so a surface block carries whatever the
-  weather and the animals were doing. `deepHash` (y 24..72, below all of that) is the
-  bit-exact generator check. Re-baseline if the machine's load has changed - a busy
-  machine measured against a quiet baseline reads as a perf regression.
-
-## A fragment is a slice of text, not a module
-
-Everything from `core/boot.js` to `main/99-close.js` lives inside the single
-`(async () => { ... })()` that `core/boot.js` opens and `main/99-close.js` closes. Thirteen
-fragments have their own scope (see "Making a fragment a module"); the other 55 do not, and
-none of them use `import`/`export`. Three consequences that matter every time you edit:
-
-- **A fragment may use anything declared in a fragment above it**, exactly as the one big
-  file did. Order is `src/manifest.txt`, top to bottom — not alphabetical, not inferred
-  from the directory names.
-- **One lexical scope spans the 55 non-module fragments.** `const rad` in `sim/tools.js`
-  collides with `const rad` in `ui/hud.js`; the whole game is then a SyntaxError and a
-  black screen. Check 5 catches it, and it is the failure this layout newly makes possible
-  — run the linter. Converting a fragment to a module removes its private names from that
-  risk entirely.
-- **Some fragments open a brace that a later one closes.** `main/tick-body.js` opens
-  `function tickBody(now) {`; the next six fragments are its body; `main/tick-passes.js`
-  closes it. They are cut at statement boundaries, so ordinary editing inside one is
-  safe, but do not touch a fragment's first or last line without checking its neighbour.
+**A test that dies with no verdict is not necessarily your change.** The engine writes
+`v2-crash.log` beside the exe with the faulting module, a stack and what it was doing
+(see `engine/src/platform/crashlog.h`). Read it before blaming the code under test -- there
+is a known intermittent crash during the startup world prime that has nothing to do with
+whatever is being tested.
 
 ## Dispatching agents: six rules, each of them paid for
 
@@ -322,80 +260,21 @@ subagents rather than in sequence (user's standing instruction, 2026-08-09).
 Does not apply to sequential or dependent steps, or to edits small enough that briefing an
 agent costs more than doing the work.
 
-## Making a fragment a module
-
-Thirteen fragments now have their own scope. Put these two lines at the very top of a
-fragment and `tools/bundle.py` wraps it in an IIFE that returns exactly the named list:
-
-```js
-  // @module — one line on what this owns
-  // @exports foo, bar, baz
-```
-
-Everything else it declares becomes invisible to the other 77 fragments, so two agents can
-both invent `edIdx` and the merge is still fine. Names arrive in the shared scope as
-ordinary consts at the module's own position, so every use below reads exactly as before,
-at the same cost.
-
-You do not have to work out the export list. Guess, run `python tools/lint-vb.py`, and
-check 10 tells you precisely which names to add or drop — it derives the real answer from
-what the rest of the build actually reaches for.
-
-**A module cannot export a `let` that another fragment assigns.** The shared scope gets a
-const copy, so those writes would land on the copy and the module would never see them —
-silently. Check 10 refuses it and names the writer. Two fixes, both real:
-
-- The name does not belong here. `cmpOn` was the compass setting sitting in
-  `ui/video-editor.js` purely because that is where a Phase A cut fell; it moved to
-  `ui/input.js`, where every use already was.
-- The state is genuinely shared. Fold it into an object the module already exports —
-  `veLastPaint` became `VE.lastPaint`, so the frame loop's write lands on the object both
-  sides hold.
-
-**A module may not `await` at its top level.** The program is one `(async () => {` opened
-in `core/boot.js`, so `await` is legal at a fragment's top level — but `wrap_module`'s IIFE
-is *not* async, and scoping such a fragment makes that line
-`SyntaxError: Unexpected reserved word`. Every other check passes, the bundle builds, and
-the only symptom is a page that never boots: vbtest says just "game never became ready
-within 180s". Check 10 now catches it and names the file and line. `assets/models.js` is
-the live case — line 7 is `await stage('loading decorations…')`, and that one line is the
-whole reason it cannot be a module.
-
-Currently modules (13): `render/wgsl/vis.js`, `sim/life/mammals.js`, `sim/life/reactions.js`,
-`sim/particles.js`, `sim/projectiles.js`, `sim/solver.js`, `sim/support.js`, `sim/tools.js`,
-`ui/console.js`, `ui/editor.js`, `ui/video-editor.js`, `world/gen-worker.js`,
-`world/terrain.js`. The other 55 fragments share one scope, so check 5 still matters.
-
-**Scoping is close to exhausted, and that is a finding rather than a to-do.** Every
-fragment was measured against the three gates; the shared surface is 993 names and only
-about 18 more could be removed by scoping what is left:
-
-| why not | count | what it means |
-|---|---|---|
-| already a module | 13 | done |
-| exported `let` that something assigns | 28 | **the real blocker** — shared mutable state |
-| exports everything it declares | 22 | a pure interface; scoping hides nothing |
-| opens/closes a brace across fragments | 4 | all of `src/main/`, plus `core/boot.js` |
-| top-level `await` | 1 | `assets/models.js` |
-
-The 28 are the same wall the original ES-modules analysis hit: 211 of 334 top-level `let`s
-are assigned from a fragment other than the one declaring them. Until that shared mutable
-state is folded into objects, no amount of `// @module` will shrink the scope much further
-— so treat check 5 and check 10 at merge time as the real defence, not scoping.
-
-## Adding a fragment
-
-Write the file, then add its path to `src/manifest.txt` **in the position where it should
-be evaluated**. A fragment that is not listed is not in the build; the linter fails on
-that rather than letting the code silently vanish.
-
 ## House rules that outrank convenience
 
-- **Perf work must be perceptually lossless.** Anything lossy needs explicit sign-off.
-- **The game is CPU-bound** (GPU ~1.7 ms against a 2.5–5.4 ms frame). Profile JS with the
-  Chrome sampler; shader toggles mislead.
 - **Never commit or push** without being asked.
-- **Put `//` comments at the end of a line, never mid-way into a dense one-liner** — the
-  comment eats the rest of the line, taking the closing braces with it.
-- **No backticks inside WGSL comments** — a `` ` `` ends the JS template literal early and
-  the boot dies with no useful error.
+- **`voxelbit.exe` must match the codebase** -- see the rule above. It is the only
+  artifact a player ever sees, and it is the one thing in this tree that can be wrong
+  while looking perfectly right.
+- **Perf work must be perceptually lossless.** Anything lossy needs explicit sign-off.
+- **Measure on a pinned world.** `--spawn <n>`, or the number you are comparing is the
+  spawn point rather than your change.
+- **Never put the game on screen.** Every run is `--background`; every capture is
+  minimised. Reported three times.
+- **Never kill a `v1.exe` you cannot prove is yours.** More than one session works this
+  tree, and the other one may be mid-render or the owner may be playing. See
+  `engine/CLAUDE.md` and `engine/tools/claude-session.ps1`, which is how builds and runs are
+  serialised.
+- **Comments say WHY, and record what was measured and rejected** as well as what
+  shipped -- so nobody spends a weekend rediscovering that an idea was already tried
+  twice. If a measurement made you change something, put the measurement in the comment.

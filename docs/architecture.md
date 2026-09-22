@@ -1,5 +1,12 @@
 # Architecture — what lives where
 
+> **This document describes the BROWSER ENGINE, which was retired on
+> 2026-09-21.** `src/` and `game/index.html` no longer exist; the engine is
+> now `engine/` and ships as `voxelbit.exe`. Kept as a record of how the
+> browser game was built and why -- several of its decisions were carried
+> across -- but nothing here describes the code in this tree today.
+
+
 `game/index.html` is generated. The source is `src/`, concatenated in the order given by
 `src/manifest.txt`. See [CLAUDE.md](../CLAUDE.md) for the rules; this file is the map.
 

@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>voxelbit</title>
+<meta name="description" content="A voxel world path traced in real time. No rasteriser and no textures - every frame casts rays through a grid of 10 cm voxels on the GPU.">
+<link rel="icon" href="logo.png">
+
+<meta property="og:title" content="voxelbit">
+<meta property="og:description" content="A voxel world path traced in real time.">
+<meta property="og:image" content="logo.png">
+<meta property="og:type" content="website">
+
+<style>
+/* ---------------------------------------------------------------------------
+   THE WORDMARK IS v1's, NOT A REDRAW.
+
+   Every rule under "the wordmark" is lifted from src/ui/style-base.css as it
+   stood at 7064cff^ -- the same three-layer stack the title screen and the
+   loading screen both used: a gold bevel painted as eight hard text-shadows
+   underneath, the crimson/lime face painted as a gradient clipped to the
+   glyphs on top, and one drop-shadow filter composited behind the lot.
+
+   THE ONE CHANGE IS THE UNIT. v1 fixed the font at 60px and wrote the bevel
+   offsets and the drop shadow in px to match. A homepage wants the mark much
+   larger and fluid, so those constants are in `em` here: 4px/60px = 0.0667em,
+   and the shadow's 5/6/4 likewise. At 60px this computes back to v1's exact
+   numbers; at any other size the bevel stays in proportion instead of
+   thinning out.
+--------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: 'px3';
+  src: url('3x3-pixel.otf') format('opentype');
+  font-display: block;   /* the mark is the brand -- no fallback flash */
+}
+
+:root {
+  --gold: #ffd76a;
+  --blurple: #5865F2;
+  --ink: #e8edf4;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #05070a;   /* behind the video, and before it loads */
+}
+
+body {
+  color: var(--ink);
+  font-family: 'px3', Consolas, monospace;
+  /* v1 put a crosshair on everything. Kept for the page, but NOT on the
+     controls -- a button that does not say "clickable" is a worse joke than
+     the joke is good. */
+  cursor: crosshair;
+  overflow: hidden;
+}
+
+/* ---- the cursor, which is v1's ------------------------------------------ */
+
+/* FOUR BARS THAT MAKE A CROSS, THEN A SQUARE.
+   Lifted from v1's free-mouse cursor. Two horizontals sit on top of each other
+   on the centre line and read as one bar, the two verticals likewise, so at
+   rest it is an ordinary crosshair. Over something clickable they slide apart
+   to the four edges and it becomes a square outline -- one transform
+   transition on the same four elements, nothing added or removed.
+
+   THE DOM IS THE POINT: a native cursor cannot tween between two shapes, so
+   the real one is hidden and this is drawn instead.
+
+   mix-blend-mode: difference is what lets it stay visible over a bright sky
+   and dark grass in the same frame without picking a colour. */
+#curs {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  z-index: 9999;
+  display: none;
+}
+
+/* ONLY WITH A REAL POINTER -- see the script. On a phone there is no cursor to
+   replace and an un-driven one would sit in the top-left corner for ever. */
+body.freecur #curs { display: block; }
+body.freecur, body.freecur * { cursor: none !important; }
+
+#curs i {
+  position: absolute;
+  background: #fff;
+  transition: transform 0.19s cubic-bezier(0.4, 0, 0.2, 1);
+}
+#curs .h { left: 0; right: 0; height: 2px; top: 7px; }
+#curs .v { top: 0; bottom: 0; width: 2px; left: 7px; }
+
+#curs.sq .h1 { transform: translateY(-7px); }
+#curs.sq .h2 { transform: translateY(7px); }
+#curs.sq .v1 { transform: translateX(-7px); }
+#curs.sq .v2 { transform: translateX(7px); }
+
+/* ---- the cover ---------------------------------------------------------- */
+
+.cover {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+.cover video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* No poster (user): the first frames fall through to body's own near-black
+     rather than to a still. */
+}
+
+/* THE SCRIM, AND WHY IT IS TWO LAYERS. The cover is a bright noon sky over
+   pale water, so a flat tint dark enough to carry white text kills the shot.
+   A radial well behind the middle does the reading work where the words are
+   and leaves the corners of the frame alone; the linear pass on top only
+   weights the very bottom, for the watermark. */
+.cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 78% 62% at 50% 46%,
+                    rgba(5,7,10,0.72) 0%,
+                    rgba(5,7,10,0.50) 42%,
+                    rgba(5,7,10,0.14) 72%,
+                    rgba(5,7,10,0.06) 100%),
+    linear-gradient(180deg,
+                    rgba(5,7,10,0.34) 0%,
+                    rgba(5,7,10,0.00) 26%,
+                    rgba(5,7,10,0.00) 70%,
+                    rgba(5,7,10,0.55) 100%);
+  pointer-events: none;
+}
+
+/* ---- the middle --------------------------------------------------------- */
+
+main {
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 34px;
+  padding: 24px 16px 0;    /* 16px side gutter, phone included */
+  text-align: center;
+}
+
+/* ---- the wordmark (v1, src/ui/style-base.css) ---------------------------- */
+
+h1 {
+  position: relative;
+  font: clamp(23px, 5.5vw, 66px) 'px3', Consolas, monospace;   /* half of v1's hero size */
+  letter-spacing: 0.0667em;               /* v1: 4px at 60px */
+  margin: 0;
+  text-shadow: none;                      /* must stay -- see v1's note */
+  filter: drop-shadow(0.083em 0.1em 0.067em rgba(0,0,0,0.60));
+  /* The mark is an image, not a paragraph: nothing here should be selectable
+     (v1 2026-08-09 -- clicking it painted the whole h1 browser-blue). */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+h1 .tv, h1 .tb {
+  position: relative;
+  display: inline-block;
+  background: none;
+  color: transparent;
+}
+
+h1 .tv::before, h1 .tb::before,
+h1 .tv::after,  h1 .tb::after {
+  content: attr(data-t);
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: pre;
+}
+
+/* THE GOLD BEVEL -- eight hard shadows, no blur, lit from the top-left. */
+h1 .tv::before, h1 .tb::before {
+  z-index: 1;
+  color: transparent;
+  text-shadow:
+     0em     -0.0667em 0 #ffe6a8,
+    -0.0667em -0.0667em 0 #ffeec2,
+     0.0667em -0.0667em 0 #f7d288,
+    -0.0667em  0em      0 #eec684,
+     0.0667em  0em      0 #d2a453,
+    -0.0667em  0.0667em 0 #ab7d31,
+     0em       0.0667em 0 #916522,
+     0.0667em  0.0667em 0 #754e17;
+}
+
+/* THE FACE -- a sheen raked across a vertical ramp, clipped to the glyphs. */
+h1 .tv::after, h1 .tb::after {
+  z-index: 2;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+h1 .tv::after {
+  background-image:
+    linear-gradient(104deg, rgba(255,255,255,0) 34%, rgba(255,255,255,0.30) 46%, rgba(255,255,255,0) 56%),
+    linear-gradient(180deg, #ffc8ce 0%, #ff7a8a 16%, #c8263a 58%, #7d0c1c 100%);
+}
+
+h1 .tb::after {
+  background-image:
+    linear-gradient(104deg, rgba(255,255,255,0) 34%, rgba(255,255,255,0.30) 46%, rgba(255,255,255,0) 56%),
+    linear-gradient(180deg, #e6ffbe 0%, #b8ff6e 16%, #5cbc26 58%, #2a7d10 100%);
+}
+
+/* THE VERSION BADGE. Absolute at left:100% so it hangs off the right edge at
+   zero layout width -- in flow it widens the h1 and shoves the wordmark off
+   centre, and the WORDMARK is what has to be centred. The rest of the
+   arithmetic is v1's and measured; see its note. */
+h1 .tver {
+  position: absolute;
+  left: 100%;
+  /* v1's optical nudges were -2px and -3px against a 12px badge (h1 at 60px).
+     Written in the BADGE's own em they survive the clamp: 2/12 and 3/12. In
+     px they would shrink against a 132px mark and the tag would ride high. */
+  top: calc(2.4167em - 0.1667em);
+  margin-left: calc(0.35em - 0.25em);
+  white-space: nowrap;
+  font-size: 0.2em;
+  letter-spacing: 2px;
+  line-height: 2;                         /* MUST be 2 -- see v1's note */
+  background: linear-gradient(180deg, #c6ced8 0%, #6d757f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* THE ROLLING DRUM -- one window per digit; the strip inside it slides by
+   exactly one cell so the old number leaves as the new one arrives.
+   overflow:hidden is what makes it a window rather than a list. */
+.tver .vd  { display: inline-block; overflow: hidden; vertical-align: top; }
+.tver .vdr { display: block; will-change: transform; }
+
+/* THE GRADIENT LIVES ON EACH DIGIT, NOT THE PARENT: background-clip:text
+   clips to the element's own box, and a digit halfway through the window
+   would otherwise be masked by the parent's box instead of its own. */
+.tver .vdr i {
+  display: block;
+  font-style: normal;
+  background: linear-gradient(180deg, #c6ced8 0%, #6d757f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---- the two buttons ---------------------------------------------------- */
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+/* BOTH ARE PILLS. The ask names one by its shape and one by its colour, and
+   those are the two things that actually tell them apart in a row of two --
+   giving the second a different radius as well would read as a mistake
+   rather than as a second kind of button. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6.5px 22.5px;
+  border: 0;
+  border-radius: 999px;
+  font-family: 'px3', Consolas, monospace;
+  /* Half the original ramp, then back up by 50%. px3 is a pixel face built
+     for exactly this range -- v1 sets the HUD at 7px and the watermark at
+     5.25px -- so it stays crisp rather than turning to mush the way a
+     hinted text face would. */
+  font-size: clamp(7.5px, 1.125vw, 9.75px);
+  letter-spacing: 2.25px;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+
+.btn:hover  { transform: translateY(-3px); }   /* doubled (user) */
+.btn:active { transform: translateY(0); }
+
+.btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+/* the download -- the engine's own gold */
+.dl {
+  color: #241a05;
+  background: linear-gradient(180deg, #ffe9a6 0%, var(--gold) 46%, #e0a72e 100%);
+  box-shadow: 0 4.5px 15px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.55);
+}
+.dl:hover { box-shadow: 0 7.5px 19.5px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.6); }
+
+/* ---- the discord button, pinned bottom-right ---------------------------- */
+
+/* FIXED TO THE VIEWPORT rather than sitting in the middle stack. It is a
+   standing way through to the server, not one of two things the page is
+   offering you, and the bottom-right corner is where that convention lives.
+   z-index 12 puts it over the watermark's 11 -- they never touch on desktop,
+   but the watermark is centred and a narrow phone brings them close.
+   SIZED IN ITS OWN RIGHT, not off .btn: it shares none of the pill's box, so
+   inheriting the pill's padding and clamped font would only fight it. */
+.dc {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 12;
+  width:  clamp(42px, 4.2vw, 54px);
+  height: clamp(42px, 4.2vw, 54px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(180deg, #7b86ff 0%, var(--blurple) 52%, #404ec9 100%);
+  box-shadow: 0 4.5px 15px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.28);
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+/* A PERCENTAGE, not an em: the circle is sized in px here, so the mark has to
+   follow the circle rather than a font-size it no longer has any relation to.
+   55% leaves the ring of blurple that makes it read as a badge. */
+.dc svg { width: 55%; height: 55%; }
+
+.dc:hover  { transform: translateY(-3px); box-shadow: 0 7.5px 19.5px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.34); }
+.dc:active { transform: translateY(0); }
+.dc:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+/* ---- the watermark (v1, src/ui/style-console.css) ------------------------ */
+
+/* The (c) is a px3 "c" with a CSS ring round it, because the 3x3 face has no
+   copyright glyph -- anything else is a different typeface mid-word. */
+#copyr {
+  position: fixed;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 11;
+  pointer-events: none;
+  color: var(--gold);
+  opacity: 0.64;
+  font: 5.25px/1.6 'px3', Consolas, monospace;
+  letter-spacing: 2px;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#copyr .cmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6em;
+  height: 1.6em;
+  font-size: 1em;
+  line-height: 1;
+  box-sizing: border-box;
+  margin-right: 6px;
+  letter-spacing: 0;
+  text-align: center;
+  position: relative;
+  top: 0;
+}
+
+#copyr .cmark::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 100%;
+  height: 100%;
+  border: 0.14em solid currentColor;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+/* ---- short screens and phones ------------------------------------------- */
+
+@media (max-height: 560px) {
+  main { gap: 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn, .dc, #curs i { transition: none; }
+}
+</style>
+</head>
+
+<body>
+
+<div id="curs"><i class="h h1"></i><i class="h h2"></i><i class="v v1"></i><i class="v v2"></i></div>
+
+<div class="cover">
+  <!-- MUTED + PLAYSINLINE ARE NOT OPTIONAL: every browser blocks autoplay with
+       sound, and iOS takes an un-inlined video fullscreen. `loop` because the
+       cover is 15 s and a hero that stops is a hero that looks broken. -->
+  <video autoplay muted loop playsinline preload="auto">
+    <!-- ONE SOURCE. The HEVC master is gone and this is the H.264 encode
+         under its name, so there is nothing to fall back to and nothing that
+         needs a codecs string -- declaring hvc1 on an H.264 file makes a
+         browser skip the only source there is. -->
+    <source src="cover.mp4" type="video/mp4">
+  </video>
+</div>
+
+<main>
+  <!-- The wordmark, exactly as v1's title screen writes it. The data-t values
+       must match the text content -- the bevel and the face are both drawn
+       from attr(data-t), so a mismatch prints two different words on top of
+       each other. -->
+  <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v<span class="vd"><span class="vdr"><i>0</i></span></span>.<span class="vd"><span class="vdr"><i>0</i></span></span></sup></h1>
+
+  <div class="row">
+    <!-- THE REAL BUILD, one directory up -- voxelbit.exe lives at the repo
+         root, not in here, and at 782 MB it is not worth a second copy. The
+         `download` attribute is what makes the click SAVE the file instead
+         of navigating to it, and naming it explicitly means it lands as
+         voxelbit.exe whatever the URL ends up looking like.
+         AN INSTALLER, NOT THE OLD SELF-EXTRACTING EXE. That one was an
+         unsigned launcher stub with the game appended after its PE image --
+         structurally what a dropper does, which is why Defender's classifier
+         scored it Trojan:Win32/Sabsik.FL.A!ml and DELETED it on download
+         rather than warning. The game binary was never the problem; the
+         wrapper was. This is built by tools/package.py --installer and
+         passes a clean Defender scan.
+         STILL UNSIGNED, so first run shows SmartScreen's "unrecognized app"
+         -- a click-through, not a deletion. A certificate removes that. -->
+    <a class="btn dl" href="voxelbit.exe" download="voxelbit.exe">download</a>
+
+  </div>
+</main>
+
+<!-- Pinned to the corner, so it sits outside <main> with the watermark
+     rather than inside the centred stack. -->
+<a class="dc" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" title="discord">
+  <svg viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>
+</a>
+
+<div id="copyr"><span class="cmark">c</span>2026 voxelbit - all rights reserved</div>
+
+
+<script>
+/* ---------------------------------------------------------------------------
+   THE VERSION COUNTS UP -- v1's loading-screen drum, lifted from
+   src/core/boot.js at 7064cff^ and cut down to the one thing it did.
+
+   Over there the tag ticked while the world generated; there is no world to
+   generate here, so the clock is the page load itself. The MECHANISM is
+   unchanged, including the two things its notes say were bought the hard way:
+
+     * THE STEP IS MEASURED, NOT DERIVED. px3 declares a 2.0em content box, so
+       the drum has to move by whatever the row's offsetHeight actually is.
+     * BOTH DIGITS MOVE TOGETHER OR NEITHER DOES. Rolling them independently
+       showed a literal "v1.9" -- the units cell took its 1 while the tenths
+       cell was still mid-roll on its 9, so for one frame the drum read a
+       version that never shipped. The busy gate covers the whole number.
+
+   ONE DEVIATION. v1 ran a 150 ms tick against a 1500 ms clock, which samples
+   0.0 -> 1.4 ten times and therefore skips a few tenths; on the loading
+   screen the bar was the thing being read and nobody noticed. Here the count
+   IS the feature, so it steps every tenth instead -- 15 steps at v1's own
+   150 ms, which is the cadence its note pins down (the 95 ms roll has to
+   finish well inside the tick; at 140 ms it measured the drum dropping 0.6).
+--------------------------------------------------------------------------- */
+(function () {
+  var VER_TO   = 1.4;    // WHAT THE DRUM COUNTS UP TO -- the one place it is written
+  var STEP_MS  = 150;    // v1's tick; the roll below must land well inside it
+
+  var tver  = document.querySelector('.tver');
+  var cells = tver ? [].slice.call(tver.querySelectorAll('.vd')) : [];
+  if (cells.length !== 2) return;   // no drum in the markup -- leave the tag alone
+
+  // Slide ONE cell to a new digit: stack the newcomer under the current row,
+  // translate up by exactly one cell, then drop the old row and reset.
+  function verRoll(cell, ch) {
+    var strip = cell.firstElementChild;
+    if (cell.dataset.v === ch || strip.dataset.busy) return;
+    cell.dataset.v = ch;
+
+    var row = document.createElement('i');
+    row.textContent = ch;
+    strip.appendChild(row);
+
+    var h = strip.firstElementChild.offsetHeight;
+    if (!cell.style.height) cell.style.height = h + 'px';
+
+    strip.dataset.busy = '1';
+
+    // THE MOVE GOES IN A FRAME CALLBACK; THE CLEANUP DOES NOT.
+    //
+    // v1 nested the whole thing inside requestAnimationFrame, which is fine on
+    // a loading screen nobody tabs away from. A landing page is not that: rAF
+    // does NOT fire in a background tab, so the busy flag set above would
+    // never be cleared, the gate would stay shut, and the drum would rest for
+    // good on whatever digit it had when the tab lost focus. Measured here --
+    // headless throttles rAF the same way, and the count froze at v0.1.
+    //
+    // So the timeout is scheduled unconditionally. If the frame never comes,
+    // the transform is never applied and the digit simply arrives without
+    // sliding, which is the right thing to degrade to.
+    requestAnimationFrame(function () {
+      if (!strip.dataset.busy) return;   // the cleanup already ran; do not re-offset a reset strip
+      strip.style.transition = 'transform 0.09s cubic-bezier(0.3, 0.85, 0.35, 1)';
+      strip.style.transform  = 'translateY(' + (-h) + 'px)';
+    });
+    setTimeout(function () {
+      strip.style.transition = 'none';
+      strip.style.transform  = 'translateY(0)';
+      while (strip.children.length > 1) strip.removeChild(strip.firstElementChild);
+      delete strip.dataset.busy;
+    }, 95);
+  }
+
+  // vs is "1.4": [0] is the units, [2] the tenths. Gate on EITHER strip.
+  function verSet(vs) {
+    if (cells.some(function (c) { return c.firstElementChild.dataset.busy; })) return;
+    verRoll(cells[0], vs[0]);
+    verRoll(cells[1], vs[2]);
+  }
+
+  // THE FONT HAS TO BE THERE FIRST. offsetHeight is the step, and measuring a
+  // row still set in the fallback face gives the wrong one -- the drum then
+  // slides by a distance that is not a cell and the digit sits half out of
+  // its window. document.fonts settles this; where it is missing the load
+  // event is close enough.
+  function run() {
+    var n = 0, total = Math.round(VER_TO * 10), want = VER_TO.toFixed(1);
+    (function tick() {
+      verSet((n / 10).toFixed(1));
+      if (n++ < total) { setTimeout(tick, STEP_MS); return; }
+
+      // PIN THE LAST NUMBER, AND KEEP ASKING UNTIL IT TAKES. A tick that
+      // lands while a strip is still rolling is dropped by the busy gate --
+      // harmless in the middle of the count, but if it is the FINAL tick the
+      // drum rests on 1.3 and stays there. v1 had the same hole and closed it
+      // the same way: finishLoad re-asserts VER_TO rather than trusting the
+      // last tick to have landed.
+      (function settle() {
+        if (cells[0].dataset.v === want[0] && cells[1].dataset.v === want[2]) return;
+        verSet(want);
+        setTimeout(settle, STEP_MS);
+      })();
+    })();
+  }
+
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(run);
+  else window.addEventListener('load', run);
+})();
+</script>
+
+
+<script>
+/* ---------------------------------------------------------------------------
+   THE CURSOR FOLLOWS, AND SQUARES OVER ANYTHING CLICKABLE -- v1's input.js,
+   cut down to the half a page needs.
+
+   Over there it also had to know about pointer lock, because the game takes
+   the mouse and gives it back. A page never does, so `freecur` is simply on
+   from the first frame.
+
+   ONLY WITH A FINE POINTER. On a touch screen there is no cursor to stand in
+   for, and an un-driven one parks in the top-left corner and stays there --
+   the class is what gates both the bars and the `cursor: none` that hides the
+   real one, so a phone keeps its ordinary behaviour entirely.
+--------------------------------------------------------------------------- */
+(function () {
+  if (!window.matchMedia || !matchMedia('(pointer: fine)').matches) return;
+  var el = document.getElementById('curs');
+  if (!el) return;
+  document.body.classList.add('freecur');
+
+  // WHAT SQUARES IT. v1's CURS_HIT, minus the controls this page has not got.
+  // Genuinely clickable things only -- the note over its copy is emphatic that
+  // squaring the cursor across a whole panel makes the shape mean nothing.
+  var HIT = 'a, button, [role="button"]';
+
+  addEventListener('mousemove', function (e) {
+    // translate3d, not left/top: this runs on every mouse event and a
+    // transform is the one property that moves an element without asking the
+    // page to lay itself out again.
+    el.style.transform = 'translate3d(' + e.clientX + 'px,' + e.clientY + 'px,0)';
+    var t = e.target;
+    el.classList.toggle('sq', !!(t && t.closest && t.closest(HIT)));
+  }, { passive: true });
+
+  // LEAVING THE WINDOW PUTS IT BACK TO A CROSS. Without this it keeps the
+  // square it had when the pointer crossed the edge over a button, and comes
+  // back wrong on the next entry.
+  addEventListener('mouseleave', function () { el.classList.remove('sq'); });
+})();
+</script>
+
+</body>
+</html>

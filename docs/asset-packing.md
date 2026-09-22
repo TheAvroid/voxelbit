@@ -1,5 +1,12 @@
 # Asset packing — protecting the asset tree, and the boot win that pays for it
 
+> **This document describes the BROWSER ENGINE, which was retired on
+> 2026-09-21.** `src/` and `game/index.html` no longer exist; the engine is
+> now `engine/` and ships as `voxelbit.exe`. Kept as a record of how the
+> browser game was built and why -- several of its decisions were carried
+> across -- but nothing here describes the code in this tree today.
+
+
 **Status:** plan. Nothing is implemented. Written 2026-08-28, from a session that started with the
 question *"can the game still run in the browser but have all the files protected in a back end
 database?"* and ended somewhere else.

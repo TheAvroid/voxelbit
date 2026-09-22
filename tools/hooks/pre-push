@@ -1,21 +1,23 @@
 #!/bin/sh
 # voxelbit pre-push -- backstop only.
 #
-# By push time the commits exist, so this cannot repair anything; it refuses to
-# send a bundle that does not match src/. That normally means a commit was made
-# with --no-verify, or a rebase/merge replayed src/ without rebuilding.
+# WHAT THIS USED TO GUARD (2026-09-21). By push time the commits exist, so this
+# can repair nothing; its one job was refusing to send a game/index.html that
+# did not match the src/ it was bundled from, which happened whenever somebody
+# committed with --no-verify or a rebase replayed the fragments without
+# rebuilding. The browser engine has been retired and there is no bundle left
+# to disagree with itself.
+#
+# WHAT IS LEFT IS THE HOOKS THEMSELVES. tools/hooks/ only reaches another
+# worktree if it is in a COMMIT -- staged is not enough, and the post-merge hook
+# is what installs it there -- so a push that carries a hook change in the index
+# but not in history silently leaves every other clone on the old hooks. That is
+# the one question pre-commit cannot ask, and it is cheap to ask here.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-PY=$(command -v python || command -v python3 || command -v py)
-[ -z "$PY" ] && exit 0            # no python: do not block a push we cannot verify
-
-if ! "$PY" tools/bundle.py --check; then
-  echo "" >&2
-  echo "pre-push: game/index.html does not match src/ - push refused." >&2
-  echo "          fix with:  python tools/bundle.py  then commit the artifact" >&2
+if ! git diff --cached --quiet -- tools/hooks 2>/dev/null; then
+  echo "pre-push: tools/hooks has STAGED changes that are not committed." >&2
+  echo "          A hook only reaches another clone from a commit. Commit it and push again." >&2
   exit 1
 fi
-# --push adds the one question pre-commit cannot ask: are the hooks in a COMMIT, not
-# just staged? A staged-only tools/hooks/ reaches no other worktree.
-"$PY" tools/lint-vb.py --push || { echo "pre-push: lint-vb.py failed - push refused" >&2; exit 1; }
 exit 0

@@ -1,20 +1,20 @@
 # voxelbit — full technology stack
 
-Two shipping codebases plus a research lineage. Windows 11, single dev machine, NVIDIA RTX 4070.
+One shipping codebase plus a research lineage. Windows 11, single dev machine, NVIDIA RTX 4070.
 
 ---
 
-## 1. The engine — `C:\voxelbit\v2`
+## 1. The engine — `C:\voxelbit\engine`
 
 An endless voxel pine forest, path traced in real time. Branch `main`, 204 commits,
-~44,600 lines of C++ headers + Slang shaders. Launcher `C:\voxelbit\v2.bat`,
-exe `v2\build\bin\Release\v2.exe`.
+~44,600 lines of C++ headers + Slang shaders. Launcher `C:\voxelbit\engine.bat`,
+exe `engine\build\bin\Release\v1.exe`, shipped as `dist\voxelbit.exe`.
 
 ### Framework and shading language
 
 | | |
 |---|---|
-| **NVIDIA Falcor** | private source fork at `v2/external/falcor` (75 MB). Falcor stays the top-level CMake project; v2 is pulled in via `-DFALCOR_EXTERNAL_APP_DIR=C:/voxelbit/v2`. Three fork patches: `gfxEnableDebugLayer(true)`, `/wd4996`, `Device::Desc::existingVulkanHandles`. `FALCOR_ENABLE_USD=OFF`, `FALCOR_HAS_NVAPI=0`. |
+| **NVIDIA Falcor** | private source fork at `engine/external/falcor` (75 MB). Falcor stays the top-level CMake project; the engine is pulled in via `-DFALCOR_EXTERNAL_APP_DIR=C:/voxelbit/engine`. Three fork patches: `gfxEnableDebugLayer(true)`, `/wd4996`, `Device::Desc::existingVulkanHandles`. `FALCOR_ENABLE_USD=OFF`, `FALCOR_HAS_NVAPI=0`. |
 | **Slang 2026.13.1** | private copy staged from the Vulkan SDK, selected with `FALCOR_LOCAL_SLANG*`. Falcor's own packman Slang is 2024.1.34 and has **zero** cooperative-vector symbols — this substitution is the reason the engine exists in this form. |
 | **Backends** | D3D12 (primary, everything works) and Vulkan (via slang-gfx; needed for cooperative vectors on the stock stack). |
 | **Ray tracing** | DXR **inline** ray tracing (`RayQuery`) in compute. Per-chunk BLAS + TLAS. `RAY_FLAG_FORCE_OPAQUE` everywhere — no any-hit, no alpha test. |
@@ -36,10 +36,10 @@ exe `v2\build\bin\Release\v2.exe`.
 | **RTXGI 1.3 (DDGI)** | `C:/Users/mrwbh/RTXGI-DDGI`, `rtxgi-d3d12.lib` | Probe-based irradiance GI (`--gi 1`, `--gi-depth 2`) | Working, D3D12 only |
 | **RTXGI 2.x — NRC** | `C:/Users/mrwbh/RTXGI/Libraries/Nrc`, `NRC_D3D12.dll` + 4 CUDA DLLs | Neural Radiance Cache; trains on tensor cores through its own DLL, so no SM 6.10 floor | Cache **demonstrably learns**; the resolve weighting is the one unsolved step |
 | **RTXGI 2.x — SHaRC** | `.../Libraries/Sharc` (header-only) | Spatial hash radiance cache | Working |
-| **NVAPI** | `v2/external/nvapi` | **RTX Mega Geometry** — CLAS, `BUILD_BLAS_FROM_CLAS`, partitioned TLAS | Capability query passes; the builder faults the GPU. Gated behind `--cluster-test`, default OFF |
-| **PhysX 5.10.0** | `v2/external/physx`, CPU-only | Rigid bodies for things that move | Working (`--physx`). Needs a custom **Ninja** preset — PhysX presets stop at VS2022 |
-| **Agility SDK 1.721.2-preview + DXC 1.10 preview** | `v2/external/{agility-sdk,dxcompiler}` | Shader Model **6.10** → cooperative vectors on D3D12 alongside DLSS | Opt-in: `build.bat preview`. Default OFF (stock = SM 6.8), because a failed preview runtime means no D3D12 device at all. Needs Developer Mode **latched at boot** |
-| **NanoVDB 32.3.3** | `v2/external/nanovdb` | Sparse voxel storage; `PNanoVDB.h` compiles as Slang as-is | Used by the `v3`/`v4` branches |
+| **NVAPI** | `engine/external/nvapi` | **RTX Mega Geometry** — CLAS, `BUILD_BLAS_FROM_CLAS`, partitioned TLAS | Capability query passes; the builder faults the GPU. Gated behind `--cluster-test`, default OFF |
+| **PhysX 5.10.0** | `engine/external/physx`, CPU-only | Rigid bodies for things that move | Working (`--physx`). Needs a custom **Ninja** preset — PhysX presets stop at VS2022 |
+| **Agility SDK 1.721.2-preview + DXC 1.10 preview** | `engine/external/{agility-sdk,dxcompiler}` | Shader Model **6.10** → cooperative vectors on D3D12 alongside DLSS | Opt-in: `build.bat preview`. Default OFF (stock = SM 6.8), because a failed preview runtime means no D3D12 device at all. Needs Developer Mode **latched at boot** |
+| **NanoVDB 32.3.3** | `engine/external/nanovdb` | Sparse voxel storage; `PNanoVDB.h` compiles as Slang as-is | Used by the `v3`/`v4` branches |
 
 ### Rendering techniques (own implementations, in Slang)
 
@@ -68,15 +68,15 @@ exe `v2\build\bin\Release\v2.exe`.
 ### Repo layout
 
 ```
-v2/src/core      defaults, value noise, vecmath, blue noise
-v2/src/scene     chunks, voxel world, collision, .vox loading, sky, day/night
-v2/src/render    camera, player, held item, bow, arrows, birds, butterflies,
+engine/src/core      defaults, value noise, vecmath, blue noise
+engine/src/scene     chunks, voxel world, collision, .vox loading, sky, day/night
+engine/src/render    camera, player, held item, bow, arrows, birds, butterflies,
                  drops, dynamics, governor, recorder (Media Foundation), audio
-v2/src/gpu       tracer, world (BLAS/TLAS), ddgi, sharc, nrc, nrcsdk, restir,
+engine/src/gpu       tracer, world (BLAS/TLAS), ddgi, sharc, nrc, nrcsdk, restir,
                  neural, clusters, dlss, streamline, atmosphere, volfog, clouds,
                  post, cuda + cuda/kernels.cu
-v2/src/physics   PhysX
-v2/shaders       36 .slang files; Shared.slang is included by BOTH the C++ and
+engine/src/physics   PhysX
+engine/shaders       36 .slang files; Shared.slang is included by BOTH the C++ and
                  the shaders, which is what keeps both sides of every struct in
                  one place
 ```

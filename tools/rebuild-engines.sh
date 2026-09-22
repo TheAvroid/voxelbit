@@ -6,7 +6,7 @@
 # never reach anyone. The NATIVE engines had no equivalent, and the failure they
 # produce is worse, because nothing reports it:
 #
-#   * A pull changes v2/shaders/Trace.cs.slang. The exe on disk is unchanged and
+#   * A pull changes engine/shaders/Trace.cs.slang. The exe on disk is unchanged and
 #     still runs -- Falcor compiles shaders at startup, so the picture silently
 #     becomes a mixture of last week's C++ and today's shader. If a binding was
 #     added on either side, the dispatch fails with an unbound resource and the

@@ -1,0 +1,26 @@
+// ---------------------------------------------------------------------------
+// voxelbit.rc -- the icon Windows draws on the executable itself.
+//
+// (user 2026-09-21: "the icon now is just a regular .exe file. I want the
+//  voxelbit icon logo".)
+//
+// THIS IS NOT THE WINDOW ICON. Two different things wear the same picture and
+// they are set in two different ways:
+//
+//   * the WINDOW and TASKBAR icon is a runtime call -- see app_load.inl, which
+//     overrides Falcor's nvidia.ico with game/logo.ico once the window exists.
+//   * the icon EXPLORER draws on the file, and the one a Start Menu shortcut
+//     inherits, is a Win32 resource compiled INTO the binary. Nothing at
+//     runtime can supply it, which is why fixing the first left this one a
+//     blank sheet of paper.
+//
+// ORDINAL 1, AND IT MATTERS. Windows shows the icon resource with the LOWEST
+// ordinal as a file's icon, so this must be 1 and must be the only ICON in the
+// binary -- Falcor adds none, so it is.
+//
+// THE PATH REACHES OUT OF THE ENGINE TREE and that is deliberate: game/ is the
+// content root the engine already reads at runtime (build.bat passes --pines
+// and --decor out of it), so the icon lives with the rest of the brand rather
+// than being copied in and left to drift.
+// ---------------------------------------------------------------------------
+1 ICON "../../../game/logo.ico"
