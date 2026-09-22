@@ -324,6 +324,39 @@
     vb::Ambience steps_;
     float stepLastX_ = 0.0f, stepLastZ_ = 0.0f;
     ToolSounds toolSfx_;
+
+    // -- THE MIX, PUSHED DOWN TO THE VOICES ---------------------------------
+    //
+    // (user 2026-09-22: "can you create a sound settings box. have it have the
+    //  master volume, the ambient volume, the SFX volume".)
+    //
+    // ONE FUNCTION, BECAUSE THERE ARE THREE SLIDERS AND FOUR PLACES A GAIN
+    // LANDS. Every row in the sound card edits opt_ and then calls this;
+    // nothing anywhere else writes a voice gain. The alternative -- each slider
+    // doing its own multiply at its own call site -- is how a master fader ends
+    // up applying to two of three buses, which is a bug nobody can see in a
+    // diff and everybody can hear.
+    //
+    // opt_ IS THE TRUTH AND THE VOICES ARE DERIVED. Ambience::masterGain()
+    // holds the PRODUCT once this has run, so it is no longer a thing anybody
+    // may read back as "what the player chose" -- bakeDefaults used to do
+    // exactly that and now reads opt_.ambience, for this reason.
+    //
+    // THE FOOTSTEPS RIDE THE SFX BUS. They are a sound the world makes, which
+    // is what that bus is; kStepGain stays their level WITHIN it -- v1's 0.372,
+    // deliberately not matched to the rest -- so the row scales it rather than
+    // replacing it.
+    //
+    // SAFE WITH NO AUDIO AT ALL. Under --no-sound, --background or on a machine
+    // with no endpoint, setMasterGain writes a float into an object whose voice
+    // is null and update() returns early; ToolSounds::setGain is the same. So
+    // this needs no gate and the sliders stay meaningful if sound arrives later.
+    void applyVolumes() {
+        const float m = clampf(opt_.volume, 0.0f, 1.0f);
+        ambience_.setMasterGain(opt_.ambience * m);
+        steps_.setMasterGain(kStepGain * opt_.sfx * m);
+        toolSfx_.setGain(opt_.sfx * m);
+    }
     // What the settings panel has asked the arrow to be, and whether the frame
     // still has to act on it. The rows edit this rather than the tool's own
     // offset, so dragging stays responsive while the rebuild happens a frame
@@ -445,13 +478,34 @@
         float yaw = kKeepFacing;
     };
     static constexpr PinnedSpawn kPinnedSpawns[] = {
-        // Re-measured 2026-09-21 ("at the coords -2126 233 -2077 spawn the
-        // player facing east") -- the same clearing as the original
-        // -2135 231 -2077, nine metres east, now with a bearing.
-        {Biome::Pine, -2126.0f, -2077.0f, 90.0f},   // 90 = E
-        {Biome::Pine, 1942.0f, 2505.0f, 315.0f},   // 315 = NW
-        {Biome::Pine, 2056.0f, 224.0f, 225.0f},    // 225 = SW  (user 2026-09-21)
+        // -- THE PINE'S ORDER IS THE ASK, NOT THE ORDER THEY ARRIVED IN ----
+        //
+        // (user 2026-09-22: "I want 2056 155 224 to be the first spawn point.
+        //  make -2121 235 -2073 to be the second pine spawn point".)
+        //
+        // ROW ORDER IS CYCLE ORDER -- the turn below indexes this table in the
+        // order it is written, so moving a row moves when you arrive at it.
+        // The clearing that used to be first is second now and has been
+        // re-measured five metres north-east with it; the 1942 row keeps third
+        // place because nothing asked it to move.
+        {Biome::Pine, 2056.0f, 224.0f, 225.0f},     // 225 = SW
+        {Biome::Pine, -2121.0f, -2073.0f, 90.0f},   // 90 = E -- was -2126, -2077
+        {Biome::Pine, 1942.0f, 2505.0f, 315.0f},    // 315 = NW
         {Biome::Birch, -3339.0f, -314.0f},
+        // (user 2026-09-22: "add the desert coords to the spawn cycle:
+        //  -228 236 -375. facing west".)
+        //
+        // MEASURED BEFORE IT WAS PINNED, with tests/biome_hop_probe.cpp: x =
+        // -228 is 228 m from the nearest seam inside the desert band, so it is
+        // clear of the 90 m blend and cannot land you in the cherry beside it.
+        // The y is not used -- teleportTo stands the body on the ground it
+        // finds, which is the only height that survives an edit or a DEM.
+        {Biome::Desert, -228.0f, -375.0f, 270.0f},   // 270 = W
+        // (user 2026-09-22: "make the oak forest spawn at 1273 150 51 and
+        //  facing south".) Measured with tests/biome_hop_probe.cpp before it
+        //  was pinned: x = 1273 is 73 m from the oak band's centre and 327 m
+        //  from the nearest seam, so it is clear of the 90 m blend.
+        {Biome::Oak, 1273.0f, 51.0f, 180.0f},        // 180 = S
     };
     // HOW MANY TIMES [G] HAS LANDED IN EACH BAND -- the cycle index into that
     // band's pinned rows, sized off the last enumerator.

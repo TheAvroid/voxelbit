@@ -59,7 +59,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Root = 'C:\voxelbit\v1'
+$Root = 'C:\voxelbit\engine'
 $Lock = Join-Path $Root 'build\.claude-build.lock'
 
 # A render's .png lands in the owning tab's scratchpad, so the uuid is in the

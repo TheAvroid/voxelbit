@@ -1237,7 +1237,15 @@
             if (steps_.open(audio_, opt_.soundDir + "/footsteps/grass.mp4", kStepGain))
                 steps_.setFade(kStepFadePerSec, /*square=*/false);
             toolSfx_.open(audio_, opt_.soundDir);
-            toolSfx_.setGain(opt_.sfx);
+            // -- AND THE WHOLE MIX AT ONCE, THROUGH THE ONE PATH ----------
+            //
+            // This was `toolSfx_.setGain(opt_.sfx)` and the other two gains
+            // were passed to open() above. applyVolumes folds in the master
+            // (Options::volume, unity at start-up, so nothing here changes
+            // level) and -- the part that was NOT true before -- puts the
+            // footsteps on the SFX bus. One call now owns every gain, so the
+            // sound card cannot get out of step with the boot.
+            applyVolumes();
             // ...AND THE RECORDER GETS THE SAME MIX THE PLAYER HEARS. The tap
             // sits on the mastering voice, so what R keeps is the game's own
             // output after every gain -- and nothing from any other program.
@@ -1912,7 +1920,7 @@
             woodPitch_ = pitch_;
             woodFly_ = player_.fly;
             if (world_.setLevel(true)) standInLevel();
-            else std::fprintf(stderr, "v2: --level: no nuketown.vox to travel to\n");
+            else std::fprintf(stderr, "v2: --level: no arcade.vox to travel to\n");
             // -- ...AND THEN TURN THE WHEEL, IF ASKED ----------------------
             //
             // (user 2026-09-18: "when the player scrolls up it selects it".)

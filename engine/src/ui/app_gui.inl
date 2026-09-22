@@ -55,12 +55,18 @@
     // exists to avoid. Measured against the font, it holds at any size.
     static constexpr float kCardGapCh = 4.0f;
     float cardGap_ = 14.0f;
+    // HOW MANY BOXES THE SETTINGS ARE. Four since 2026-09-22 -- controls,
+    // visuals, general and sound -- and it is written once because the three
+    // arrays below and the placement loop all have to agree about it. They
+    // disagreed for a while when there were three and it was spelled out in
+    // five places.
+    static constexpr int kCards = 4;
     // Each box's height as it was LAST frame -- see the placement block.
-    float cardH_[3] = {0.0f, 0.0f, 0.0f};
-    float cardHWas_[3] = {-1.0f, -1.0f, -1.0f};   // ...and the frame before
+    float cardH_[kCards] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float cardHWas_[kCards] = {-1.0f, -1.0f, -1.0f, -1.0f};   // ...and the frame before
     // Where each box's top edge was, and how tall the heading is -- the two
     // things that let the word sit on the boxes. See the header placement.
-    float cardY_[3] = {0.0f, 0.0f, 0.0f};
+    float cardY_[kCards] = {0.0f, 0.0f, 0.0f, 0.0f};
     float headH_ = 0.0f;
 
     // -- A LINE THAT READS WITH NOTHING BEHIND IT ---------------------
@@ -177,10 +183,54 @@
             ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, ui::kCard());
             ImGui::PushStyleColor(ImGuiCol_Border, ui::kCardEdge());
             ImGui::PushStyleColor(ImGuiCol_Text, ui::kGreen());
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+            // -- THE TITLE STARTS WHERE THE ROWS DO --------------------------
+            //
+            // (user 2026-09-22: "can you align the title of each of the
+            //  settings boxes to the rest of the text. it needs to be nudged to
+            //  the right a little bit".)
+            //
+            // TWO DIFFERENT PADDINGS WERE DOING IT, and neither is wrong on its
+            // own. ImGui insets a window's CONTENT by WindowPadding.x -- 16
+            // here, set in styleV2 -- and insets the TITLE BAR's text by
+            // FramePadding.x, which is a different number and a smaller one.
+            // So every card's name sat a few pixels left of the first letter of
+            // every row under it, which is exactly the report.
+            //
+            // MATCHED RATHER THAN NUDGED. A hand-picked offset is a number that
+            // stops being right the moment either padding moves; reading the
+            // one the content uses means they cannot disagree again.
+            //
+            // ONLY THE x. FramePadding.y is what decides GetFrameHeight, which
+            // is the row height, which is the slider handle's diameter -- see
+            // hoverSlider. Touching it would resize every control in the panel.
+            //
+            // WHAT ELSE READS FramePadding.x here: the dropdown's inner text
+            // inset, and a button's. Both move by the same few pixels and both
+            // are inside a box whose content now starts in one place.
+            {
+                const ImGuiStyle &st = ImGui::GetStyle();
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                    ImVec2(st.WindowPadding.x, st.FramePadding.y));
+            }
+            // -- FOUR PIXELS NOW (user 2026-09-22: "make the settings gold
+            //    outline 2x thicker", then "double the gold outline thickness
+            //    again around the ui boxes"). One, then two, now four.
+            //
+            //    IT IS A WINDOW BORDER AND NOTHING ELSE DRAWS IT, so the
+            //    thickness is one number: ImGui passes WindowBorderSize
+            //    straight to AddRect as the stroke width. No padding moves
+            //    with it -- the border is drawn INSIDE the window rect, so a
+            //    fatter edge eats a pixel of the fill rather than growing the
+            //    box or shifting anything under it.
+            //
+            //    STILL SCOPED TO THE CARDS. styleV2 is shared with the water
+            //    panel, the stack and the HUD; this struct is pushed around
+            //    the settings boxes only, which is what "the settings gold
+            //    outline" names.
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 4.0f);
         }
         ~cardSkin() {
-            ImGui::PopStyleVar();
+            ImGui::PopStyleVar(2);   // FramePadding, WindowBorderSize
             ImGui::PopStyleColor(6);
         }
     };
@@ -258,42 +308,168 @@
         //    PUSHED HERE RATHER THAN IN cardSkin: the row height is only known
         //    once the window's font scale has been applied, and cardSkin runs
         //    before Begin. GetFrameHeight() at this point is the real one.
-        ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, th);
-        ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, th * 0.5f);
-        const bool changed = w.slider(label, v, lo, hi, std::forward<R>(r)...);
-        ImGui::PopStyleVar(2);
-        // -- ...AND IT GROWS OVER TIME, NOT ON THE FRAME (user 2026-09-21:
-        //    "make the bigger knob effect do a smooth transition into the
-        //     bigger circle knob. right now it is instant.")
         //
-        //    `sliderGrow_` is 0..1 and eased in onGuiRender; SMOOTHSTEPPED
-        //    here rather than there because the curve belongs to the look and
-        //    the easing belongs to the clock. A linear ramp on a radius reads
-        //    as a pop at both ends -- the eye sees the first and last frames
-        //    of it, and those are exactly where a linear ramp has its corners.
-        if (sliderN_ == sliderShown_ && sliderGrow_ > 0.001f) {
-            // `th`, NOT GetStyle().GrabMinSize -- the push above has already
-            // been popped by here, so the style would read back ImGui's 12 and
-            // the big circle would be centred on a travel the grab never had.
-            const float d = th;
+        //    -- AND IT STILL WAS NOT ONE (user 2026-09-22: "also make the
+        //       circle slider handles perfect circles, they dont look like
+        //       perfect circles").
+        //
+        //       THE GRAB IS NOT AS TALL AS THE ROW. That is the miss above,
+        //       and it is four pixels: SliderBehaviorT insets the handle by a
+        //       hardcoded `grab_padding = 2.0f` at the top AND the bottom of
+        //       the frame (imgui_widgets.cpp:2770, 2920), so a grab in a row
+        //       `th` high is only `th - 4` tall however wide GrabMinSize makes
+        //       it. Pinning the width to `th` therefore made it four pixels
+        //       WIDER than it was tall -- and AddRectFilled clamps a rounding
+        //       that big to half the SHORT side, which turns the shape into a
+        //       horizontal stadium: two semicircles with a four-pixel straight
+        //       run welded between them. At the 20-odd pixel row this panel
+        //       uses that is a fifth of the handle, and it reads as exactly
+        //       what was reported -- a circle that is slightly not one.
+        //
+        //       kGrabPad IS ImGui's CONSTANT, WRITTEN DOWN. It is not exposed
+        //       through ImGuiStyle, so the only alternatives were to guess the
+        //       height or to patch the library; naming it here keeps the one
+        //       number in one place and says where it came from.
+        const float gd = maxf(1.0f, th - kGrabPad * 2.0f);
+        // =====================================================================
+        // THE TROUGH, THE FILL AND THE HANDLE ARE ALL DRAWN HERE NOW.
+        // =====================================================================
+        //
+        // (user 2026-09-22: "keep the circle sliders the same, but make the
+        //  slider bars 25% thinner from top to bottom. then, to the left of the
+        //  slider have the gold color fill in the bar. then make the circle
+        //  slider handle white instead of gold. then put a white/light grey
+        //  gradient on the circle handle from top to bottom. white at the top,
+        //  grey at the bottom.")
+        //
+        // NOT ONE OF THE FOUR IS A STYLE COLOUR. ImGui gives a slider one fill
+        // for the whole trough, one for the grab, and no notion of a filled
+        // PORTION at all -- so a bar that is gold up to the handle and grey
+        // past it cannot be asked for, and neither can a handle with two
+        // colours in it. The widget still runs, and still owns the hit test,
+        // the drag, the keyboard and the value text; what it draws is turned
+        // off and replaced.
+        //
+        // WHY THE BAR COULD NOT SIMPLY BE MADE SHORTER. Its height is
+        // GetFrameHeight, which is the ROW height -- the same number that sets
+        // the handle's diameter and the spacing of every row under it. Thinning
+        // it through FramePadding would shrink the circles and close up the
+        // panel. Drawn by hand the bar is any height we like and the layout
+        // does not move at all.
+        //
+        // A SPLITTER, BECAUSE ORDER MATTERS AND WE ARE ON THE WRONG SIDE OF IT.
+        // ImGui draws the frame, then the grab, then the VALUE TEXT over both.
+        // Anything drawn after the call lands on top of that number. Channel 0
+        // is under everything the widget emitted, so the bar and the handle sit
+        // beneath the text exactly where ImGui's own grab used to.
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImDrawListSplitter sp;
+        sp.Split(dl, 2);
+        sp.SetCurrentChannel(dl, 1);
+        ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, gd);
+        ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, gd * 0.5f);
+        // Transparent, not removed: the widget still lays the rects out and
+        // still reports hover and drag off them. See ImGuiCol_FrameBg read back
+        // below, which is why these are popped before anything is drawn.
+        const ImVec4 clear(0.0f, 0.0f, 0.0f, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, clear);
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, clear);
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, clear);
+        ImGui::PushStyleColor(ImGuiCol_SliderGrab, clear);
+        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, clear);
+        const bool changed = w.slider(label, v, lo, hi, std::forward<R>(r)...);
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar(2);
+
+        sp.SetCurrentChannel(dl, 0);
+        {
+            // -- 1. THE BAR, A QUARTER THINNER --------------------------
+            //
+            //    kTroughFrac of the row rather than all of it. Centred on the
+            //    row, so the rows do not move and the handle -- which is still
+            //    the full gd across -- now stands proud of the bar rather than
+            //    filling it. That overhang is the look: a knob ON a track.
+            const float bh = maxf(2.0f, floorf(th * kTroughFrac));
+            const float by = floorf(p0.y + (th - bh) * 0.5f);
             const float span = maxf(1e-6f, float(hi) - float(lo));
             const float f = clampf((float(v) - float(lo)) / span, 0.0f, 1.0f);
-            const ImVec2 c(p0.x + d * 0.5f + f * maxf(0.0f, tw - d), p0.y + th * 0.5f);
-            const float e = sliderGrow_ * sliderGrow_ * (3.0f - 2.0f * sliderGrow_);
-            ImGui::GetWindowDrawList()->AddCircleFilled(
-                c, d * 0.5f * (1.0f + (kGrabGrow - 1.0f) * e),
-                ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_SliderGrabActive
-                                                         : ImGuiCol_SliderGrab),
-                // 0 = let ImGui tessellate for the radius. It was 24, which is
-                // enough for a small knob and visibly faceted once the hover
-                // has grown it by half again.
-                0);
+            // THE HANDLE'S CENTRE, and the travel is inset by kGrabPad at both
+            // ends -- slider_usable_pos_min/max are bb.Min.x + pad + gd/2 and
+            // bb.Max.x - pad - gd/2. The bar is drawn across the FULL width,
+            // because a track that stops where the handle stops reads as a
+            // track that is too short.
+            const ImVec2 c(p0.x + kGrabPad + gd * 0.5f +
+                               f * maxf(0.0f, tw - kGrabPad * 2.0f - gd),
+                           p0.y + th * 0.5f);
+            dl->AddRectFilled(ImVec2(p0.x, by), ImVec2(p0.x + tw, by + bh),
+                              ImGui::GetColorU32(ImGuiCol_FrameBg), bh * 0.5f);
+            // -- 2. ...AND GOLD UP TO THE HANDLE ------------------------
+            //
+            //    HOW FAR ALONG YOU ARE, which is the one thing the number
+            //    beside a slider tells you and the bar never did. Clipped to
+            //    the handle's centre rather than its left edge: the fill is
+            //    read against the middle of the knob, and stopping it at the
+            //    edge leaves a grey gap under a handle sitting at the top of
+            //    its travel.
+            //
+            //    THE SAME ROUNDING AS THE BAR. At f near 0 the rounded left cap
+            //    is the whole of the fill, which is what a pill-shaped track
+            //    wants; AddRectFilled clamps the radius to half the short side,
+            //    so a sliver never renders as a lozenge wider than itself.
+            if (c.x > p0.x + 1.0f)
+                dl->AddRectFilled(ImVec2(p0.x, by), ImVec2(c.x, by + bh),
+                                  ImGui::GetColorU32(ui::kGold()), bh * 0.5f);
+            // -- 3. THE HANDLE, WHITE AND LIT FROM ABOVE ----------------
+            //
+            //    `sliderGrow_` is 0..1 and eased in onGuiRender; SMOOTHSTEPPED
+            //    here rather than there because the curve belongs to the look
+            //    and the easing belongs to the clock. A linear ramp on a radius
+            //    reads as a pop at both ends -- the eye sees the first and last
+            //    frames of it, and those are exactly where a linear ramp has
+            //    its corners. Unchanged: the growth was asked for and kept.
+            const float e = (sliderN_ == sliderShown_)
+                                ? sliderGrow_ * sliderGrow_ * (3.0f - 2.0f * sliderGrow_)
+                                : 0.0f;
+            const float rad = gd * 0.5f * (1.0f + (kGrabGrow - 1.0f) * e);
+            // A GRADIENT IS A SHADE OF THE VERTICES, NOT A PRIMITIVE. ImDrawList
+            // has AddRectFilledMultiColor and nothing of the kind for a circle,
+            // so the circle is emitted flat white and its vertex colours are
+            // then interpolated down its own bounding height. That is what
+            // imgui_internal's ShadeVertsLinearColorGradientKeepAlpha is for,
+            // and it is why this file includes that header.
+            //
+            // 0 SEGMENTS = LET ImGui TESSELLATE FOR THE RADIUS. It was 24, which
+            // is enough for a small knob and visibly faceted once the hover has
+            // grown it by half again.
+            const int v0 = dl->VtxBuffer.Size;
+            dl->AddCircleFilled(c, rad, IM_COL32_WHITE, 0);
+            ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+                dl, v0, dl->VtxBuffer.Size, ImVec2(c.x, c.y - rad), ImVec2(c.x, c.y + rad),
+                kGrabTop, kGrabBottom);
         }
+        sp.Merge(dl);
         if (ImGui::IsItemHovered()) sliderHotNext_ = sliderN_;
         ++sliderN_;
         return changed;
     }
+    // A QUARTER THINNER THAN THE ROW (user 2026-09-22). The row height is
+    // GetFrameHeight and is load-bearing -- it sets the handle's diameter and
+    // the spacing of the rows -- so the bar is a FRACTION of it that only the
+    // drawing reads.
+    static constexpr float kTroughFrac = 0.75f;
+    // THE HANDLE'S TWO ENDS. White at the top, a light grey at the bottom: it
+    // reads as a round thing lit from above, which is the only reason a flat
+    // circle needs a gradient at all. The bottom is deliberately light -- a
+    // dark foot would read as a shadow UNDER the knob rather than shading ON
+    // it, and the panel already has a drop shadow language it is not part of.
+    static constexpr ImU32 kGrabTop = IM_COL32(255, 255, 255, 255);
+    static constexpr ImU32 kGrabBottom = IM_COL32(176, 180, 188, 255);
     static constexpr float kGrabGrow = 1.45f;
+    // ImGui's own `grab_padding`, which is a local in SliderBehaviorT marked
+    // "FIXME: Should be part of style." and is not readable from ImGuiStyle.
+    // It is what makes a slider grab shorter than the row it sits in; see
+    // hoverSlider, which is the only thing that needs to know.
+    static constexpr float kGrabPad = 2.0f;
     // HOW LONG THE GROWTH TAKES. Short enough to feel like a response to the
     // cursor rather than an animation playing at you; long enough that the
     // eye reads it as a move rather than a cut.
@@ -1066,7 +1242,8 @@
             dl->AddText(ImVec2(at.x + 1.0f, at.y + 2.0f), IM_COL32(0, 0, 0, 150), kMark);
             dl->AddText(ImVec2(at.x + ms.x + 1.0f, at.y + 2.0f), IM_COL32(0, 0, 0, 150), kRest);
 
-            const ImU32 gold = ImGui::GetColorU32(ui::kGold(0.64f));
+            // THE ONE THING THAT DOES NOT FOLLOW THE PANEL -- see kGoldLight.
+            const ImU32 gold = ImGui::GetColorU32(ui::kGoldLight(0.64f));
             dl->AddText(at, gold, kMark);
             dl->AddText(ImVec2(at.x + ms.x, at.y), gold, kRest);
             // -- THE RING, ROUND THE INK AND NOT ROUND THE LINE BOX --------
@@ -1461,9 +1638,20 @@
         // second frame and then stops moving, which is one frame nobody sees
         // and no guessed constants.
         const bool place = !menuPlaced_;
-        ImVec2 at[3];
+        //
+        // -- AND SOUND MAKES IT FOUR (user 2026-09-22) ------------------
+        //
+        //    IT STACKS UNDER GENERAL, in the same right-hand column, which is
+        //    what keeps the block square: controls is still the tall one, and
+        //    three short boxes beside it is closer to its height than two
+        //    were. A third COLUMN was the other option and it is the one the
+        //    note above already rejected -- at this column width three abreast
+        //    wraps every label, and the panel is centred on the screen rather
+        //    than filling it.
+        ImVec2 at[kCards];
         if (place) {
-            const float rightH = cardH_[1] + cardGap_ + cardH_[2];
+            const float rightH =
+                cardH_[1] + cardGap_ + cardH_[2] + cardGap_ + cardH_[3];
             const float blockH = maxf(cardH_[0], rightH);
             const float blockW = ctlW + cardGap_ + colW;
             const float x0 = floorf(maxf(0.0f, (fbW - blockW) * 0.5f));
@@ -1471,6 +1659,7 @@
             at[0] = ImVec2(x0, y0);
             at[1] = ImVec2(x0 + ctlW + cardGap_, y0);
             at[2] = ImVec2(at[1].x, y0 + cardH_[1] + cardGap_);
+            at[3] = ImVec2(at[1].x, at[2].y + cardH_[2] + cardGap_);
             // -- SETTLED, NOT MERELY NON-ZERO -------------------------
             //
             // AN AUTO-SIZED WINDOW REACHES ITS SIZE OVER SEVERAL FRAMES, not
@@ -1483,11 +1672,16 @@
             // A height that has not changed since last frame is one the
             // window has finished growing into. Three or four frames, then it
             // locks and the boxes are the player's to move.
-            const bool steady = cardH_[0] > 0.0f && cardH_[1] > 0.0f && cardH_[2] > 0.0f &&
-                                fabsf(cardH_[0] - cardHWas_[0]) < 0.5f &&
-                                fabsf(cardH_[1] - cardHWas_[1]) < 0.5f &&
-                                fabsf(cardH_[2] - cardHWas_[2]) < 0.5f;
-            for (int i = 0; i < 3; ++i) cardHWas_[i] = cardH_[i];
+            //
+            // A LOOP RATHER THAN A CONJUNCTION, now that there are four of
+            // them: the spelled-out version was three `> 0` tests and three
+            // `fabsf` tests, and adding a box to it meant adding two more
+            // terms in two places and getting both right.
+            bool steady = true;
+            for (int i = 0; i < kCards; ++i)
+                steady = steady && cardH_[i] > 0.0f &&
+                         fabsf(cardH_[i] - cardHWas_[i]) < 0.5f;
+            for (int i = 0; i < kCards; ++i) cardHWas_[i] = cardH_[i];
             if (steady) menuPlaced_ = true;
         }
 
@@ -1624,11 +1818,26 @@
                     if (px3_) ImGui::PopFont();
                     cardRule();
                 }
-            hoverSlider(w, "Walk speed", player_.walk, 0.2f, 200.0f);
-            // No invalidate: it changes nothing that has already been traced, only
-            // how far the next mouse movement will turn the view -- exactly like
-            // exposure and walk speed above it.
-            hoverSlider(w, "Sensitivity", opt_.sensitivity, 0.02f, 0.50f, false, "%.3f deg/px");
+            // -- NO WALK SPEED ROW (user 2026-09-22: "remove the walk speed
+            //    slider").
+            //
+            //    THE SPEED IS NOT GONE, THE ROW IS. player_.walk keeps its
+            //    default, --walk still sets it, and app_capture.inl still
+            //    reads it to decide when the footstep loop doubles its rate --
+            //    so nothing downstream had to move. It was the one row in this
+            //    card that changed how the GAME plays rather than how it is
+            //    controlled, which is what made it the odd one out.
+            //
+            // No invalidate on the row below: it changes nothing that has already
+            // been traced, only how far the next mouse movement will turn the view.
+            //
+            // -- THE NUMBER AND NOTHING ELSE (user 2026-09-22: "in the
+            //    sensitivity slider remove the deg/px, just display the
+            //    number"). The unit was true -- it is degrees of yaw per
+            //    counted mouse pixel -- and true is not the same as wanted on a
+            //    row nobody reads as a measurement. The value is unchanged; only
+            //    the format string lost its suffix.
+            hoverSlider(w, "Sensitivity", opt_.sensitivity, 0.02f, 0.50f, false, "%.3f");
             // AND NOTHING ELSE ABOUT THE MOUSE. There were two more rows here --
             // acceleration and weight -- and they are gone at the user's word; the
             // note in Options says why they were removed rather than zeroed.
@@ -1672,13 +1881,21 @@
             // badge under it -- see the block in drawUi. What is left here is the
             // pointer, because a row that used to be in a menu and is now nowhere
             // is worse than either.
-            if (held_.ready()) {
-                cardRule();
-                w.checkbox(fmt("%s in hand  (H)", held_.name()).c_str(), held_.shown);
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-                ImGui::TextUnformatted("  K -- pose, sights and stack badge");
-                ImGui::PopStyleColor();
-            }
+            // -- ...AND THE POINTER IS GONE TOO (user 2026-09-22: "remove the
+            //    stone axe in hand checkmark section. remove the k -- pose,
+            //    sights and stack badge text").
+            //
+            //    TWO LINES, TWO KEYS, BOTH STILL BOUND. [H] still shows and
+            //    hides whatever is in the hand and [K] still opens the pose
+            //    cards -- see the drawUi block and keyBriefText, which is the
+            //    key list printed a few rows above this in the same card. That
+            //    list is what made these redundant: the checkbox named a key
+            //    the list already names, and the note under it was a signpost
+            //    to a card the list already points at.
+            //
+            //    AND THE RULE WENT WITH THEM. cardRule() was drawn to separate
+            //    this group from the sliders above; with nothing under it, it
+            //    would have been a line ruling off the bottom edge of the box.
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
                 ImGui::End();
@@ -1806,10 +2023,21 @@
             // this changes nothing about the picture -- it is a readout, like
             // the frame rate and the hardware line further down.
             //
-            // THE KEY IS ON THE LABEL. Every other toggle in this panel that
-            // has one says so in its own text (the hand item's "(H)"), because
-            // a checkbox is how you find a feature and a key is how you use it
-            // afterwards.
+            // -- ONE WORD (user 2026-09-22: "instead of show coordinates text,
+            //    display coordinates only. no (f3) either. only display
+            //    coordinates text").
+            //
+            //    THE KEY USED TO BE ON THE LABEL, on the rule that a checkbox
+            //    is how you find a feature and a key is how you use it
+            //    afterwards. That rule lost its last customer this morning --
+            //    the hand row that also carried one is gone -- and the key
+            //    list is printed at the top of the CONTROLS card two boxes
+            //    over, which is where somebody looks for a key.
+            //
+            //    THE NOTE UNDER IT WENT WITH THE KEY. "metres, under the frame
+            //    rate -- x y z at your feet" is a description of a readout
+            //    nobody has to be told about once they have switched it on,
+            //    and the ask is for the row to be the word and nothing else.
             // -- NO SNOW ROW, AND THE SNOW IS STILL THERE ----------------
             //
             // (user 2026-09-20: "just remove the snow for now. keep the code
@@ -1829,60 +2057,13 @@
             //
             // TO PUT IT BACK: three lines, a w.checkbox on snowOn plus the
             // opt_ mirror. Nothing else has to be rebuilt or rewired.
-            w.checkbox("Show coordinates  (F3)", showCoords_);
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted("  metres, under the frame rate -- x y z at your feet");
-            ImGui::PopStyleColor();
+            w.checkbox("Coordinates", showCoords_);
             cardRule();
 
-            // No invalidate here either, and for a stronger reason than the two
-            // above: this one changes nothing the renderer can even see. Hidden
-            // rather than greyed when there is no voice -- under --no-sound or on
-            // a machine with no endpoint, a slider that does nothing is worse
-            // than no slider.
-            // CALLED VOLUME, BECAUSE THAT IS WHAT SOMEBODY LOOKS FOR. It was
-            // "Ambience", which is accurate -- the bed is the only sound the engine
-            // makes -- and accurate is not the same as findable.
-            //
-            // AND A REASON WHEN IT IS MISSING, which reverses the old rule here.
-            // Hiding a dead slider is right; hiding it without explanation sends
-            // somebody hunting through a menu for a row that was never going to be
-            // drawn. A line of text is not a control that does nothing, it is the
-            // answer to the question the missing control provokes.
-            //
-            // THE DEFAULT IS THE MIDDLE OF THE TRACK. This ran to 2.0, and the
-            // bed is a background: everything anybody would actually choose
-            // lived in the first eighth of the travel, with the whole right-hand
-            // half reserved for twice the level the asset was baked at. So the
-            // top is now twice the default instead of eight times it, which puts
-            // the handle you start with in the centre and spends the travel on
-            // the range the ear is actually being asked about.
-            //
-            // The command line is unchanged and still reaches the baked level:
-            // --ambience 1.0, or 2.0, is a number rather than a drag.
-            if (ambience_.active()) {
-                float amb = ambience_.masterGain();
-                // The floor is what stops a bake at zero from welding the control
-                // shut: a slider whose top is its bottom can never be dragged back
-                // up, and the volume is the one setting somebody is most likely to
-                // take all the way down before baking.
-                const float top = maxf(0.05f, defaults::kAmbience * 2.0f);
-                if (hoverSlider(w, "Volume", amb, 0.0f, top, false, "%.2f"))
-                    ambience_.setMasterGain(amb);
-            }
-            // ITS OWN SLIDER, which is the JS engine's split: the bed and the
-            // things the world does are two buses there, because a wood that is too
-            // loud and an axe that is too loud are different complaints.
-            // NO "Tools" BUS ROW (user 2026-09-21). toolSfx_ keeps its own gain
-            // and its default; there is just no slider for it in the menu.
-            if (!ambience_.active()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-                ImGui::TextUnformatted(opt_.background
-                                           ? "Volume: no audio under --background"
-                                           : "Volume: no audio (--no-sound, or no endpoint)");
-                ImGui::PopStyleColor();
-            }
-
+            // -- THE VOLUME ROW LEFT THIS CARD (user 2026-09-22: "can you
+            //    create a sound settings box"). It is three rows in a box of
+            //    its own now -- see the sound card below. Nothing about it
+            //    changed on the way except that there are two more of it.
 
             // ---- WHICH SKY IS NOT A QUESTION THIS MENU ASKS ---------------------
             //
@@ -1935,47 +2116,162 @@
                 clock_.tday = clampf(hours / 24.0f, 0.0f, 0.99999f);
                 invalidate();
             }
-            char speed[24];
-            clock_.speedLabel(speed, sizeof(speed));
-            w.text(fmt("Cycle speed  %s   (X + wheel, or:)", speed));
-            if (w.button("slower")) clock_.nudgeSpeed(false);
-            if (w.button("faster", true)) clock_.nudgeSpeed(true);
-            if (w.button(clock_.paused ? "resume" : "pause", true)) clock_.paused = !clock_.paused;
-            cardRule();
+            // -- NO CYCLE SPEED ROW (user 2026-09-22: "under general, remove
+            //    the cycle speed text, remove the slower, faster, pause
+            //    boxes").
+            //
+            //    THE CLOCK IS NOT TOUCHED AND THE KEY STILL WORKS. `X + wheel`
+            //    is the binding the removed line was advertising, and it is
+            //    still bound (see app_input.inl) and still in the key list at
+            //    the top of the CONTROLS card; nudgeSpeed and `paused` are
+            //    unchanged. What has gone is three buttons and a readout, for
+            //    a setting the wheel does better than a pair of steppers.
+            //
+            // -- AND NO BAKE BUTTON (same ask: "remove the bake as default
+            //    box").
+            //
+            //    bakeDefaults() IS STILL HERE AND STILL WORKS -- see
+            //    app_hud.inl. This was its only caller, so there is now no way
+            //    to reach it from inside the running game; that is a real loss
+            //    and it is the ask, said out loud rather than quietly worked
+            //    around. Putting it back is one button, or one console command,
+            //    whichever is wanted.
+            //
+            //    The note it carried is worth keeping: a bake writes SOURCE,
+            //    not a config file, deliberately. A config read at startup
+            //    would be one more thing that can be stale, missing, or
+            //    disagree with the flags; a header means the defaults are
+            //    visible in the diff, travel with the branch, and cost nothing
+            //    at runtime.
+            //
+            // -- NO HARDWARE READOUT EITHER (user 2026-09-21: "remove cluster,
+            //    neural, cuda text from settings"). Three lines that named
+            //    capabilities of the device rather than anything to decide --
+            //    true, and not a setting. --stats still prints all three.
+                ImGui::PopStyleColor();
+                ImGui::PopItemWidth();
+                ImGui::End();
+            }
 
+            // ================================================================
+            // SOUND -- THE FOURTH BOX
+            // ================================================================
+            //
+            // (user 2026-09-22: "can you create a sound settings box. have it
+            //  have the master volume, the ambient volume, the SFX volume. they
+            //  all should have sliders.")
+            //
+            // THE MIX WAS ONE ROW IN GENERAL AND IT WAS THE WRONG ROW. "Volume"
+            // sat under the coordinate toggle and over the time of day, named
+            // for the whole of the sound and wired to exactly one bus -- so
+            // there was no way to turn the axe down at all, and no way to turn
+            // the game down without changing the balance between the birds and
+            // everything else. Three faders in a box of their own is the shape
+            // that question has always had.
+            //
+            // THE ORDER IS MASTER FIRST, which is not alphabetical and is not an
+            // accident: a fader that moves the other two belongs above them, the
+            // way it does on every desk, and it is the one somebody reaches for
+            // when the answer is "all of it".
+            //
+            // EVERY ROW WRITES opt_ AND THEN CALLS applyVolumes -- see the note
+            // on that function. No row touches a voice directly, which is what
+            // lets the master be a master rather than a fourth level.
+            ImGui::SetNextWindowSizeConstraints(ImVec2(colW, 0.0f),
+                                                ImVec2(colW, float(fbH) * 0.96f));
+            {
+                // ONE PUSH NOW, not two: we drive Begin ourselves, so nothing
+                // pushes another font over ours afterwards -- see cardWidgets.
+                px3Font face(px3_);
+                ImGui::Begin("sound##v2", nullptr, cardWinFlags());
+                cardWidgets w(pGui);
+                // ...and how tall it came out, for next frame's centring.
+                cardH_[3] = ImGui::GetWindowSize().y;
+                cardY_[3] = ImGui::GetWindowPos().y;
+                if (place) ImGui::SetWindowPos(at[3]);
+                ImGui::SetWindowFontScale(style.scale);
+                ImGui::PushItemWidth(sliderW);
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::kText());
 
-            // -- NO HARDWARE READOUT (user 2026-09-21: "remove cluster, neural,
-            //    cuda text from settings"). Three lines that named capabilities
-            //    of the device rather than anything to decide -- true, and not
-            //    a setting. --stats still prints all three.
+                // NO invalidate ANYWHERE IN THIS CARD, and for a stronger
+                // reason than the rows that merely do not need one: none of
+                // this changes anything the renderer can even see.
+                //
+                // THE GATE IS THE DEVICE, NOT THE BED. This used to ask
+                // ambience_.active(), which is whether the bird recording
+                // decoded -- so a machine that had audio but a missing
+                // bird_ambience.mp3 lost the SFX row too, and explained it as
+                // "no audio". audio_.ready() is the question actually being
+                // asked: is there an endpoint, with an engine on it.
+                //
+                // AND HIDDEN RATHER THAN GREYED when there is none, which is
+                // the rule this row has always followed: a slider that does
+                // nothing is worse than no slider. The LINE stays, because
+                // hiding a control without saying why sends somebody hunting
+                // through a menu for a row that was never going to be drawn.
+                if (audio_.ready()) {
+                    // -- 1. ALL OF IT ----------------------------------
+                    //
+                    //    0 TO 1 AND IT STARTS AT THE TOP, which is the one
+                    //    range in this panel where the default is an end of the
+                    //    travel rather than its middle. That is what a master
+                    //    fader is: unity is the loudest the mix was designed to
+                    //    be, and everything it can do is take it down. A range
+                    //    that went past 1 would be offering to clip the two
+                    //    levels below it back into the mastering voice.
+                    if (hoverSlider(w, "Master", opt_.volume, 0.0f, 1.0f, false, "%.2f"))
+                        applyVolumes();
 
+                    // -- 2. THE WOOD -----------------------------------
+                    //
+                    //    THE OLD "Volume" ROW, RENAMED TO WHAT IT DRIVES. It
+                    //    was called Volume because it was the only one; with a
+                    //    master above it that name now belongs to something
+                    //    else, and "Ambient" is what the bed is -- the birds and
+                    //    the wood, faded by the canopy closure at your feet.
+                    //
+                    //    THE DEFAULT IS THE MIDDLE OF THE TRACK, unchanged.
+                    //    This ran to 2.0 once, and the bed is a background:
+                    //    everything anybody would actually choose lived in the
+                    //    first eighth of the travel. The top is twice the
+                    //    default instead of eight times it, which puts the
+                    //    handle you start with in the centre.
+                    //
+                    //    The floor on `top` is what stops a bake at zero from
+                    //    welding the control shut: a slider whose top is its
+                    //    bottom can never be dragged back up, and this is the
+                    //    one setting somebody is most likely to take all the way
+                    //    down before baking.
+                    //
+                    //    --ambience 1.0, or 2.0, still reaches the baked level:
+                    //    the command line is a number rather than a drag.
+                    const float ambTop = maxf(0.05f, defaults::kAmbience * 2.0f);
+                    if (hoverSlider(w, "Ambient", opt_.ambience, 0.0f, ambTop, false, "%.2f"))
+                        applyVolumes();
 
-            // A bake writes SOURCE, not a config file, deliberately. A config read
-            // at startup would be one more thing that can be stale, missing, or
-            // disagree with the flags; a header means the defaults are visible in
-            // the diff, travel with the branch, and cost nothing at runtime.
-            // THE ONE RED THING IN THE PANEL. This rewrites the defaults every
-            // later run starts from -- the only row here that changes anything
-            // outside the session -- and red is what this game's screen does
-            // when something is happening to you. Spending it here and nowhere
-            // else is what keeps it meaning that. See ui::kRed.
-            // GOLD, NOT RED (user 2026-09-21). It was red because it is the one
-            // row that rewrites source rather than state -- but red in this
-            // panel now reads as the quit ball, and gold is the colour every
-            // other thing that ACTS in this engine already wears: the compass,
-            // the watermark, the download button on the site. The three alphas
-            // are unchanged, so it is the same button at the same weights.
-            ImGui::PushStyleColor(ImGuiCol_Button, ui::kGold(0.28f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::kGold(0.55f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ui::kGold(0.85f));
-            const bool bake = w.button("Bake as default");
-            ImGui::PopStyleColor(3);
-            if (bake) bakeStatus_ = bakeDefaults();
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-            ImGui::TextUnformatted(bakeStatus_.empty()
-                                       ? "writes src/core/defaults.h; then rebuild.bat, in v2/"
-                                       : bakeStatus_.c_str());
-            ImGui::PopStyleColor();
+                    // -- 3. EVERYTHING THE WORLD DOES ------------------
+                    //
+                    //    THE JS ENGINE'S SPLIT, and its reason: a wood that is
+                    //    too loud and an axe that is too loud are different
+                    //    complaints. This is the bus the tools, the gun, the
+                    //    bow, the pickups and the footsteps all sit on -- one
+                    //    number here where that engine has four, because v2 has
+                    //    fewer things that make a noise.
+                    //
+                    //    0 TO 2 PUTS THE DEFAULT IN THE CENTRE, like Ambient
+                    //    and unlike Master: 1.0 is the level the cues were
+                    //    levelled at rather than a ceiling, so there is a real
+                    //    answer above it as well as below.
+                    if (hoverSlider(w, "SFX", opt_.sfx, 0.0f, 2.0f, false, "%.2f"))
+                        applyVolumes();
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+                    ImGui::TextUnformatted(opt_.background
+                                               ? "no audio under --background"
+                                               : "no audio (--no-sound, or no endpoint)");
+                    ImGui::PopStyleColor();
+                }
+
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
                 ImGui::End();

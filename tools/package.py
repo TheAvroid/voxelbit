@@ -512,6 +512,41 @@ def check():
     return 0
 
 
+# ---------------------------------------------------------------------------
+# THE STAGE TREE IS SCRATCH AND DOES NOT OUTLIVE THE RUN.
+#
+# (user 2026-09-22: "cant you delete the dist folder? I thought we already
+#  deleted it? do we need it? if we dont need it, remove it and stop
+#  regenerating it.")
+#
+# IT WAS 1.4 GB OF NOTHING ANYBODY NEEDS. dist/ holds one thing -- stage/ --
+# and stage() opens by rmtree'ing it and laying the whole tree out again from
+# the repository, so nothing in it is ever read across two runs. The shipped
+# artefacts do not live there either: OUT_EXE, OUT_ZIP and OUT_SETUP are all
+# written to the repository ROOT. So the directory was a byproduct that
+# happened to persist, and persisting is the only thing it did.
+#
+# IT CANNOT SIMPLY NOT EXIST. Both writers walk a laid-out tree -- the SFX
+# packer to build its archive, ISCC because the .iss names stage paths -- so
+# there has to be somewhere to lay it out. What changes is that it is cleaned
+# up afterwards rather than left sitting in the tree.
+#
+# --stage-only IS THE EXCEPTION AND THAT IS ITS WHOLE PURPOSE: "just lay out
+# dist/stage and stop". A flag that asks for the tree gets the tree.
+#
+# BEST EFFORT ON THE WAY OUT. A half-gigabyte rmtree can lose a race with a
+# virus scanner or an open handle, and a packaging run that SUCCEEDED must not
+# report failure because it could not tidy up after itself.
+def sweep():
+    if not os.path.isdir(DIST):
+        return
+    try:
+        shutil.rmtree(DIST)
+        print('  cleaned  %s' % os.path.relpath(DIST, ROOT))
+    except OSError as e:
+        print('  note: could not remove %s (%s)' % (DIST, e))
+
+
 def main():
     args = sys.argv[1:]
     if '--check' in args:
@@ -520,13 +555,22 @@ def main():
     stage()
     if '--stage-only' in args:
         print('  staged at %s' % STAGE)
+        print('  (left in place because --stage-only asked for it; '
+              'an ordinary run sweeps it)')
         return
-    if '--installer' in args:
-        build_installer()
-    elif '--zip' in args:
-        build_zip(compress='--no-compress' not in args)
-    else:
-        build_exe(compress='--no-compress' not in args)
+    try:
+        if '--installer' in args:
+            build_installer()
+        elif '--zip' in args:
+            build_zip(compress='--no-compress' not in args)
+        else:
+            build_exe(compress='--no-compress' not in args)
+    finally:
+        # IN A finally, so a run that dies half way through compressing does
+        # not leave the tree behind either. The artefact is already written by
+        # this point on the success path, and on the failure path there is
+        # nothing in stage/ worth keeping -- stage() rebuilds it from scratch.
+        sweep()
 
 
 if __name__ == '__main__':

@@ -39,6 +39,12 @@
 #include "Utils/UI/Gui.h"
 #include "Utils/Timing/Profiler.h"
 #include <imgui.h>
+// ShadeVertsLinearColorGradientKeepAlpha, for the gradient on a slider handle
+// -- see hoverSlider. ImDrawList has AddRectFilledMultiColor and nothing of the
+// kind for a circle, so the only way to put two colours in one is to emit it
+// flat and interpolate its vertices, and that function is where ImGui keeps
+// the loop for doing so. It is the only internal symbol this engine uses.
+#include <imgui_internal.h>
 #include "Utils/UI/InputState.h"
 
 #include <algorithm>
@@ -541,6 +547,29 @@ struct Options {
     std::string sound = asset("game/sound/bird_ambience.mp3");
     float ambience = defaults::kAmbience;
     bool soundOn = true;
+    // -- ...AND THE ONE OVER BOTH OF THEM ---------------------------------
+    //
+    // (user 2026-09-22: "can you create a sound settings box. have it have the
+    //  master volume, the ambient volume, the SFX volume".)
+    //
+    // `volume` MULTIPLIES THE TWO BUSES, it is not a third bus. `ambience` and
+    // `sfx` stay exactly what they were -- the level each half of the mix sits
+    // at relative to the other -- and this is the one number that takes the
+    // whole game down without disturbing that balance, which is the only thing
+    // a master fader is for.
+    //
+    // APPLIED AT THE VOICES, NOT AT THE MASTERING VOICE, and that is a choice
+    // the recorder makes for us. IXAudio2MasteringVoice::SetVolume is the
+    // obvious one-line answer, but the capture tap is an APO in the mastering
+    // voice's EFFECT CHAIN -- effects run BEFORE the voice's own volume -- so a
+    // master implemented there would be inaudible in everything R records. Per
+    // bus, it is upstream of the tap and the recording is the mix the player
+    // actually heard, which is what app_load.inl promises. See applyVolumes().
+    //
+    // NOT BAKED AND NOT A FLAG. The two bus levels are tuning and live in
+    // defaults.h; a master is what somebody drags because the room is quiet,
+    // and it starts at unity every run on purpose.
+    float volume = 1.0f;
     // ---- what the tools sound like (render/toolsound.h) ------------------
     //
     // The DIRECTORY, not a file: it holds a dozen cues in three subfolders and
@@ -1110,7 +1139,10 @@ namespace ui {
 inline ImVec4 rgb(int r, int g, int b, float a = 1.0f) {
     return ImVec4(float(r) / 255.0f, float(g) / 255.0f, float(b) / 255.0f, a);
 }
-inline ImVec4 kTitle() { return rgb(255, 214, 120); }  // amber
+// AMBER ONCE, GOLD NOW, AND IT IS READ NOWHERE -- kept only so a caller that
+// reaches for a "title colour" gets the one gold rather than reinventing a
+// second. See the unification note over kGreen.
+inline ImVec4 kTitle() { return rgb(191, 161, 80); }
 // #ffd76a, AND IT IS ONE GOLD RATHER THAN TWO. Lifted from the JS engine's
 // style-console.css, where the same value dresses the copyright watermark, the
 // menu button hover and the button labels -- and its note says why it is not a
@@ -1118,7 +1150,37 @@ inline ImVec4 kTitle() { return rgb(255, 214, 120); }  // amber
 // choice". The frame-rate readout and the watermark share it here for exactly
 // that reason. The alpha is the caller's; the watermark asks for 0.64, which
 // is that engine's opacity for it, and the readout takes it whole.
-inline ImVec4 kGold(float a = 1.0f) { return rgb(255, 215, 106, a); }
+// -- A QUARTER DARKER (user 2026-09-22: "make the gold ui 25% darker. again
+//    it should be matching the voxelbit all rights reserved text color").
+//
+//    #ffd76a * 0.75 ON EVERY CHANNEL, which is what "25% darker" means for a
+//    colour and is why it is not a fresh hue picked by eye: the ratios between
+//    the channels are untouched, so this is the same gold with less light on
+//    it rather than a different one.
+//
+//    IT MOVES THE WATERMARK TOO, and that is the point rather than a side
+//    effect -- the ask is that everything keeps matching that text, and the
+//    only way that survives a change like this is for the text to be reading
+//    the same constant as everything else. It is; see the unification note
+//    over kGreen.
+inline ImVec4 kGold(float a = 1.0f) { return rgb(191, 161, 80, a); }
+// -- ...AND THE WATERMARK KEEPS THE ORIGINAL -----------------------------
+//
+// (user 2026-09-22: "you seemed to have make the voxelbit all rights reserved
+//  text darker? restore the color of that text to the lighter gold".)
+//
+// #ffd76a, WHICH IS WHERE ALL OF THIS STARTED. The JS engine's style-console.css
+// dresses its copyright watermark, its menu button hover and its button labels
+// with this one value, and that is the gold the panel was asked to match.
+//
+// SO THERE ARE TWO AGAIN, AND IT IS DELIBERATE THIS TIME. The unification note
+// over kGreen is still right that four golds a few hex apart read as a mistake
+// -- but "the UI a quarter darker" and "the watermark unchanged" cannot both be
+// true of one constant. This is the reference the rest was measured against, so
+// it is the one that does not move; everything else reads kGold and moves
+// together. If the watermark should follow the panel down, delete this and put
+// the call site back on kGold.
+inline ImVec4 kGoldLight(float a = 1.0f) { return rgb(255, 215, 106, a); }
 inline ImVec4 kText() { return rgb(226, 232, 240); }
 inline ImVec4 kDim() { return rgb(150, 158, 170); }
 inline ImVec4 kHot() { return rgb(126, 220, 255); }  // cyan: the live value
@@ -1161,13 +1223,45 @@ inline ImVec4 kPanel() { return rgb(16, 20, 27, 214.0f / 255.0f); }
 // (the defaults) and nowhere else. A palette that uses its alarm colour for
 // decoration has no alarm colour, and that is as true of a gold theme as of a
 // green one.
-inline ImVec4 kGreen(float a = 1.0f) { return rgb(226, 186, 92, a); }
-inline ImVec4 kGreenDim(float a = 1.0f) { return rgb(150, 118, 52, a); }
+// =========================================================================
+// ONE GOLD. #ffd76a, AND NOTHING ELSE IS GOLD.
+// =========================================================================
+//
+// (user 2026-09-22: "make the gold everywhere match the gold on the voxelbit -
+//  all right reserved text color. there should only be one unified gold color
+//  everywhere. also make the outlines of the ui box the same color".)
+//
+// THERE WERE FOUR GOLDS AND THEY WERE ALL DEFENSIBLE SEPARATELY. kGold is the
+// watermark's, the frame rate's and the compass's; kGreen was "a shade below
+// that" so a panel wearing it on every row would not shout; kGreenDim was "a
+// bronze rather than a grey" for edges and hovers; kCardEdge was darker still.
+// Four hues a few dozen units apart, which is the exact thing kGold's own note
+// warns about -- "two golds a few hex apart read as a mistake rather than a
+// choice" -- arrived at one row at a time.
+//
+// THE ALPHAS STAY AND THAT IS THE WHOLE TRICK. Every one of those four was
+// reaching for LESS PRESENCE, not a different colour, and opacity is how you
+// say that without a second hue: a separator at 0.35 and a hover at 0.55 read
+// exactly as they did, against the same gold the watermark wears. So the
+// hierarchy this palette was built for survives and there is one colour in it.
+//
+// THE NAMES ARE STILL WRONG AND THAT IS STILL DELIBERATE. kGreen has not been
+// green since 2026-09-20; it is read in nine places and renaming it would be
+// nine chances to leave one behind, in a diff nobody can read. What the theme
+// IS lives here; what reads it does not care.
+inline ImVec4 kGreen(float a = 1.0f) { return rgb(191, 161, 80, a); }
+inline ImVec4 kGreenDim(float a = 1.0f) { return rgb(191, 161, 80, a); }
 inline ImVec4 kRed(float a = 1.0f) { return rgb(232, 96, 96, a); }
 // The card a settings category sits in, and its edge. Barely lighter than the
 // panel behind it: a box you can see the corners of, not a second surface.
 inline ImVec4 kCard() { return rgb(24, 30, 39, 232.0f / 255.0f); }
-inline ImVec4 kCardEdge() { return rgb(82, 68, 34, 1.0f); }
+// THE CARD'S EDGE IS THE SAME GOLD, at full strength (user 2026-09-22: "also
+// make the outlines of the ui box the same color"). It was rgb(82, 68, 34) --
+// "barely lighter than the panel behind it: a box you can see the corners of,
+// not a second surface" -- which was written when the edge was one pixel. It
+// is four now, and four pixels of near-black around a gold panel reads as a
+// gap rather than an outline.
+inline ImVec4 kCardEdge() { return rgb(191, 161, 80, 1.0f); }
 
 }  // namespace ui
 

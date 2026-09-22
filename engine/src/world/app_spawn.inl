@@ -277,6 +277,23 @@
     // same reason kPinnedSpawns is a table.
     static constexpr float kOpenAtX = -2131.0f;
     static constexpr float kOpenAtZ = -2073.0f;
+    // ...AND WHICH WAY YOU ARE POINTED WHEN YOU GET THERE ------------------
+    //
+    // (user 2026-09-22: "when the player spawns at -2131 234 -2073, have the
+    //  person face north east".)
+    //
+    // 45 IS NORTH-EAST BECAUSE 0 IS NORTH. yaw is built everywhere in this
+    // engine as atan2(d.x, -d.z), so zero looks down -Z and the angle grows
+    // toward +X -- and the compass in app_hud.inl labels exactly that: N at 0,
+    // NE at 45, E at 90. The heading and the letters drawn over it cannot
+    // disagree, because this number is read against the same convention they
+    // are.
+    //
+    // A CONSTANT BESIDE THE COORDINATE IT BELONGS TO, for the reason the
+    // coordinate is two constants rather than an inline pair: the place and the
+    // facing are one decision, and a bare 45.0f in the branch below is the half
+    // of it that goes stale when somebody moves the clearing.
+    static constexpr float kOpenYaw = 45.0f;
 
     void chooseSpawn() {
         uint32_t seed = opt_.spawnSeed;
@@ -316,8 +333,22 @@
         if (!opt_.camGiven && !opt_.camPlace && !t.forced && opt_.spawnSeed == 0) {
             opt_.camX = kOpenAtX;
             opt_.camZ = kOpenAtZ;
-            std::printf("  spawn    the opening clearing, %.0f, %.0f\n",
-                        double(kOpenAtX), double(kOpenAtZ));
+            // -- ...FACING NORTH-EAST -------------------------------------
+            //
+            //    AND --yaw STILL WINS, which is the same deference every other
+            //    line in this branch pays: a flag that names a place means take
+            //    me THERE, and one that names a heading means point me THAT
+            //    way. yawGiven is the only reason that flag exists -- see the
+            //    "facing it" block at the end of this function, which asks the
+            //    identical question before aiming a roamed spawn at water.
+            //
+            //    HERE RATHER THAN IN THE DEFAULT. Options::yaw is 205 and stays
+            //    205: it is the fallback for every OTHER way into the world --
+            //    --cam-x, a forced biome, a seeded roll -- and moving it would
+            //    re-aim all of them to answer a question about one clearing.
+            if (!opt_.yawGiven) opt_.yaw = kOpenYaw;
+            std::printf("  spawn    the opening clearing, %.0f, %.0f, facing NE (yaw %.0f)\n",
+                        double(kOpenAtX), double(kOpenAtZ), double(opt_.yaw));
             std::fflush(stdout);
             return;
         }

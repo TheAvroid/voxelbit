@@ -34,10 +34,16 @@ constexpr float CS_MIN = 0.25f, CS_MAX = 512.0f;
 
 class DayNight {
   public:
-    // Time of day in [0,1). 7/24 is 7:00 am, which is where the JS engine
-    // starts and a good hour to open on: the sun is up but still low enough to
-    // rake across the stand.
-    float tday = 7.0f / 24.0f;
+    // Time of day in [0,1). 8/24 is 8:00 am (user 2026-09-22: "make the
+    // default starting time at 8.000") -- the sun is up but still low enough to
+    // rake across the stand, and it is the hour azimuthBase and the noon
+    // elevation were chosen together for; see the note four lines down, which
+    // has said "the default 08:00" since before this number agreed with it.
+    //
+    // defaults::kTimeOfDay IS WHAT THE GAME ACTUALLY OPENS AT -- app_load
+    // writes it over this on every path. This is the value a DayNight built
+    // anywhere else starts from, and the two say the same thing on purpose.
+    float tday = 8.0f / 24.0f;
     float cycleSpeed = 1.0f;
     bool paused = false;
 

@@ -239,7 +239,11 @@ REM make a one-line change cost a full package. It prints one line instead, and
 REM only when there is something to say -- no dist means nobody is shipping yet.
 REM See tools/package.py --check, and the rule in CLAUDE.md that says when the
 REM exe must actually be refreshed.
-if exist "%~dp0..\dist\voxelbit.exe" (
+REM ...AND IT IS AT THE ROOT, NOT IN dist\. package.py writes OUT_SETUP to
+REM the repository root and always has; this tested a path nothing has ever
+REM written, so the staleness line could not fire. dist\ is swept after every
+REM package now (user 2026-09-22), which would have made it permanently false.
+if exist "%~dp0..\voxelbit.exe" (
   for /f "delims=" %%P in ('python "%~dp0..\tools\package.py" --check 2^>nul') do echo   %%P
 )
 exit /b 0

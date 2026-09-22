@@ -1044,7 +1044,6 @@
             "space        = jump\n"
             "caps lock    = crouch\n"
             "f            = fly\n"
-            "arrow keys   = scrub time\n"
             "x + wheel    = day speed\n"
             "y            = settings\n"
             "k            = stack count\n"
@@ -1053,12 +1052,10 @@
             "g            = respawn\n"
             "ctrl+g       = refresh\n"
             "r            = record\n"
-            "- / =        = exposure\n"
-            "[ / ]        = bounces\n"
             "p            = screenshot\n"
             "f1           = help\n"
             "f3           = coordinates\n"
-            "o            = nuketown\n"
+            "o            = arcade\n"
             "esc          = free mouse\n";
     }
 
@@ -1098,7 +1095,7 @@
             "                        the recorder, in every mode and with anything\n"
             "                        in your hands\n"
             "  R                     the same recorder -- but with a GUN in hand it\n"
-            "                        RELOADS, so in nuketown record on F9 (ctrl+R\n"
+            "                        RELOADS, so in the arcade record on F9 (ctrl+R\n"
             "                        works there too)\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
@@ -1183,7 +1180,7 @@
             "constexpr int kWidth = %d;\n"
             "constexpr int kHeight = %d;\n"
             "constexpr int kTrees = %d;\n"
-            "constexpr float kTimeOfDay = %.4ff;  // %s\n"
+            "constexpr float kTimeOfDay = %.6ff;  // %s\n"
             "constexpr float kCycleSpeed = %.2ff;\n"
             "constexpr bool kAtmosphere = %s;\n"
             "constexpr float kNightBrightness = %.2ff;\n"
@@ -1226,12 +1223,20 @@
             // discard the thing just tuned, which is the one job this has.
             tracer_.blueNoise ? "true" : "false",
             tracer_.post().autoExposure ? "true" : "false", tracer_.post().bloom,
-            // THE LIVE GAIN WHERE THERE IS ONE, and the option otherwise. A bake
-            // under --no-sound or --background never opened the bed, so masterGain()
-            // is the 1.0 the object was constructed with rather than anything anybody
-            // chose -- and baking that would turn the wood up fourfold for having
-            // tuned the picture with the sound off.
-            ambience_.active() ? ambience_.masterGain() : opt_.ambience,
+            // opt_.ambience, WHICHEVER WAY THE SOUND WENT. This used to prefer
+            // ambience_.masterGain() and fall back to the option, because the
+            // slider wrote the voice and never the option -- and a bake under
+            // --no-sound or --background would otherwise have written back the
+            // 1.0 the object was constructed with, turning the wood up fourfold
+            // for having tuned the picture in silence.
+            //
+            // THAT INVERTED WHEN THE MASTER FADER LANDED. masterGain() now holds
+            // opt_.ambience TIMES opt_.volume (see applyVolumes), so reading it
+            // would bake the room's own volume into the wood's level: turn the
+            // game down to type, bake, and the bed is permanently quieter. The
+            // option is the number the player actually set, in both states, so
+            // there is no longer a fallback to choose between.
+            opt_.ambience,
             // Straight off the live object, like the two above it: the menu
             // row writes into held_ and never into opt_, so opt_ still holds
             // whatever the command line said at start-up.

@@ -170,7 +170,7 @@
             pos_ = player_.eyePosition();
             tracer_.resetAccumulation();
             volfog_.invalidate();
-            std::printf("v2: %s\n", on ? "nuketown" : "back to the wood");
+            std::printf("v2: %s\n", on ? "arcade" : "back to the wood");
             std::fflush(stdout);
             return true;
         }
@@ -209,6 +209,18 @@
             //     press 1   free the mouse          setCapture(false)
             //     press 2   the three buttons up    setRoomOpen(true)
             //     press 3   quit, CRT collapse      beginQuit()
+            //
+            // -- THE FIRST TWO WERE SWAPPED AND IT IS REVERTED ---------------
+            //
+            //    (user 2026-09-22: "have the first esc show the 3D ui menu,
+            //     the second esc free the cursor", then "revert the recent esc
+            //     ladder changes".)
+            //
+            //    The argument for menu-first was that a press which only hands
+            //    the mouse back puts nothing on the screen, so it reads as a
+            //    press that did nothing. That is true and it is not what the
+            //    user wants: this order is the one that was asked for twice
+            //    before (2026-09-14, 2026-09-20) and it is back.
             //
             // "Have 1 esc free the mouse, another esc to bring up the main menu
             // with the three balls, and one more esc to exit the game" (user

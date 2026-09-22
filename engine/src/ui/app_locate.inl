@@ -684,11 +684,71 @@
         consoleMsgUntil_ = nowSeconds() + kConsoleMsgHold;
     }
 
+    // -----------------------------------------------------------------------
+    // THE NEAREST REPEAT OF A BAND -- THAT THIS WORLD ACTUALLY HAS.
+    //
+    // (user 2026-09-22: "the cherry spawn point, and the desert spawn points
+    //  seem to broken, they are not spawning in the right biomes".)
+    //
+    // MEASURED WITH tests/biome_hop_probe.cpp, which replays a lap of the [G]
+    // cycle against the real DEM and prints what woodBit says at each landing:
+    //
+    //     dem rmnp50  span 8333 x 8333 m  ->  clamped to +-3967
+    //       cherry   -3967   birch   WRONG BAND  CLAMPED
+    //       desert   -3967   birch   WRONG BAND  CLAMPED
+    //
+    // THE ARITHMETIC WAS NEVER WRONG. This returned the nearest repeat of the
+    // band full stop, and respawnToNextBiome then CLAMPED that to the DEM
+    // window -- which exists for a real reason (outside it the height clamps
+    // per row and the world is infinite straight ridges) and which nothing
+    // told about bands. The clamp moved the destination hundreds of metres
+    // along x, and hundreds of metres along x is a DIFFERENT WOOD.
+    //
+    // WHY CHERRY AND DESERT AND NOT THE OTHER THREE. They are band indices 3
+    // and 4, the two furthest from the origin in the tiling, so their nearest
+    // repeat is the one most likely to sit outside a window that is about two
+    // periods wide. Pine, birch and oak were landing correctly the whole time,
+    // which is exactly what was reported.
+    //
+    // SO THE WINDOW IS ASKED HERE, where the answer is still a band. Every
+    // repeat is 4000 m apart and the window is 7934 m across, so a band always
+    // has at least one repeat inside it; the nearest of those is the honest
+    // answer to "take me to the cherry wood".
+    //
+    // WITH ROOM FOR THE ROAM. Callers add up to 0.4 * kBandW of jitter across
+    // the band, so a centre that only just fits would be clamped again the
+    // moment the jitter pushed it out. Holding that much back means the clamp
+    // downstream never has anything to do -- it stays as the backstop it was
+    // written to be rather than the thing that picks the wood.
+    //
+    // AND IF NOTHING FITS the band genuinely is not in this world -- a DEM
+    // window narrower than one period -- so the unwindowed answer is returned
+    // and the clamp does what it did before. That is a world where [G] cannot
+    // reach five woods, which is a fact about the data rather than a bug here.
+    // -----------------------------------------------------------------------
     float nearestBandX(Biome b) const {
         const float period = VoxelTerrain::bandCount() * VoxelTerrain::kBandW;
         const float c = VoxelTerrain::bandCentre(b);
         const float k = floorf((pos_.x - c) / period + 0.5f);
-        return c + k * period;
+        const float plain = c + k * period;
+        if (!world_.terrain.usingDem()) return plain;
+        const float half = maxf(0.0f, 0.5f * world_.terrain.dem().spanX() - 200.0f);
+        const float lim = maxf(0.0f, half - VoxelTerrain::kBandW * 0.4f);
+        if (fabsf(plain) <= lim) return plain;
+        // OUTWARD FROM THE NEAREST, so the first one that fits is also the
+        // closest one that fits. Three periods either side is 24 km and covers
+        // any window this engine loads.
+        float best = 0.0f;
+        bool have = false;
+        for (int d = -3; d <= 3; ++d) {
+            const float cand = c + (k + float(d)) * period;
+            if (fabsf(cand) > lim) continue;
+            if (!have || fabsf(cand - pos_.x) < fabsf(best - pos_.x)) {
+                best = cand;
+                have = true;
+            }
+        }
+        return have ? best : plain;
     }
 
     // -----------------------------------------------------------------------

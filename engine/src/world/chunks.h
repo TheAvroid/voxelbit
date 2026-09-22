@@ -193,12 +193,24 @@ class ChunkMesher {
     void request(int cx, int cz, bool urgent = false) {
         {
             std::lock_guard<std::mutex> lk(inMx_);
+            // STILL PUSHED TO THE FRONT when it is urgent, and the flag as well
+            // -- see the note over Job. The position is belt and braces: the
+            // pick scans for the flag, so an urgent job wins wherever it sits,
+            // and putting it at the head means the scan finds it immediately.
             if (urgent)
-                pending_.push_front({cx, cz});
+                pending_.push_front({cx, cz, true});
             else
-                pending_.push_back({cx, cz});
+                pending_.push_back({cx, cz, false});
         }
         inCv_.notify_one();
+    }
+
+    // WHICH CHUNK THE FILL GROWS OUT OF. Called by World::rering every time the
+    // player changes chunk, which includes the frame a teleport lands on.
+    void setCentre(int cx, int cz) {
+        std::lock_guard<std::mutex> lk(inMx_);
+        centreX_ = cx;
+        centreZ_ = cz;
     }
 
     // Take one finished chunk, if there is one.
@@ -1068,7 +1080,58 @@ class ChunkMesher {
     VoxelTerrain terrain_;
     std::vector<std::thread> workers_;
     int threads_ = 0;   // kept so restart() can raise the same crew
-    std::deque<std::pair<int, int>> pending_;
+    // =======================================================================
+    // A JOB, AND WHY IT IS NO LONGER A BARE PAIR.
+    // =======================================================================
+    //
+    // (user 2026-09-22: "when teleporting and the terrain starts to generate,
+    //  the terrain generates outwards in, instead of inwards to outwards. can
+    //  you fix this and make the terrain always generate from the player
+    //  outwards".)
+    //
+    // THE REQUEST ORDER WAS ALREADY RIGHT AND IT WAS NOT ENOUGH. World::rering
+    // sorts the whole disc by distance and asks for the nearest chunk first;
+    // this queue was strict FIFO, so on a walk the two agree and the ground
+    // fills outward from your feet. A TELEPORT is where they come apart:
+    //
+    //   * the ring you are LEAVING still has its outstanding requests sitting
+    //     in this queue, and every one of them is now kilometres away. They
+    //     are meshed first, at full price, and then thrown away by the adopt
+    //     (`wanted_.count == 0`) -- so the first thing the workers do after a
+    //     hop is a pile of work for a place you are not;
+    //   * `requested_` is not cleared across the hop, so rering SKIPS those
+    //     chunks when it draws the new disc -- and on a short hop the ones it
+    //     skips can be the near ones;
+    //   * and the water re-mesh ring (see waveRing_) keeps pushing jobs in
+    //     behind them, all of which are for chunks that are already resident.
+    //
+    // ORDER AT THE HEAD OF THE QUEUE IS A PROMISE THE PRODUCER CANNOT KEEP.
+    // Whatever the request order was, what the player sees is decided by what
+    // the WORKERS pick up, so that is where "from the player outwards" belongs.
+    // run() now takes the pending job nearest the ring's centre rather than the
+    // oldest one, which makes the fill order true by construction and needs no
+    // caller to be careful: a stale request from the old ring is simply the
+    // furthest thing in the queue and is done last.
+    //
+    // IT COSTS A LINEAR SCAN of at most a ring's worth of entries -- about 700
+    // -- under the input lock, per job. That is a few microseconds against a
+    // chunk that takes tens of milliseconds to mesh.
+    //
+    // `urgent` IS STILL FIRST, AND IT HAS TO BE SAID EXPLICITLY NOW. An edit
+    // used to jump the queue by being pushed to the FRONT, which a nearest-
+    // first pick would quietly undo -- so the flag rides with the job and the
+    // pick honours it before it looks at distance. In practice an edit is
+    // under the crosshair and would win on distance anyway; relying on that
+    // would be relying on a coincidence.
+    struct Job {
+        int cx = 0, cz = 0;
+        bool urgent = false;
+    };
+    std::deque<Job> pending_;
+    // WHERE THE PLAYER IS, IN CHUNKS. Set by World::rering, read by the pick
+    // below; guarded by inMx_ with the queue it is used against, so a worker
+    // can never read a centre that is half-written.
+    int centreX_ = 0, centreZ_ = 0;
     std::deque<ChunkBuild> done_;
     std::mutex inMx_, outMx_;
     std::condition_variable inCv_;
@@ -1118,19 +1181,35 @@ class ChunkMesher {
         vox::BrickStore bricks(&terr, &edits);
 
         for (;;) {
-            std::pair<int, int> job;
+            Job job;
             {
                 std::unique_lock<std::mutex> lk(inMx_);
                 inCv_.wait(lk, [this] { return stop_ || !pending_.empty(); });
                 if (stop_) return;
-                job = pending_.front();
-                pending_.pop_front();
+                // -- NEAREST THE PLAYER, NOT OLDEST -- see the note over Job.
+                //
+                //    A SQUARED DISTANCE IN CHUNKS, in long long because the
+                //    world is unbounded: a stale request from before a hop can
+                //    be tens of thousands of chunks away, and 40000^2 does not
+                //    fit in an int.
+                size_t pick = 0;
+                long long best = -1;
+                for (size_t q = 0; q < pending_.size(); ++q) {
+                    const Job &p = pending_[q];
+                    if (p.urgent) { pick = q; break; }
+                    const long long dx = (long long)p.cx - centreX_;
+                    const long long dz = (long long)p.cz - centreZ_;
+                    const long long d2 = dx * dx + dz * dz;
+                    if (best < 0 || d2 < best) { best = d2; pick = q; }
+                }
+                job = pending_[pick];
+                pending_.erase(pending_.begin() + long(pick));
                 ++busy_;
             }
 
             ChunkBuild b;
-            b.cx = job.first;
-            b.cz = job.second;
+            b.cx = job.cx;
+            b.cz = job.cz;
             const auto t0 = std::chrono::steady_clock::now();
             // AN EMPTY WORLD, ON PURPOSE. The terrain generator and the
             // scatter both still exist and both still work -- they are simply
