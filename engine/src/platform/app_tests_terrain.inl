@@ -1018,13 +1018,37 @@
                                       dp.y >= wtop ? "-- afloat" : "-- SUNK, WRONG");
                 }
             }
+            // -- ...AND IT STAYS DEAD -------------------------------------------
+            //
+            // (user 2026-09-23: "when I kill a skunk, another one appears. it
+            //  starts tiny then grows ... make sure none of the life does
+            //  this".)
+            //
+            // Every population handed a killed slot straight back, so the next
+            // fill grew a replacement in it -- and a marcher's came back as a
+            // SKUNK whatever it had been, because March{} is kind 0. Three
+            // seconds standing over the body is a hundred and eighty fills; the
+            // slot has to still be empty at the end of them. See KillHold.
+            char back[48] = {0};
+            bool refilled = false;
+            if (died) {
+                warmLife(player_.pos, 3);
+                publishLife();
+                refilled = world_.flyerAt(slot, nullptr, nullptr);
+                const LifeKind now = lifeKindAt(slot);
+                if (refilled)
+                    std::snprintf(back, sizeof(back), "  REFILLED as a %s -- WRONG",
+                                  now.name ? now.name : "?");
+                else
+                    std::snprintf(back, sizeof(back), "  stays dead");
+            }
             if (died) ++killed;
-            if (!died || !meatRight) ++wrong;
-            std::printf("  %-10s  %-5d  %-6d  %-6d  %-5d  %s%s\n", kind.name ? kind.name : ln.name,
+            if (!died || !meatRight || refilled) ++wrong;
+            std::printf("  %-10s  %-5d  %-6d  %-6d  %-5d  %s%s%s\n", kind.name ? kind.name : ln.name,
                         hits, lastPieces_, sparks - smoke, smoke,
                         kind.meat ? (got > 0 ? "steak" : "NONE -- WRONG")
                                   : (got == 0 ? "none, correct" : "A STEAK -- WRONG"),
-                        died ? (meatWhere[0] ? meatWhere : "") : "   IT DID NOT DIE");
+                        died ? (meatWhere[0] ? meatWhere : "") : "   IT DID NOT DIE", back);
             particles_.update(simMs_ + 4000.0);   // clear the air before the next one
         }
         // ---- ...AND A SHAFT STOPS AT A BOULDER --------------------------

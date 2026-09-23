@@ -11,8 +11,10 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <climits>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "core/vecmath.h"
 
@@ -485,6 +487,85 @@ inline constexpr float kYieldMarginM = 55.0f;
 // ...and the site has to be somewhere the population is not already, or the
 // rule fires for ever on a lattice finer than the margin. See yieldSite.
 inline constexpr float kYieldLonelyM = 30.0f;
+
+// ---------------------------------------------------------------------------
+// A KILL IS NOT A VACANCY.
+//
+// "when I kill a skunk, another one appears. it starts tiny then grows.
+//  prevent another skunk from spawning in after one has been killed. make sure
+//  none of the life does this"                              -- user 2026-09-23
+//
+// Every population is a FIXED number of slots, and every killSlot handed its
+// slot straight back: the next fill found it empty and filled it. Three ways,
+// all of them within a frame or two of the blow:
+//
+//   * the dead animal's OWN SITE. A lattice claims in hash order, so the cell
+//     it died in is the one it was given for being low in that order -- and
+//     after an arrow kill past the thirty-metre floor it is simply claimed
+//     again. Same place, same species, growing in.
+//   * a JOIN. A housefly bunch, a fish school and an ant column each take a new
+//     member beside the leader rather than on a site, and a kill is what makes
+//     them short. The housefly's join had no floor at all.
+//   * the NEIGHBOURS. Any slot recycled at the far edge takes the best free
+//     site in range, and the patch you have just emptied is full of them.
+//
+// So a killed slot is HELD at the place it died. It is given back only once the
+// player is farther from that place than the population's own recycle radius --
+// exactly when a live animal standing there would have been recycled anyway --
+// and while it is held nothing of that kind is born within kKillQuietM of it.
+// The wood you emptied stays empty for as long as you are in it.
+//
+// PER POPULATION, and a population that holds several species asks by SLOT
+// RANGE: shooting a salmon is not a reason for the bass to stay away.
+// ---------------------------------------------------------------------------
+inline constexpr float kKillQuietM = 30.0f;   // the birth floor's own thirty, about the body
+
+class KillHold {
+  public:
+    // At the kill, BEFORE the slot is reset -- the position is the animal's.
+    void hold(int slot, float x, float z) {
+        for (H &h : h_)
+            if (h.slot == slot) { h.x = x; h.z = z; return; }
+        h_.push_back({slot, x, z});
+    }
+    bool held(int slot) const {
+        for (const H &h : h_)
+            if (h.slot == slot) return true;
+        return false;
+    }
+    int count() const { return int(h_.size()); }
+    // Is a death of slot [lo, hi) within r of this point? Asked of a candidate
+    // birth, never of a live animal walking past.
+    bool within(float x, float z, float r, int lo = 0, int hi = INT_MAX) const {
+        for (const H &h : h_) {
+            if (h.slot < lo || h.slot >= hi) continue;
+            const float dx = h.x - x, dz = h.z - z;
+            if (dx * dx + dz * dz < r * r) return true;
+        }
+        return false;
+    }
+    // Once per update, BEFORE the fill. keepM is the radius the population
+    // recycles its living at -- see the note above for why it is that one.
+    void release(float px, float pz, float keepM) {
+        for (size_t i = 0; i < h_.size();) {
+            const float dx = h_[i].x - px, dz = h_[i].z - pz;
+            if (dx * dx + dz * dz > keepM * keepM) {
+                h_[i] = h_.back();
+                h_.pop_back();
+            } else {
+                ++i;
+            }
+        }
+    }
+    void clear() { h_.clear(); }
+
+  private:
+    struct H {
+        int slot;
+        float x, z;
+    };
+    std::vector<H> h_;
+};
 
 
 }  // namespace v2

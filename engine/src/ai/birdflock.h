@@ -229,6 +229,7 @@ class BirdFlock {
             }
         }
         birds_.resize(kFlockBirds);
+        hold_.clear();
         ready_ = !strips_.empty();
         if (ready_)
             std::printf("  flock    %zu songbird species in the air, %d frames each\n",
@@ -262,6 +263,7 @@ class BirdFlock {
         if (!ready_) return;
         solids_ = solids;
         clock_ += dt;
+        hold_.release(player.x, player.z, kSongKeepM);   // see KillHold
         // BEFORE the steps, so a bird that was paired this frame chases on this
         // frame -- and, more usefully, so a bird whose partner has just been
         // recycled is not steering at a dead slot for one tick.
@@ -349,14 +351,18 @@ class BirdFlock {
     // goes further and marks the slot slain for the session, which needs a
     // notion of a population roster this engine does not have.
     // -----------------------------------------------------------------------
+    // HELD WHERE IT DIED -- see KillHold in core/noise.h. The empty slot used
+    // to be re-rolled onto the ring on the very next step.
     bool killSlot(int i) {
         if (i < 0 || size_t(i) >= birds_.size() || !birds_[size_t(i)].live) return false;
+        hold_.hold(i, birds_[size_t(i)].x, birds_[size_t(i)].z);
         birds_[size_t(i)] = Bird{};
         return true;
     }
 
   private:
     const VoxelTerrain *terrain_ = nullptr;   // see load -- which band a bird is over
+    KillHold hold_;
 
     struct Strip { std::vector<int> model; };
 
@@ -509,12 +515,20 @@ class BirdFlock {
                 b->live = false;
         }
         if (!b->live) {
+            // A KILLED ONE IS NOT RE-ROLLED until you have left -- KillHold.
+            if (hold_.held(int(i))) return;
             const float a = rnd(i, 0x81u) * 6.2831853f;
             const float r = kSongKeepM * (kSongRingLo + (kSongRingHi - kSongRingLo) * rnd(i, 0x82u));
             *b = Bird{};
             b->live = true;
             b->x = player.x + sinf(a) * r;
             b->z = player.z + cosf(a) * r;
+            // ...nor rolled onto the ring where one was shot. Refused the way
+            // the desert is below: the slot stays empty and rolls again.
+            if (hold_.within(b->x, b->z, kKillQuietM)) {
+                b->live = false;
+                return;
+            }
             // POINTED INBOARD. A bird spawned on the ring facing outward turns
             // round in front of you and leaves, which is the one arrival that
             // draws attention to itself.

@@ -355,6 +355,9 @@ class Physics {
     void makeKinematic(int h) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        // CCD OFF FIRST: PhysX refuses it on a kinematic body and says so on
+        // stderr every time -- one line per frozen piece. See setKinematic.
+        bodies_[size_t(h)]->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, false);
         bodies_[size_t(h)]->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC, true);
 #else
         (void)h;
@@ -967,8 +970,18 @@ class Physics {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
         physx::PxRigidDynamic *a = bodies_[size_t(h)];
-        a->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC, on);
-        if (!on) a->wakeUp();
+        // CCD AND KINEMATIC DO NOT MIX -- PhysX ignores the one and logs an
+        // error for it. Off before going kinematic, back on after leaving it:
+        // every dynamic body here is created with it (a chip is small and a
+        // lip is thin), so "on" is what a dynamic body should return to.
+        if (on) {
+            a->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, false);
+            a->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC, true);
+        } else {
+            a->setRigidBodyFlag(physx::PxRigidBodyFlag::eKINEMATIC, false);
+            a->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, true);
+            a->wakeUp();
+        }
 #else
         (void)h;
         (void)on;

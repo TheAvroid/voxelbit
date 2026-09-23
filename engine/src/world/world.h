@@ -1124,6 +1124,41 @@ constexpr float kFellNudge = 0.25f;   // rad/s
 // breaking an equilibrium, it is throwing the tree.
 constexpr float kFellLeanAcc = 0.55f;    // rad/s^2, while still near vertical
 constexpr float kFellCommitUp = 0.94f;   // cos ~20 degrees: past this it is away
+// ...AND IF IT IS STUCK THERE, HARDER -- see the lean assist in updateDebris.
+// "Stuck" is turning slower than kFellStuckW; the push grows by kFellLeanRamp
+// for every second of that, up to kFellLeanMax, and resets once it moves.
+constexpr float kFellStuckW = 0.05f;     // rad/s
+constexpr float kFellLeanRamp = 1.5f;    // rad/s^2 per stuck second
+constexpr float kFellLeanMax = 4.0f;     // rad/s^2
+// ...how its spin is smoothed before it is judged, and how long it may be
+// stuck before it is sent downhill instead.
+constexpr float kFellStuckTau = 0.3f;    // s
+// ...and how far one that is still stuck after being turned is lifted clear.
+constexpr float kFellUnjamM = 0.3f;
+constexpr float kFellTurnS = 1.0f;
+// -- WHAT GETS ALL OF THE ABOVE: ANYTHING LEFT BALANCED ON ITS CUT ----------
+//
+// (user 2026-09-23: "EVERYTHING that breaks from the static environment should
+//  obey the same rules. theres shouldnt be seperate mechanics for seperate
+//  objects.")
+//
+// The hinge, the lean and the stuck-escalation above were a TREE's, gated on
+// modelKind == 0. What they are actually for is a body standing on a cut too
+// narrow for it -- in equilibrium, and one PhysX will leave standing for ever.
+// So the gate is that, asked of the shape of whatever was cut: the height of
+// its centre of mass over the cut, against the half-width of its footing.
+//
+// THREE, because of kFellCommitUp. A body with its centre of mass three
+// half-widths up tips past its own balance point at atan(1/3) = 18 degrees,
+// which is inside the 20 the lean pushes through -- so the lean always carries
+// it over. Anything squatter is stable where it lands, and pushing it would
+// only ever reach the "stuck" branch and start lifting it: exactly the hop a
+// cut cactus was doing, which is how this was found. Measured shapes:
+// see the "fell     balance" line fellTree prints.
+constexpr float kToppleRatio = 3.0f;
+// How deep a footing is read, in voxels: the cut face and a little above it,
+// so one stray voxel on the face does not decide the width.
+constexpr int kToppleFootRows = 3;
 
 // ---- WHAT COUNTS AS HAVING THE GROUND DUG OUT FROM UNDER YOU --------------
 //
@@ -4186,6 +4221,9 @@ class World {
         d.calmT0 = -1e9;
         d.fellPeak = 0.0f;
         d.hitT0 = -1e9;
+        d.topples = false;   // see Debris::topples
+        d.tipArmed = false;
+        d.srcSlot = -1;
         // Structure and triangles both go back, once the device is done with
         // them -- a chunk that vanished this frame was still being drawn last
         // frame. See retireLoose.
@@ -4212,6 +4250,9 @@ class World {
         if (d.frozen) --frozenNow_;
         d.frozen = false;
         d.stillT0 = -1.0;
+        d.leanStuckS = 0.0f;
+        d.leanW = 0.0f;
+        d.leanTurned = false;
         // ...AND THE NEXT OCCUPANT DID NOT MOVE FROM HERE -- see SlotXf.
         debrisCurXf_[size_t(slot)].valid = false;
         debrisDrawnXf_[size_t(slot)].valid = false;
@@ -5682,7 +5723,7 @@ class World {
             if (ph.boundsOf(phys, &lo, &hi)) {
                 d.winLo = Vec3{lo.x - kStaticPadM, lo.y - kStaticPadM, lo.z - kStaticPadM};
                 d.winHi = Vec3{hi.x + kStaticPadM, hi.y + kStaticPadM, hi.z + kStaticPadM};
-                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
+                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled, /*reachGround=*/true, &d.winLo);
             }
         }
         setDebrisInstance(slot, d.pos, d.quat);
@@ -7354,7 +7395,9 @@ class World {
         }
         // A REFUSAL THAT WILL NOT CHANGE -- see Debris::noBreak. `noBreak` is
         // already set from the submit, so this only has to release the latch.
-        if (done.noBreak || done.cuts.size() < 2) {
+        // ONE PIECE IS ENOUGH FOR A FELLED BODY -- see the note where
+        // shatterWork hands a single lump back.
+        if (done.noBreak || done.cuts.empty() || (done.cuts.size() < 2 && !p->felled)) {
             shatterParent_ = -1;
             return;
         }
@@ -8138,6 +8181,24 @@ class World {
             cuts.push_back(std::move(c));
         }
         if (cuts.size() < 2) {
+            // -- ...BUT ONE LUMP IS STILL A PIECE (2026-09-23) --------------
+            //
+            // Handed back rather than refused, and pumpShatter decides: a FELLED
+            // body leaves as the one piece it is, because "everything that
+            // breaks from the static environment" ends up as loot on the same
+            // clock, however small. Refusing it left a stalk or a stump the
+            // partition could not split standing as a felled body -- coarse
+            // 0.4 m boxes and no floor backstop -- for kFelledLifeMs, which is
+            // the invisible mushroom barrier the stump queue's old tree-only
+            // gate was written to avoid. Anything else still refuses, as before.
+            if (cuts.size() == 1) {
+                out->cuts = std::move(cuts);
+                out->K = 1;
+                out->cap = cap;
+                out->span = span;
+                out->woodSpan = woodSpan;
+                return;
+            }
             // NOTHING TO GAIN, AND IT WILL NOT CHANGE. See Debris::noBreak.
             out->noBreak = true;
             return;
@@ -8656,7 +8717,7 @@ class World {
                            com.z - d.halfM[2] - kStaticPadM};
             d.winHi = Vec3{com.x + d.halfM[0] + kStaticPadM, com.y + d.halfM[1] + kStaticPadM,
                            com.z + d.halfM[2] + kStaticPadM};
-            d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
+            d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled, /*reachGround=*/true, &d.winLo);
         } else {
             d.window = buildWindow(ph, com);
             // A CUBE -- and spawnPiece sets fields one at a time, so say so
@@ -8804,26 +8865,37 @@ class World {
     // `skipStumps` leaves out every stump queued to come away (stumpQueue_):
     // a shatter's pieces are shown a few frames before their own stump goes,
     // and a window holding it would be a stale stump the moment it did.
+    // `skipSlot` / `skipChunk` name ONE placement to leave out: a toppling
+    // body's own stump -- see Debris::topples. A tree's was always left out,
+    // with every other tree; this is the same thing for anything else.
     int buildSolidWindow(Physics &ph, const Vec3 &loIn, const Vec3 &hi, bool skipTrees = false,
                          bool reachGround = false, Vec3 *loOut = nullptr,
-                         bool skipStumps = false) {
+                         bool skipStumps = false, long long skipChunk = 0, int skipSlot = -1) {
         if (!ph.available()) return -1;
         Vec3 lo = loIn;
         if (reachGround && !level_) {
             TerrainMemo memo;
             const int i0 = int(std::floor(lo.x / VOXEL_M)), i1 = int(std::floor(hi.x / VOXEL_M));
             const int j0 = int(std::floor(lo.z / VOXEL_M)), j1 = int(std::floor(hi.z / VOXEL_M));
-            int low = INT_MAX;
+            int low = INT_MAX, high = INT_MIN;
             for (int j = j0; j <= j1; j += kFellGroundStep)
-                for (int i = i0; i <= i1; i += kFellGroundStep)
-                    low = mini(low, terrainTopAt(i, j, memo));
+                for (int i = i0; i <= i1; i += kFellGroundStep) {
+                    const int top = terrainTopAt(i, j, memo);
+                    low = mini(low, top);
+                    high = maxi(high, top);
+                }
             if (low != INT_MAX) {
                 // A floor box is kFellGroundThickM deep under its top; the
                 // bottom has to reach below that or the filter drops it.
                 const float floorY = float(low + 1) * VOXEL_M - kFellGroundThickM - 0.5f;
                 // ...within reason: a piece forty metres over a ravine gets a
-                // new window as it falls, the ordinary way.
-                if (floorY < lo.y && lo.y - floorY < kWinGroundReachM) lo.y = floorY;
+                // new window as it falls, the ordinary way. MEASURED TO THE
+                // NEAREST GROUND, the highest in the footprint, and extended to
+                // the lowest: on a steep birch slope (14 m of relief across a
+                // 14 m window) the lowest ground was 31 m under pieces that
+                // were 16 m over the nearest, and the reach refused them all.
+                const float nearY = float(high + 1) * VOXEL_M;
+                if (floorY < lo.y && lo.y - nearY < kWinGroundReachM) lo.y = floorY;
             }
         }
         if (loOut) *loOut = lo;
@@ -8854,6 +8926,8 @@ class World {
             //  debrisInStump is the measure to use before trying it again.)
             if (skipTrees && sl.modelKind == 0) { ++winTreesCut_; continue; }
             if (skipStumps && stump) continue;
+            if (skipSlot >= 0 && sl.ownerChunk == skipChunk && int(sl.decorSlot) == skipSlot)
+                continue;   // its own stump -- see the note above the signature
             if (sl.modelKind == 0) ++winTreesIn_;
             if (sl.baseY > hi.y || sl.top < lo.y) continue;
             const std::vector<VoxBox> &mb = boxesFor(sl);
@@ -8941,6 +9015,8 @@ class World {
         // box per run of equal-height columns, a metre thick -- enough to stop
         // anything resting on it and not so deep that a body already buried is
         // trapped under a slab.
+        const size_t groundBox0 = winBoxes_.size();
+        int topLo = INT_MAX, topHi = INT_MIN;
         {
             TerrainMemo memo;
             const int i0 = int(std::floor(lo.x / VOXEL_M));
@@ -8953,6 +9029,7 @@ class World {
                 int runTop = INT_MIN;
                 for (int i = i0; i <= i1 + step; i += step) {
                     const int top = (i <= i1) ? terrainTopAt(i, j, memo) : INT_MIN;
+                    if (i <= i1) { topLo = mini(topLo, top); topHi = maxi(topHi, top); }
                     if (top == runTop) continue;
                     if (runTop != INT_MIN) {
                         // One box over [runStart, i), a metre deep.
@@ -8973,6 +9050,20 @@ class World {
                     runStart = i;
                     runTop = top;
                 }
+            }
+        }
+        // A WINDOW WITH NO GROUND IN IT SAYS SO -- a body given one falls
+        // through the world. (Found by "the birch trees are getting hung in
+        // the air": a felled birch was handed 0 boxes and went through.)
+        if (winBoxes_.size() == groundBox0 && !level_) {
+            static int told = 0;
+            if (told++ < 8) {
+                std::printf("  window   NO GROUND: y %.2f..%.2f, terrain tops %.2f..%.2f m "
+                            "over %.1f x %.1f m\n",
+                            double(lo.y), double(hi.y), double(topLo) * VOXEL_M,
+                            double(topHi + 1) * VOXEL_M, double(hi.x - lo.x),
+                            double(hi.z - lo.z));
+                std::fflush(stdout);
             }
         }
         if (winBoxes_.empty()) return -1;
@@ -10360,7 +10451,12 @@ class World {
                 // never ran at all. Measured: the trace was identical to the
                 // frame before the change, which is the only reason it was
                 // caught.
-                if (d.felled && debrisDt_ > 0.0f) {
+                // ...AND ONLY FOR A BODY THAT IS BALANCED ON ITS CUT -- see
+                // Debris::topples. This was every felled body, pushed about the
+                // DEFAULT axis when it had none of its own: a cut cactus could
+                // not turn against its stump, read as stuck, and the branch
+                // below lifted it 0.3 m every second -- the jitter.
+                if (d.felled && d.topples && debrisDt_ > 0.0f) {
                     const float uyNow =
                         1.0f - 2.0f * (d.quat[0] * d.quat[0] + d.quat[2] * d.quat[2]);
                     static const float leanAcc = [] {
@@ -10368,8 +10464,103 @@ class World {
                         const float v = e ? float(std::atof(e)) : -1.0f;
                         return v >= 0.0f ? v : kFellLeanAcc;
                     }();
-                    if (uyNow > kFellCommitUp)
-                        ph.addSpin(d.phys, d.tipAxis, leanAcc * debrisDt_);
+                    // -- ...HARDER FOR AS LONG AS IT IS NOT GOING ------------------
+                    //
+                    // (user 2026-09-22: "make sure no trees get stuck in the air
+                    //  after being cut down ... theyre not tilting over when they
+                    //  get stuck".)
+                    //
+                    // kFellLeanAcc is gentle on purpose (see its note: past ~0.6
+                    // it throws a tree that would have gone anyway). But a butt
+                    // that lands wedged on the hillside's steps holds against it
+                    // indefinitely -- measured on --fell-test --oak --spawn 3:
+                    // 4.5 degrees at 1.5 s, 4.9 at 5 s, spin 0.01, and with the
+                    // push raised to 2 it went straight over and came to rest on
+                    // the slope. So the push only grows while the tree is near
+                    // vertical AND not turning, by kFellLeanRamp per stuck
+                    // second, and falls back the moment it moves. A tree that
+                    // tips on its own never sees it.
+                    if (uyNow > kFellCommitUp) {
+                        // STUCK IS TURNING TOO SLOWLY THE WAY IT IS PUSHED,
+                        // SMOOTHED. Two measures failed first, both traced:
+                        //   * the raw spin: every push makes a wedged trunk
+                        //     twitch past any threshold, which reset the ramp as
+                        //     fast as it grew (0.6 -> 2.2 -> 0.7, over and over);
+                        //   * progress in the lean's cosine: near vertical the
+                        //     cosine barely moves, so it called eight of twelve
+                        //     healthy falls "stuck" at 1-4 degrees in their first
+                        //     second and sent them downhill.
+                        // The spin ALONG tipAxis, low-passed over kFellStuckTau,
+                        // separates them: a tree that is going passes kFellStuckW
+                        // within a fifth of a second, a wedged one sits at
+                        // 0.002-0.04 however it twitches. Stuck time builds under
+                        // it and drains at twice the rate over it.
+                        {
+                            Vec3 lv{0, 0, 0}, av{0, 0, 0};
+                            ph.velocityOf(d.phys, &lv, &av);
+                            const float wt = av.x * d.tipAxis.x + av.y * d.tipAxis.y +
+                                             av.z * d.tipAxis.z;
+                            d.leanW += (wt - d.leanW) * minf(1.0f, debrisDt_ / kFellStuckTau);
+                            d.leanStuckS = d.leanW < kFellStuckW
+                                               ? d.leanStuckS + debrisDt_
+                                               : maxf(0.0f, d.leanStuckS - 2.0f * debrisDt_);
+                        }
+                        // -- ...AND IF THE WAY IT WAS PUSHED IS BLOCKED, DOWNHILL --
+                        //
+                        // A tree goes the way the swing sends it, and on a steep
+                        // slope that can be straight up the hill: the coarse boxes
+                        // round its butt dig into the rising ground and nothing
+                        // will turn it. Measured on --fell-test --oak --spawn 3:
+                        // 9.5 degrees at 4 s with the push at 3.3 rad/s^2 and the
+                        // spin 0.002 -- every bit of it taken by the contact. So
+                        // after kFellTurnS of that it falls the way a real tree on
+                        // a slope does, down the fall line of the ground under
+                        // it; on the flat, a quarter turn from where it was
+                        // failing, and again each time that fails too.
+                        if (d.leanStuckS > kFellTurnS && terrainAt) {
+                            Vec3 bl{0, 0, 0}, bh{0, 0, 0};
+                            const bool hasB = ph.boundsOf(d.phys, &bl, &bh);
+                            const float bx = hasB ? 0.5f * (bl.x + bh.x) : d.pos.x;
+                            const float bz = hasB ? 0.5f * (bl.z + bh.z) : d.pos.z;
+                            const float e = 2.0f;
+                            const float gx = terrainAt(bx + e, bz) - terrainAt(bx - e, bz);
+                            const float gz = terrainAt(bx, bz + e) - terrainAt(bx, bz - e);
+                            const float gl = sqrtf(gx * gx + gz * gz);
+                            // The way it falls now, from the axis it spins about.
+                            Vec3 f{d.tipAxis.z, 0.0f, -d.tipAxis.x};
+                            const char *how = "a quarter turn round";
+                            if (!d.leanTurned && gl > 0.2f) {   // a real slope: downhill
+                                f = Vec3{-gx / gl, 0.0f, -gz / gl};
+                                how = "down the slope";
+                            } else if (!d.leanTurned) {         // flat: turn
+                                f = Vec3{-f.z, 0.0f, f.x};
+                            } else {
+                                // -- STILL STUCK AFTER BEING TURNED: LIFT IT CLEAR --
+                                //
+                                // The last case, traced on --fell-test --oak
+                                // --spawn 3: jammed at ~10 degrees whichever way
+                                // it was pushed, at the full kFellLeanMax. The
+                                // butt is 0.9 m collider cells, wider than the
+                                // trunk, sat across the 0.4 m steps the window's
+                                // ground is made of, with its edges caught on the
+                                // risers. kFellUnjamM up takes it off them, and
+                                // the push -- still pointed downhill -- turns it
+                                // before it lands again.
+                                ph.liftBy(d.phys, kFellUnjamM);
+                                how = "downhill again, lifted clear of the ground it was caught on";
+                            }
+                            d.tipAxis = Vec3{-f.z, 0.0f, f.x};
+                            d.leanTurned = true;
+                            d.leanStuckS = 0.0f;
+                            d.leanW = 0.0f;
+                            std::printf("  fell     stuck at %.1f degrees -- tipping it %s\n",
+                                        double(acosf(minf(1.0f, uyNow)) * 57.29578f), how);
+                            std::fflush(stdout);
+                        }
+                        const float acc =
+                            minf(kFellLeanMax, leanAcc + kFellLeanRamp * d.leanStuckS);
+                        ph.addSpin(d.phys, d.tipAxis, acc * debrisDt_);
+                    }
                 }
 
                 // ...AND THE SOLID WORLD FOLLOWS IT DOWN.
@@ -10407,7 +10598,10 @@ class World {
                          bh.x > d.winHi.x || bh.y > d.winHi.y || bh.z > d.winHi.z)) {
                         d.winLo = Vec3{bl.x - kStaticPadM, bl.y - kStaticPadM, bl.z - kStaticPadM};
                         d.winHi = Vec3{bh.x + kStaticPadM, bh.y + kStaticPadM, bh.z + kStaticPadM};
-                        const int nw = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
+                        const int nw = buildSolidWindow(ph, d.winLo, d.winHi, d.felled,
+                                                        /*reachGround=*/true, &d.winLo,
+                                                        /*skipStumps=*/false, d.srcChunk,
+                                                        d.topples ? d.srcSlot : -1);
                         dropWindow(ph, d.window);   // it may be shared
                         d.window = nw;
                     }
@@ -10653,7 +10847,21 @@ class World {
                 // uses, and the same field. A mushroom has none and goes on
                 // breaking; an animal has one and is already as broken as it
                 // gets.
-                const bool wood = d.felled && d.takesAs == kDebrisWood;
+                // -- EVERYTHING FELLED, WHATEVER IT IS MADE OF (2026-09-23) --
+                //
+                // (user: "EVERYTHING that breaks from the static environment
+                //  should obey the same rules".)
+                //
+                // "WOOD ONLY" above is superseded twice over: by the five
+                // second clock, which the user asked to apply "to everything
+                // that breaks from the static terrain", and now by this. A cut
+                // cactus was SOFT, so it was sent down the cut-plant branch --
+                // which waits for it to tip past kFellTiltUp -- and a cactus
+                // that never tipped came apart at the twenty-second backstop.
+                // A slab cut off a boulder was STONE and never came apart.
+                // The material still says which tool cuts it; it no longer says
+                // when the thing breaks.
+                const bool wood = d.felled;
                 const bool corpse = d.hurtT0 > -1e8;
                 // -- EVERYTHING THAT CAME OFF THE STATIC WORLD -------------
                 //
@@ -11240,6 +11448,45 @@ class World {
     // the model and costs what it did. Nothing is left standing, so the
     // placement is simply dropped.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // IS WHAT WAS CUT BALANCED ON ITS CUT? -- see Debris::topples, kToppleRatio.
+    //
+    // The same question for every placement there is, answered from its own
+    // voxels: the height of its centre of mass above its lowest row, over the
+    // half-width of that row's footing. `ratio` is handed back for the report.
+    // -----------------------------------------------------------------------
+    static bool toppleShape(const std::vector<uint8_t> &v, int sx, int sy, int sz,
+                            float *ratio) {
+        *ratio = 0.0f;
+        int yLo = -1;
+        long n = 0;
+        double sumY = 0.0;
+        const size_t plane = size_t(sx) * size_t(sz);
+        for (int y = 0; y < sy; ++y) {
+            const uint8_t *row = v.data() + size_t(y) * plane;
+            for (size_t i = 0; i < plane; ++i) {
+                if (row[i] == mat::AIR) continue;
+                if (yLo < 0) yLo = y;
+                ++n;
+                sumY += double(y) + 0.5;
+            }
+        }
+        if (n == 0) return false;
+        int x0 = sx, x1 = -1, z0 = sz, z1 = -1;
+        for (int y = yLo; y < mini(sy, yLo + kToppleFootRows); ++y)
+            for (int z = 0; z < sz; ++z)
+                for (int x = 0; x < sx; ++x) {
+                    if (v[size_t(x) + size_t(z) * size_t(sx) + size_t(y) * plane] == mat::AIR)
+                        continue;
+                    x0 = mini(x0, x); x1 = maxi(x1, x);
+                    z0 = mini(z0, z); z1 = maxi(z1, z);
+                }
+        const float half = maxf(0.5f * VOXEL_M, 0.25f * float((x1 - x0 + 1) + (z1 - z0 + 1)) * VOXEL_M);
+        const float comH = float(sumY / double(n) - double(yLo)) * VOXEL_M;
+        *ratio = comH / half;
+        return *ratio > kToppleRatio;
+    }
+
     bool fellWhole(Physics &ph, const Solid &so, Chunk &c, const ModelTemplate &t,
                    const std::vector<uint8_t> &vol, double nowMs, int chunkVoxHint,
                    bool breakAtOnce) {
@@ -11284,7 +11531,18 @@ class World {
         if (mesh.triCount() == 0) return false;
         Blas blas = recordLooseBuild(mesh);
         if (!blas.valid()) return false;
-        const bool isTree = (so.modelKind == 0);
+        // WHAT IT IS MADE OF decides which TOOL cuts it -- see fellTree. It no
+        // longer decides anything about how it comes down.
+        const bool fleshy = so.modelKind == 3 || so.modelKind == 7 || so.modelKind == 8;
+        const uint8_t takes = so.modelKind == 0 ? uint8_t(kDebrisWood)
+                              : fleshy          ? uint8_t(kDebrisSoft)
+                                                : uint8_t(kDebrisStone);
+        // LEAVES HOLD NOTHING UP -- unless leaves are all there is. See fellTree.
+        bool leafRule = false;
+        for (uint8_t mv : box)
+            if (mv != mat::AIR && !palette.isFoliage(mv)) { leafRule = true; break; }
+        float wholeRatio = 0.0f;
+        const bool topples = toppleShape(box, cx, cy, cz, &wholeRatio);
         // THE COLLIDER, fellTree's search on the crop: the same cells, the same
         // wood-or-dense-crown rule, the grid shifted to where the crop sits.
         float cell = kFellCellM;
@@ -11292,7 +11550,7 @@ class World {
             const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
             const int gx = (cx + q - 1) / q, gy = (cy + q - 1) / q, gz = (cz + q - 1) / q;
             const int need = maxi(1, int(float(q * q * q) * kFellFillFrac));
-            const int needAny = isTree ? maxi(1, int(float(q * q * q) * kFellCrownFrac)) : need;
+            const int needAny = leafRule ? maxi(1, int(float(q * q * q) * kFellCrownFrac)) : need;
             greedyBoxes(
                 gx, gy, gz, off, cell,
                 [&](int i, int j, int k) {
@@ -11306,7 +11564,7 @@ class World {
                                                        size_t(y) * size_t(cx) * size_t(cz)];
                                 if (mv == mat::AIR) continue;
                                 ++any;
-                                if (!(isTree && palette.isFoliage(mv))) ++wood;
+                                if (!(leafRule && palette.isFoliage(mv))) ++wood;
                                 if (wood >= need || any >= needAny) return true;
                             }
                     return false;
@@ -11322,17 +11580,18 @@ class World {
             return false;
         }
         const float yawRad = float(so.yaw & 3) * 1.57079633f;
+        const float density = takes == kDebrisStone ? kStoneDensity : kTimberDensity;
         const int phys = ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()),
-                                            Vec3{so.tx, so.baseY, so.tz}, yawRad,
-                                            isTree ? kTimberDensity : kStoneDensity);
+                                            Vec3{so.tx, so.baseY, so.tz}, yawRad, density);
         if (phys < 0) {
             retireLoose(std::move(blas), TriPool::kInvalid, 0);
             return false;
         }
-        if (isTree) {
+        {
+            // EVERY BODY WEIGHS WHAT ITS BOXES WEIGH -- see fellTree.
             double logVol = 0.0;
             for (const VoxBox &b : winBoxes_) logVol += 8.0 * double(b.hx) * b.hy * b.hz;
-            ph.setBodyMass(phys, maxf(50.0f, float(logVol * kTimberDensity)));
+            ph.setBodyMass(phys, maxf(50.0f, float(logVol * density)));
         }
         ph.stopBody(phys);
 
@@ -11355,10 +11614,11 @@ class World {
         d.vsx = cx;
         d.vsy = cy;
         d.vsz = cz;
-        const bool fleshy = so.modelKind == 3 || so.modelKind == 7 || so.modelKind == 8;
-        d.takesAs = isTree ? uint8_t(kDebrisWood)
-                    : fleshy ? uint8_t(kDebrisSoft)
-                             : uint8_t(kDebrisStone);
+        d.takesAs = takes;
+        // THE SAME SHAPE RULE AS A CUT -- see Debris::topples. No swing, so no
+        // hinge and the default lean axis, exactly as before; what changed is
+        // that a squat body is no longer pushed (and lifted) at all.
+        d.topples = topples;
         d.halfM[0] = 0.5f * float(cx) * VOXEL_M;
         d.halfM[1] = 0.5f * float(cy) * VOXEL_M;
         d.halfM[2] = 0.5f * float(cz) * VOXEL_M;
@@ -11369,7 +11629,7 @@ class World {
         d.quat[2] = 0.0f;
         d.quat[3] = std::cos(yawRad * 0.5f);
         d.winCentre = d.pos;
-        if (isTree) dropHangers(c, so, t);
+        dropHangers(c, so, t);   // whatever hangs inside it, whatever it is
 
         // NOTHING IS LEFT STANDING. The placement's own record goes to all air
         // at its full size -- other code indexes it by the model's dimensions --
@@ -11389,7 +11649,7 @@ class World {
             if (ph.boundsOf(phys, &lo, &hi)) {
                 d.winLo = Vec3{lo.x - kStaticPadM, lo.y - kStaticPadM, lo.z - kStaticPadM};
                 d.winHi = Vec3{hi.x + kStaticPadM, hi.y + kStaticPadM, hi.z + kStaticPadM};
-                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
+                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled, /*reachGround=*/true, &d.winLo);
             }
         }
         std::printf("  fell     whole, cropped to %d x %d x %d of %d x %d x %d  (%d voxels, "
@@ -11477,12 +11737,13 @@ class World {
                 hingeRow(t.volume, t.sx, t.sy, t.sz, &r0, &c0, &a0);
                 t.bornHinge = maxi(1, c0);
             }
-            int hr = -1, hc = 0;
+            int hr = -1, hc = 0, ho = 0;
             long habove = 0;
-            hingeRow(vol, t.sx, t.sy, t.sz, &hr, &hc, &habove);
+            // THE CUT ROW, AGAINST ITS OWN ORIGINAL -- see hingeRow's `orig`.
+            // A quarter or less of that row's wood left and it goes over.
+            hingeRow(vol, t.sx, t.sy, t.sz, &hr, &hc, &habove, &t.volume, &ho);
             const bool hinged = hr >= 0 && habove >= kHingeAboveVox &&
-                                hc <= maxi(kHingeFloorVox,
-                                           int(float(t.bornHinge) * kHingeFrac));
+                                hc <= maxi(1, int(float(ho) * kHingeFrac));
             if (!hinged && cut < kMinLooseCells && sevLooseFrac_ < kFellFraction) return false;
             // THE SPLIT IS BY ROW WHEN IT IS THE HINGE THAT GAVE, not by
             // connectivity -- the point is that the thread is still joined, so
@@ -11565,6 +11826,7 @@ class World {
         };
         fallVol_.assign(vol.size(), mat::AIR);
         stumpVol_.assign(vol.size(), mat::AIR);
+        int woodLo = INT_MAX, woodHi = INT_MIN;
         for (int y = 0; y < t.sy; ++y)
             for (int z = 0; z < t.sz; ++z)
                 for (int x = 0; x < t.sx; ++x) {
@@ -11575,10 +11837,15 @@ class World {
                     // hingeCut_. Otherwise the flood's.
                     const bool stays = (hingeCut_ >= 0) ? (y <= hingeCut_)
                                                         : (sevSeen_[cellIx(x, y, z)] != 0);
-                    if (stays)
+                    if (stays) {
                         stumpVol_[i] = vol[i];   // still connected to the ground
-                    else
+                    } else {
                         fallVol_[i] = vol[i];    // no longer standing on anything
+                        if (!palette.isFoliage(vol[i])) {   // see boleTop below
+                            woodLo = mini(woodLo, y);
+                            woodHi = maxi(woodHi, y);
+                        }
+                    }
                 }
 
         // ---- the half that falls, as geometry ------------------------------
@@ -11594,12 +11861,78 @@ class World {
         // on its canopy with the trunk in the air. Boxes off its own voxels,
         // coarsened until the count is one a dynamic body can carry -- see
         // kFellCellM, which is measured rather than chosen.
-        // WHAT KIND OF THING THIS IS, asked before the collider rather than
-        // after it: a trunk and a boulder want different shapes out of the same
-        // voxels, and the loop below is where that first matters.
-        const bool isTree = (so.modelKind == 0);
-
+        // -- ONE SET OF RULES FOR WHATEVER WAS CUT -----------------------------
+        //
+        // (user 2026-09-23: "EVERYTHING that breaks from the static
+        //  environment should obey the same rules. theres shouldnt be seperate
+        //  mechanics for seperate objects.")
+        //
+        // This used to ask "is it a tree" (modelKind == 0) and hand a tree the
+        // hinge, the lean, a wood-only collider, a mass, its hangers and a stump
+        // that comes away -- and everything else none of them. A cut cactus
+        // therefore stood on its own stump while the lean, which ran anyway,
+        // lifted it 0.3 m a second. Every one of those is now asked of the
+        // THING, not of its kind:
+        //
+        //   * does it go over         -> toppleShape, below
+        //   * what holds it up        -> wood, unless leaves are all there is
+        //   * what it weighs          -> its boxes, at its material's density
+        //   * what hangs on it        -> whatever is inside its own box
+        //
+        // What is left keyed on the kind is WHICH TOOL CUTS IT (takesAs), which
+        // is a fact about the material and not a mechanic.
+        const bool fleshy = so.modelKind == 3 || so.modelKind == 7 || so.modelKind == 8;
+        const uint8_t takes = so.modelKind == 0 ? uint8_t(kDebrisWood)
+                              : fleshy          ? uint8_t(kDebrisSoft)
+                                                : uint8_t(kDebrisStone);
+        // LEAVES HOLD NOTHING UP, UNLESS LEAVES ARE ALL THERE IS -- the rule
+        // makeLooseBody already has for a piece of crown. woodLo <= woodHi is
+        // "something in the falling half is not foliage".
+        const bool leafRule = woodLo <= woodHi;
+        float toppleRatio = 0.0f;
+        const bool topples = toppleShape(fallVol_, t.sx, t.sy, t.sz, &toppleRatio);
+        std::printf("  fell     balance: centre of mass %.1f x its footing's half-width over the "
+                    "cut -- %s\n",
+                    double(toppleRatio), topples ? "it goes over" : "it stands, gravity only");
+        // -- THE BOLE IS ALWAYS IN THE COLLIDER, HOWEVER THIN ------------------
+        //
+        // (user 2026-09-22: "the birch trees are getting 'hung' in the air ...
+        //  theyre not tilting over when they get stuck".)
+        //
+        // kFellFillFrac asks a cell to be 15% wood before it counts, which is
+        // what keeps thin outer branches out. A birch's TRUNK is two or three
+        // voxels across, so wherever it straddles a cell edge it is thin
+        // branch by that test too -- and it failed all the way up. Measured on
+        // a birch on a slope (--fell-test --birch --spawn 6): the collider
+        // started EIGHT METRES above the cut. The window is cut around the
+        // collider, so it held none of the hillside; the tree dropped with
+        // nothing under its visible trunk until the crown boxes caught, and it
+        // stood there upright, jammed, with its bole in its own stump.
+        //
+        // So in the LOWER HALF of the felled wood -- the bole, before a birch
+        // or a pine branches -- any wood in a cell counts. The collider then
+        // reaches the cut on every tree, which is where it lands and pivots.
+        //
+        // ONLY WHEN THE ORDINARY COLLIDER FALLS SHORT OF THE CUT. An oak's lower
+        // half is thick limbs as well as bole; counting every wood cell there
+        // pushed it past kFellMaxBoxes, the cells grew to 1.35 m, the collider
+        // reached down into its own stump from row 0 and the OAK hung at 2
+        // degrees. So the ordinary search runs first, and the bole pass runs
+        // again only if what it built starts more than kBoleGapM above the
+        // wood -- a thin trunk. An oak and a pine keep the collider they had.
+        const int boleTop = woodLo <= woodHi ? woodLo + (woodHi - woodLo) / 2 : -1;
+        constexpr float kBoleGapM = 1.0f;
+        bool bole = false;
         float cell = kFellCellM;
+        for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {
+            if (winBoxes_.empty() || woodLo > woodHi) break;
+            float cLo0 = 1e9f;
+            for (const VoxBox &b : winBoxes_) cLo0 = minf(cLo0, b.cy - b.hy);
+            if (cLo0 <= float(woodLo) * VOXEL_M + kBoleGapM) break;
+            bole = true;
+            cell = kFellCellM;
+        }
         for (int tries = 0; tries < 4; ++tries) {
             const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
             const int cx = (t.sx + q - 1) / q, cy = (t.sy + q - 1) / q, cz = (t.sz + q - 1) / q;
@@ -11607,7 +11940,7 @@ class World {
             // A ROCK HAS NO CANOPY, so the second bar is the first one for
             // anything that is not a tree and the loop below is what it was.
             const int needAny =
-                isTree ? maxi(1, int(float(q * q * q) * kFellCrownFrac)) : need;
+                leafRule ? maxi(1, int(float(q * q * q) * kFellCrownFrac)) : need;
             greedyBoxes(
                 cx, cy, cz, Vec3{0.0f, 0.0f, 0.0f}, cell,
                 [&](int i, int j, int k) {
@@ -11671,7 +12004,10 @@ class World {
                                              size_t(y) * size_t(t.sx) * size_t(t.sz)];
                                 if (mv == mat::AIR) continue;
                                 ++any;
-                                if (!(isTree && palette.isFoliage(mv))) ++wood;
+                                if (!(leafRule && palette.isFoliage(mv))) {
+                                    ++wood;
+                                    if (bole && y <= boleTop) return true;   // the bole
+                                }
                                 if (wood >= need || any >= needAny) return true;
                             }
                     return false;
@@ -11680,9 +12016,17 @@ class World {
             if (winBoxes_.size() <= kFellMaxBoxes) break;
             cell *= 1.5f;
         }
+        }   // pass
         if (winBoxes_.empty()) return false;
-        std::printf("  fell     collider %zu boxes at %.2f m cells%s\n", winBoxes_.size(),
-                    double(cell), isTree ? "  (trunk + dense crown)" : "");
+        {
+            float cLo = 1e9f;
+            for (const VoxBox &b : winBoxes_) cLo = minf(cLo, b.cy - b.hy);
+            std::printf("  fell     collider %zu boxes at %.2f m cells%s%s, from %.2f m up the "
+                        "model; the wood starts at %.2f m\n",
+                        winBoxes_.size(), double(cell), leafRule ? "  (wood + dense leaves)" : "",
+                        bole ? " + the whole bole" : "",
+                        double(cLo), woodLo <= woodHi ? double(woodLo) * VOXEL_M : -1.0);
+        }
 
         // THE ACTOR STANDS WHERE THE MODEL DOES, at its origin corner, wearing
         // the model's own quarter turn -- which is the frame the boxes are in
@@ -11690,20 +12034,21 @@ class World {
         // the same object with the same numbers, and the tree does not jump on
         // the frame it is cut.
         const float yawRad = float(so.yaw & 3) * 1.57079633f;
+        const float density = takes == kDebrisStone ? kStoneDensity : kTimberDensity;
         const int phys = ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()),
-                                            Vec3{so.tx, so.baseY, so.tz}, yawRad,
-                                            isTree ? kTimberDensity : kStoneDensity);
+                                            Vec3{so.tx, so.baseY, so.tz}, yawRad, density);
         if (phys < 0) return false;
 
-        // ...AND IT WEIGHS WHAT A TREE WEIGHS. Left to the shapes it came out
-        // at over a hundred tonnes -- see Physics::setBodyMass.
-        if (isTree) {
+        // ...AND IT WEIGHS WHAT ITS BOXES WEIGH. Left to the shapes a tree came
+        // out at over a hundred tonnes -- see Physics::setBodyMass. The same
+        // arithmetic for anything, at its own material's density.
+        {
             // FROM THE BOXES THE SOLVER ACTUALLY HAS, which are the trunk. Left
             // to PhysX this came from the shape VOLUME at timber density and
             // measured 128 to 297 tonnes; a felled pine is nearer a tonne.
             double logVol = 0.0;   // not `vol`: the model's voxels are already that
             for (const VoxBox &b : winBoxes_) logVol += 8.0 * double(b.hx) * b.hy * b.hz;
-            ph.setBodyMass(phys, maxf(50.0f, float(logVol * kTimberDensity)));
+            ph.setBodyMass(phys, maxf(50.0f, float(logVol * density)));
         }
 
         // AWAY FROM THE AXE, AND ONLY FOR A TREE. A severed trunk standing
@@ -11748,7 +12093,7 @@ class World {
         // is no longer there, so gravity is the whole story.
         {
             const float dl = sqrtf(swingDir.x * swingDir.x + swingDir.z * swingDir.z);
-            if (isTree && dl > 1e-4f) {
+            if (topples && dl > 1e-4f) {
                 d.tipAxis = Vec3{-swingDir.z / dl, 0.0f, swingDir.x / dl};
                 d.tipArmed = true;
             }
@@ -11795,10 +12140,11 @@ class World {
         // is and what kDebrisSoft already means. Kinds 7 and 8 are the cactus
         // and the desert shrub -- see makeInstance, where the same two numbers
         // decide standable.
-        const bool fleshy = so.modelKind == 3 || so.modelKind == 7 || so.modelKind == 8;
-        d.takesAs = isTree ? uint8_t(kDebrisWood)
-                    : fleshy ? uint8_t(kDebrisSoft)
-                             : uint8_t(kDebrisStone);
+        d.takesAs = takes;
+        // ...AND THE REST OF THE ONE RULE SET -- see Debris::topples.
+        d.topples = topples;
+        d.srcChunk = so.ownerChunk;
+        d.srcSlot = int(so.decorSlot);
         d.halfM[0] = 0.5f * float(t.sx) * VOXEL_M;
         d.halfM[1] = 0.5f * float(t.sy) * VOXEL_M;
         d.halfM[2] = 0.5f * float(t.sz) * VOXEL_M;
@@ -11817,8 +12163,9 @@ class World {
         //
         // Cones and hives are their own placements, hung in the canopy by
         // hangPinecones -- so a tree that leaves without them leaves them in
-        // the air where its branches used to be.
-        if (isTree) dropHangers(c, so, t);
+        // the air where its branches used to be. Asked of anything cut: what
+        // is hung inside its own box goes with it (see dropHangers' bound).
+        dropHangers(c, so, t);
 
         // ---- the stump: the same instance, with the top gone ---------------
         if (dit == damaged_.end()) {
@@ -11919,7 +12266,16 @@ class World {
             // NOT DUE YET -- see PendingStump::treeSlot. `slot` is the body
             // this call just made out of the half that fell, and the stump
             // waits for it to come apart.
-            if (isTree)
+            // -- ...AND NOW THE RULE IS THE SHAPE, NOT THE KIND --------------
+            //
+            // (user 2026-09-23: "everything should obey the same rules".) A
+            // stump is what is left of something that WENT OVER, so the stump
+            // comes away whenever the half that fell toppled -- a cactus's does
+            // now, a slab knocked off a boulder still leaves the boulder. And a
+            // stalk too thin to come apart no longer lingers as a fat collider:
+            // a body the partition cannot split leaves as ONE piece (see
+            // pumpShatter), which is what the gate above was protecting.
+            if (topples)
                 stumpQueue_.push_back(PendingStump{so.ownerChunk, int(so.decorSlot),
                                                    Vec3{so.tx, so.baseY, so.tz}, wholeCap,
                                                    slot, nowMs});
@@ -11949,7 +12305,17 @@ class World {
             if (ph.boundsOf(phys, &lo, &hi)) {
                 d.winLo = Vec3{lo.x - kStaticPadM, lo.y - kStaticPadM, lo.z - kStaticPadM};
                 d.winHi = Vec3{hi.x + kStaticPadM, hi.y + kStaticPadM, hi.z + kStaticPadM};
-                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
+                // DOWN TO THE GROUND, ALWAYS -- see buildSolidWindow's
+                // reachGround. A felled body whose collider started high was
+                // handed a window with no hillside in it and went through.
+                // ...AND WITHOUT ITS OWN STUMP, if it is going over -- see
+                // Debris::topples. A tree's stump was already out with every
+                // other tree; a cactus's was IN, under a collider born at the
+                // cut, and it stood on it.
+                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled,
+                                            /*reachGround=*/true, &d.winLo,
+                                            /*skipStumps=*/false, d.srcChunk,
+                                            d.topples ? d.srcSlot : -1);
             }
         }
         d.winCentre = d.pos;
@@ -11986,6 +12352,9 @@ class World {
             if (!c.decorDesc[i].instanceMask) continue;
             if (q.x < x0 || q.x > x1 || q.z < z0 || q.z > z1) continue;
             if (q.y < so.baseY) continue;
+            // ...AND NOT ABOVE IT. Asked for anything that is cut now, not only a
+            // tree, so a mushroom under a pine must not take the pine's cones.
+            if (q.y > so.top) continue;
             c.decorDesc[i].instanceMask = 0;
             // -- THE FRUIT COMES DOWN; IT DOES NOT VANISH AND IT DOES NOT HANG --
             //
@@ -12081,27 +12450,59 @@ class World {
     // tree because its branches are sparse. A cut is made at chest height, so
     // that is where this looks.
     // -----------------------------------------------------------------------
+    // -- `orig`: ONLY A ROW THAT WAS CUT CAN BE THE HINGE ----------------------
+    //
+    // (user 2026-09-22: "the birch trees are getting 'hung' in the air ...
+    //  theyre not tilting over when they get stuck".)
+    //
+    // Without it this is the narrowest row of the lower half, full stop -- and
+    // a birch HAS a naturally thin row, eight metres up where the trunk narrows
+    // before it forks, four voxels across. Four is kHingeFloorVox, so on the
+    // first blow ANYWHERE the tree was "hinged" at that row: the top half came
+    // off 8 m up, dropped onto an 8 m stump it is not allowed to collide with,
+    // and jammed there upright. Measured on --fell-test --birch --spawn 6: one
+    // blow at chest height, felled wood starting 8.2 m up the model.
+    //
+    // Given the undamaged volume, a row qualifies only if it has LOST voxels,
+    // and the pick is the row with the least of ITS OWN wood left; `origCount`
+    // hands back what that row started with, so the caller can ask "is a
+    // quarter or less of this trunk left" of the right trunk.
     static void hingeRow(const std::vector<uint8_t> &vol, int sx, int sy, int sz, int *row,
-                         int *count, long *above) {
-        int bestRow = -1, bestN = INT_MAX;
+                         int *count, long *above, const std::vector<uint8_t> *orig = nullptr,
+                         int *origCount = nullptr) {
+        int bestRow = -1, bestN = INT_MAX, bestO = 0;
+        float bestFrac = 2.0f;
         const int top = maxi(2, sy / 2);
         std::vector<int> perRow(size_t(sy), 0);
         for (int y = 0; y < sy; ++y) {
-            int n = 0;
+            int n = 0, o = 0;
             for (int z = 0; z < sz; ++z)
-                for (int x = 0; x < sx; ++x)
-                    if (vol[size_t(x) + size_t(z) * size_t(sx) +
-                            size_t(y) * size_t(sx) * size_t(sz)] != mat::AIR)
-                        ++n;
+                for (int x = 0; x < sx; ++x) {
+                    const size_t i =
+                        size_t(x) + size_t(z) * size_t(sx) + size_t(y) * size_t(sx) * size_t(sz);
+                    if (vol[i] != mat::AIR) ++n;
+                    if (orig && y < top && (*orig)[i] != mat::AIR) ++o;
+                }
             perRow[size_t(y)] = n;
             // ROW ZERO IS THE FOOT and is never the hinge -- a tree standing on
             // the ground has its narrowest section there by construction on
             // anything that tapers.
-            if (y >= 1 && y < top && n < bestN) {
+            if (y < 1 || y >= top) continue;
+            if (orig) {
+                if (o <= 0 || n >= o) continue;   // not cut here
+                const float f = float(n) / float(o);
+                if (f < bestFrac || (f == bestFrac && n < bestN)) {
+                    bestFrac = f;
+                    bestN = n;
+                    bestO = o;
+                    bestRow = y;
+                }
+            } else if (n < bestN) {
                 bestN = n;
                 bestRow = y;
             }
         }
+        if (origCount) *origCount = bestO;
         if (bestRow < 0) {
             if (row) *row = -1;
             if (count) *count = 0;
@@ -17197,6 +17598,31 @@ class World {
         // of rotating through the wood underneath it. See fellTree.
         bool tipArmed = false;
         Vec3 tipAxis{1, 0, 0};
+        // -- IT IS LEFT STANDING ON ITS OWN CUT, SO IT GOES OVER ----------
+        //
+        // (user 2026-09-23: "EVERYTHING that breaks from the static
+        //  environment should obey the same rules. theres shouldnt be
+        //  seperate mechanics for seperate objects.")
+        //
+        // THIS USED TO BE "IS IT A TREE" (modelKind == 0), and a cactus
+        // answered no: no hinge, no lean, its own stump left in its window --
+        // and the lean ran anyway, against the default axis above, found it
+        // not turning, and LIFTED IT 0.3 m EVERY SECOND for twenty seconds.
+        // Measured: "travelled 0.64 m and got 0.03 m" per second. That hop
+        // is the jitter in the report.
+        //
+        // NOW IT IS A FACT ABOUT THE SHAPE, asked of whatever was cut: is its
+        // centre of mass more than kToppleRatio of its footing's half-width
+        // above the cut. A trunk, a saguaro and a pillar are; a slab off a
+        // boulder and a mushroom cap sitting on its own face are not, and they
+        // are left to gravity, which is all the solver needs for something
+        // that would stand there on its own anyway. See toppleShape.
+        bool topples = false;
+        // THE PLACEMENT IT CAME OFF, so a toppling body's window can leave out
+        // its OWN stump -- which is what a tree's already did, by leaving out
+        // every tree. -1: not cut from a placement.
+        long long srcChunk = 0;
+        int srcSlot = -1;
         // Which way the drawn shiver leans -- its own axis per slot, so two
         // chips off the same swing never rock together.
         Vec3 wobbleAxis{1, 0, 0};
@@ -17210,6 +17636,11 @@ class World {
         // still).
         bool frozen = false;
         double stillT0 = -1.0;
+        // HOW LONG A FELLED TREE HAS STOOD NEAR VERTICAL WITHOUT TURNING -- see
+        // kFellLeanRamp. A new occupant starts from Debris{} or from retire.
+        float leanStuckS = 0.0f;
+        float leanW = 0.0f;          // its spin along tipAxis, smoothed
+        bool leanTurned = false;     // already sent downhill once
         Vec3 winCentre{0, 0, 0};
         // WHAT THE STATIC WINDOW ACTUALLY COVERS, for a body too big for a
         // fixed cube. Rebuilt when the body leaves the inner box -- see

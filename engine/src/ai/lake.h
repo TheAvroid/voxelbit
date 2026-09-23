@@ -1296,6 +1296,9 @@ class LakeLife {
                             kBluegillCount + kBettaCount));
         pads_.resize(kLilyCount);
         flies_.resize(kDflyCount);
+        fishHold_.clear();
+        dflyHold_.clear();
+        duckHold_.clear();
         ready_ = !salmon_.empty() || !bass_.empty() || !koi_.empty() || !minnow_.empty() ||
                  !lily_.empty() || !dfly_.empty() || !duckM_.empty();
         if (ready_)
@@ -1352,6 +1355,10 @@ class LakeLife {
         birth_.tick(dt, player.x, player.z, look.x, look.z);
         if (field_.stale(player)) field_.rebuild(terrain, player);
         recycle(player, dt);
+        // ...AND A KILL IS GIVEN BACK ON THE LAKE'S OWN DROP -- see KillHold.
+        fishHold_.release(player.x, player.z, kLakeDropM);
+        dflyHold_.release(player.x, player.z, kLakeDropM);
+        duckHold_.release(player.x, player.z, kLakeDropM);
         fill(terrain, player);
         // -- A CREATURE OUTSIDE THE FIELD HOLDS STILL, IT DOES NOT VANISH ---
         //
@@ -1770,11 +1777,33 @@ class LakeLife {
                kBluegillCount + kBettaCount + kLilyCount + kDflyCount + i;
     }
 
+    // Every one HELD WHERE IT DIED -- see KillHold in core/noise.h -- at its
+    // own vector's index.
     bool killSlot(int i) {
         if (i < 0) return false;
         if (size_t(i) < fish_.size()) {
-            if (!fish_[size_t(i)].live) return false;
-            fish_[size_t(i)] = Fish{};
+            Fish &f = fish_[size_t(i)];
+            if (!f.live) return false;
+            fishHold_.hold(i, f.x, f.z);
+            // -- AND ITS SCHOOL TAKES THE LOSS --------------------------------
+            //
+            // A school short of its `want` is a school fillFish tops up, and it
+            // does it BESIDE THE LEADER with no birth floor at all -- so a
+            // salmon shot out of a shoal was replaced by a new one growing in at
+            // the next station, in the water you were looking at. The school is
+            // one smaller now, and stays that way.
+            //
+            // A dead LEADER passes its want on through its own empty slot:
+            // promoteSchools reads it from there when it crowns the heir.
+            if (f.lead >= 0) {
+                Fish &L = fish_[size_t(f.lead)];
+                if (L.live && L.want > 1) --L.want;
+                f = Fish{};
+            } else {
+                const int want = f.want;
+                f = Fish{};
+                f.want = want > 1 ? want - 1 : want;
+            }
             return true;
         }
         i -= int(fish_.size());
@@ -1782,6 +1811,7 @@ class LakeLife {
         i -= int(pads_.size());
         if (size_t(i) < flies_.size()) {
             if (!flies_[size_t(i)].live) return false;
+            dflyHold_.hold(i, flies_[size_t(i)].x, flies_[size_t(i)].z);
             flies_[size_t(i)] = Dfly{};
             return true;
         }
@@ -1814,6 +1844,7 @@ class LakeLife {
                     k.cryEye = b;   // the three of them do not weep in step
                 }
             }
+            duckHold_.hold(i, ducks_[size_t(i)].x, ducks_[size_t(i)].z);
             ducks_[size_t(i)] = Duck{};
             return true;
         }
@@ -3411,7 +3442,8 @@ class LakeLife {
             if (schoolSize(int(i)) < f.want) return int(i);
         }
         int free = 0;
-        for (size_t i = lo; i < hi; ++i) free += fish_[i].live ? 0 : 1;
+        // A killed fish's slot is not room -- see KillHold.
+        for (size_t i = lo; i < hi; ++i) free += (fish_[i].live || fishHold_.held(int(i))) ? 0 : 1;
         if (free >= kSchoolMin) return -1;   // there is room to found a real one
 
         int best = -1, bestN = kSchoolMax;
@@ -3460,13 +3492,17 @@ class LakeLife {
         bool gathered = false;
         for (size_t i = lo; i < hi; ++i) {
             Fish &f = fish_[i];
-            if (f.live) continue;
+            if (f.live || fishHold_.held(int(i))) continue;   // see KillHold
             const uint32_t fh = hashU32(salt ^ uint32_t(i), uint32_t(clock_ * 7.0f));
 
             if (schools) {
                 const int li = shortSchool(species, lo, hi);
                 if (li >= 0) {
                     const Fish &L = fish_[size_t(li)];
+                    // NOT INTO WATER YOU HAVE JUST FISHED -- see KillHold. The
+                    // want is cut at the kill as well; this is for a school that
+                    // was short already.
+                    if (fishHold_.within(L.x, L.z, kKillQuietM, int(lo), int(hi))) continue;
                     Fish n{};
                     rollSlot(&n, fh);
                     const float c = cosf(L.smTh), sn = sinf(L.smTh);
@@ -3503,7 +3539,7 @@ class LakeLife {
             }
             const Site *st = freeSite([&](int cx, int cz) {
                 return claimed(fish_, cx, cz, [](const Fish &e) { return e.owns; });
-            }, woods);
+            }, woods, &fishHold_, int(lo), int(hi));
             if (!st) break;
             bornFish(&f, *st, species, fh);
             f.lead = -1;
@@ -3559,7 +3595,7 @@ class LakeLife {
             bool gatheredDucks = false;
             for (size_t i = 0; i < size_t(kDuckCount); ++i) {
                 Duck &m = ducks_[i];
-                if (m.live || duckM_.empty()) continue;
+                if (m.live || duckM_.empty() || duckHold_.held(int(i))) continue;   // see KillHold
                 if (!gatheredDucks) {
                     // DEEPER WATER THAN A LILY PAD WANTS. A duck family needs a
                     // few metres of room to swim a line in, and the shallow rim
@@ -3577,7 +3613,7 @@ class LakeLife {
                 while ((st = freeSite([&](int cx, int cz) {
                             return claimed(ducks_, cx, cz,
                                            [](const Duck &e) { return e.mom < 0; });
-                        })) != nullptr)
+                        }, 0, &duckHold_)) != nullptr)
                     if (!padAt(st->x, st->z, duckR_)) break;
                 if (!st) break;
                 const uint32_t h = hashU32(kDuckSalt ^ uint32_t(i), uint32_t(clock_ * 7.0f));
@@ -3601,6 +3637,9 @@ class LakeLife {
                     // that death, and they would vanish a second time by a
                     // completely different route. It hatches one fewer instead.
                     if (k.live && k.orphan) continue;
+                    // ...AND A DUCKLING THAT WAS KILLED STAYS KILLED, the same
+                    // way: one fewer until you have left. See KillHold.
+                    if (duckHold_.held(int(kDuckCount + i * kBabyPerDuck + size_t(b)))) continue;
                     k = Duck{};
                     k.live = true;
                     k.mom = int(i);
@@ -3677,21 +3716,22 @@ class LakeLife {
                                           [](const Pad &) { return true; }, kPadBirthMinM,
                                           kPadBirthFarM);
             if (!dfly_.empty()) yieldSite(flies_, player, kDflyCellM, kDflySalt,
-                                          [](const Dfly &) { return true; });
+                                          [](const Dfly &) { return true; }, kBirthMinM,
+                                          kBirthFarM, &dflyHold_);
         }
 
         // ---- and the dragonflies ------------------------------------------
         bool gatheredFlies = false;
         for (size_t i = 0; i < flies_.size(); ++i) {
             Dfly &d = flies_[i];
-            if (d.live || dfly_.empty()) continue;
+            if (d.live || dfly_.empty() || dflyHold_.held(int(i))) continue;   // see KillHold
             if (!gatheredFlies) {
                 gatherSites(player, kDflyCellM, kDflySalt, 0.15f);
                 gatheredFlies = true;
             }
             const Site *st = freeSite([&](int cx, int cz) {
                 return claimed(flies_, cx, cz, [](const Dfly &) { return true; });
-            });
+            }, 0, &dflyHold_);
             if (!st) break;
             const uint32_t h = hashU32(kDflySalt ^ uint32_t(st->cx), uint32_t(st->cz));
             d = Dfly{};
@@ -3736,16 +3776,18 @@ class LakeLife {
     // -----------------------------------------------------------------------
     template <typename V, typename OwnsF>
     void yieldSite(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns,
-                   float birthMinM = kBirthMinM, float birthFarM = kBirthFarM) {
+                   float birthMinM = kBirthMinM, float birthFarM = kBirthFarM,
+                   const KillHold *kills = nullptr) {
         for (int n = 0; n < kYieldPerPass; ++n)
-            if (!yieldOne(v, player, cellM, salt, owns, birthMinM, birthFarM)) return;
+            if (!yieldOne(v, player, cellM, salt, owns, birthMinM, birthFarM, kills)) return;
     }
 
     // One retirement, or false when there is nothing worth retiring for. The
     // caller runs it a few times a pass -- see kYieldPerPass.
     template <typename V, typename OwnsF>
     bool yieldOne(V &v, const Vec3 &player, float cellM, uint32_t salt, OwnsF owns,
-                  float birthMinM = kBirthMinM, float birthFarM = kBirthFarM) {
+                  float birthMinM = kBirthMinM, float birthFarM = kBirthFarM,
+                  const KillHold *kills = nullptr) {
         // THE SAME FLOOR THE FILL USES, or this rule hunts for sites the fill
         // is not allowed to take and retires a pad for nothing.
         // THE SAME REACH THE FILL USED, or a pad yields a site it can never be
@@ -3756,6 +3798,11 @@ class LakeLife {
         const Site *want = nullptr;
         for (const Site &st : sites_) {
             if (claimed(v, st.cx, st.cz, owns)) continue;   // sorted, nearest first
+            // WATER YOU EMPTIED IS NOT "WATER WITH NOTHING IN IT". Without this
+            // the rule below read a pond you had just shot clear as exactly the
+            // lonely water it exists to fill, and sent it a replacement from
+            // the far edge. See KillHold.
+            if (kills && kills->within(st.x, st.z, kKillQuietM)) continue;
             // -- AND IT HAS TO BE WATER WITH NOTHING IN IT ------------------
             //
             // WITHOUT THIS THE RULE NEVER STOPS FIRING. The lattice is nine
@@ -3812,10 +3859,15 @@ class LakeLife {
     // `woods` is a kWood* mask, or 0 for anywhere -- see LakeLife::wood. The
     // test is on the SITE, which is the same rule every banded population in
     // this engine uses.
-    const Site *freeSite(TakenF taken, uint8_t woods = 0) {
+    // `kills` and [lo, hi) are the population's KillHold and the slots of the
+    // species being placed -- see KillHold in core/noise.h. Null for the pads,
+    // which nothing kills.
+    const Site *freeSite(TakenF taken, uint8_t woods = 0, const KillHold *kills = nullptr,
+                         int lo = 0, int hi = INT_MAX) {
         while (!sites_.empty()) {
             const Site &st = sites_.front();
-            if (taken(st.cx, st.cz) || (woods && wood && !(wood(st.x) & woods))) {
+            if (taken(st.cx, st.cz) || (woods && wood && !(wood(st.x) & woods)) ||
+                (kills && kills->within(st.x, st.z, kKillQuietM, lo, hi))) {
                 sites_.erase(sites_.begin());
                 continue;
             }
@@ -4199,6 +4251,9 @@ class LakeLife {
     float babyHX_ = 0.0f, babyHY_ = 0.0f, babyHZ_ = 0.0f;
     std::vector<Pad> pads_;
     std::vector<Dfly> flies_;
+    // WHERE EACH WAS KILLED, by its own vector's index -- see KillHold. The
+    // pads have none: a lily pad is not life.
+    KillHold fishHold_, dflyHold_, duckHold_;
 };
 
 }  // namespace v2

@@ -563,6 +563,7 @@ class Critters {
         flies_.assign(size_t(kHouseflyCount), Fly{});
         bugs_.assign(size_t(kLbugCount), Lbug{});
         frogs_.assign(size_t(kFrogCount), Frog{});
+        clearHolds();
 
         ready_ = !ant_.empty() || !fly_.empty() || !lbug_.empty() || !frogHop_.empty() ||
                  !ffly_.empty();
@@ -683,6 +684,13 @@ class Critters {
         solids_ = &solids;
         clock_ += dt;
         birth_.tick(dt, player.x, player.z, look.x, look.z);
+        // A KILL IS GIVEN BACK ON THE RADIUS ITS SPECIES RECYCLES AT -- see
+        // KillHold. The frog's is the lake's; everything else is kCritDropM.
+        fireflyHold_.release(player.x, player.z, kCritDropM);
+        antHold_.release(player.x, player.z, kCritDropM);
+        flyHold_.release(player.x, player.z, kCritDropM);
+        bugHold_.release(player.x, player.z, kCritDropM);
+        frogHold_.release(player.x, player.z, kFrogDropM);
 
         night_ = night;
         if (!ffly_.empty()) { recycleFlies2(player, dt); if (night) fillFireflies(player); stepFireflies(dt); }
@@ -752,6 +760,7 @@ class Critters {
         for (Fly &f : flies_) f = Fly{};
         for (Lbug &b : bugs_) b = Lbug{};
         for (Frog &g : frogs_) g = Frog{};
+        clearHolds();   // a new world, or the deck: nothing died in either
     }
 
     // ---- the offline report, and /locate ---------------------------------
@@ -878,34 +887,43 @@ class Critters {
     // -----------------------------------------------------------------------
     // FIVE POPULATIONS IN ONE RUN, in publish()'s own order -- which is the
     // order this walks, so the two cannot disagree about which slot is a frog.
+    //
+    // Each one HELD WHERE IT DIED, at its own species' index -- see KillHold in
+    // core/noise.h. The housefly came straight back into its bunch on the next
+    // tick, the same way the ant used to (see fillAnts).
     bool killSlot(int i) {
         if (i < 0) return false;
         if (size_t(i) < fireflies_.size()) {
             if (!fireflies_[size_t(i)].live) return false;
+            fireflyHold_.hold(i, fireflies_[size_t(i)].x, fireflies_[size_t(i)].z);
             fireflies_[size_t(i)] = Firefly{};
             return true;
         }
         i -= int(fireflies_.size());
         if (size_t(i) < ants_.size()) {
             if (!ants_[size_t(i)].live) return false;
+            antHold_.hold(i, ants_[size_t(i)].x, ants_[size_t(i)].z);
             ants_[size_t(i)] = Ant{};
             return true;
         }
         i -= int(ants_.size());
         if (size_t(i) < flies_.size()) {
             if (!flies_[size_t(i)].live) return false;
+            flyHold_.hold(i, flies_[size_t(i)].x, flies_[size_t(i)].z);
             flies_[size_t(i)] = Fly{};
             return true;
         }
         i -= int(flies_.size());
         if (size_t(i) < bugs_.size()) {
             if (!bugs_[size_t(i)].live) return false;
+            bugHold_.hold(i, bugs_[size_t(i)].x, bugs_[size_t(i)].z);
             bugs_[size_t(i)] = Lbug{};
             return true;
         }
         i -= int(bugs_.size());
         if (size_t(i) < frogs_.size()) {
             if (!frogs_[size_t(i)].live) return false;
+            frogHold_.hold(i, frogs_[size_t(i)].x, frogs_[size_t(i)].z);
             frogs_[size_t(i)] = Frog{};
             return true;
         }
@@ -1007,11 +1025,11 @@ class Critters {
     void fillFireflies(const Vec3 &player) {
         for (size_t i = 0; i < fireflies_.size(); ++i) {
             Firefly &f = fireflies_[i];
-            if (f.live) continue;
+            if (f.live || fireflyHold_.held(int(i))) continue;   // see KillHold
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(fireflies_, kFireflyCellM, kFireflySalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx,
-                       &cz))
+            if (!claim(fireflies_, fireflyHold_, kFireflyCellM, kFireflySalt, player, kWoodGreen, 0.0f,
+                       &sx, &sz, &cx, &cz))
                 break;
             f = Firefly{};
             f.live = true;
@@ -1100,7 +1118,7 @@ class Critters {
 
         for (size_t i = 0; i < ants_.size(); ++i) {
             Ant &a = ants_[i];
-            if (a.live) continue;
+            if (a.live || antHold_.held(int(i))) continue;   // see KillHold
             if (leader >= 0) {
                 // Joins the column that exists, at the back of the trail.
                 const Ant &L = ants_[size_t(leader)];
@@ -1125,6 +1143,10 @@ class Critters {
                 // has already passed this same gate, so every follower it
                 // gathers in that moment passes it too.
                 if (!birth_.mayAt(L.x - player.x, L.z - player.z)) continue;
+                // ...AND A COLUMN THAT LOST ANTS TO YOU STAYS SHORT while you
+                // are there. The floor alone gave the dead ant back the moment
+                // the column had walked thirty metres off. See KillHold.
+                if (antHold_.within(L.x, L.z, kKillQuietM)) continue;
                 // ...and not on a beach. Asked at the LEADER for the reason the
                 // note above gives: that is where this ant appears, and every
                 // follower it gathers has passed the same gate.
@@ -1146,7 +1168,9 @@ class Critters {
             }
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(ants_, kAntCellM, kAntSalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx, &cz)) break;
+            if (!claim(ants_, antHold_, kAntCellM, kAntSalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx,
+                       &cz))
+                break;
             a = Ant{};
             a.live = true;
             a.lead = -1;
@@ -1262,12 +1286,19 @@ class Critters {
     void fillFlies(const Vec3 &player) {
         for (size_t i = 0; i < flies_.size(); ++i) {
             Fly &f = flies_[i];
-            if (f.live) continue;
+            if (f.live || flyHold_.held(int(i))) continue;   // see KillHold
             // Join the emptiest bunch that has room before opening a new one --
             // v1's rule, and it is what stops a lone fly ever existing.
             int host = -1, hostN = kHouseflyPerBunch;
             for (size_t j = 0; j < flies_.size(); ++j) {
                 if (!flies_[j].live || flies_[j].leadr >= 0) continue;
+                // -- NOT A BUNCH YOU HAVE JUST SWATTED ONE OUT OF -----------
+                //
+                // THIS JOIN HAD NO GATE AT ALL, not even the floor the ant's
+                // has: the dead fly's slot joined the emptiest bunch, which was
+                // the one it had died in, on the very next tick, at a seat
+                // beside the body. See KillHold.
+                if (flyHold_.within(flies_[j].x, flies_[j].z, kKillQuietM)) continue;
                 int n = 1;
                 for (size_t k = 0; k < flies_.size(); ++k)
                     if (flies_[k].live && flies_[k].leadr == int(j)) ++n;
@@ -1289,7 +1320,8 @@ class Critters {
             int cx = 0, cz = 0;
             // PINE ONLY, as asked. v1 has the fly in its broadleaf wood; this
             // is the one species of the seven whose home the user MOVED.
-            if (!claim(flies_, kHouseflyCellM, kHouseflySalt, player, uint8_t(kWoodPine | kWoodOak), 0.0f, &sx, &sz, &cx, &cz))
+            if (!claim(flies_, flyHold_, kHouseflyCellM, kHouseflySalt, player,
+                       uint8_t(kWoodPine | kWoodOak), 0.0f, &sx, &sz, &cx, &cz))
                 break;
             f = Fly{};
             f.live = true;
@@ -1423,11 +1455,14 @@ class Critters {
 
     // ===================== LADYBUG ========================================
     void fillBugs(const Vec3 &player) {
-        for (Lbug &b : bugs_) {
-            if (b.live) continue;
+        for (size_t i = 0; i < bugs_.size(); ++i) {
+            Lbug &b = bugs_[i];
+            if (b.live || bugHold_.held(int(i))) continue;   // see KillHold
             float sx = 0, sz = 0;
             int cx = 0, cz = 0;
-            if (!claim(bugs_, kLbugCellM, kLbugSalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx, &cz)) break;
+            if (!claim(bugs_, bugHold_, kLbugCellM, kLbugSalt, player, kWoodGreen, 0.0f, &sx, &sz, &cx,
+                       &cz))
+                break;
             b = Lbug{};
             b.live = true;
             b.cx = cx;
@@ -1600,12 +1635,13 @@ class Critters {
         if (banks.empty()) return;
         for (size_t i = 0; i < frogs_.size(); ++i) {
             Frog &f = frogs_[i];
-            if (f.live) continue;
+            if (f.live || frogHold_.held(int(i))) continue;   // see KillHold
             for (const Vec3 &b : banks) {
                 const float ex = b.x - player.x, ez = b.z - player.z;
                 const float d2 = ex * ex + ez * ez;
                 if (d2 > kFrogSpawnM * kFrogSpawnM) continue;
                 if (!birth_.mayAt(ex, ez)) continue;
+                if (frogHold_.within(b.x, b.z, kKillQuietM)) continue;
                 if (wet_ && wet_(b.x, b.z)) continue;   // ON the bank, never in it
                 // BIRCH AND OAK (user 2026-09-17: "add the grass snake, frog, and
                 // mouse to the oak forest"). This read `birchMix < 0.5`, which is
@@ -1755,8 +1791,8 @@ class Critters {
     // `woods` is a set of kWood* bits, or kWoodAll for "anywhere" -- which is
     // not what a forest creature means and no longer what it says: see
     // kWoodForest, and the five rabbits that were found in Death Valley.
-    bool claim(const std::vector<T> &pop, float cellM, uint32_t salt, const Vec3 &player,
-               uint8_t woods,
+    bool claim(const std::vector<T> &pop, const KillHold &kills, float cellM, uint32_t salt,
+               const Vec3 &player, uint8_t woods,
                float shoreM, float *ox, float *oz, int *ocx, int *ocz) {
         const int r = int(kCritSpawnM / cellM) + 1;
         const int c0x = int(floorf(player.x / cellM));
@@ -1775,6 +1811,8 @@ class Critters {
                 const float ord = siteOrder(salt, cx, cz);
                 if (ord >= best) continue;
                 if (!birth_.mayAt(ex, ez)) continue;
+                // NOT WHERE ONE WAS JUST KILLED -- see KillHold.
+                if (kills.within(sx, sz, kKillQuietM)) continue;
                 if (woods != kWoodAll && birch_ && !(birch_(sx) & woods)) continue;
                 if (wet_ && wet_(sx, sz)) continue;   // never IN the water
                 // ...NOR ON THE BEACH BESIDE IT. See the note over update().
@@ -2275,6 +2313,15 @@ class Critters {
     WetF sand_;
     BirchF birch_;
     BirthGate birth_;
+    // WHERE EACH SPECIES WAS KILLED, by its own index -- see KillHold.
+    KillHold fireflyHold_, antHold_, flyHold_, bugHold_, frogHold_;
+    void clearHolds() {
+        fireflyHold_.clear();
+        antHold_.clear();
+        flyHold_.clear();
+        bugHold_.clear();
+        frogHold_.clear();
+    }
     float clock_ = 0.0f;
     long frogTicks_[4] = {0, 0, 0, 0};
     long lbugTicks_[3] = {0, 0, 0};

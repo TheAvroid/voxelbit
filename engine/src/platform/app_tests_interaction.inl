@@ -4177,18 +4177,29 @@
         world_.collidersNear(player_.pos, 120.0f, &around);
         const Solid *tree = nullptr;
         float best = 1e30f;
+        // WHICH KIND OF PLACEMENT TO FELL (V2_FELL_KIND, default 0 = a tree).
+        // 7 is the cactus, 8 the desert shrub, 3 a mushroom, 1 a rock -- see
+        // makeInstance. Everything severed from the static world is meant to
+        // come down by the same rules (user 2026-09-23), so the test has to be
+        // able to cut any of them and not only a trunk.
+        static const int fellKind = [] {
+            const char *e = std::getenv("V2_FELL_KIND");
+            return e ? std::atoi(e) : 0;
+        }();
         for (const Solid &s : around) {
-            if (s.modelKind != 0 || !s.vol || s.hx <= 0.0f) continue;
+            if (s.modelKind != fellKind || !s.vol || s.hx <= 0.0f) continue;
             const float dx = s.cx - player_.pos.x, dz = s.cz - player_.pos.z;
             if (dx * dx + dz * dz < best) { best = dx * dx + dz * dz; tree = &s; }
         }
         if (!tree) {
-            std::printf("  no tree within 80 m of the spawn -- try another --spawn\n");
+            std::printf("  no kind-%d placement within 80 m of the spawn -- try another --spawn\n",
+                        fellKind);
             return false;
         }
         const Solid so = *tree;
-        std::printf("  tree at (%.1f, %.1f, %.1f)  model %d  %d x %d voxels\n", so.tx, so.baseY,
-                    so.tz, int(so.modelIndex), int(so.msx), int(so.msz));
+        std::printf("  kind %d at (%.1f, %.1f, %.1f)  model %d  %d x %d voxels, %.1f m tall\n",
+                    fellKind, so.tx, so.baseY, so.tz, int(so.modelIndex), int(so.msx),
+                    int(so.msz), double(so.top - so.baseY));
         // STAND WHERE THE TREE IS. The ground patch follows the player, and a
         // player who has just chopped a tree down is next to it -- so the test
         // has to be too, or it measures a fall over ground that was never
@@ -4222,7 +4233,10 @@
         // same point along the same ray eats a TUNNEL through the wood, and a
         // tunnel severs nothing -- forty of those left the tree standing. A
         // player's aim wanders across the cut, so this does too.
-        const float cutY = so.baseY + 1.2f;
+        // ...AND LOW ENOUGH TO REACH A SHORT ONE. 1.2 m is chest height on a
+        // trunk and over the top of a desert shrub, so the cut is taken a third
+        // of the way up anything shorter than that would allow.
+        const float cutY = so.baseY + minf(1.2f, 0.35f * (so.top - so.baseY));
         int blows = 0;
         bool down = false;
         for (; blows < 60 && !down; ++blows) {
@@ -4299,11 +4313,53 @@
         double physSum0 = physics_.stepSumMs();
         int physLoud0 = physics_.stepLoudAll();
         double physWorst = 0.0;
+        // -- DOES IT JITTER -----------------------------------------------
+        //
+        // (user 2026-09-23: "when the cactus is broken, it jitters in place".)
+        // The half-second trace below samples the pose and cannot see a hop
+        // that lands again inside one sample. So the felled body is followed
+        // EVERY frame: how far its origin travelled in the second against how
+        // far it actually got. A body that is falling travels about as far as
+        // it gets; one that is hopping on the spot travels far and gets nowhere.
+        int watch = -1;
+        for (int i = 0; i < kDebrisInstances && watch < 0; ++i) {
+            Vec3 p{0, 0, 0};
+            float q[4] = {0, 0, 0, 1};
+            if (world_.debrisPose(i, &p, q)) watch = i;
+        }
+        Vec3 wPrev{0, 0, 0}, wSec0{0, 0, 0};
+        float wPath = 0.0f;
+        bool wHave = false;
         for (int f = 0; f < 15 * perSec; ++f) {
             maybeRebuildGroundPatch();
             physics_.step(dt);
             if (physics_.stepMs() > physWorst) physWorst = physics_.stepMs();
+            if (watch >= 0) {
+                Vec3 p{0, 0, 0};
+                float q[4] = {0, 0, 0, 1};
+                if (world_.debrisPose(watch, &p, q)) {
+                    if (!wHave) { wPrev = p; wSec0 = p; wHave = true; }
+                    const float ex = p.x - wPrev.x, ey = p.y - wPrev.y, ez = p.z - wPrev.z;
+                    wPath += sqrtf(ex * ex + ey * ey + ez * ez);
+                    wPrev = p;
+                } else {
+                    watch = -1;   // it broke, or went: nothing left to follow
+                }
+            }
             if (f % perSec == perSec - 1) {
+                if (wHave) {
+                    const float nx = wPrev.x - wSec0.x, ny = wPrev.y - wSec0.y,
+                                nz = wPrev.z - wSec0.z;
+                    const float net = sqrtf(nx * nx + ny * ny + nz * nz);
+                    std::printf("  jitter   second %2d: the body travelled %.2f m and got %.2f m"
+                                "%s\n",
+                                f / perSec + 1, double(wPath), double(net),
+                                (wPath > 0.3f && wPath > 3.0f * net) ? "  -- HOPPING IN PLACE"
+                                                                     : "");
+                    wPath = 0.0f;
+                    wSec0 = wPrev;
+                    if (watch < 0) wHave = false;
+                }
                 int wAlive = 0, wBuilt = 0, wJoined = 0;
                 world_.sharedWindowStats(&wAlive, &wBuilt, &wJoined);
                 std::printf("  phys     second %2d: %6.1f ms in the solver, worst step %5.1f, "

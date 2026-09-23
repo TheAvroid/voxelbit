@@ -256,6 +256,7 @@ class Birds {
         }
 
         birds_.assign(size_t(kBirdSlots), Bird{});
+        hold_.clear();
         ready_ = loaded_ > 0;
         if (ready_)
             std::printf("  birds    %d species x %d frames, %d perches\n", loaded_, kBirdFrames,
@@ -276,6 +277,7 @@ class Birds {
         nowMs_ += double(dt) * 1000.0;
         // BEFORE any perch is taken -- see kBirthMinM.
         birth_.tick(dt, player.x, player.z);
+        hold_.release(player.x, player.z, kBirdDropM);   // see KillHold
 
         for (size_t i = 0; i < birds_.size(); ++i) {
             Bird &b = birds_[i];
@@ -337,6 +339,8 @@ class Birds {
                 if (b.live) tick(&b);
                 continue;
             }
+            // A KILLED ONE IS NOT RE-PERCHED until you have left -- KillHold.
+            if (!b.live && hold_.held(int(i))) continue;
 
             if (!b.live || tooFar || lost) {
                 Bird cand = b;
@@ -688,14 +692,18 @@ class Birds {
     // goes further and marks the slot slain for the session, which needs a
     // notion of a population roster this engine does not have.
     // -----------------------------------------------------------------------
+    // HELD WHERE IT DIED -- see KillHold in core/noise.h. The empty slot used
+    // to be re-perched on the very next update.
     bool killSlot(int i) {
         if (i < 0 || size_t(i) >= birds_.size() || !birds_[size_t(i)].live) return false;
+        hold_.hold(i, birds_[size_t(i)].p.x, birds_[size_t(i)].p.z);
         birds_[size_t(i)] = Bird{};
         return true;
     }
 
   private:
     BirthGate birth_;
+    KillHold hold_;
 
     struct Species {
         bool ok = false;
@@ -874,6 +882,9 @@ class Birds {
                 // rather than being dropped, so a thin band costs a few frames
                 // and never a gap. See kBirthMinM.
                 if (!displaced && !birth_.may(pd2)) continue;
+                // ...NOR IN THE CROWNS WHERE ONE WAS JUST SHOT. A bird moving
+                // house is exempt for the floor's own reason. See KillHold.
+                if (!displaced && hold_.within(s.cx, s.cz, kKillQuietM)) continue;
             }
             // A TRUNK, NOT A ROCK. `standable` is what tells them apart: a rock
             // you can climb, a trunk carries a canopy far over your head.

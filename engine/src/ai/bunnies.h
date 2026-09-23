@@ -1006,6 +1006,8 @@ class Bunnies {
             }
         }
         marchers_.assign(size_t(kMarchCount), March{});
+        bunHold_.clear();
+        marchHold_.clear();
         // ...AND EACH ONE KNOWS WHICH ANIMAL IT IS FROM THE START, so a slot
         // that has never been filled still reports the right species to the
         // band and to the census.
@@ -1077,6 +1079,9 @@ class Bunnies {
         // BEFORE fill, which asks it -- see kBirthMinM.
         birth_.tick(dt, player.x, player.z);
         recycle(player, dt);
+        // ...AND A KILL IS GIVEN BACK ON THE SAME RADIUS -- see KillHold.
+        bunHold_.release(player.x, player.z, kBunnyKeepM);
+        marchHold_.release(player.x, player.z, kBunnyKeepM);
         fill(player, ground);
         for (size_t i = 0; i < buns_.size(); ++i)
             if (buns_[i].live) step(&buns_[i], uint32_t(i), dt, player, ground);
@@ -1295,7 +1300,17 @@ class Bunnies {
     // one call after this clears the band.
     void despawnAll() {
         for (Bunny &b : buns_) b = Bunny{};
-        for (March &s : marchers_) s = March{};
+        // KIND SURVIVES THE RESET -- see killMarcher. This line reset it too,
+        // so every [G] and every visit to the deck came back with all fifty
+        // marcher slots as skunks.
+        for (March &s : marchers_) {
+            const int kind = s.kind;
+            s = March{};
+            s.kind = kind;
+        }
+        // A new world, or the deck: nothing died in either.
+        bunHold_.clear();
+        marchHold_.clear();
     }
 
     // -- HOW CLOSE THE NEAREST TWO OF A KIND STAND -------------------------
@@ -1428,15 +1443,29 @@ class Bunnies {
     // within THIS population's run of the instance band and App::killLifeAt
     // does the arithmetic.
     // -----------------------------------------------------------------------
+    // HELD WHERE IT DIED -- see KillHold in core/noise.h. Without it the next
+    // fill gave the slot straight back, usually to this very cell.
     bool killSlot(int i) {
         if (i < 0 || size_t(i) >= buns_.size() || !buns_[size_t(i)].live) return false;
+        bunHold_.hold(i, buns_[size_t(i)].x, buns_[size_t(i)].z);
         buns_[size_t(i)] = Bunny{};
         return true;
     }
 
+    // -- AND THE SLOT STAYS THE SAME ANIMAL ---------------------------------
+    //
+    // `kind` is set ONCE, at load, from the slot's place in the band -- and
+    // March{} has kind 0, which is the SKUNK. So resetting a dead marcher to
+    // March{} turned the slot of every armadillo, mouse, snake and flamingo you
+    // killed into a skunk slot, and the fill grew a skunk in its place. That is
+    // "when I kill a skunk, another one appears" for every row but the skunk's.
     bool killMarcher(int i) {
         if (i < 0 || size_t(i) >= marchers_.size() || !marchers_[size_t(i)].live) return false;
-        marchers_[size_t(i)] = March{};
+        March &m = marchers_[size_t(i)];
+        marchHold_.hold(i, m.x, m.z);
+        const int kind = m.kind;
+        m = March{};
+        m.kind = kind;
         return true;
     }
 
@@ -1780,9 +1809,12 @@ class Bunnies {
     void fillSkunks(const Vec3 &player, const GroundF &ground) {
         for (size_t i = 0; i < marchers_.size(); ++i) {
             March &s = marchers_[i];
-            if (s.live) continue;
+            if (s.live || marchHold_.held(int(i))) continue;   // see KillHold
             const MarchSpec &sp = kMarchSpec[s.kind];
             if (march_[s.kind].empty()) continue;
+            // ...and the quiet is this SPECIES' -- an armadillo shot here is no
+            // reason for the skunk to stay away. The band is laid out by kind.
+            const int hlo = marchBase(s.kind), hhi = hlo + sp.count;
 
             const int r = int(kBunnySpawnM / sp.cellM) + 1;
             const int c0x = int(floorf(player.x / sp.cellM));
@@ -1805,6 +1837,7 @@ class Bunnies {
                     const float ord = siteOrder(sp.salt, cx, cz);
                     if (ord >= best) continue;
                     if (!birth_.may(d2)) continue;
+                    if (marchHold_.within(sx, sz, kKillQuietM, hlo, hhi)) continue;
                     // -- AND IN THE RIGHT WOOD --------------------------------
                     //
                     // The armadillo and the porcupine are the pine's, the mouse
@@ -2243,11 +2276,14 @@ class Bunnies {
     // patch of wood.
     // -----------------------------------------------------------------------
     BirthGate birth_;
+    // WHERE THINGS WERE KILLED, one per gait -- see KillHold in core/noise.h.
+    KillHold bunHold_, marchHold_;
 
     template <typename GroundF>
     void fill(const Vec3 &player, const GroundF &ground) {
         int free = 0;
-        for (const Bunny &b : buns_) free += b.live ? 0 : 1;
+        for (size_t i = 0; i < buns_.size(); ++i)
+            free += (buns_[i].live || bunHold_.held(int(i))) ? 0 : 1;
         if (!free) return;
 
         const int r = int(kBunnySpawnM / kBunnyCellM) + 1;
@@ -2255,7 +2291,7 @@ class Bunnies {
         const int c0z = int(floorf(player.z / kBunnyCellM));
         for (size_t i = 0; i < buns_.size(); ++i) {
             Bunny &b = buns_[i];
-            if (b.live) continue;
+            if (b.live || bunHold_.held(int(i))) continue;   // see KillHold
             // IN HASH ORDER, NOT NEAREST FIRST -- see siteOrder in
             // core/noise.h. Nearest-first put both rabbits inside nine metres
             // of the player on a ninety-six metre disc, which is "the life
@@ -2275,6 +2311,8 @@ class Bunnies {
                     if (d2 > kBunnySpawnM * kBunnySpawnM) continue;
                     const float ord = siteOrder(kBunnySalt, cx, cz);
                     if (ord >= best) continue;
+                    // NOT WHERE ONE WAS JUST KILLED -- see KillHold.
+                    if (bunHold_.within(sx, sz, kKillQuietM)) continue;
                     // NOT WHERE YOU CAN WATCH IT ARRIVE -- see kBirthMinM. It
                     // matters less than it did now the claim is not
                     // nearest-first, but a hash order still lands on a near

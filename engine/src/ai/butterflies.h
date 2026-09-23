@@ -303,6 +303,8 @@ class Butterflies {
     int wanted = 12;
     // Where a butterfly may START being. See kBirthMinM in core/noise.h.
     BirthGate birth_;
+    // ...and where one was KILLED. See KillHold, beside it.
+    KillHold hold_;
 
     // -----------------------------------------------------------------------
     // Six colours of eight frames, and a colour is committed WHOLE.
@@ -390,6 +392,7 @@ class Butterflies {
         // ITS OWN RUN OF THE BAND, not all of it -- the perched songbirds
         // own the rest. See kButterflySlots.
         flies_.assign(size_t(kButterflySlots), Fly{});
+        hold_.clear();
         return true;
     }
 
@@ -414,6 +417,7 @@ class Butterflies {
         // the rabbits and the perched songbirds are born outside.
         birth_.tick(dt, player.x, player.z);
         recycle(player);
+        hold_.release(player.x, player.z, kFlyKeepM);   // see KillHold
         fill(world, player);
         pairUp();
 
@@ -625,8 +629,10 @@ class Butterflies {
     // goes further and marks the slot slain for the session, which needs a
     // notion of a population roster this engine does not have.
     // -----------------------------------------------------------------------
+    // HELD WHERE IT DIED -- see KillHold in core/noise.h.
     bool killSlot(int i) {
         if (i < 0 || size_t(i) >= flies_.size() || !flies_[size_t(i)].live) return false;
+        hold_.hold(i, flies_[size_t(i)].p.x, flies_[size_t(i)].p.z);
         flies_[size_t(i)] = Fly{};
         return true;
     }
@@ -894,7 +900,9 @@ class Butterflies {
         int living = 0;
         for (const Fly &b : flies_)
             if (b.live) ++living;
-        free = want - living;
+        // A KILLED ONE STILL COUNTS against the want until you have left the
+        // place it died -- see KillHold.
+        free = want - living - hold_.count();
         if (free <= 0) return;
 
         cand_.clear();
@@ -917,6 +925,8 @@ class Butterflies {
                 // is 30, so there is a band 46 m wide to be born in. See
                 // kBirthMinM -- one number for every population in the engine.
                 if (!birth_.may(dd2)) continue;
+                // ...NOR WHERE ONE WAS JUST KILLED. See KillHold.
+                if (hold_.within(hm.x, hm.z, kKillQuietM)) continue;
                 // -- NOR OVER THE SAND ---------------------------------
                 //
                 // The same rule the songbird flock takes, on the same
@@ -951,9 +961,10 @@ class Butterflies {
                 cand_.push_back(hm);
             }
 
-        for (Fly &b : flies_) {
+        for (size_t fi = 0; fi < flies_.size(); ++fi) {
+            Fly &b = flies_[fi];
             if (free <= 0 || cand_.empty()) break;
-            if (b.live) continue;
+            if (b.live || hold_.held(int(fi))) continue;
             // The smallest arbitrary key in the list, which picks uniformly
             // over the disc -- see the note at the top of the file.
             size_t k = 0;

@@ -184,6 +184,7 @@ class Bees {
             hz_ = 0.5f * float(sz) * VOXEL_M;
         }
         bees_.assign(size_t(kBeeCount), Bee{});
+        hold_.clear();
         ready_ = !model_.empty();
         if (ready_)
             std::printf("  bee      %zu frames, %d slots, %d to a hive\n", model_.size(),
@@ -222,6 +223,10 @@ class Bees {
         clock_ += dt;
         player_ = player;   // for kAngry, which is the one mode that chases
         recycle(hives, dt);
+        // A bee's hive is recycled when it leaves the app's gather, and that
+        // gather is a BOX -- see the disc note in fill() -- so a hive can stay
+        // in it out to the diagonal. The hold waits that long. See KillHold.
+        hold_.release(player.x, player.z, kBeeHiveM * 1.4142f);
         fill(player, hives);
         for (size_t i = 0; i < bees_.size(); ++i) {
             if (!bees_[i].live) continue;
@@ -263,6 +268,7 @@ class Bees {
 
     void despawnAll() {
         for (Bee &b : bees_) b = Bee{};
+        hold_.clear();   // a new world, or the deck: nothing died in either
     }
 
     // Borrowed for the length of one update() and never held -- the same
@@ -369,13 +375,18 @@ class Bees {
     // goes further and marks the slot slain for the session, which needs a
     // notion of a population roster this engine does not have.
     // -----------------------------------------------------------------------
+    // HELD WHERE IT DIED -- see KillHold in core/noise.h. Without it the hive
+    // it came from was one short, and the next fill topped it straight up.
     bool killSlot(int i) {
         if (i < 0 || size_t(i) >= bees_.size() || !bees_[size_t(i)].live) return false;
+        hold_.hold(i, bees_[size_t(i)].x, bees_[size_t(i)].z);
         bees_[size_t(i)] = Bee{};
         return true;
     }
 
   private:
+    KillHold hold_;
+
     enum Mode { kWander = 0, kToFlower, kSit, kToHive, kOrbit, kAngry, kModeCount };
 
     struct Bee {
@@ -481,11 +492,13 @@ class Bees {
     void fill(const Vec3 &player, const std::vector<Vec3> &hives) {
         for (size_t i = 0; i < bees_.size(); ++i) {
             Bee &b = bees_[i];
-            if (b.live) continue;
+            if (b.live || hold_.held(int(i))) continue;   // see KillHold
             const Vec3 *want = nullptr;
             float best = kBeeHiveM * kBeeHiveM;
             for (const Vec3 &h : hives) {
                 if (atHive(h) >= kBeePerHive) continue;
+                // ...AND NOT THE SWARM YOU HAVE JUST SWATTED. See KillHold.
+                if (hold_.within(h.x, h.z, kKillQuietM)) continue;
                 // -- A DISC, BECAUSE THE GATHER IS A BOX ---------------------
                 //
                 // World::decorNear tests each axis separately, so a hive on the
