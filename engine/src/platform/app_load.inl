@@ -2086,6 +2086,8 @@
         float stream = 0.0f;   // World::update -- rering, take, adopt, tlas
         float blas = 0.0f, tlas = 0.0f, pool = 0.0f, rering = 0.0f;
         float drain = 0.0f, take = 0.0f;   // the compaction drain, and the queue pop
+        float cread = 0.0f;    // ...of which the compacted-size READS (see finishCompact)
+        float bAcq = 0.0f, bUpd = 0.0f, bPre = 0.0f, bRes = 0.0f, bCre = 0.0f;   // blas, split
         float phys = 0.0f;     // the ground patch and the solver
         float life = 0.0f;     // every population's update
         float pub = 0.0f;      // ...and every population's publish
@@ -2111,5 +2113,118 @@
     double hStop() {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hMark_)
             .count();
+    }
+
+    // -- THE WHOLE FRAME, SPLIT AT ITS OWN BLOCK BOUNDARIES -----------------
+    //
+    // (2026-09-23: "do an engine profile first to see where the trace is
+    //  going".) --hitch times five named buckets and called the other 91% of
+    // the main thread "unaccounted" -- with the GPU busy 18 ms of a 30 ms
+    // frame, that 91% is the question. So onFrameRender is cut at every
+    // top-level block and each cut is booked here: two clock reads a segment,
+    // always on, and printed by --profile. A segment that is large and does
+    // nothing large is a WAIT, which is what this exists to find.
+    enum CpuSeg {
+        kSegPre, kSegStream, kSegInput, kSegHooks, kSegDrops, kSegPhysics, kSegLife,
+        kSegAmbience, kSegSetup, kSegPublish, kSegRecord, kSegPresent, kSegTail, kSegCount
+    };
+    static constexpr const char *kSegName[kSegCount] = {
+        "pre (sim start, sun)", "stream (World::update)", "input", "test hooks",
+        "drops + held", "loose, arrows, bullets, physics", "life", "ambience, crumbs",
+        "render setup", "publish + refit", "record gpu work", "fg tag + blit + hud",
+        "recorder, stats, tail"};
+    double segSum_[kSegCount] = {}, segWorst_[kSegCount] = {};
+    long segFrames_ = 0;
+    std::chrono::steady_clock::time_point segMark_;
+    void segBegin() { segMark_ = std::chrono::steady_clock::now(); }
+    void segEnd(CpuSeg s) {
+        const auto t = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t - segMark_).count();
+        segSum_[s] += ms;
+        if (ms > segWorst_[s]) segWorst_[s] = ms;
+        segMark_ = t;
+    }
+
+    // -- ...AND THE LIFE SEGMENT, BY POPULATION ------------------------------
+    //
+    // "life" is one number over seven populations and four wide gathers, and
+    // its worst frame was 11.8 ms. Lapped per population, always on, printed by
+    // --profile: a spike with a name is a spike somebody can fix.
+    // ...and the PHYSICS bucket the same way, which lumped the ground patch in
+    // with the solver.
+    enum LifeLap { kLapButterflies, kLapPerchGather, kLapBirds, kLapLake, kLapFlock,
+                   kLapMammals, kLapDecorGather, kLapBees, kLapCritters, kLapParticles,
+                   kLapGround, kLapSolver, kLapDebris, kLapCount };
+    static constexpr const char *kLapName[kLapCount] = {
+        "life: butterflies", "life: perch gather (115 m)", "life: perched birds",
+        "life: lake life", "life: songbird flock", "life: bunnies + marchers",
+        "life: hive/bloom/bank gathers", "life: bees", "life: critters", "life: particles",
+        "phys: ground patch", "phys: solver step", "phys: debris update"};
+    double lapSum_[kLapCount] = {}, lapWorst_[kLapCount] = {};
+    std::chrono::steady_clock::time_point lapMark_;
+    void lapBegin() { lapMark_ = std::chrono::steady_clock::now(); }
+    void lap(LifeLap k) {
+        const auto t = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t - lapMark_).count();
+        lapSum_[k] += ms;
+        if (ms > lapWorst_[k]) lapWorst_[k] = ms;
+        lapMark_ = t;
+    }
+
+    // -- THE DEBUG LAYER'S OWN MESSAGES, ON STDOUT -------------------------
+    //
+    // (2026-09-23.) --debug turns the D3D12 validation layer on, and it then
+    // reports every bad barrier and every wrong state -- to OutputDebugString,
+    // which no run of this engine is ever attached to. So a --debug run that
+    // printed nothing proved nothing. This drains the info queue once a frame,
+    // errors and warnings only, capped so a bad frame cannot flood the log.
+    int infoPrinted_ = 0;
+    void drainInfoQueue() {
+        if (!getDevice()->getDesc().enableDebugLayer || infoPrinted_ >= 200) return;
+        ID3D12Device *dev = getDevice()->getNativeHandle().as<ID3D12Device *>();
+        ID3D12InfoQueue *q = nullptr;
+        if (!dev || FAILED(dev->QueryInterface(IID_PPV_ARGS(&q))) || !q) return;
+        const UINT64 n = q->GetNumStoredMessages();
+        std::vector<char> buf;
+        for (UINT64 i = 0; i < n && infoPrinted_ < 200; ++i) {
+            SIZE_T len = 0;
+            if (FAILED(q->GetMessage(i, nullptr, &len)) || len == 0) continue;
+            buf.resize(len);
+            D3D12_MESSAGE *m = reinterpret_cast<D3D12_MESSAGE *>(buf.data());
+            if (FAILED(q->GetMessage(i, m, &len))) continue;
+            if (m->Severity > D3D12_MESSAGE_SEVERITY_WARNING) continue;
+            std::printf("  d3d12    %s  %s\n",
+                        m->Severity <= D3D12_MESSAGE_SEVERITY_ERROR ? "ERROR" : "warning",
+                        m->pDescription);
+            ++infoPrinted_;
+        }
+        q->ClearStoredMessages();
+        q->Release();
+        std::fflush(stdout);
+    }
+
+    // -- V2_ABLATE: WHAT EACH FEATURE COSTS THE CAMERA TRACE ----------------
+    //
+    // (2026-09-23, the optimisation pass.) The trace is one dispatch and one
+    // GPU number, 8.3 ms, and a number that size says nothing about which of
+    // the dozen things the shader does per pixel is expensive. So under
+    // --profile with V2_ABLATE=1 a STANDING run switches one feature off per
+    // phase and books the camera scope's GPU time against it. Same view, same
+    // frames, one build: the only honest way to rank them. Every switch it
+    // touches is put back when its phase ends.
+    static constexpr int kAblFirst = 300, kAblLen = 180, kAblSkip = 30;
+    enum Abl { kAblBase, kAblNoFog, kAblNoClouds, kAblNoSky, kAblDepth1, kAblDepth3,
+               kAblNoAtmo, kAblBase2, kAblCount };
+    static constexpr const char *kAblName[kAblCount] = {
+        "baseline", "no fog march", "no clouds", "no sky rays", "1 bounce (direct only)",
+        "3 bounces", "no atmosphere", "baseline again"};
+    double ablSum_[kAblCount] = {}, ablFog_[kAblCount] = {}, ablAll_[kAblCount] = {};
+    int ablN_[kAblCount] = {};
+    int ablPrevPhase_ = -1;
+    int ablFrame_ = 0;
+    Falcor::Profiler::Event *ablCam_ = nullptr, *ablFogEv_ = nullptr, *ablRoot_ = nullptr;
+    static bool ablateOn() {
+        static const bool on = std::getenv("V2_ABLATE") != nullptr;
+        return on;
     }
 

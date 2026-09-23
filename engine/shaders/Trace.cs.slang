@@ -2780,6 +2780,10 @@ void main(uint3 tid: SV_DispatchThreadID)
             // geometry it is -- which is the entire reason it is in the
             // structure rather than drawn over the top.
             const Hit hw = traceRadiance(o, d, MASK_WORLD);
+            // (A bounding-sphere test to skip this second trace was measured
+            //  2026-09-23 and bought nothing: the held mask culls every other
+            //  instance at the top level almost for free -- +2% and -1% in two
+            //  phases of the same run, inside the noise. Not worth a field.)
             const Hit hh = traceRadiance(o, d, MASK_HELD);
             h = hh.hit ? hh : hw;
 

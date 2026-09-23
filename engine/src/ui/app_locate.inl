@@ -155,14 +155,19 @@
             //  MISSING from the cherry band rather than correctly absent.
             {"bunny",     "rabbit",    Life::Bunny,      5.0f, kWoodGreen, false},
             {"skunk",     "",          Life::Skunk,      5.0f, kWoodGreen, false},
-            {"armadillo", "",          Life::Armadillo,  5.0f, kWoodPine, false},
-            {"porcupine", "",          Life::Porcupine,  5.0f, kWoodPine, false},
-            // BIRCH *AND* OAK -- kMarchSpec says kWoodBroad for both of these,
-            // and this column said birch. In the oak wood /locate mouse found
-            // a mouse and the survey called the find a table error, which is
-            // the right complaint aimed at the wrong half.
+            // -- ALL THREE GREEN WOODS, AS kMarchSpec HAS SAID SINCE 09-17 ------
+            //
+            // (2026-09-23.) "There should be an even amount of land mammals in
+            // the biomes" moved the armadillo and porcupine to kWoodGreen and
+            // then the mouse into the pine, and none of the three moves reached
+            // this column. Found when --locate-test first completed on spawn
+            // 4242 -- it had died of a device loss there every time before --
+            // and called a mouse in the pine a TABLE WRONG. The table was wrong,
+            // not the mouse.
+            {"armadillo", "",          Life::Armadillo,  5.0f, kWoodGreen, false},
+            {"porcupine", "",          Life::Porcupine,  5.0f, kWoodGreen, false},
             {"mouse",     "",          Life::Mouse,     10.0f,
-             uint8_t(kWoodBroadGreen | kWoodDesert),                       false},
+             uint8_t(kWoodGreen | kWoodDesert),                            false},
             // EVERY FOREST, AND NOT THE SAND. kMarchSpec gives the worm
             // kWoodForest; this row said kWoodAll, so standing in the desert
             // the survey reported "NONE, AND IT SHOULD BE HERE" about an
@@ -202,7 +207,9 @@
             // are frogs on every oak bank in the world and this column said
             // there were none -- a miss in the oak wood walked the player to
             // the birch band, past the water they were standing next to.
-            {"frog",      "",          Life::Frog,       4.0f, kWoodBroad,true},
+            // kWoodBroadGREEN: fillFrogs asks `birch_(x) & kWoodBroadGreen`, and
+            // kWoodBroad would add the blossom, whose roster has no frog in it.
+            {"frog",      "",          Life::Frog,       4.0f, kWoodBroadGreen, true},
             // -- A HIVE HANGS IN AN OAK TOO, WHICH NOBODY MEANT ---------------
             //
             // hangHive's only wood test is `if (treeIndex < birchBase) return;`
@@ -459,16 +466,17 @@
     bool nearestWater(float *outX, float *outZ, uint8_t woods = kWoodAll) const {
         const VoxelTerrain &t = world_.terrain;
         TerrainMemo memo;
-        auto wetAt = [&](float x, float z) {
-            // THE TERRAIN'S OWN BIT, not `birchAt` against an index. The frog
-            // is kWoodBroad and this used to ask "is it birch", so every oak
-            // bank in the world -- half the water a frog can live beside --
-            // was refused. See LifeName::woods.
-            if (woods != kWoodAll && !(t.woodBit(x) & woods)) return false;
+        // THE TERRAIN'S OWN BIT, not `birchAt` against an index. The frog is
+        // birch AND oak and this used to ask "is it birch", so every oak bank in
+        // the world -- half the water a frog can live beside -- was refused.
+        // See LifeName::woods.
+        auto rightWood = [&](float x) { return woods == kWoodAll || (t.woodBit(x) & woods); };
+        auto lakeAt = [&](float x, float z) {
             const int vi = int(floorf(x / VOXEL_M)), vj = int(floorf(z / VOXEL_M));
             int wy = 0;
             return t.lakeColumn(vi, vj, memo, &wy);
         };
+        auto wetAt = [&](float x, float z) { return rightWood(x) && lakeAt(x, z); };
         float wx = 0.0f, wz = 0.0f;
         bool found = false;
         for (float r = 0.0f; r <= 6000.0f && !found; r += 6.0f) {
@@ -481,13 +489,17 @@
             }
         }
         if (!found) return false;
-        // Back out to dry land -- the nearest column that is not in the lake.
+        // Back out to dry land -- the nearest column that is not in the lake,
+        // AND IN THE SAME WOOD. This asked `!wetAt`, and wetAt is false for any
+        // column in the wrong wood, so beside a lake on a band seam "not wet"
+        // meant "the pine": /locate frog stood you on a pine bank where no frog
+        // is ever born, and --locate-test said so (2026-09-23, spawn 4242).
         for (float r = 2.0f; r <= 200.0f; r += 2.0f) {
             const int steps = maxi(8, int(2.0f * PI * r / 2.0f));
             for (int k = 0; k < steps; ++k) {
                 const float a = float(k) / float(steps) * 2.0f * PI;
                 const float x = wx + cosf(a) * r, z = wz + sinf(a) * r;
-                if (wetAt(x, z)) continue;
+                if (lakeAt(x, z) || !rightWood(x)) continue;
                 *outX = x; *outZ = z; return true;
             }
         }

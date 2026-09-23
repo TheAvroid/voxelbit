@@ -1807,9 +1807,40 @@ class Bunnies {
     // can watch it arrive.
     template <typename GroundF>
     void fillSkunks(const Vec3 &player, const GroundF &ground) {
+        // -- A SPECIES THAT FOUND NOTHING IS NOT ASKED AGAIN AT ONCE ----------
+        //
+        // (2026-09-23, the optimisation pass: "bunnies + marchers" was 1.15 ms
+        //  of the 1.64 ms life segment and owned its 15.4 ms worst frame.)
+        //
+        // Every empty slot scanned the whole lattice disc -- ~441 cells, a
+        // woodBit and up to five ground probes each -- EVERY FRAME, and a slot
+        // that found nothing did not stop the next empty slot of the same kind
+        // from repeating the identical scan. In a pine wood the desert's three
+        // and the blossom's flamingo can never find a site, so twenty slots
+        // failed that scan sixty times a second, for ever.
+        //
+        // TWO RULES. Inside one pass, a kind that failed is skipped for the rest
+        // of it -- its other slots would search the same cells and fail the
+        // same way, so the result is identical. Across passes, a kind that
+        // failed waits kMarchRetrySec before it looks again: a birth that lands
+        // a quarter of a second later than it could have is invisible, because
+        // births already happen out of sight (see kBirthMinM).
+        bool failed[kMarchKinds] = {};
+        // -- ...AND NO MORE THAN A FEW BIRTHS A FRAME ----------------------------
+        //
+        // Each birth is a lattice scan with ground probes, and after a jump or
+        // a band crossing dozens of slots are empty at once -- that is the 7-8 ms
+        // frame left after the rules above. kMarchBirthsPerFrame of them now,
+        // the rest on the frames after: a population that fills over a few
+        // frames instead of one is the same population, born where nobody is
+        // looking (see kBirthMinM), and BirthGate's waiver after a jump lasts a
+        // second -- sixty frames, far longer than this ever needs.
+        int born = 0;
         for (size_t i = 0; i < marchers_.size(); ++i) {
+            if (born >= kMarchBirthsPerFrame) break;
             March &s = marchers_[i];
             if (s.live || marchHold_.held(int(i))) continue;   // see KillHold
+            if (failed[s.kind] || clock_ < marchRetryAt_[s.kind]) continue;
             const MarchSpec &sp = kMarchSpec[s.kind];
             if (march_[s.kind].empty()) continue;
             // ...and the quiet is this SPECIES' -- an armadillo shot here is no
@@ -1862,7 +1893,11 @@ class Bunnies {
                     bz = sz;
                     found = true;
                 }
-            if (!found) continue;
+            if (!found) {
+                failed[s.kind] = true;
+                marchRetryAt_[s.kind] = clock_ + kMarchRetrySec;
+                continue;
+            }
 
             const int kind = s.kind;
             // -- BEFORE THE SLOT GOES LIVE ---------------------------------
@@ -1946,6 +1981,7 @@ class Bunnies {
             s.fps = sp.fps;
             s.frame = rnd(uint32_t(i), 0x5A2u) * float(sp.frames);
             s.whimAt = clock_ + kMarchWhimMin;
+            ++born;
         }
     }
 
@@ -2278,6 +2314,12 @@ class Bunnies {
     BirthGate birth_;
     // WHERE THINGS WERE KILLED, one per gait -- see KillHold in core/noise.h.
     KillHold bunHold_, marchHold_;
+    // WHEN A KIND THAT FOUND NO SITE MAY LOOK AGAIN -- see fillSkunks. On the
+    // population's own clock, so a paused or scripted run agrees with it.
+    static constexpr float kMarchRetrySec = 0.25f;
+    static constexpr int kMarchBirthsPerFrame = 3;   // see fillSkunks
+    float marchRetryAt_[kMarchKinds] = {};
+    float bunRetryAt_ = 0.0f;
 
     template <typename GroundF>
     void fill(const Vec3 &player, const GroundF &ground) {
@@ -2285,6 +2327,10 @@ class Bunnies {
         for (size_t i = 0; i < buns_.size(); ++i)
             free += (buns_[i].live || bunHold_.held(int(i))) ? 0 : 1;
         if (!free) return;
+        // The marchers' retry rule -- see fillSkunks. A rabbit in a dune field
+        // has nowhere to be born, and the scan that says so need not run every
+        // frame to go on saying it.
+        if (clock_ < bunRetryAt_) return;
 
         const int r = int(kBunnySpawnM / kBunnyCellM) + 1;
         const int c0x = int(floorf(player.x / kBunnyCellM));
@@ -2347,7 +2393,10 @@ class Bunnies {
                     bz = sz;
                     found = true;
                 }
-            if (!found) break;
+            if (!found) {
+                bunRetryAt_ = clock_ + kMarchRetrySec;
+                break;
+            }
 
             b = Bunny{};
             b.live = true;

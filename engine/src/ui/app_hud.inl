@@ -797,7 +797,23 @@
         var["gCrossCB"]["gSize"] = float2(w, h);
         var["gCrossCB"]["gArm"] = 16.0f * scale;
         var["gCrossCB"]["gHalf"] = 2.0f * scale;
-        crosshair_->execute(ctx, target);
+        // -- ONLY THE CROSS'S OWN BOX IS SHADED (2026-09-23) -----------------
+        //
+        // A full-screen pass shaded all 7.6 million pixels of a 3820x1990 frame
+        // to draw a 64-pixel cross, discarding every one of them but that. The
+        // viewport and the scissor are cut to the box the arms can reach: the
+        // shader reads SV_Position, which stays in whole-target pixels however
+        // small the viewport is, so every pixel it does shade comes out exactly
+        // as before, and the ones it no longer shades it was discarding anyway.
+        const float arm = 16.0f * scale + 2.0f;
+        const float cx = w * 0.5f, cy = h * 0.5f;
+        const float x0 = maxf(0.0f, floorf(cx - arm)), y0 = maxf(0.0f, floorf(cy - arm));
+        const float x1 = minf(w, ceilf(cx + arm)), y1 = minf(h, ceilf(cy + arm));
+        auto st = crosshair_->getState();
+        st->setFbo(target, false);
+        st->setViewport(0, Falcor::GraphicsState::Viewport(x0, y0, x1 - x0, y1 - y0, 0.0f, 1.0f),
+                        true);
+        crosshair_->execute(ctx, target, /*autoSetVpSc=*/false);
     }
 
     // -----------------------------------------------------------------------
@@ -859,14 +875,21 @@
         std::sort(worst.begin(), worst.end(),
                   [](const HitchFrame *a, const HitchFrame *b) { return a->total > b->total; });
         std::printf("\n  the ten worst frames\n");
-        std::printf("  %7s %7s %7s %7s %7s %7s %7s %7s %7s %6s\n", "total", "stream", "blas",
-                    "tlas", "rering", "drain", "phys", "life", "pub", "chunk");
+        std::printf("  %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s %6s\n", "total", "stream", "blas",
+                    "tlas", "rering", "drain", "read", "phys", "life", "pub", "chunk");
         for (size_t i = 0; i < 10 && i < worst.size(); ++i) {
             const HitchFrame *h = worst[i];
-            std::printf("  %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %6d\n",
+            std::printf("  %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %6d\n",
                         double(h->total), double(h->stream), double(h->blas), double(h->tlas),
-                        double(h->rering), double(h->drain), double(h->phys), double(h->life),
-                        double(h->pub), h->adopted);
+                        double(h->rering), double(h->drain), double(h->cread), double(h->phys),
+                        double(h->life), double(h->pub), h->adopted);
+            // ...and a structure build big enough to matter, split -- see
+            // World::Profile::bAcq.
+            if (h->blas > 1.0f)
+                std::printf("          blas = acquire %.2f  upload %.2f  prebuild %.2f  "
+                            "result %.2f  create %.2f\n",
+                            double(h->bAcq), double(h->bUpd), double(h->bPre), double(h->bRes),
+                            double(h->bCre));
         }
         // WHERE THE TIME OVER BUDGET ACTUALLY WENT, summed over the bad frames
         // only. This is the number that says what to fix: the total bill from
@@ -942,24 +965,64 @@
         }
 
         // The device-side breakdown, if the profiler collected one.
+        //
+        // EVERY EVENT, NOT A LIST OF NAMES (2026-09-23). This used to keep five
+        // leaves it knew about and drop the rest, which is how "probes" and
+        // "fog" were silently missing for weeks and how "atmosphere" and
+        // "cloudfill" still were -- a profile that filters by name can only
+        // ever confirm what its author already suspected. Printed as the tree
+        // Falcor records, indented by depth, CPU beside GPU: the CPU column is
+        // the cost of RECORDING the scope, which is what the frame loop pays.
         if (Falcor::Profiler *prof = getDevice()->getProfiler()) {
-            std::string line;
+            std::printf("\n  %-44s %9s %9s\n", "gpu scope", "gpu ms", "cpu ms");
             for (Falcor::Profiler::Event *e : prof->getEvents()) {
                 if (!e) continue;
                 const std::string path = e->getName();
-                // Falcor names nested events by their path; the leaf is enough.
+                int depth = 0;
+                for (char ch : path) depth += ch == '/' ? 1 : 0;
                 const size_t slash = path.find_last_of('/');
                 const std::string leaf =
                     slash == std::string::npos ? path : path.substr(slash + 1);
-                // "probes" and "fog" were being COLLECTED and then dropped here, so
-                // every profile this engine has ever printed was silent about the
-                // DDGI probe trace and about the fog volume.
-                if (leaf != "probes" && leaf != "trace" && leaf != "fog" &&
-                    leaf != "reconstruct" && leaf != "tonemap")
-                    continue;
-                line += fmt("   %s %.2f ms", leaf.c_str(), e->getGpuTimeAverage());
+                const std::string label =
+                    std::string(size_t(maxi(0, depth - 1) * 2), ' ') + leaf;
+                std::printf("  %-44s %9.3f %9.3f\n", label.c_str(),
+                            double(e->getGpuTimeAverage()), double(e->getCpuTimeAverage()));
             }
-            if (!line.empty()) std::printf("  gpu      %s\n", line.c_str());
+        }
+
+        // -- ...AND WHAT EACH FEATURE COSTS THE TRACE -- see kAblFirst ---------
+        if (ablateOn()) {
+            std::printf("\n  %-26s %11s %9s %10s %7s\n", "ablation (standing)", "camera ms",
+                        "fog ms", "frame gpu", "frames");
+            const double base = ablN_[kAblBase] ? ablSum_[kAblBase] / ablN_[kAblBase] : 0.0;
+            for (int k = 0; k < kAblCount; ++k) {
+                if (!ablN_[k]) continue;
+                const double cam = ablSum_[k] / ablN_[k];
+                std::printf("  %-26s %8.3f %+5.0f%% %9.3f %10.3f %7d\n", kAblName[k], cam,
+                            base > 0.0 ? 100.0 * (cam - base) / base : 0.0,
+                            ablFog_[k] / ablN_[k], ablAll_[k] / ablN_[k], ablN_[k]);
+            }
+        }
+
+        // -- ...AND THE MAIN THREAD, CUT AT ITS OWN BLOCKS -- see CpuSeg --------
+        //
+        // Over EVERY frame since launch, prime included, so it is read against
+        // the period line under it as shares rather than as absolute steady-state
+        // costs. The row that matters is the one that is big for no reason.
+        if (segFrames_ > 0) {
+            double inside = 0.0;
+            std::printf("\n  %-34s %9s %9s\n", "cpu segment", "mean ms", "worst ms");
+            for (int k = 0; k < kSegCount; ++k) {
+                const double mean = segSum_[k] / double(segFrames_);
+                inside += mean;
+                std::printf("  %-34s %9.3f %9.2f\n", kSegName[k], mean, segWorst_[k]);
+            }
+            std::printf("  %-34s %9.3f\n", "= onFrameRender", inside);
+            for (int k = 0; k < kLapCount; ++k)
+                std::printf("    %-30s %9.3f %9.2f\n", kLapName[k],
+                            lapSum_[k] / double(segFrames_), lapWorst_[k]);
+            std::printf("  %-34s %9.3f   (the frame period minus the above: present, Falcor)\n",
+                        "outside it", sum / double(n) - inside);
         }
 
         const World::Profile w = world_.profile();
@@ -996,6 +1059,15 @@
         }
         std::printf("  drain     %.1f ms over %zu drains (%zu forced)   take %.1f   rering %.1f\n",
                     w.drainMs, w.drains, w.forcedDrains, w.takeMs, w.reringMs);
+        std::printf("  read      %.1f ms over %zu compacted-size reads, worst %.2f ms\n",
+                    w.compactReadMs, w.compactReads, w.compactReadWorst);
+        std::printf("  rering    worst evict %.2f ms (%zu chunks evicted in all), worst ask %.2f ms\n",
+                    w.evictWorst, w.evicted, w.askWorst);
+        // Nonzero on a walk would mean a frame recorded far more than a frame
+        // does -- see World::endDeviceFrameIfDue.
+        std::printf("  devframe  %zu ended by the streamer itself: %zu loading, %zu in frames\n",
+                    world_.deviceFramesForced(), world_.deviceFramesAtLoad(),
+                    world_.deviceFramesForced() - world_.deviceFramesAtLoad());
         std::printf("  compact   %.0f MB built -> %.0f MB kept (%.0f%%), %zu still pending\n"
                     "  pools     %.0f MB in %zu recycled buffers\n",
                     w.uncompactedMb, w.compactedMb,

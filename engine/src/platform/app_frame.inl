@@ -9,6 +9,8 @@
 // -----------------------------------------------------------------------------
     void onFrameRender(Falcor::RenderContext *ctx, const Falcor::ref<Fbo> &target) override {
         const auto hitchT0 = std::chrono::steady_clock::now();
+        segBegin();   // see CpuSeg -- the frame split at its block boundaries
+        world_.frameMark();   // SampleApp ends this device frame -- see World::endDeviceFrameIfDue
         hPhys_ = hLife_ = hPub_ = hDebris_ = 0.0;
         // APPLIED A SECOND TIME, ON THE FIRST FRAME ONLY. onLoad runs before
         // the swapchain is sized and before the window is shown, and anything
@@ -215,11 +217,19 @@
         // reason, and it is what makes coming back one TLAS rebuild rather than
         // a re-stream of everything you were looking at a moment ago.
         const Vec3 streamAt = world_.levelOn() ? woodPos_ : pos_;
+        segEnd(kSegPre);
         const auto streamT0 = std::chrono::steady_clock::now();
-        if (world_.update(streamAt)) tracer_.resetAccumulation();
+        {
+            // Its GPU work too -- structure builds, compaction copies, the top
+            // level -- which no scope measured, so a GPU spike on a frame a
+            // chunk arrived in had nowhere to show up.
+            FALCOR_PROFILE(ctx, "stream");
+            if (world_.update(streamAt)) tracer_.resetAccumulation();
+        }
         const double streamMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - streamT0)
                 .count();
+        segEnd(kSegStream);
 
         // ---- AND THE SPAWN IS CHECKED ONCE THERE IS A WORLD TO CHECK IT
         // AGAINST ------------------------------------------------------------
@@ -297,6 +307,7 @@
         }
 
         if (processInput(dt)) tracer_.resetAccumulation();
+        segEnd(kSegInput);
 
         // A SCRIPTED FLASH, on its named frame. It sets the flash DIRECTLY
         // rather than swinging: the kill path is covered by --kill-test, and
@@ -687,6 +698,7 @@
         // objects falling through terrain that streams. Walking over one picks
         // it up, which is what stops Q being a way to lose your axe -- the JS
         // engine's autoPickup, at its own radius.
+        segEnd(kSegHooks);
         {
             // The night sky's clock -- see Tracer::skyTime. DayNight carries
             // whole days separately from the fraction, so this stays continuous
@@ -785,6 +797,7 @@
         // Everything that has come off the static world: the solver, and the
         // pieces it is carrying. Before the arrows only because both want the
         // same frame's dt and this one also owns the clock they are timed on.
+        segEnd(kSegDrops);
         stepLoose(dt);
 
         // The shafts in the air. AFTER processInput, so one loosed this frame
@@ -978,8 +991,11 @@
         // pause, it is a bug. Either the walk stops too or the wood keeps
         // living, and the wood keeping living is what "put the 3 balls in
         // front of the player IN GAME" describes.
+        segEnd(kSegPhysics);
         hStart();
+        lapBegin();
         flock_.update(dt, world_, player_.pos);
+        lap(kLapButterflies);
         // -- PERCHES ARE LOOKED FOR FURTHER OUT THAN COLLISION IS ----------
         //
         // solids_ is gathered at six metres, which is the distance the PLAYER
@@ -1004,7 +1020,9 @@
         // colliders is every chunk in a square a hundred metres across.
         if ((frameTick_ % 30) == 0)
             world_.collidersNear(player_.pos, kBirdKeepM, &perches_);
+        lap(kLapPerchGather);
         birds_.update(dt, perches_, player_.pos);
+        lap(kLapBirds);
         // WHAT LIVES ON THE WATER. Ticked beside the birds because it is the
         // same kind of thing -- a small population that follows the player --
         // and published in the same window, so the flyer band is written once.
@@ -1024,6 +1042,7 @@
         // it is the same shape as the arrow's landed/impact drains above.
         for (const Vec3 &t : lake_.tearsThisTick()) particles_.tear(t, simMs_);
         lake_.publish(world_);
+        lap(kLapLake);
         // THE GROUND THE FLOCK FOLLOWS IS THE ONE EVERYTHING ELSE STANDS ON,
         // handed in rather than reached for -- see BirdFlock::update. The
         // generator's own height, not the walk's: a bird does not care about a
@@ -1039,6 +1058,7 @@
                        // argued not to need -- see the note over its update.
                        &perches_);
         flock2_.publish(world_, kButterflySlots + kBirdSlots + kLakeSlots);
+        lap(kLapFlock);
         // ...AND THE BUNNIES, on the generator's ground for the reason the
         // songbirds are: a rabbit does not care about a hole somebody dug, and
         // asking the edit layer would cost a scan per probe per animal.
@@ -1087,6 +1107,7 @@
             if (const int bit = bunnies_.biteDamage(); bit > 0)
                 vitals_.hurt(bit, bit >= 5 ? "a cobra struck you" : "a scorpion stung you");
             bunnies_.publish(world_, kBunnySlot0);
+            lap(kLapMammals);
             // ...AND THE MARCHERS, WHICH HAVE THEIR OWN RUN OF THE BAND. The
             // editor branch above deliberately does not publish them: the deck
             // is not the wood, and despawnAll() has already given every slot up.
@@ -1137,8 +1158,10 @@
             // not move, and re-deriving it per frog per frame is the wide query
             // this engine pays once.
             if (tick30 == 24) lake_.bankSpots(uint32_t(frameTick_), 8, &banksNear_);
+            lap(kLapDecorGather);
             bees_.update(dt, player_.pos, hivesNear_, bloomsNear_, &perches_);
             bees_.publish(world_, kBeeSlot0);
+            lap(kLapBees);
             // -- AND THE FOUR SMALL ONES -----------------------------------
             //
             // The same three predicates the marchers take, because they are
@@ -1190,11 +1213,13 @@
                              [this](float x, float z) { return waterTopAt(x, z); },
                              [this](float x, float z) { return sandAt(x, z); });
             critters_.publish(world_, kCritterSlot0);
+            lap(kLapCritters);
             // The sparks are on the same clock as everything else in the band.
             // update() only retires what has run out -- a particle's position
             // is a closed form off its birth, so nothing here integrates.
             particles_.update(simMs_);
             particles_.publish(world_, simMs_);
+            lap(kLapParticles);
             hLife_ += hStop();
             // ...AND THE RED, AFTER EVERY POPULATION HAS PUBLISHED. It is
             // written onto instances the populations have just re-placed, and a
@@ -1219,6 +1244,7 @@
                                   : 0xFFFFFFFFu;
             tracer_.glowRadiance = Vec3(kGlowNits, kGlowNits * 0.85f, kGlowNits * 0.18f);
         }
+        segEnd(kSegLife);
 
         // -- THE PENDANTS IN NUKETOWN'S ROOMS -------------------------------
         //
@@ -1280,6 +1306,7 @@
         // fault anywhere in the GPU half, including on a driver thread we do
         // not own, still knows which frame and which place it died in.
         v2::crumbFrame(long(frameTick_), player_.pos.x, player_.pos.y, player_.pos.z, simMs_);
+        segEnd(kSegAmbience);
         sl_.markSimulationEnd();
 
 
@@ -1423,6 +1450,7 @@
         // reason it has to set the fog and the sky separately: it runs none of
         // the per-frame systems, so anything hung off this tick is absent from
         // every --out image.
+        segEnd(kSegSetup);
         {
             const HeldXform hx = held_.xform(gcam, player_.bobPhase, player_.bobAmp);
             // KEPT FOR THE NEXT FRAME'S RELEASE. loose() runs in processInput,
@@ -1497,10 +1525,65 @@
             hPub_ += hStop();
             world_.refitTlas();
         }
+        segEnd(kSegPublish);
 
         // Constant grain: start from nothing EVERY frame, not just when the
         // camera moves. Moving already did this -- it is what made a walking
         // frame noisy -- so doing it always is what makes the two identical.
+        // -- V2_ABLATE -- see kAblFirst -------------------------------------
+        //
+        // BOOKED BEFORE THIS FRAME'S WORK: getGpuTime is the PREVIOUS frame's,
+        // so it goes to the phase that frame ran in. Every switch is restored
+        // and then this phase's one thing is turned off, so no phase can leak
+        // into the next.
+        if (opt_.profile && ablateOn()) {
+            static const bool fog0 = volfog_.enabled, cloud0 = clouds_.enabled,
+                              atmo0 = atmo_.enabled;
+            Falcor::Profiler *ap = getDevice()->getProfiler();
+            if (ap && !ablCam_) {
+                for (Falcor::Profiler::Event *e : ap->getEvents()) {
+                    if (!e) continue;
+                    const std::string nm = e->getName();
+                    const auto ends = [&nm](const std::string &tail) {
+                        return nm.size() >= tail.size() &&
+                               nm.compare(nm.size() - tail.size(), tail.size(), tail) == 0;
+                    };
+                    if (ends("/camera")) ablCam_ = e;
+                    else if (ends("/fog")) ablFogEv_ = e;
+                    else if (ends("/onFrameRender")) ablRoot_ = e;
+                }
+            }
+            const int f = ablFrame_++;
+            const int prev = f - 1;
+            if (prev >= kAblFirst && ablCam_) {
+                const int pp = (prev - kAblFirst) / kAblLen;
+                if (pp < kAblCount && (prev - kAblFirst) % kAblLen >= kAblSkip) {
+                    ablSum_[pp] += ablCam_->getGpuTime();
+                    ablFog_[pp] += ablFogEv_ ? ablFogEv_->getGpuTime() : 0.0f;
+                    ablAll_[pp] += ablRoot_ ? ablRoot_->getGpuTime() : 0.0f;
+                    ++ablN_[pp];
+                }
+            }
+            volfog_.enabled = fog0;
+            clouds_.enabled = cloud0;
+            atmo_.enabled = atmo0;
+            const int phase = f < kAblFirst ? -1 : (f - kAblFirst) / kAblLen;
+            if (phase != ablPrevPhase_ && phase >= 0 && phase < kAblCount) {
+                std::printf("  ablate   phase %d: %s\n", phase, kAblName[phase]);
+                std::fflush(stdout);
+            }
+            ablPrevPhase_ = phase;
+            switch (phase) {
+                case kAblNoFog: volfog_.enabled = false; break;
+                case kAblNoClouds: clouds_.enabled = false; break;
+                case kAblNoSky: cfg.skyRays = 0; break;
+                case kAblDepth1: cfg.maxDepth = 1; break;
+                case kAblDepth3: cfg.maxDepth = mini(cfg.maxDepth, 3); break;
+                case kAblNoAtmo: atmo_.enabled = false; break;
+                default: break;
+            }
+        }
+
         const int spf = maxi(1, opt_.samplesPerFrame);
         cfg.samplesPerFrame = spf;
         // GPU TIMESTAMPS, and only under --profile. The whole point is to be
@@ -1668,7 +1751,10 @@
             }
 #endif
 
-            tracer_.resolve(ctx, cfg, reconstructed, dt);
+            {
+                FALCOR_PROFILE(ctx, "resolve");
+                tracer_.resolve(ctx, cfg, reconstructed, dt);
+            }
 
             // -- teach the cache what this frame found -----------------------
             //
@@ -1680,6 +1766,7 @@
             // exist; asking the GPU would mean a stall to learn a number that
             // was never in doubt.
             if (nrc_.shouldTrain()) {
+                FALCOR_PROFILE(ctx, "nrc");
                 const uint32_t traced = uint32_t(tracer_.width()) * uint32_t(tracer_.height());
                 const uint32_t n = traced / uint32_t(maxi(1, nrc_.trainEvery));
                 const Vec3 sd = world_.sky.sunDir();
@@ -1705,6 +1792,7 @@
         // set the Reflex markers, and stopped there -- so DLSS-G was switched on
         // with no depth, no motion vectors and no matrices, and had nothing to
         // interpolate between. It reported itself available the whole time.
+        segEnd(kSegRecord);
         sl_.markRenderSubmitStart();
         if (sl_.frameGeneration() != FrameGen::Off) {
             const Falcor::uint2 renderDim{uint32_t(tracer_.width()), uint32_t(tracer_.height())};
@@ -1737,6 +1825,7 @@
         }
 
         if (target->getWidth() > 0 && target->getHeight() > 0) {
+            FALCOR_PROFILE(ctx, "blit+hud");
             ctx->blit(tracer_.display()->getSRV(), target->getRenderTargetView(0),
                       Falcor::uint4(0, 0, uint32_t(tracer_.displayWidth()),
                                     uint32_t(tracer_.displayHeight())));
@@ -1746,6 +1835,7 @@
             drawVitals(ctx, target);
             drawGameOver(ctx, target);
         }
+        segEnd(kSegPresent);
 
         // -- the recorder ----------------------------------------------------
         //
@@ -1788,6 +1878,9 @@
         }
 
         moving_ = false;  // cleared only once the frame it applied to is drawn
+        drainInfoQueue();
+        segEnd(kSegTail);
+        ++segFrames_;
 
         // -- the scripted capture, if one was asked for -----------------------
         // --profile shares the frame counter, so a run can be measured with or
@@ -1838,6 +1931,13 @@
             h.rering = float(wp.reringMs - hitchWas_.reringMs);
             h.drain = float(wp.drainMs - hitchWas_.drainMs);
             h.take = float(wp.takeMs - hitchWas_.takeMs);
+            h.cread = float(wp.compactReadMs - hitchWas_.compactReadMs);
+            // Clamped: the shatter report zeroes these clocks when it prints.
+            h.bAcq = float(maxf(0.0f, float(wp.bAcq - hitchWas_.bAcq)));
+            h.bUpd = float(maxf(0.0f, float(wp.bUpd - hitchWas_.bUpd)));
+            h.bPre = float(maxf(0.0f, float(wp.bPre - hitchWas_.bPre)));
+            h.bRes = float(maxf(0.0f, float(wp.bRes - hitchWas_.bRes)));
+            h.bCre = float(maxf(0.0f, float(wp.bCre - hitchWas_.bCre)));
             h.adopted = int(wp.adopted - hitchWas_.adopted);
             h.phys = float(hPhys_);
             h.life = float(hLife_);

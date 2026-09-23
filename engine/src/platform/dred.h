@@ -50,6 +50,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>   // the debug layer's own words -- see reportDeviceRemoved
 #endif
 
 namespace v2 {
@@ -178,9 +179,56 @@ inline void enableDred(bool wanted) {
     std::fflush(stdout);
 }
 
+// ---------------------------------------------------------------------------
+// WHAT THE DEBUG LAYER SAID, when it is on (2026-09-23).
+//
+// An illegal call is refused by the RUNTIME, not faulted by the GPU, so DRED
+// has nothing to say about it: under --debug the layer writes the reason in
+// plain words to its info queue and OutputDebugString, and nowhere else. The
+// test harnesses that die this way (--kill-test, --locate-test) run inside
+// onLoad, where App::drainInfoQueue is never reached -- so the last errors
+// are read on the way out instead, by both reports: the device-removed one
+// below, and crashlog.h's, because under --debug the layer RAISES (0x087A)
+// from ExecuteCommandLists and the process dies there first.
+// ---------------------------------------------------------------------------
+namespace detail {
+inline void debugLayerErrors(std::string &out) {
+    ID3D12Device *dev = dredDevice();
+    ID3D12InfoQueue *q = nullptr;
+    if (!dev || FAILED(dev->QueryInterface(IID_PPV_ARGS(&q))) || !q) return;
+    // EVERY stored message, not the tail: the call that broke a list is
+    // recorded well before the ExecuteCommandLists that refuses it, and the
+    // frames between can fill the tail with warnings.
+    const UINT64 n = q->GetNumStoredMessages();
+    std::string buf;
+    char line[512];
+    int shown = 0;
+    for (UINT64 i = 0; i < n && shown < 24; ++i) {
+        SIZE_T len = 0;
+        if (FAILED(q->GetMessage(i, nullptr, &len)) || len == 0) continue;
+        buf.resize(len);
+        D3D12_MESSAGE *m = reinterpret_cast<D3D12_MESSAGE *>(buf.data());
+        if (FAILED(q->GetMessage(i, m, &len))) continue;
+        if (m->Severity > D3D12_MESSAGE_SEVERITY_ERROR) continue;
+        std::snprintf(line, sizeof(line), "  d3d12     [id %d] %.470s\n", int(m->ID),
+                      m->pDescription);
+        out += line;
+        ++shown;
+    }
+    std::snprintf(line, sizeof(line),
+                  "  d3d12     %llu message(s) stored, %llu discarded by the queue's limit%s\n",
+                  (unsigned long long)n,
+                  (unsigned long long)q->GetNumMessagesDiscardedByMessageCountLimit(),
+                  shown ? "" : ", none of them an error");
+    out += line;
+    q->Release();
+}
+}  // namespace detail
+
 // Remembered once the device exists. Falcor hands out the native handle.
 inline void noteDredDevice(void *nativeD3D12Device) {
     detail::dredDevice() = static_cast<ID3D12Device *>(nativeD3D12Device);
+    detail::crashExtra() = &detail::debugLayerErrors;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +325,8 @@ inline void reportDeviceRemoved(const char *logPath) {
             dred->Release();
         }
     }
+
+    detail::debugLayerErrors(out);   // under --debug; see debugLayerErrors
 
     std::fputs(out.c_str(), stderr);
     std::fflush(stderr);

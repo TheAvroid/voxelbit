@@ -238,6 +238,20 @@ inline std::string writeDump(EXCEPTION_POINTERS *ep, int n) {
 }
 
 // -----------------------------------------------------------------------
+// ONE HOOK FOR WHAT THIS FILE CANNOT KNOW.
+//
+// (2026-09-23.) Under --debug the D3D12 layer reports an illegal call by
+// RAISING, code 0x087A, from inside ExecuteCommandLists -- so the death lands
+// here, with a stack that ends at Falcor's submit and says nothing about which
+// call was illegal. The layer wrote that down in its info queue, and only the
+// device can read it. dred.h, which holds the device, fills this in.
+// -----------------------------------------------------------------------
+inline void (*&crashExtra())(std::string &) {
+    static void (*f)(std::string &) = nullptr;
+    return f;
+}
+
+// -----------------------------------------------------------------------
 // THE REPORT ITSELF.
 //
 // `unhandled` separates the two callers: the vectored tap, which sees a fault
@@ -303,6 +317,8 @@ inline void report(EXCEPTION_POINTERS *ep, bool unhandled) {
     all += "  stack\n";
     all += stack;
     if (all.empty() || all.back() != '\n') all += '\n';
+    // ...and whatever the platform layer can add -- see crashExtra.
+    if (crashExtra()) crashExtra()(all);
     if (!dump.empty()) all += "  dump      " + dump + "\n";
 
     std::fputs(all.c_str(), stderr);

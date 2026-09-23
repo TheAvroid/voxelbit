@@ -36,6 +36,7 @@
 #include "Core/API/Texture.h"
 #include "Core/Pass/ComputePass.h"
 #include "Utils/Image/Bitmap.h"
+#include "Utils/Timing/Profiler.h"   // FALCOR_PROFILE -- see renderSample's scopes
 
 #include <functional>
 #include <cstdio>
@@ -1082,6 +1083,9 @@ class Tracer {
         // two dispatches in a fixed order would be a wider interface for
         // nothing -- the same argument runRestir makes.
         if (sharc_ && sharc_->available() && p.giMode == 2 && sharcUpdate_) {
+            // ITS OWN GPU SCOPE, like the three below -- "trace" was one number
+            // for four dispatches, so no profile could say which one cost.
+            FALCOR_PROFILE(ctx, "sharc");
             // Before the update pass, which is the one that records a dropped
             // insert. See clearStats in sharc.h for what clearing it later did.
             sharc_->clearStats(ctx);
@@ -1125,6 +1129,7 @@ class Tracer {
             const uint32_t tw = nrcSdk_->trainingWidth();
             const uint32_t th = nrcSdk_->trainingHeight();
             if (tw > 0 && th > 0) {
+                FALCOR_PROFILE(ctx, "nrctrain");
                 auto uv = nrcSdkUpdate_->getRootVar();
                 bindTrace(uv, uint2(tw, th));
                 bindNrcSdk(uv);
@@ -1137,7 +1142,10 @@ class Tracer {
             bindTrace(var, uint2(uint32_t(w_), uint32_t(h_)));
 #endif
 
-        trace_->execute(ctx, uint32_t(w_), uint32_t(h_));
+        {
+            FALCOR_PROFILE(ctx, "camera");
+            trace_->execute(ctx, uint32_t(w_), uint32_t(h_));
+        }
 
         // RESAMPLE WHAT THAT SAMPLE FOUND, per SAMPLE and not per frame. The
         // trace just filled the candidate buffer with one bounce per pixel;
@@ -1149,7 +1157,10 @@ class Tracer {
         // last frame's finished one -- see the note at the shading site in
         // Trace.cs.slang -- and running this first would hand it a result built
         // from a candidate buffer this frame has not written yet.
-        runRestir(ctx, uint32_t(tick_));
+        {
+            FALCOR_PROFILE(ctx, "restir");
+            runRestir(ctx, uint32_t(tick_));
+        }
 
         ++frame_;
         ++tick_;
@@ -1500,7 +1511,10 @@ class Tracer {
         // of the two would sample a rectangle of it that was never written.
         // resize() no-ops when nothing changed, so this costs a comparison.
         post_.resize(int(dim.x), int(dim.y));
-        post_.run(ctx, src, dim.x, dim.y, cfg.exposure, dt);
+        {
+            FALCOR_PROFILE(ctx, "post");
+            post_.run(ctx, src, dim.x, dim.y, cfg.exposure, dt);
+        }
 
         auto var = tonemap_->getRootVar();
         var["gSrc"] = src;
@@ -1546,7 +1560,10 @@ class Tracer {
         var["gTonemapCB"]["gBloomStrength"] = bloomOn ? post_.bloom : 0.0f;
         var["gTonemapCB"]["gUseAuto"] = post_.exposureActive() ? 1u : 0u;
 
-        tonemap_->execute(ctx, dim.x, dim.y);
+        {
+            FALCOR_PROFILE(ctx, "map");
+            tonemap_->execute(ctx, dim.x, dim.y);
+        }
         displayW_ = int(dim.x);
         displayH_ = int(dim.y);
     }

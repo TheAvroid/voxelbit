@@ -59,6 +59,9 @@
 #include "Core/API/RenderContext.h"
 #include "Core/API/Fence.h"
 #include "Core/API/RtAccelerationStructure.h"
+#include "Core/API/NativeHandleTraits.h"   // the compacted-size emit -- see emitCompactedSize
+#include <d3d12.h>
+#include <d3d12sdklayers.h>   // the --debug info-queue reader -- see App::drainInfoQueue
 
 #include <algorithm>
 #include <chrono>
@@ -191,9 +194,6 @@ using Falcor::RtAccelerationStructure;
 using Falcor::RtAccelerationStructureBuildFlags;
 using Falcor::RtAccelerationStructureBuildInputs;
 using Falcor::RtAccelerationStructureKind;
-using Falcor::RtAccelerationStructurePostBuildInfoDesc;
-using Falcor::RtAccelerationStructurePostBuildInfoPool;
-using Falcor::RtAccelerationStructurePostBuildInfoQueryType;
 using Falcor::RtGeometryDesc;
 using Falcor::RtGeometryFlags;
 using Falcor::RtGeometryInstanceFlags;
@@ -4468,6 +4468,9 @@ class World {
                        RtAccelerationStructureBuildFlags::PerformUpdate;
         inputs.descCount = uint32_t(instanceDescs_.size());
         inputs.instanceDescs = instanceDescBuf_->getGpuAddress();
+        // THE INSTANCE DATA MUST HAVE ARRIVED BEFORE THE BUILD READS IT -- see
+        // the same barrier in rebuildTlas, and why it was missing.
+        ctx_->resourceBarrier(instanceDescBuf_.get(), Falcor::Resource::State::NonPixelShader);
 
         RtAccelerationStructure::BuildDesc bd = {};
         bd.inputs = inputs;
@@ -15769,6 +15772,18 @@ class World {
         size_t poolBuffers = 0, pendingCompactions = 0;
         double drainMs = 0.0, takeMs = 0.0, reringMs = 0.0;
         size_t drains = 0, forcedDrains = 0;
+        // THE SIZE READ INSIDE THE DRAIN, on its own -- see finishCompact. A
+        // drain that is mostly this is a drain that is mostly a device wait.
+        double compactReadMs = 0.0, compactReadWorst = 0.0;
+        size_t compactReads = 0;
+        // ...AND WHAT A STRUCTURE BUILD SPENT ITS TIME ON, cumulative -- see
+        // recordBuild's own clock: pool acquire, upload, prebuild + scratch,
+        // result buffer, structure create. For the hitch report's worst frames.
+        double bAcq = 0.0, bUpd = 0.0, bPre = 0.0, bRes = 0.0, bCre = 0.0;
+        // rering's two halves -- see rering: evicting what left the disc, and
+        // asking for what entered it. Worst single call of each.
+        double evictWorst = 0.0, askWorst = 0.0;
+        size_t evicted = 0;
     };
     // -- IS A BODY COMING APART RIGHT NOW ---------------------------------
     //
@@ -15792,6 +15807,11 @@ class World {
         p.poolBuffers =
             vertPool_.count() + idxPool_.count() + scratchPool_.count() + rawPool_.count();
         p.pendingCompactions = pendingItems();
+        p.bAcq = blasAcquireMs_;
+        p.bUpd = blasUpdateMs_;
+        p.bPre = blasPrebuildMs_;
+        p.bRes = blasResultMs_;
+        p.bCre = blasCreateMs_;
         return p;
     }
     void resetProfile() {
@@ -16052,6 +16072,8 @@ class World {
             ctx_->signal(fence_.get(), epoch_);
             ++epoch_;
             recorded_ = false;
+            ++submitsSinceFrame_;
+            endDeviceFrameIfDue();
         }
         return changed;
     }
@@ -16986,6 +17008,11 @@ class World {
         ref<RtAccelerationStructure> as;
         uint64_t uncompactedSize = 0;
         uint32_t query = 0;
+        // THE COMPACTED SIZE WAS EMITTED INTO THE GROUP'S READBACK -- see
+        // emitCompactedSize. False when the emit could not get the native list;
+        // finishCompact then clones at full size rather than read a slot that
+        // nothing wrote.
+        bool sizeKnown = false;
     };
 
     // A structure that is built and in use, but not yet compacted.
@@ -17005,10 +17032,15 @@ class World {
     // A key no chunk can have, for a build whose compacted form nobody wants.
     static constexpr long long kNoOwner = (-9223372036854775807LL - 1);
 
-    // One generation: the builds that share a query pool, and the fence value
+    // One generation: the builds that share a size buffer, and the fence value
     // by which all of them have run.
     struct CompactGroup {
-        ref<RtAccelerationStructurePostBuildInfoPool> pool;
+        // -- WHERE ITS COMPACTED SIZES LAND, READ WITHOUT A WAIT ----------------
+        //
+        // See emitCompactedSize. sizeGpu is written by the device, one uint64 a
+        // build; sizeCpu is its readback copy, recorded in the same command
+        // list, mapped by the drain once the fence says the group is done.
+        ref<Buffer> sizeGpu, sizeCpu;
         std::vector<PendingCompact> items;
         uint64_t epoch = 0;    // highest epoch any item was recorded under
         uint64_t opened = 0;   // the epoch it started, so age can close it
@@ -17020,22 +17052,27 @@ class World {
         size_t next = 0;
     };
 
-    // How many builds share a pool, and how many epochs an unfilled one may
+    // How many builds share a group, and how many epochs an unfilled one may
     // stay open before it is sealed and becomes eligible to be read.
     static constexpr size_t kGroupSize = 16;
     // ...and how many of them one ordinary frame will compact. See
     // drainCompactions for why this is counted in builds.
     // TWO, not four: four still left 12 to 14 ms on a frame, because each
-    // build costs a blocking size readback. Two halves that again and still
+    // build cost a blocking size readback. Two halves that again and still
     // drains fifteen builds a second against a mesher that delivers two.
+    // (The readback stopped being a wait on 2026-09-23 -- see
+    // emitCompactedSize. What is left per build is a buffer creation and a
+    // structure copy, 3-4 ms, which is what two a frame still protects.)
     static constexpr int kDrainPerFrame = 2;
     static constexpr uint64_t kGroupAge = 6;
 
     // HOW MUCH UNCOMPACTED STRUCTURE IS WORTH HOLDING RATHER THAN STALLING FOR.
     //
-    // Reading a compacted size costs a device drain -- Falcor's query pool
-    // flushes on its first read and there is no way to ask it not to -- and a
-    // drain waits for the frame currently on the GPU. Measured at about eleven
+    // Reading a compacted size USED TO cost a device drain -- Falcor's query
+    // pool flushes on its first read and there is no way to ask it not to --
+    // and a drain waits for the frame currently on the GPU. (It no longer does:
+    // see emitCompactedSize. The budget stays, because a compaction is still a
+    // buffer and a structure copy per build.) Measured at about eleven
     // milliseconds a time, which is a whole frame, and doing it every eight
     // chunks was 3.7 seconds of a 5.6-second streaming cost on a long flight:
     // once the buffer allocations were fixed, THIS became the stutter.
@@ -18020,7 +18057,8 @@ class World {
     bool recorded_ = false;  // did this frame put anything on the queue
 
     std::deque<CompactGroup> groups_;
-    std::vector<ref<RtAccelerationStructurePostBuildInfoPool>> freePools_;
+    // ...and the size buffers, recycled with their group -- see CompactGroup.
+    std::vector<std::pair<ref<Buffer>, ref<Buffer>>> freeSizeBufs_;
     TransientPool vertPool_, idxPool_, scratchPool_, rawPool_;
     // ...AND THE ONE A LOOSE BODY'S STRUCTURE LIVES IN -- see recordBuild.
     // Released only by sweepLoose, which is what makes it safe.
@@ -18086,25 +18124,21 @@ class World {
         if (!groups_.empty() && !groups_.back().sealed) groups_.back().sealed = true;
 
         CompactGroup g;
-        g.pool = acquireQueryPool();
+        if (!freeSizeBufs_.empty()) {
+            g.sizeGpu = freeSizeBufs_.back().first;
+            g.sizeCpu = freeSizeBufs_.back().second;
+            freeSizeBufs_.pop_back();
+        } else {
+            g.sizeGpu = device_->createBuffer(kGroupSize * sizeof(uint64_t),
+                                              ResourceBindFlags::UnorderedAccess,
+                                              Falcor::MemoryType::DeviceLocal);
+            g.sizeCpu = device_->createBuffer(kGroupSize * sizeof(uint64_t),
+                                              ResourceBindFlags::None,
+                                              Falcor::MemoryType::ReadBack);
+        }
         g.opened = epoch_;
         groups_.push_back(std::move(g));
         return groups_.back();
-    }
-
-    // Pools are reset and reused rather than recreated. `reset` is what puts a
-    // pool back into the write-once state its results depend on.
-    ref<RtAccelerationStructurePostBuildInfoPool> acquireQueryPool() {
-        if (!freePools_.empty()) {
-            ref<RtAccelerationStructurePostBuildInfoPool> q = freePools_.back();
-            freePools_.pop_back();
-            q->reset(ctx_);
-            return q;
-        }
-        RtAccelerationStructurePostBuildInfoPool::Desc qd;
-        qd.queryType = RtAccelerationStructurePostBuildInfoQueryType::CompactedSize;
-        qd.elementCount = uint32_t(kGroupSize);
-        return RtAccelerationStructurePostBuildInfoPool::create(device_.get(), qd);
     }
 
     // `ownResult`: put the finished structure in a buffer of ITS OWN rather
@@ -18216,6 +18250,7 @@ class World {
         const auto rb1 = std::chrono::steady_clock::now();
         ctx_->updateBuffer(g.verts.get(), m.position.data(), 0, vbytes);
         ctx_->updateBuffer(g.idx.get(), m.index.data(), 0, ibytes);
+        stagedSinceFrame_ += vbytes + ibytes;   // see endDeviceFrameIfDue
         const auto rb2 = std::chrono::steady_clock::now();
         blasAcquireMs_ += std::chrono::duration<double, std::milli>(rb1 - rb0).count();
         blasUpdateMs_ += std::chrono::duration<double, std::milli>(rb2 - rb1).count();
@@ -18300,17 +18335,57 @@ class World {
         bd.dest = g.as.get();
         bd.scratchData = g.scratch->getGpuAddress();
 
-        if (compacted) {
-            RtAccelerationStructurePostBuildInfoDesc pbi = {};
-            pbi.type = RtAccelerationStructurePostBuildInfoQueryType::CompactedSize;
-            pbi.index = g.query;
-            pbi.pool = group->pool.get();
-            ctx_->buildAccelerationStructure(bd, 1, &pbi);
-        } else {
-            ctx_->buildAccelerationStructure(bd, 0, nullptr);
-        }
+        ctx_->buildAccelerationStructure(bd, 0, nullptr);
+        // -- THE COMPACTED SIZE, WITHOUT A QUERY POOL -- see emitCompactedSize --
+        if (compacted && group->sizeGpu && group->sizeCpu)
+            g.sizeKnown = emitCompactedSize(g, *group);
         recorded_ = true;
         return g;
+    }
+
+    // -----------------------------------------------------------------------
+    // THE COMPACTED SIZE, EMITTED WHERE THE CPU CAN READ IT WITHOUT WAITING.
+    //
+    // (2026-09-23, "prevent hitching across the game".) The size used to come
+    // back through Falcor's post-build-info pool, and reading it is a device
+    // WAIT: getElement does submit(true) on the first read after every reset,
+    // every group has a freshly reset pool, and gfx's own getResult waits too
+    // (reading the gfx pool directly was tried and measured the same, 0.31
+    // against 0.32 ms a read). On a walk that read was the single worst thing
+    // in the streamer -- 14 to 25 ms on the frame a group drained.
+    //
+    // D3D12 does not need any of that. The structure's size is written by
+    // EmitRaytracingAccelerationStructurePostbuildInfo into an ordinary buffer,
+    // a copy in the SAME command list takes it to a readback buffer, and the
+    // drain -- which already refuses a group the fence has not passed -- maps
+    // that and reads it. Nothing waits: by the time anything reads the value,
+    // the device has provably written it.
+    //
+    // FALCOR DOES EVERY BARRIER AND THE COPY, so its state tracker stays the
+    // single owner of every resource state; the only native call is the emit,
+    // which Falcor has no entry point for. The uavBarrier on the structure is
+    // what orders the build before the emit reads it.
+    //
+    // Returns false if the native list cannot be had -- the build then carries
+    // no size, and finishCompact clones it at full size rather than guessing.
+    // -----------------------------------------------------------------------
+    bool emitCompactedSize(const Staged &g, CompactGroup &grp) {
+        ctx_->uavBarrier(g.uncompacted.get());
+        ctx_->resourceBarrier(grp.sizeGpu.get(), Falcor::Resource::State::UnorderedAccess);
+        ID3D12GraphicsCommandList *base =
+            ctx_->getLowLevelData()->getCommandBufferNativeHandle().as<ID3D12GraphicsCommandList *>();
+        ID3D12GraphicsCommandList4 *cl = nullptr;
+        if (!base || FAILED(base->QueryInterface(IID_PPV_ARGS(&cl))) || !cl) return false;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC d = {};
+        d.DestBuffer = grp.sizeGpu->getGpuAddress() + uint64_t(g.query) * sizeof(uint64_t);
+        d.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+        const D3D12_GPU_VIRTUAL_ADDRESS src = g.as->getGpuAddress();
+        cl->EmitRaytracingAccelerationStructurePostbuildInfo(&d, 1, &src);
+        cl->Release();
+        ctx_->copyBufferRegion(grp.sizeCpu.get(), uint64_t(g.query) * sizeof(uint64_t),
+                               grp.sizeGpu.get(), uint64_t(g.query) * sizeof(uint64_t),
+                               sizeof(uint64_t));
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -18321,9 +18396,27 @@ class World {
     // that -- a driver is entitled to report a compacted size no smaller than
     // the original, and cloning is the right answer when it does.
     // -----------------------------------------------------------------------
-    void finishCompact(PendingCompact &p, RtAccelerationStructurePostBuildInfoPool *pool) {
+    void finishCompact(PendingCompact &p, CompactGroup &grp) {
         Staged &g = p.staged;
-        const uint64_t compacted = pool->getElement(ctx_, g.query);
+        const auto tr0 = std::chrono::steady_clock::now();
+        // THE SIZE READ, TIMED ON ITS OWN -- see emitCompactedSize. Mapped and
+        // unmapped per read rather than held: Map is what makes the device's
+        // write visible to a CPU cache that may hold the previous group's value.
+        uint64_t compacted = 0;   // 0 means "unknown": cloned at full size below
+        if (g.sizeKnown) {
+            if (const uint64_t *sz = static_cast<const uint64_t *>(grp.sizeCpu->map())) {
+                compacted = sz[g.query];
+                grp.sizeCpu->unmap();
+            }
+        }
+        {
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - tr0)
+                                  .count();
+            prof_.compactReadMs += ms;
+            prof_.compactReadWorst = std::max(prof_.compactReadWorst, ms);
+            ++prof_.compactReads;
+        }
         const uint64_t finalSize =
             (compacted > 0 && compacted < g.uncompactedSize) ? compacted : g.uncompactedSize;
 
@@ -18415,7 +18508,64 @@ class World {
         deviceDone_ = epoch_;
         ++epoch_;
         recorded_ = false;
+        ++submitsSinceFrame_;
+        endDeviceFrameIfDue();
     }
+
+    // -----------------------------------------------------------------------
+    // A RUN OF UPDATES WITH NO FRAME BETWEEN THEM STILL HAS TO END ONE.
+    //
+    // (2026-09-23. --kill-test and --locate-test lost the device on every run,
+    //  "INVALID CALL", and the debug layer's only words were "Command lists
+    //  must be successfully closed before execution" -- nothing recorded into
+    //  the list was illegal. It ran out of memory.)
+    //
+    // Falcor reclaims per-frame memory in Device::endFrame and NOWHERE ELSE:
+    // the staging copy behind every updateBuffer and the command allocator
+    // live in gfx's transient heap, which is reset only there; and every
+    // buffer this class drops is only really released there
+    // (executeDeferredReleases). The game ends a frame after every present, so
+    // it never sees this. But the load prime, a teleport's catch-up and every
+    // test harness call update() over and over INSIDE one frame -- the kill
+    // test streams a fresh ring 120 updates at a time for eighteen species --
+    // and all three kinds of memory grow until a command list cannot close.
+    // It is also the likely end of the 2026-09-20 "load the world in before
+    // teleportation" crash, which died the same way inside one frame.
+    //
+    // So World ends the device frame itself once it has recorded more since
+    // the app's last one (frameMark) than a frame ever does: an ordinary frame
+    // is one submit and a few megabytes. It costs a wait only on the frame
+    // three device frames back, which in a burst like this is the point.
+    // -----------------------------------------------------------------------
+    static constexpr int kSubmitsPerDeviceFrame = 16;
+    static constexpr size_t kStagedPerDeviceFrame = size_t(256) << 20;
+    int submitsSinceFrame_ = 0;
+    size_t stagedSinceFrame_ = 0;
+    size_t deviceFramesForced_ = 0;
+    void endDeviceFrameIfDue() {
+        if (submitsSinceFrame_ < kSubmitsPerDeviceFrame && stagedSinceFrame_ < kStagedPerDeviceFrame)
+            return;
+        device_->endFrame();
+        submitsSinceFrame_ = 0;
+        stagedSinceFrame_ = 0;
+        ++deviceFramesForced_;
+    }
+
+  public:
+    // The app's frame boundary -- see endDeviceFrameIfDue. Once per frame,
+    // before anything that may call update().
+    void frameMark() {
+        submitsSinceFrame_ = 0;
+        stagedSinceFrame_ = 0;
+        if (!framesMarked_++) deviceFramesAtLoad_ = deviceFramesForced_;
+    }
+    // ...split at the first frame, because the load prime is SUPPOSED to hit
+    // it and a walk is supposed not to.
+    size_t deviceFramesForced() const { return deviceFramesForced_; }
+    size_t deviceFramesAtLoad() const { return framesMarked_ ? deviceFramesAtLoad_ : deviceFramesForced_; }
+    size_t framesMarked_ = 0, deviceFramesAtLoad_ = 0;
+
+  private:
 
     // -----------------------------------------------------------------------
     // Compact whatever the device has finished building.
@@ -18442,8 +18592,9 @@ class World {
     // that idle time is free -- but a group only becomes eligible once the
     // DEVICE has finished it, so while you walk they pile up unread, and the
     // moment the streamer draws breath every one of them lands on the same
-    // frame. Each carries up to kGroupSize builds, and each build costs a
-    // blocking size readback plus a buffer creation.
+    // frame. Each carries up to kGroupSize builds, and each build cost a
+    // blocking size readback plus a buffer creation (the readback is no longer
+    // a wait -- see emitCompactedSize).
     //
     // MEASURED on a walk, on frames that adopted NO chunks at all:
     //
@@ -18453,7 +18604,7 @@ class World {
     // total is identical; it is simply not allowed to arrive all at once.
     //
     // COUNTED IN BUILDS RATHER THAN GENERATIONS, because a generation is up to
-    // kGroupSize of them and each one costs a blocking size readback plus a
+    // kGroupSize of them and each one cost a blocking size readback plus a
     // buffer creation: capping at one generation still left 23 ms frames.
     // Sixteen builds is what a group holds and four a frame drains one in four
     // frames -- fifteen a second, against a mesher that delivers two.
@@ -18492,7 +18643,7 @@ class World {
             CompactGroup &grp = groups_.front();
             if (!grp.sealed || grp.epoch > deviceDone_) break;
             // AS MANY AS THE BUDGET ALLOWS, FROM WHERE THIS GROUP GOT TO. The
-            // generation is only retired -- and its query pool only recycled --
+            // generation is only retired -- and its size buffers only recycled --
             // once every one of its builds has been compacted, so a half-drained
             // group is left at the front for the next call.
             while (grp.next < grp.items.size()) {
@@ -18520,9 +18671,9 @@ class World {
                 // hundred frames of the minute AFTER the tree came apart.
                 //
                 // AND IT DOES NOT SPEND THE BUDGET. kDrainPerFrame is two
-                // because each item costs a blocking size readback; one that
-                // does no readback costs four pool releases and is not what
-                // that budget is protecting the frame from.
+                // because each item costs a buffer creation and a structure
+                // copy; one that does neither costs four pool releases and is
+                // not what that budget is protecting the frame from.
                 //
                 // THE RECYCLE STILL RUNS, unchanged and in the same place: the
                 // vertices, indices and scratch have to go back whatever
@@ -18537,14 +18688,14 @@ class World {
                     compactAll || !(p.key == kNoOwner && !p.direct && p.held < 0);
                 if (wanted && maxItems >= 0 && done >= maxItems) return any;
                 if (wanted) {
-                    finishCompact(p, grp.pool.get());
+                    finishCompact(p, grp);
                     ++done;
                 }
                 recyclePending(p.staged);
                 ++grp.next;
                 any = true;
             }
-            freePools_.push_back(grp.pool);
+            if (grp.sizeGpu && grp.sizeCpu) freeSizeBufs_.push_back({grp.sizeGpu, grp.sizeCpu});
             groups_.pop_front();
         }
         return any;
@@ -21516,6 +21667,7 @@ class World {
     // chunks to mesh, upload and keep in the TLAS for the same view distance
     // straight ahead. The corners it drops were the furthest, haziest and most
     // expensive part of the frame.
+    std::vector<std::pair<int, int>> askScratch_;   // see rering's request batch
     bool rering(int cx, int cz) {
         const int R = maxi(1, viewChunks);
         const int R2 = R * R;
@@ -21545,16 +21697,21 @@ class World {
             }
 
         bool changed = false;
+        const auto te0 = std::chrono::steady_clock::now();
         for (auto it = chunks_.begin(); it != chunks_.end();) {
             if (wanted_.count(it->first) == 0) {
                 pool_.release(it->second.triOffset, it->second.tris);
                 residentTris_ -= it->second.tris;
                 it = chunks_.erase(it);
                 changed = true;
+                ++prof_.evicted;
             } else {
                 ++it;
             }
         }
+        const auto te1 = std::chrono::steady_clock::now();
+        prof_.evictWorst = std::max(
+            prof_.evictWorst, std::chrono::duration<double, std::milli>(te1 - te0).count());
 
         // -- AND `requested_` IS NOT CLEARED ON A JUMP --------------------
         //
@@ -21595,10 +21752,17 @@ class World {
         std::sort(order.begin(), order.end(),
                   [](const std::pair<int, std::pair<int, int>> &a,
                      const std::pair<int, std::pair<int, int>> &b) { return a.first < b.first; });
+        // ONE BATCH, NOT ONE LOCK A CHUNK -- see ChunkMesher::requestMany.
+        askScratch_.clear();
         for (const auto &o : order) {
             requested_.insert(chunkKey(o.second.first, o.second.second));
-            mesher_.request(o.second.first, o.second.second);
+            askScratch_.push_back(o.second);
         }
+        mesher_.requestMany(askScratch_);
+        prof_.askWorst = std::max(
+            prof_.askWorst,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - te1)
+                .count());
         return changed;
     }
 
@@ -22551,6 +22715,18 @@ class World {
             inputs.flags = inputs.flags | RtAccelerationStructureBuildFlags::AllowUpdate;
         inputs.descCount = n;
         inputs.instanceDescs = instanceDescBuf_->getGpuAddress();
+        // -- AND THE UPLOAD HAS TO LAND BEFORE THE BUILD READS IT (2026-09-23) --
+        //
+        // Found by the D3D12 debug layer, once --debug could print what it says
+        // (see App::drainInfoQueue): every top-level build read this buffer in
+        // COPY_DEST, straight after the updateBuffer that filled it. Falcor
+        // transitions what a SHADER binds; a build takes the buffer by GPU
+        // address, so nothing moved it and nothing ordered the copy before the
+        // read. NVIDIA's driver let it through -- which is why it never showed
+        // as a crash -- but it is a hazard the specification does not promise
+        // to survive, and the symptom it would have is a top level built from
+        // half-written instances for one frame: a flicker nobody could pin.
+        ctx_->resourceBarrier(instanceDescBuf_.get(), Falcor::Resource::State::NonPixelShader);
 
         const auto pre = RtAccelerationStructure::getPrebuildInfo(device_.get(), inputs);
         ensureBuffer(tlasScratch_, pre.scratchDataSize, ResourceBindFlags::UnorderedAccess,

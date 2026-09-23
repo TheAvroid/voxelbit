@@ -47,6 +47,16 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>   // SetThreadPriority -- see ChunkMesher::run
+#endif
+
 #include "voxel/expand.h"
 #include "player/collide.h"
 #include "world/voxelworld.h"
@@ -203,6 +213,24 @@ class ChunkMesher {
                 pending_.push_back({cx, cz, false});
         }
         inCv_.notify_one();
+    }
+
+    // -- A WHOLE RING'S WORTH IN ONE LOCK (2026-09-23) --------------------
+    //
+    // rering asked for each new chunk with request(), and crossing a chunk
+    // boundary is thirty-odd of them. Each one took inMx_ and woke a worker --
+    // and the woken worker's first act is to take inMx_ itself and scan the
+    // queue for the nearest job, so the main thread queued behind the workers
+    // it had just woken, thirty times over. Measured: the ask half of rering
+    // at up to 9.5 ms. Same queue, same order, same pick -- one lock, and every
+    // worker woken once at the end.
+    void requestMany(const std::vector<std::pair<int, int>> &cells) {
+        if (cells.empty()) return;
+        {
+            std::lock_guard<std::mutex> lk(inMx_);
+            for (const auto &c : cells) pending_.push_back({c.first, c.second, false});
+        }
+        inCv_.notify_all();
     }
 
     // WHICH CHUNK THE FILL GROWS OUT OF. Called by World::rering every time the
@@ -1162,6 +1190,27 @@ class ChunkMesher {
     }
 
     void run() {
+#ifdef _WIN32
+        // -- BELOW THE MAIN THREAD (2026-09-23) --------------------------------
+        //
+        // There are hardware_concurrency - 2 of these -- twenty-six on the
+        // 28-thread dev machine -- and while you walk every one of them is
+        // busy. At the SAME priority as the main thread, the scheduler owes the
+        // frame nothing: it can hand the core to a worker for a whole quantum
+        // (15.6 ms on Windows), and that showed up as a lap costing 16.6 ms
+        // that is 0.1 ms on every other frame. Below normal, a worker gives the
+        // core back the moment the main thread or the driver's own threads
+        // want it, and still gets every cycle they leave -- a chunk arrives a
+        // little later on a busy frame, and nothing a chunk does is urgent at
+        // the frame scale.
+        //
+        // MEASURED, three interleaved pairs on one walk: the main thread's
+        // BLAS work per chunk 3.26 -> 1.49 ms (it was queueing for a core),
+        // the world prime 4.1 -> 2.5 s, rering's ask worst 3.8 -> 0.24 ms (a
+        // worker holding inMx_ no longer sits out a quantum), the life
+        // segment's worst 15.3 -> 8.2 ms. Chunks meshed per second unchanged.
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
         // ONE PER WORKER, for the life of the thread -- the grids and the noise
         // memo inside it are pure working storage, and rebuilding them per
         // chunk was several hundred kilobytes of allocate-and-zero per job.

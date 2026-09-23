@@ -86,11 +86,14 @@
         }
         if (physics_.available()) {
             hStart();
+            lapBegin();
             // REBUILT WHEN THE GROUND MOVES, not only when the player does.
             // A dig changes the shape of the floor under everything that is
             // falling, and the patch is the only copy of it the solver has.
             maybeRebuildGroundPatch();
+            lap(kLapGround);
             physics_.step(dt);
+            lap(kLapSolver);
             hPhys_ += hStop();
             // Gathered ONCE for the whole band rather than per body: walkWorld
             // runs collidersNear, and asking it per chip per frame would be the
@@ -122,6 +125,7 @@
                     return walkGroundM(ww, x, z);
                 });
             world_.flushDebrisInstances();
+            lap(kLapDebris);
             hDebris_ += hStop();   // --fell-live reads it
             // -- WHATEVER A FELLED TREE WAS CARRYING, FALLING -----------------
             //
