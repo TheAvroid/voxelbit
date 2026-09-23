@@ -502,7 +502,17 @@
             ImGui::SetClipboardText(out.c_str());
             return true;
         }
-        if (e.key == Input::Key::P) shotRequested_ = true;
+        // -- NO SCREENSHOT KEY -------------------------------------------
+        //
+        // (user 2026-09-22: "remove the 6 keybind completely. no screenshots.")
+        //
+        // 6 AND P ARE BOTH GONE, and so is the readback behind them. It was put
+        // on 6 an hour earlier, crashed the game on the first press, and could
+        // not be reproduced here in four separate ways -- so what is removed is
+        // a feature that was not working and had no diagnosis. --shot still
+        // exists and is untouched: that is a command-line capture the test
+        // harness drives, it quits on the next line, and it has never been the
+        // thing that broke.
         // WHERE YOU ARE -- see showCoords_. Free of the console and the menu
         // for the reason every other bare key here is: a letter typed into the
         // console must reach the console.

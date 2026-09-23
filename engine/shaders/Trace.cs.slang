@@ -1153,6 +1153,31 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // have had -- it was not a flyer, it was KIND_TERRAIN. See World::place.
     h.moved = inst.prevOffset;
 
+    // -- ...AND HOW FAR IT TURNED, FOR A LOOSE BODY -------------------------
+    //
+    // (user 2026-09-22: "the trees are flickering when the player chops them
+    //  down".) A felled tree and the pieces it breaks into TURN, and a turn
+    // moves every surface by a different amount -- the crown of a 26 m trunk
+    // going over travels metres while its butt barely moves. prevOffset alone
+    // gave every surface the same vector, so Ray Reconstruction was reprojecting
+    // the whole falling tree from the wrong place. For these instances the host
+    // sends prevOffset as the travel of the instance ORIGIN and flap as the turn
+    // since last frame, axis * angle, taking a vector of the body now back to
+    // where it pointed then -- see World::SlotXf. Rotate this hit's offset from
+    // the origin back through it, and the difference is how far the surface
+    // itself turned. Flyers and the tool own `flap` and are excluded; every
+    // other instance leaves it at zero and is untouched.
+    if (inst.kind != KIND_FLYER && inst.kind != KIND_HELD && any(inst.flap != 0.0f))
+    {
+        const float3x4 o2w = q.CommittedObjectToWorld3x4();
+        const float3 r = h.p - float3(o2w[0][3], o2w[1][3], o2w[2][3]);
+        const float th = length(inst.flap);
+        const float3 k = inst.flap / th;
+        const float ct = cos(th), st = sin(th);
+        const float3 rWas = r * ct + cross(k, r) * st + k * (dot(k, r) * (1.0f - ct));
+        h.moved = inst.prevOffset + (r - rWas);
+    }
+
     // -- AND THE TOOL, WHICH IS NOT SOMEWHERE IN THE WORLD AT ALL -----------
     //
     // Everything above is a correction ON TOP of the static-world reprojection:

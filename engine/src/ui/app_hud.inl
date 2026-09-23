@@ -781,7 +781,10 @@
         // ...AND NOT OVER A SCREEN THAT IS SWITCHING OFF. The crosshair is
         // drawn after the tone map, so it would sit there in full brightness
         // over a collapsing picture and then float alone on the black.
-        if (!crosshair_ || menuOpen_ || quitting_) return;
+        // ...AND NOT IF IT HAS BEEN SWITCHED OFF (user 2026-09-22). The row
+        // is under visuals, beside the compass -- the two things in that card
+        // that are ON the screen rather than part of how it is rendered.
+        if (!crosshair_ || !opt_.crosshair || menuOpen_ || quitting_) return;
 
         const float w = float(target->getWidth()), h = float(target->getHeight());
         // v2's sizes, and v2's whole-number scaling rule with them: 32 px across
@@ -1052,7 +1055,6 @@
             "g            = respawn\n"
             "ctrl+g       = refresh\n"
             "r            = record\n"
-            "p            = screenshot\n"
             "f1           = help\n"
             "f3           = coordinates\n"
             "o            = arcade\n"
@@ -1099,7 +1101,7 @@
             "                        works there too)\n"
             "  - / =                 exposure down / up\n"
             "  [ / ]                 bounces down / up\n"
-            "  P                     screenshot            F1   this help\n"
+            "  F1                    this help\n"
             "  F3                    coordinates -- x y z at your feet\n"
             // The water panel had this line and no longer has a key at all --
             // it is `--water-ui` now. See onKeyEvent, where L used to be.

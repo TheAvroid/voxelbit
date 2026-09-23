@@ -147,7 +147,30 @@ inline LifeKind lifeAtSlot(int slot) {
     if (s < kLakeSlots) {
         const int fish = kSalmonCount + kBassCount + kKoiCount + kMinnowCount + kCatfishCount +
                          kBluegillCount;
-        if (s < fish) return {"fish", true, false};   // v1: kind 6 leaves meat
+        if (s < fish) {
+            // -- ...EXCEPT THE MINNOW, WHICH LEAVES NOTHING -----------------
+            //
+            // (user 2026-09-22: "when killing a minow, it should not drop any
+            //  meat".)
+            //
+            // THE SAME CALL THE BETTA MAKES, one note below, and for the same
+            // reason: a minnow is 30 cm of fish (see kMinnowCellM) and a steak
+            // off one is the joke the betta note is already making. The five
+            // that still pay -- salmon, bass, koi, catfish, bluegill -- are all
+            // things you would actually eat.
+            //
+            // COUNTED IN THE FILL'S OWN TERMS, not against a hard offset. The
+            // band is laid out by fillFish in LakeLife::publish -- salmon,
+            // bass, koi, MINNOW, catfish, bluegill, betta -- so the minnow's
+            // run starts after the three before it and is kMinnowCount long.
+            // Written as a sum of the same constants, a count that changes
+            // moves this with it; written as 22 it would not, and the note
+            // below is what a population moving out of register looks like.
+            const int beforeMinnow = kSalmonCount + kBassCount + kKoiCount;
+            const bool minnow = s >= beforeMinnow && s < beforeMinnow + kMinnowCount;
+            // v1: kind 6 leaves meat -- for the fish that are a meal.
+            return {minnow ? "minnow" : "fish", !minnow, false};
+        }
         s -= fish;
         // -- THE BETTA, WHICH IS A FISH THAT LEAVES NOTHING ----------------
         //

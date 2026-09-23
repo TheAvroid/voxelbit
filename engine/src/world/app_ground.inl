@@ -103,6 +103,7 @@
             // Gathered ONCE for the whole band: walkWorld runs collidersNear,
             // and asking it per chip per frame would be the expensive part of
             // a feature that is otherwise nearly free.
+            hStart();
             const WalkWorld ww = walkWorld();
             world_.updateDebris(
                 physics_, player_.eyePosition(), simMs_,
@@ -121,6 +122,36 @@
                     return walkGroundM(ww, x, z);
                 });
             world_.flushDebrisInstances();
+            hDebris_ += hStop();   // --fell-live reads it
+            // -- WHATEVER A FELLED TREE WAS CARRYING, FALLING -----------------
+            //
+            // See World::dropHangers. A fruit becomes a pickable fruit while the
+            // drops have a free slot -- the same spill a shot-down one makes --
+            // and a falling body after that, so a laden oak does not push the
+            // player's own dropped kit out of the drops' eight slots.
+            {
+                Vec3 fa{0.0f, 0.0f, 0.0f};
+                int fk = 0, nth = 0, asBodies = 0;
+                while (world_.takeFallenFruit(&fa, &fk)) {
+                    const int slot = (fk == 1) ? orangeTool_ : appleTool_;
+                    const bool room = drops_.count() < kDropSlots;
+                    if (slot >= 0 && room && !held_.tool(slot).models.empty()) {
+                        const Tool &t = held_.tool(slot);
+                        drops_.spill(slot, t.models[0], t.sx, t.sy, t.sz, fa,
+                                     float(nth) * 2.39996f);   // the golden angle apart
+                    } else {
+                        world_.spawnFruitBody(physics_, fa, fk, simMs_);
+                        ++asBodies;
+                    }
+                    ++nth;
+                }
+                if (nth > 0) {
+                    std::printf("  fell     %d fruit came down with the tree: %d to pick up, "
+                                "%d as bodies (the drops were full)\n",
+                                nth, nth - asBodies, asBodies);
+                    std::fflush(stdout);
+                }
+            }
         }
     }
 

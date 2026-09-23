@@ -99,7 +99,10 @@ STAGE = os.path.join(DIST, 'stage')
 # gets, and will not be again until there is a certificate to sign it with.
 OUT_EXE = os.path.join(ROOT, 'voxelbit-sfx.exe')
 OUT_ZIP = os.path.join(ROOT, 'voxelbit.zip')
-OUT_SETUP = os.path.join(ROOT, 'voxelbit.exe')
+# IN website/, NOT AT THE ROOT (user 2026-09-22). That is where index.html
+# links to it from, and keeping one copy is what stops the two drifting -- see
+# the OutputDir note in voxelbit.iss, which has to agree with this.
+OUT_SETUP = os.path.join(ROOT, 'website', 'voxelbit.exe')
 ISS = os.path.join(ROOT, 'tools', 'voxelbit.iss')
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,62 @@ inline constexpr float kArrowAimM = 30.0f;  // AIM_FAR 300 voxels
 // minute is long enough that you can walk up to one you shot.
 inline constexpr float kArrowRestSec = 60.0f;
 
+// -- WHAT WATER DOES TO A SHAFT ------------------------------------------
+//
+// (user 2026-09-22: "the arrows should go through the water, instead they get
+//  stuck on the surface".)
+//
+// HOW MUCH SPEED THE SURFACE TAKES, on the substep that crosses it. An arrow
+// hitting water at 48 m/s does not carry on at 48 m/s, and the one time this
+// file tried letting it (see the note at the crossing) the result was reported
+// as a dart: the shaft crossed the whole lake in a straight line and buried
+// itself in the mud, all of it visible through clear water.
+//
+// 0.30 of it: enough that the entry READS as an entry -- a visible change of
+// pace at the surface -- without being the full stop that replaced it. At 48
+// m/s a shaft enters the water at about 14, which is a dive rather than a dart.
+inline constexpr float kArrowSplashKeep = 0.30f;
+
+// V2_ARROW_LOG=1 prints what a shaft meets at the waterline -- see the call.
+// An env var rather than a flag, for the reason V2_SHATTER_BURST is one: this
+// is a question you ask of a RUNNING game, and the bow cannot be driven from
+// the command line.
+inline bool arrowLog() {
+    static const bool on = [] {
+        const char *e = std::getenv("V2_ARROW_LOG");
+        return e && *e && *e != '0';
+    }();
+    return on;
+}
+
+// ...AND HOW FAST IT SHEDS THE REST, per second, as an exponential decay.
+//
+// AN EXPONENT AND NOT A SUBTRACTION, because the substep is 5 ms and a linear
+// drag at that rate is a different curve at every frame rate. exp(-k*h) is the
+// same answer however the step is diced.
+//
+// -- 6.0 WAS TOO MUCH AND IT LOOKED LIKE THE BUG IT FIXED -----------------
+//
+// (user 2026-09-22: "the arrow needs to go through the water", after the first
+//  pass at this.)
+//
+// The first numbers here were 6.0 of drag against 12% of gravity, and together
+// they are a shaft that enters the water and then HANGS: terminal speed is
+// g/k, so 0.12 * 17 / 6.0 is a third of a metre a second. It does go in -- and
+// from outside, an arrow drifting down at 30 cm/s a hand's width under the
+// surface is indistinguishable from one stuck ON it, which is the report.
+//
+// THE PAIR IS WHAT MATTERS, NOT EITHER NUMBER. 3.0 against 55% of gravity puts
+// terminal at about 3 m/s, so a three-metre lake is crossed in about a second
+// -- fast enough to read as sinking, slow enough that you watch it happen.
+inline constexpr float kArrowWaterDrag = 3.0f;
+
+// AND GRAVITY IS ONLY PARTLY CANCELLED, which is buoyancy without modelling it:
+// a wooden shaft is light in water but it is not neutral, and it is fletched at
+// one end and pointed at the other. 55% sinks it. The 12% this replaced was
+// near enough to neutral that nothing reached the bed.
+inline constexpr float kArrowWaterG = 0.55f;
+
 // The roll, from the JS engine's projectiles.js. Radians a second about the
 // shaft's own axis -- about 1.4 turns a second.
 inline constexpr float kArrowRoll = 9.0f;
@@ -120,6 +176,10 @@ class Arrows {
         float roll = 0.0f;
         bool live = false;   // in the air
         bool stuck = false;  // landed, and still standing in whatever it hit
+        // IS IT UNDER THE WATERLINE -- see the crossing in update(). State
+        // rather than a test, because the SPLASH is a transition and a shaft
+        // loosed from under water has not made one.
+        bool wet = false;
         // -- ON ITS WAY TO THE PLAYER'S HAND ------------------------------
         //
         // (user 2026-09-17: "when absorbing the arrow in the terrain, have to
@@ -300,27 +360,96 @@ class Arrows {
                 // THE SURFACE, FOR THE COLUMN IT IS OVER. Asked per column and
                 // not off a global waterline -- that number is the camera
                 // band's and is wrong anywhere else (see World::waterY).
+                //
+                // -- IT GOES IN NOW, IT DOES NOT LAND ON IT ------------------
+                //
+                //    (user 2026-09-22: "the arrows should go through the water,
+                //     instead they get stuck on the surface".)
+                //
+                //    THIS USED TO REST THE SHAFT AT THE WATERLINE, which is
+                //    what v1 does with anything that lands on water and which
+                //    fixed a real complaint: before it, nothing in this file
+                //    had heard of water at all, so a shaft crossed the whole
+                //    lake at full speed and buried itself in the mud -- and
+                //    through clear water you watch every metre of that, which
+                //    is why it was reported as a dart.
+                //
+                //    STOPPING IT WAS THE WRONG HALF OF THE ANSWER. The dart was
+                //    never that the arrow went in; it was that going in cost it
+                //    nothing. So the surface takes most of the speed
+                //    (kArrowSplashKeep), drag takes the rest
+                //    (kArrowWaterDrag), and gravity is nearly cancelled
+                //    (kArrowWaterG) -- the shaft slows hard at the surface,
+                //    sinks the last of the way and comes to rest in the bed,
+                //    which insideWorld already stops it at because topVox is
+                //    the lake BED and never the waterline.
+                //
+                //    THE CROSSING IS PAID FOR ONCE. `wet` is the state, and the
+                //    splash only fires on the substep that carries it from dry
+                //    to wet -- a shaft loosed from IN the water is already below
+                //    the line and must not be charged for entering it.
                 if (w.terrain) {
                     const int line = w.terrain->lakeLineAt(next.x, next.z, wmemo);
                     if (line != VoxelTerrain::kNoWaterVox) {
                         const float surf = float(line + 1) * VOXEL_M;
-                        // CROSSING IT, not merely under it: a shaft loosed from
-                        // in the water is already below the line and must not
-                        // be stopped on the frame it leaves the bow.
-                        if (next.y <= surf && a.pos.y > surf) {
-                            a.live = false;
-                            a.stuck = true;
-                            a.age = 0.0f;
-                            // AT the surface, so the fletching stands out of the
-                            // water the way it stands out of the ground.
-                            const float t = (a.pos.y - surf) /
-                                            maxf(1e-4f, a.pos.y - next.y);
-                            a.pos = a.pos + (next - a.pos) * clampf(t, 0.0f, 1.0f);
-                            landed_.push_back(a.pos);
-                            landedIdx_.push_back(int(&a - shafts_.data()));
-                            break;
+                        if (next.y <= surf) {
+                            if (!a.wet) {
+                                a.wet = true;
+                                if (a.pos.y > surf) {
+                                    a.vel.x *= kArrowSplashKeep;
+                                    a.vel.y *= kArrowSplashKeep;
+                                    a.vel.z *= kArrowSplashKeep;
+                                    // -- V2_ARROW_LOG: WHAT THE WATER DID ----
+                                    //
+                                    // There is no headless way to loose a shaft
+                                    // -- no test drives the bow -- so "it still
+                                    // sticks at the surface" can only be
+                                    // answered from the game. This prints the
+                                    // two numbers that tell the two causes
+                                    // apart: how DEEP the water is under the
+                                    // entry, and how fast the shaft is going
+                                    // once the surface has taken its share.
+                                    //
+                                    // A shallow column stops it at the bed at
+                                    // once and there is nothing to tune; a deep
+                                    // one that still does not sink is drag
+                                    // against gravity, which is kArrowWaterDrag
+                                    // and kArrowWaterG.
+                                    if (arrowLog()) {
+                                        // walkGroundM is the BED: walkTopVox
+                                        // deliberately ignores water, which is
+                                        // the whole reason a shaft can pass the
+                                        // surface at all.
+                                        const float bed = walkGroundM(w, next.x, next.z);
+                                        std::printf("v2: arrow entered water at "
+                                                    "%.1f, %.1f -- surface %.2f, bed %.2f "
+                                                    "(%.2f m deep), speed %.1f m/s\n",
+                                                    next.x, next.z, surf, bed,
+                                                    maxf(0.0f, surf - bed),
+                                                    sqrtf(a.vel.x * a.vel.x +
+                                                          a.vel.y * a.vel.y +
+                                                          a.vel.z * a.vel.z));
+                                        std::fflush(stdout);
+                                    }
+                                }
+                            }
+                        } else {
+                            a.wet = false;   // it came back out
                         }
+                    } else {
+                        a.wet = false;       // no water over this column
                     }
+                }
+                if (a.wet) {
+                    // exp(-k*h) rather than (1 - k*h): see kArrowWaterDrag.
+                    const float keep = std::exp(-kArrowWaterDrag * h);
+                    a.vel.x *= keep;
+                    a.vel.y *= keep;
+                    a.vel.z *= keep;
+                    // ...AND PUT BACK THE GRAVITY THE STEP ABOVE APPLIED IN
+                    // FULL, less the fraction water leaves it. Done here rather
+                    // than by branching the step so the dry path is untouched.
+                    a.vel.y -= kArrowG * h * (1.0f - kArrowWaterG);
                 }
                 const bool blocked = insideWorld(w, next);
                 if (!blocked) a.free_ = true;  // out in the open at last

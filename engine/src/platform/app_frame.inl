@@ -9,7 +9,7 @@
 // -----------------------------------------------------------------------------
     void onFrameRender(Falcor::RenderContext *ctx, const Falcor::ref<Fbo> &target) override {
         const auto hitchT0 = std::chrono::steady_clock::now();
-        hPhys_ = hLife_ = hPub_ = 0.0;
+        hPhys_ = hLife_ = hPub_ = hDebris_ = 0.0;
         // APPLIED A SECOND TIME, ON THE FIRST FRAME ONLY. onLoad runs before
         // the swapchain is sized and before the window is shown, and anything
         // that happens in between -- Falcor's own sizing, a DPI change, the
@@ -1787,30 +1787,50 @@
             }
         }
 
-        if (shotRequested_) {
-            shotRequested_ = false;
-            const std::string shot = outputPath("v2_shot_%03d.png", &shotIndex_);
-            const char *name = shot.c_str();
-            if (tracer_.writePng(ctx, name))
-                std::printf("v2: wrote %s at %dx%d\n", name, tracer_.displayWidth(),
-                            tracer_.displayHeight());
-            else
-                std::fprintf(stderr, "v2: could not write %s\n", name);
-            std::fflush(stdout);
-        }
-
         moving_ = false;  // cleared only once the frame it applied to is drawn
 
         // -- the scripted capture, if one was asked for -----------------------
         // --profile shares the frame counter, so a run can be measured with or
         // without a png falling out of it.
         // -- ...AND THE FRAME IS BOOKED (see HitchFrame) -------------------
+        // -- A LONG FRAME WHILE SOMETHING IS COMING APART, NAMED ----------
+        //
+        // (user 2026-09-22: "its still freezing as well before it turns into
+        //  chunks", after three rounds of headless measurement found nothing
+        //  freeze-sized.)
+        //
+        // NOTHING HEADLESS CAN SEE THIS. --fell-test measures the drain at
+        // 0.84 ms a frame over 55 frames and the solver at one step, and both
+        // of those are already too thin to feel -- so whatever is being
+        // reported happens on the render path, which that test does not run.
+        // The frame loop is the only place standing on it.
+        //
+        // ALWAYS ON, not behind --hitch. A player who fells a tree and feels a
+        // freeze is not going to be running with a diagnostic flag, and this is
+        // the one event where a frame over 30 ms has a single obvious suspect
+        // list. Rate limited to six so a bad session prints six lines, not six
+        // hundred, and gated on shatterBusy so an ordinary streaming hitch --
+        // which is a different problem with its own instrument -- says nothing.
+        const double frameMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hitchT0)
+                .count();
+        if (frameMs > kShatterLoudMs && world_.shatterBusy() && shatterLoudLeft_ > 0) {
+            --shatterLoudLeft_;
+            const World::Profile lp = world_.profile();
+            std::printf("v2: FRAME %.1f ms while a body was coming apart  "
+                        "(stream %.1f  drain %.1f  blas %.1f  tlas %.1f  phys %.1f  life %.1f  "
+                        "publish %.1f)\n",
+                        frameMs, streamMs, lp.drainMs - shatterLoudWas_.drainMs,
+                        lp.blasMs - shatterLoudWas_.blasMs, lp.tlasMs - shatterLoudWas_.tlasMs,
+                        hPhys_, hLife_, hPub_);
+            std::fflush(stdout);
+        }
+        shatterLoudWas_ = world_.profile();
+
         if (opt_.hitch) {
             const World::Profile wp = world_.profile();
             HitchFrame h;
-            h.total = float(std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - hitchT0)
-                                .count());
+            h.total = float(frameMs);
             h.stream = float(streamMs);
             h.blas = float(wp.blasMs - hitchWas_.blasMs);
             h.tlas = float(wp.tlasMs - hitchWas_.tlasMs);
@@ -1825,6 +1845,7 @@
             hitchWas_ = wp;
             hitch_.push_back(h);
         }
+        tickFellLive(ctx, frameMs, streamMs);   // --fell-live only; see app_tests_interaction.inl
         if (!opt_.shotPath.empty() || opt_.profile || !opt_.shotUi.empty()) {
             ++shotFrames_;
             // --shot-ui does its own capture at the TOP of a frame, so it must

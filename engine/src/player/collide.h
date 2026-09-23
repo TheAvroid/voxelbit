@@ -800,7 +800,31 @@ inline void solidWorldBox(const Solid &s, float voxel, float *cx, float *cz, flo
 // closest-point distance from a rectangle to the origin is the same expression
 // in either space -- so this is a box-circle test, which has an exact form,
 // wearing an ellipse's clothes.
+// -- A SOLID WITH NO EXTENT TOUCHES NOTHING ------------------------------
+//
+// (user 2026-09-22: "still when cutting down a tree, Im getting invisible
+//  barriers to the player".)
+//
+// THIS DIVIDED BY THE HALF EXTENTS AND dropSolid SETS THEM TO ZERO. Those two
+// facts sat a file apart for months. `dropSolid` is how the engine says "this
+// instance is gone" -- it zeroes hx/hz and nulls the pointers -- and
+// Player::blocked falls through to this function for exactly the solids whose
+// `vol` is null, which is exactly the ones dropSolid just emptied. So every
+// felled tree fed 0/0 and x/0 into the walk.
+//
+// AND THE ANSWER IS NOT EVEN CONSISTENTLY WRONG. This engine builds with
+// /fp:fast and /arch:AVX2 (see the compile line), which lets the compiler
+// assume no NaNs and rewrite a/b as a*(1/b) -- so what a zero extent produces
+// is whatever the optimiser makes of it that day. Measured, it blocked: a
+// felled oak left a barrier running fourteen metres from its own stump, along
+// the line z == cz where the numerator is zero and the quotient is 0/0.
+//
+// The guard is also the honest statement of the geometry. An ellipse with a
+// zero axis has no interior; nothing can be inside it. Returning false is not
+// a workaround for the division, it is the answer the division was failing to
+// compute.
 inline bool touches(const Solid &s, float x, float z, float w) {
+    if (!(s.hx > 0.0f) || !(s.hz > 0.0f)) return false;
     const float dx = maxf(0.0f, fabsf(x - s.cx) - w) / s.hx;
     const float dz = maxf(0.0f, fabsf(z - s.cz) - w) / s.hz;
     return dx * dx + dz * dz < 1.0f;

@@ -1293,7 +1293,45 @@
     // the deck, the wait belongs THERE, keyed on the position leaveStage is
     // about to restore, and the shape of it is in this note.
     // -----------------------------------------------------------------------
-    void leaveRoom() { setRoomOpen(false); }
+    // -- ...AND IT PUTS THE CURSOR BACK IN THE GAME ---------------------
+    //
+    // (user 2026-09-22: "if the user clicks the green sphere to go back,
+    //  make the cursor back in the game vs 1 esc".)
+    //
+    // setRoomOpen(false) RESTORES the capture to whatever it was before the
+    // panel opened, and coming down the ESC ladder that is the LOOSE cursor:
+    // press 1 frees the mouse, press 2 opens the panel, so captureBeforeRoom_
+    // is false and "back" handed the pointer straight back. The player was
+    // returned to the wood and then had to CLICK it before they could look
+    // around -- which is press 1's state, not the game's. A button whose word
+    // is "back" means back in the game, not back one rung.
+    //
+    // ESC IS DELIBERATELY NOT CHANGED. Closing the panel with the key is the
+    // key undoing what the key did, and it should land where the keyboard left
+    // off; this is the one path with a word on it promising otherwise. That is
+    // also why this lives in leaveRoom rather than in setRoomOpen -- the green
+    // button is leaveRoom's only caller, so the seam is already exactly the
+    // one press being described.
+    //
+    // AFTER setRoomOpen, NOT BEFORE. The close is what runs the
+    // setCapture(false) being overridden here, so taking the cursor first
+    // would simply be handed back again a line later. setCapture(true) also
+    // resets escRung_ to 0 -- see setCapture -- so the next ESC frees the
+    // mouse instead of landing on a rung the player never climbed.
+    //
+    // AND THE CLICK THAT RETURNS IS NOT A SWING. tickButtons fires the action
+    // 80 ms into the travel, so the mouse button is usually still DOWN when
+    // this runs, and the swing is polled on `lmb && swingArmed_ && looking_`
+    // with NO pause-panel gate (see app_capture.inl) -- so handing looking_
+    // back with the button held lands an axe blow on the wood the panel was
+    // standing in. Disarmed exactly as the two click-to-capture sites in
+    // app_input.inl do it; app_capture.inl re-arms on the first frame the
+    // button is seen up, so the next real click still swings.
+    void leaveRoom() {
+        setRoomOpen(false);
+        setCapture(true);
+        swingArmed_ = false;
+    }
 
     // THE ONE PLACE THE LINK LIVES. docs/discord-integration.md is where it
     // came from; the browser is the shell's business, not ours.

@@ -78,7 +78,18 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
-OutputDir=..
+; -- INTO THE WEBSITE, WHICH IS WHERE IT IS SERVED FROM ---------------------
+;
+; (user 2026-09-22: "you can remove the voxelbit.exe in the main folder and
+;  keep the exe in the website folder".)
+;
+; THERE USED TO BE TWO, and they were the same 547 MB file. index.html links to
+; it RELATIVELY -- href="voxelbit.exe", not "../voxelbit.exe" -- so the copy the
+; site serves has always been the one beside it, and the one at the repository
+; root was a second half-gigabyte that nothing pointed at. Building straight
+; into website/ is what stops the pair coming back: the download and the build
+; output are now the same file, so the site cannot go stale against it.
+OutputDir=..\website
 ; THE PLAIN NAME (user 2026-09-21: "rename voxelbit-setup.exe to just
 ; voxelbit.exe"). This IS the download now -- the self-extractor it replaced
 ; is retired, and a player fetching a game should not have to know which of

@@ -147,6 +147,28 @@ struct Options {
     // it on; --compass does too. See the HUD draw for the strip itself.
     bool compass = false;
 
+    // -- WHOLE SCREEN, OR THE WINDOW IT OPENED IN ---------------------------
+    //
+    // (user 2026-09-22: "add a fullscreen mode to the settings menu. under
+    //  visuals... by default it will always be windowed mode".)
+    //
+    // FALSE HERE AND NOT PERSISTED, which is the ask taken literally: every
+    // launch is windowed, whatever the last one ended as. That is also why it
+    // is not written to windowStateFile -- see saveWindowPlacement, which has
+    // to be told to ignore a fullscreen rect for exactly the same reason it
+    // already ignores a maximised one.
+    bool fullscreen = false;
+
+    // -- THE MARK IN THE MIDDLE OF THE SCREEN -------------------------------
+    //
+    // (user 2026-09-22: "let me toggle the cursor off and on the settings under
+    //  visual".)
+    //
+    // ON BY DEFAULT, because it is what you aim with. Off is for looking at the
+    // wood rather than playing in it -- which is also why the recorder has
+    // always dropped it from a take, with or without this. See drawCrosshair.
+    bool crosshair = true;
+
     // PHASE B -- separate the lighting from the texture before denoising.
     //
     // Off by default, and that is not laziness. The default route is DLSS Ray
@@ -719,6 +741,9 @@ struct Options {
     bool swingLog = false;
     // Fell a tree headlessly and print the body's trajectory -- see runFellTest.
     bool fellTest = false;
+    // ...and the same fell INSIDE THE REAL FRAME LOOP, rendering -- see
+    // tickFellLive. The headless test cannot see what the render path costs.
+    bool fellLive = false;
     // Dig the ground out from under a tree with no window, and report whether
     // it came down -- see runFloatTest.
     bool floatTest = false;
@@ -727,6 +752,16 @@ struct Options {
     // Survey every row of the /locate life table and check where it lands you
     // -- see runLocateTest. No window either; its whole output is stdout.
     bool locateTest = false;
+    // -- HOW MANY [G] PRESSES TO REPLAY, HEADLESS -------------------------
+    //
+    // (user 2026-09-22: "if 2056 is already the first row of the pine forest,
+    //  its not working. fix it".)
+    //
+    // tests/biome_hop_probe.cpp answers this from a TRANSCRIPTION of
+    // respawnToNextBiome, which is exactly the weakness its own header warns
+    // about -- it agrees with what the function used to do, not with what it
+    // does. This drives the real one.
+    int hopTest = 0;
     bool clipTest = false;
     bool wheatTest = false;
     bool biteTest = false;
@@ -1262,6 +1297,27 @@ inline ImVec4 kCard() { return rgb(24, 30, 39, 232.0f / 255.0f); }
 // is four now, and four pixels of near-black around a gold panel reads as a
 // gap rather than an outline.
 inline ImVec4 kCardEdge() { return rgb(191, 161, 80, 1.0f); }
+
+// =========================================================================
+// ...AND THE TWO ENDS OF IT, FOR THE GRADIENT.
+// =========================================================================
+//
+// (user 2026-09-22: "give me a gradient on the ui sliders. a gold gradient.
+//  make the gradient top to bottom, lighter color on top. apply the gradient
+//  to everything else as well in the ui".)
+//
+// 1.25x AND 0.75x OF kGold, so the pair AVERAGES to the flat colour it
+// replaces. That is what keeps this a gradient rather than a re-tint: a panel
+// lit from above still reads as the same gold it was asked to be a quarter
+// darker than, and no element changes its apparent weight against the ones
+// that are not gold.
+//
+// THE TOP LANDS ON #efc964, a hair under the watermark's #ffd76a -- which is
+// the right relationship and not a coincidence. The watermark is the reference
+// the whole palette was measured against (see kGoldLight); the panel now
+// catches that colour at its highlight and falls away below it.
+inline ImVec4 kGoldTop(float a = 1.0f) { return rgb(239, 201, 100, a); }
+inline ImVec4 kGoldBot(float a = 1.0f) { return rgb(143, 121, 60, a); }
 
 }  // namespace ui
 

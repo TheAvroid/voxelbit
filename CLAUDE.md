@@ -1,8 +1,9 @@
 # voxelbit
 
 A voxel game path traced on NVIDIA Falcor, in C++ and Slang. It ships as ONE file a
-player double-clicks: `voxelbit.exe`, a self-extracting launcher with the whole
-game appended to it.
+player double-clicks: `website/voxelbit.exe`, an Inno Setup installer. It was a
+self-extracting launcher until 2026-09-22, when Defender started deleting that on
+download as `Trojan:Win32/Sabsik.FL.A!ml` -- see tools/voxelbit.iss.
 
 **This document was rewritten on 2026-09-21.** Until that day voxelbit was a WebGPU
 renderer in a browser tab, `src/` held 78 JavaScript fragments and `game/index.html`
@@ -37,8 +38,12 @@ engine/shaders/    Slang. Deployed to build/bin/Release/shaders/v1/
 engine/build.bat   build it            run.bat   run it (--help for every option)
 game/assets/       the art the engine loads -- .vox, sound, the pixel font
 tools/             the voxelisers and bakers that produced the art
-launcher/          the self-extracting launcher
-voxelbit.exe       THE SHIPPED GAME -- built by tools/package.py, never by hand
+launcher/          the OLD self-extracting launcher -- superseded, still builds
+website/           the download page, and THE SHIPPED INSTALLER it serves:
+                   website/voxelbit.exe, built by tools/package.py --installer,
+                   never by hand. There is no copy at the repository root any
+                   more (user 2026-09-22) -- index.html links to it relatively,
+                   so the one beside it is the one players get.
 ```
 
 ### Keep `voxelbit.exe` in step with the code
@@ -51,8 +56,8 @@ A bug you just fixed is still in it.
 Refresh it with:
 
 ```
-engine\build.bat               # 1. the engine first -- package.py copies a binary
-python tools\package.py    # 2. restamp dist\voxelbit.exe
+engine\build.bat                       # 1. the engine first -- package.py copies a binary
+python tools\package.py --installer    # 2. restamp website\voxelbit.exe
 ```
 
 **THE RULE, stated by the repo owner on 2026-09-21: repackage at the end of
@@ -64,8 +69,8 @@ got a build from several fixes ago. A stale exe does not fail, it lies.
 So the last two actions of any batch that touched the engine are:
 
 ```
-engine\build.bat               # the engine first -- package.py copies a binary
-python tools\package.py    # then restamp dist\voxelbit.exe
+engine\build.bat                       # the engine first -- package.py copies a binary
+python tools\package.py --installer    # then restamp website\voxelbit.exe
 ```
 
 and the reply says the new stamp. Also run it:

@@ -1916,8 +1916,36 @@
         std::fflush(stdout);
     }
 
+    // -- IT MEASURES WHEAT, SO IT PINS ITS OWN GROUND ---------------------
+    //
+    // (found 2026-09-22, when the opening clearing moved to 2056, 224 and this
+    //  went from PASS to "A CUT PATCH MUST BE EMPTY -- WRONG".)
+    //
+    // IT WAS NOT A REGRESSION AND THE PROOF IS ONE FLAG: the same build passes
+    // at --cam-x -2131 --cam-z -2073 and fails at the new default. What differs
+    // is the TUFT it happens to find. A tuft is a site with a size, not a fixed
+    // patch (see the note on tall grass), so a wide one has stalks at a radius
+    // one swing does not reach -- and "a cut patch must be empty" is an
+    // assertion about the SWING that only holds where the tufts are small.
+    //
+    // A regression test whose verdict moves when the spawn moves is measuring
+    // the spawn. This pins the ground it runs on, so the next person to move
+    // the opening clearing does not have to rediscover that.
+    //
+    // --cam-x STILL WINS, which is what keeps it a pin and not a cage: the
+    // failure above was found by pointing it somewhere else, and that has to
+    // stay possible.
+    static constexpr float kWheatTestX = -2131.0f;
+    static constexpr float kWheatTestZ = -2073.0f;
+
     void runWheatTest() {
         std::printf("\n=== WHEAT TEST ===\n");
+        if (!opt_.camGiven) {
+            opt_.camX = kWheatTestX;
+            opt_.camZ = kWheatTestZ;
+            std::printf("  pinned to %.0f, %.0f -- see kWheatTestX\n", double(opt_.camX),
+                        double(opt_.camZ));
+        }
         player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
         for (int i = 0; i < 400; ++i) {
             world_.update(player_.pos);
@@ -2958,6 +2986,44 @@
                         "under water.\n", hitTotal);
     }
 
+    // -----------------------------------------------------------------------
+    // WHAT [G] ACTUALLY DOES, PRESS BY PRESS.
+    //
+    // (user 2026-09-22, on the pine rotation: "its not working".)
+    //
+    // THE REAL FUNCTION, NOT A COPY OF IT. This calls respawnToNextBiome the
+    // same way the key does, so anything it prints is what a player gets --
+    // including the pinned table, pinnedVisit_, the DEM clamp and teleportTo's
+    // own water and clearance nudges, none of which a transcription can carry.
+    //
+    // IT PRINTS THE WOOD IT LANDED IN, not the one it asked for. Those come
+    // apart exactly when something between the two moves you, which is the
+    // class of bug this exists to catch.
+    // -----------------------------------------------------------------------
+    void runHopTest() {
+        std::printf("\n=== HOP TEST -- %d presses of [G] ===\n", opt_.hopTest);
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+        for (int i = 0; i < 200; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        pos_ = player_.eyePosition();
+        std::printf("  start    (%.0f, %.0f) -- the %s wood\n", pos_.x, pos_.z,
+                    world_.terrain.woodName(pos_.x));
+        std::printf("  %-5s %10s %10s   %-8s %s\n", "press", "x", "z", "wood", "yaw");
+        for (int p = 1; p <= opt_.hopTest; ++p) {
+            respawnToNextBiome();
+            std::printf("  %-5d %10.0f %10.0f   %-8s %.0f\n", p, pos_.x, pos_.z,
+                        world_.terrain.woodName(pos_.x), yaw_);
+            std::fflush(stdout);
+        }
+        std::printf("\n  the pinned rows, in table order:\n");
+        for (const PinnedSpawn &ps : kPinnedSpawns)
+            std::printf("    %-8s %8.0f %8.0f\n", world_.terrain.woodName(ps.x), ps.x, ps.z);
+        std::fflush(stdout);
+    }
+
     void runLocateTest() {
         std::printf("\n=== LOCATE TEST ===\n");
         // The spawn first -- runFellTest's own note: this runs before the
@@ -3871,26 +3937,238 @@
                                                  "and every map has somewhere to arrive.");
     }
 
-    void runFellTest() {
-        std::printf("\n=== FELL TEST ===\n");
-        // WHERE THE SPAWN IS, BEFORE ANYTHING ELSE. This runs before the
-        // player has been put anywhere, so pos is still the origin -- and
-        // streaming the world round the origin finds a wood nobody is standing
-        // in. The first run of this printed "no tree within 80 m" for exactly
-        // that reason.
-        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
-
-        // The world has to exist before anything can be felled in it, and the
-        // chunks are meshed on worker threads -- so this gives them time rather
-        // than spinning on a queue they have not filled yet.
-        for (int i = 0; i < 400; ++i) {
-            world_.update(player_.pos);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // -----------------------------------------------------------------------
+    // --fell-live: THE SAME FELL, IN THE GAME.
+    //
+    // (user 2026-09-22: "again, the cherry and oak trees seem to break on a
+    //  delay" -- after --fell-test had reported every swap 0 ms late.)
+    //
+    // --fell-test steps its own loop with no rendering, so every frame it
+    // measures is a frame with nothing else in it. The drain is budgeted per
+    // FRAME and the break is on a GAME clock, so what decides whether a tree
+    // comes apart on time is how long the game's frames really are while it
+    // does -- and only the frame loop knows that. This waits for the world to
+    // stream in, fells the nearest tree with --fell-test's own blows, and then
+    // leaves the game to run: the drain, reveal and loud-frame lines it prints
+    // are the game's own, and one line a second says what the frames cost.
+    // Run with --background, like every automated launch.
+    // -----------------------------------------------------------------------
+    static constexpr int kFellLiveWarmFrames = 300;
+    static constexpr double kFellLiveRunS = 20.0;
+    static constexpr double kFellLiveEveryS = 6.0;
+    int fellLiveTrees_ = 1;   // the first is felled when the run starts
+    // -- V2_FELL_LIVE_HITS: STRIKE THE TREE WHILE IT FALLS --------------------
+    //
+    // (user 2026-09-22: "everytime I hit the tree as it is falling, it
+    //  flickers".) Stand back with the tree in view, hit the felled trunk
+    // through carveDebris every kFellLiveHitEveryS, and -- with
+    // V2_FELL_LIVE_SHOTS=<dir> -- write the frames either side of the first
+    // hit to disk, because a flicker is something to LOOK at.
+    static constexpr double kFellLiveHitEveryS = 0.8;
+    int fellLiveHits_ = 0, fellLiveShot_ = -1000;
+    float fellLiveTrunkX_ = 0.0f, fellLiveTrunkZ_ = 0.0f;
+    uint32_t fellLiveShotMask_ = 0;
+    float fellLiveTx_ = 0.0f, fellLiveTz_ = 0.0f;
+    int fellLiveFrame_ = 0, fellLiveSec_ = 0, fellLiveN_ = 0;
+    bool fellLiveCut_ = false, fellLiveDone_ = false;
+    double fellLiveSum_ = 0.0, fellLiveWorst_ = 0.0, fellLiveSim0_ = 0.0;
+    double fellLiveCpu_ = 0.0, fellLivePhys0_ = 0.0, fellLiveDebris_ = 0.0;
+    double fellLiveStream_ = 0.0, fellLiveLife_ = 0.0, fellLivePub_ = 0.0;
+    World::Profile fellLiveProf_{};
+    std::chrono::steady_clock::time_point fellLiveT0_{}, fellLiveLast_{};
+    void tickFellLive(Falcor::RenderContext *ctx, double cpuMs, double streamMs) {
+        if (!opt_.fellLive || fellLiveDone_) return;
+        const auto now = std::chrono::steady_clock::now();
+        ++fellLiveFrame_;
+        if (!fellLiveCut_) {
+            fellLiveLast_ = now;
+            // V2_FELL_LIVE_LOCATE=<what>: go there first (e.g. "apple", for a
+            // fruited oak), and give the ring the rest of the warm-up to stream.
+            static const std::string locate = [] {
+                const char *e = std::getenv("V2_FELL_LIVE_LOCATE");
+                return std::string(e ? e : "");
+            }();
+            if (!locate.empty() && fellLiveFrame_ == kFellLiveWarmFrames / 3) {
+                std::printf("  live     /locate %s\n", locate.c_str());
+                runCommand("/locate " + locate);
+            }
+            if (fellLiveFrame_ < kFellLiveWarmFrames) return;
+            std::printf("\n=== FELL LIVE === (the real frame loop, frame %d)\n", fellLiveFrame_);
+            if (!chopNearestTree(&fellLiveTrunkX_, &fellLiveTrunkZ_)) {
+                fellLiveDone_ = true;
+                askShutdown(0);
+                return;
+            }
+            fellLiveCut_ = true;
+            fellLiveT0_ = now;
+            fellLiveTx_ = fellLiveTrunkX_;
+            fellLiveTz_ = fellLiveTrunkZ_;
+            fellLiveSim0_ = simMs_;
+            fellLivePhys0_ = physics_.stepSumMs();
+            std::fflush(stdout);
+            return;
         }
-        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
-        std::printf("  spawn (%.1f, %.1f, %.1f)\n", player_.pos.x, player_.pos.y,
-                    player_.pos.z);
+        const double ms = std::chrono::duration<double, std::milli>(now - fellLiveLast_).count();
+        fellLiveLast_ = now;
+        fellLiveSum_ += ms;
+        fellLiveCpu_ += cpuMs;
+        fellLiveDebris_ += hDebris_;
+        // ANY FRAME THAT HITCHES, on its own line -- the per-second average hides
+        // exactly the frame the player feels. `ms` is the WALL interval ending
+        // at this frame, so it includes the previous present and the GPU.
+        double udDrain = 0.0, udThaw = 0.0, udStump = 0.0, udWake = 0.0;
+        world_.debrisPhases(&udDrain, &udThaw, &udStump, &udWake);
+        if (ms > 50.0 && fellLiveCut_)
+            std::printf("  live     HITCH %.1f ms at %+.0f ms after the cut: cpu %.1f  phys %.1f  "
+                        "debris %.1f (drain/swap %.1f of it stump %.1f wake %.1f; thaw %.1f)  stream %.1f  life %.1f  pub %.1f\n",
+                        ms, simMs_ - fellLiveSim0_, cpuMs, hPhys_, hDebris_, udDrain, udStump, udWake, udThaw,
+                        streamMs, hLife_, hPub_);
+        fellLiveStream_ += streamMs;
+        fellLiveLife_ += hLife_;
+        fellLivePub_ += hPub_;
+        ++fellLiveN_;
+        if (ms > fellLiveWorst_) fellLiveWorst_ = ms;
+        const double since = std::chrono::duration<double>(now - fellLiveT0_).count();
+        static const int hitsWanted = [] {
+            const char *e = std::getenv("V2_FELL_LIVE_HITS");
+            return e ? std::atoi(e) : 0;
+        }();
+        static const std::string shotDir = [] {
+            const char *e = std::getenv("V2_FELL_LIVE_SHOTS");
+            return std::string(e ? e : "");
+        }();
+        // V2_FELL_LIVE_SHOTAT=ms,ms,... : write a frame at each of those game
+        // times after the cut. V2_FELL_LIVE_VIEW=side stands square to the fall
+        // looking at the stump instead of behind the tree.
+        static const std::vector<double> shotAt = [] {
+            std::vector<double> v;
+            const char *e = std::getenv("V2_FELL_LIVE_SHOTAT");
+            for (const char *c = e; c && *c;) {
+                v.push_back(std::atof(c));
+                c = std::strchr(c, ',');
+                if (c) ++c;
+            }
+            return v;
+        }();
+        static const bool side = [] {
+            const char *e = std::getenv("V2_FELL_LIVE_VIEW");
+            return e && std::string(e) == "side";
+        }();
+        if (hitsWanted > 0 || !shotAt.empty()) {
+            // STAND BACK AND WATCH IT. The chop swings along -x, so the tree
+            // goes over towards -x: stand off on +x and a little to the side,
+            // and look at the middle of where it is falling -- or, `side`, off
+            // on +z square to the fall, looking at the cut.
+            const float ex = side ? fellLiveTx_ - 2.0f : fellLiveTx_ + 16.0f;
+            const float ez = side ? fellLiveTz_ + 11.0f : fellLiveTz_ + 7.0f;
+            if (fellLiveHits_ == 0 && fellLiveN_ <= 1 && fellLiveSec_ == 0) teleportTo(ex, ez);
+            pos_ = player_.eyePosition();
+            const float gy = walkGroundM(walkWorld(), fellLiveTx_, fellLiveTz_);
+            const Vec3 aim = side ? Vec3(fellLiveTx_ - 2.0f, gy + 2.5f, fellLiveTz_)
+                                  : Vec3(fellLiveTx_ - 5.0f, gy + 7.0f, fellLiveTz_);
+            const Vec3 look = normalize(Vec3(aim.x - pos_.x, aim.y - pos_.y, aim.z - pos_.z));
+            yaw_ = atan2f(look.x, -look.z) * 180.0f / PI;
+            pitch_ = asinf(look.y) * 180.0f / PI;
+            if (fellLiveHits_ < hitsWanted && since > 1.0 + kFellLiveHitEveryS * fellLiveHits_) {
+                const auto h0 = std::chrono::steady_clock::now();
+                const int slot = world_.testHitFelled(physics_, simMs_, kDigRadiusVox);
+                std::printf("  live     HIT %d on slot %d at %+.0f ms after the cut: %.1f ms%s"
+                            "\n", fellLiveHits_ + 1, slot, simMs_ - fellLiveSim0_,
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - h0).count(),
+                            slot < 0 ? "  (nothing to hit)" : "");
+                if (fellLiveHits_ == 0) fellLiveShot_ = fellLiveFrame_;
+                ++fellLiveHits_;
+            }
+        }
+        if (!shotDir.empty()) {
+            const double g = simMs_ - fellLiveSim0_;
+            for (size_t k = 0; k < shotAt.size(); ++k)
+                if (!(fellLiveShotMask_ & (1u << k)) && g >= shotAt[k]) {
+                    fellLiveShotMask_ |= 1u << k;
+                    char name[512];
+                    std::snprintf(name, sizeof(name), "%s/t%05.0f.png", shotDir.c_str(), g);
+                    tracer_.writePng(ctx, name);
+                }
+        }
+        // THE FRAMES EITHER SIDE OF THE FIRST HIT. The hit lands in input time
+        // on frame H; this is called after frame H has been drawn, so H-2..H+5
+        // brackets it. Written from the tone-mapped display, as --shot does.
+        if (!shotDir.empty() && fellLiveShot_ > -1000) {
+            const int k = fellLiveFrame_ - fellLiveShot_;
+            if (k >= 1 && k <= 2) {
+                char name[512];
+                std::snprintf(name, sizeof(name), "%s/hit_%+d.png", shotDir.c_str(), k);
+                tracer_.writePng(ctx, name);
+            }
+        }
+        if (!shotDir.empty() && hitsWanted > 0 && fellLiveHits_ == 0 && false) {
+            char name[512];
+            std::snprintf(name, sizeof(name), "%s/before_%d.png", shotDir.c_str(), fellLiveFrame_);
+            tracer_.writePng(ctx, name);
+        }
+        if (int(since) > fellLiveSec_) {
+            fellLiveSec_ = int(since);
+            // WHERE THE FRAME WENT: onFrameRender's own CPU time (the rest of a
+            // frame is the GPU and the present), the solver's share of that,
+            // and how many bodies it is carrying and how many are awake.
+            const double n = fellLiveN_ ? double(fellLiveN_) : 1.0;
+            int wm = 0, wn = 0, wo = 0;
+            world_.freezeWhy(&wm, &wn, &wo);
+            const World::Profile wp = world_.profile();
+            std::printf("  live     second %2d: %3d frames, %5.1f ms each, worst %5.1f   "
+                        "cpu %5.1f  solver %5.1f  debris %5.1f   bodies %d, %d awake, %d frozen "
+                        "(not: %d moving, %d on nothing, %d on a moving piece)   "
+                        "stream %.1f (blas %.1f tlas %.1f)  life %.1f  publish %.1f   "
+                        "(game clock %+.0f ms since the cut)\n",
+                        fellLiveSec_, fellLiveN_, fellLiveSum_ / n, fellLiveWorst_,
+                        fellLiveCpu_ / n, (physics_.stepSumMs() - fellLivePhys0_) / n,
+                        fellLiveDebris_ / n,
+                        physics_.liveBodies(), physics_.activeDynamics(),
+                        world_.frozenPieces(), wm, wn, wo, fellLiveStream_ / n,
+                        (wp.blasMs - fellLiveProf_.blasMs) / n, (wp.tlasMs - fellLiveProf_.tlasMs) / n,
+                        fellLiveLife_ / n, fellLivePub_ / n, simMs_ - fellLiveSim0_);
+            fellLiveProf_ = wp;
+            fellLiveStream_ = fellLiveLife_ = fellLivePub_ = 0.0;
+            std::fflush(stdout);
+            fellLiveSum_ = fellLiveWorst_ = fellLiveCpu_ = fellLiveDebris_ = 0.0;
+            fellLivePhys0_ = physics_.stepSumMs();
+            fellLiveN_ = 0;
+        }
+        // -- AND THE NEXT TREE, IF ASKED FOR MORE THAN ONE ----------------
+        //
+        // V2_FELL_LIVE_TREES=N fells a new tree every kFellLiveEveryS: the
+        // case a player makes by clearing a wood, and the one where a big
+        // tree's pieces still hold most of the debris table when the next
+        // one needs it. Each tree's own reveal line says whether it made
+        // its five seconds.
+        static const int trees = [] {
+            const char *e = std::getenv("V2_FELL_LIVE_TREES");
+            const int v = e ? std::atoi(e) : 1;
+            return v > 0 ? v : 1;
+        }();
+        if (fellLiveTrees_ < trees && since > kFellLiveEveryS * double(fellLiveTrees_)) {
+            std::printf("\n=== FELL LIVE === tree %d of %d, %.1f s in\n", fellLiveTrees_ + 1,
+                        trees, since);
+            chopNearestTree();
+            ++fellLiveTrees_;
+            std::fflush(stdout);
+        }
+        // ON THE GAME CLOCK WHEN FRAMES ARE BEING WRITTEN: a PNG takes long
+        // enough on the wall that the run would otherwise end after the first.
+        const double runFor = shotAt.empty() ? since : (simMs_ - fellLiveSim0_) * 0.001;
+        if (runFor > kFellLiveRunS + kFellLiveEveryS * double(trees - 1)) {
+            fellLiveDone_ = true;
+            askShutdown(0);
+        }
+    }
 
+    // -----------------------------------------------------------------------
+    // CUT THE NEAREST TREE THROUGH, from beside its trunk, the way a player
+    // does. --fell-test's own chop, lifted out so --fell-live can fell a tree
+    // inside the real frame loop with exactly the same blows.
+    // -----------------------------------------------------------------------
+    bool chopNearestTree(float *trunkX = nullptr, float *trunkZ = nullptr) {
         // NOT NAMED 'near'. windows.h still defines near and far as empty macros
         // from the segmented-memory era, so `std::vector<Solid> near;` compiles
         // as `std::vector<Solid> ;` and the errors name neither of them. This
@@ -3906,7 +4184,7 @@
         }
         if (!tree) {
             std::printf("  no tree within 80 m of the spawn -- try another --spawn\n");
-            return;
+            return false;
         }
         const Solid so = *tree;
         std::printf("  tree at (%.1f, %.1f, %.1f)  model %d  %d x %d voxels\n", so.tx, so.baseY,
@@ -3934,7 +4212,7 @@
                 }
         if (!nb) {
             std::printf("  the model has nothing at its base\n");
-            return;
+            return false;
         }
         float wx = 0.0f, wz = 0.0f;
         solidWorldSpace(so, float(bx / double(nb)) * VOXEL_M, float(bz / double(nb)) * VOXEL_M,
@@ -3958,9 +4236,36 @@
         }
         if (!down) {
             std::printf("  %d blows and it never came down\n", blows);
-            return;
+            return false;
         }
         std::printf("  felled after %d blows\n\n", blows);
+        if (trunkX) *trunkX = wx;
+        if (trunkZ) *trunkZ = wz;
+        return true;
+    }
+
+    void runFellTest() {
+        std::printf("\n=== FELL TEST ===\n");
+        // WHERE THE SPAWN IS, BEFORE ANYTHING ELSE. This runs before the
+        // player has been put anywhere, so pos is still the origin -- and
+        // streaming the world round the origin finds a wood nobody is standing
+        // in. The first run of this printed "no tree within 80 m" for exactly
+        // that reason.
+        player_.pos = Vec3(opt_.camX, 0.0f, opt_.camZ);
+
+        // The world has to exist before anything can be felled in it, and the
+        // chunks are meshed on worker threads -- so this gives them time rather
+        // than spinning on a queue they have not filled yet.
+        for (int i = 0; i < 400; ++i) {
+            world_.update(player_.pos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        player_.placeOnGround(walkWorld(), opt_.camX, opt_.camZ);
+        std::printf("  spawn (%.1f, %.1f, %.1f)\n", player_.pos.x, player_.pos.y,
+                    player_.pos.z);
+
+        float wx = 0.0f, wz = 0.0f;   // the trunk -- the barrier probe below walks round it
+        if (!chopNearestTree(&wx, &wz)) return;
         std::printf("  %6s %9s %9s %9s %9s %9s %9s %9s\n", "ms", "x", "y", "z", "pitch",
                     "fall m/s", "spin r/s", "in ground");
         std::printf("        (top = how far the body's highest point still is above the ground"
@@ -3974,14 +4279,48 @@
         // so without this the tree falls through a world with no floor in it --
         // which is a fault in the test rather than in the game, and the first
         // run of this spent its whole trace proving it.
-        const float dt = 1.0f / 60.0f;
-        for (int f = 0; f < 900; ++f) {
+        // THE GAME'S FRAME TIME, NOT THE TEST'S (V2_FELL_DT, seconds). The drain
+        // is budgeted in WALL milliseconds a frame, so how much GAME time it
+        // takes is frames x frame time -- and this loop's frames are a
+        // sixtieth of a second while the game's are whatever the path tracer
+        // and the drain leave. (user 2026-09-22: "the cherry and oak trees seem
+        // to break on a delay" -- the reveal line said 0 ms late here and the
+        // game did not agree.)
+        static const float dt = [] {
+            const char *e = std::getenv("V2_FELL_DT");
+            const float v = e ? float(std::atof(e)) : 0.0f;
+            return v > 0.0f ? v : 1.0f / 60.0f;
+        }();
+        const int perSec = maxi(1, int(1.0f / dt + 0.5f));
+        // THE SOLVER'S COST, PER SECOND OF THE FALL. The loud-step lines stop at
+        // forty, so they cannot say how long a freeze after a break really
+        // lasts; this can. (user 2026-09-22: "the cherry and oak trees are
+        // significantly delayed".)
+        double physSum0 = physics_.stepSumMs();
+        int physLoud0 = physics_.stepLoudAll();
+        double physWorst = 0.0;
+        for (int f = 0; f < 15 * perSec; ++f) {
             maybeRebuildGroundPatch();
             physics_.step(dt);
+            if (physics_.stepMs() > physWorst) physWorst = physics_.stepMs();
+            if (f % perSec == perSec - 1) {
+                int wAlive = 0, wBuilt = 0, wJoined = 0;
+                world_.sharedWindowStats(&wAlive, &wBuilt, &wJoined);
+                std::printf("  phys     second %2d: %6.1f ms in the solver, worst step %5.1f, "
+                            "%d over 20 ms, %d of %d bodies awake   shared windows %d "
+                            "(%d cut, %d joins so far)   floor lifts %d\n",
+                            f / perSec + 1, physics_.stepSumMs() - physSum0, physWorst,
+                            physics_.stepLoudAll() - physLoud0, physics_.activeDynamics(),
+                            physics_.liveBodies(), wAlive, wBuilt, wJoined,
+                            world_.floorClamps());
+                physSum0 = physics_.stepSumMs();
+                physLoud0 = physics_.stepLoudAll();
+                physWorst = 0.0;
+            }
             simMs_ += double(dt) * 1000.0;
             world_.updateDebris(physics_, player_.eyePosition(), simMs_,
                                 [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
-            if ((f % 30) != 0) continue;
+            if ((f % maxi(1, perSec / 2)) != 0) continue;
             for (int i = 0; i < 512; ++i) {
                 Vec3 p{0, 0, 0}, lin{0, 0, 0}, ang{0, 0, 0};
                 float q[4] = {0, 0, 0, 1};
@@ -4013,11 +4352,14 @@
                                                    walkGroundM(wwT, bhi.x, bhi.z))));
                     top = (bhi.y - g) / (2.0f * hy);
                 }
-                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f  %5.1f%% %.1fm  %5.2f\n",
+                // ...AND HOW MUCH OF IT IS INSIDE ITS STUMP -- "the top half of
+                // the tree clips through the bottom trunk", as a voxel count.
+                std::printf("  %6.0f %9.2f %9.2f %9.2f %8.1fd %9.2f %9.2f  %5.1f%% %.1fm  %5.2f"
+                            "  stump %d\n",
                             double(f) * dt * 1000.0, p.x, p.y, p.z, pitch, -lin.y,
                             sqrtf(ang.x * ang.x + ang.y * ang.y + ang.z * ang.z),
                             100.0 * double(sk.under) / double(maxi(1, sk.solid)), double(sk.worst),
-                            double(top));
+                            double(top), world_.debrisInStump(i));
                 break;
             }
         }
@@ -4119,6 +4461,68 @@
         // player happens to be standing is the "absorb at any distance" v1 was
         // reported for and fixed.
         // -------------------------------------------------------------------
+        // -------------------------------------------------------------------
+        // A FROZEN PIECE MUST STILL FALL WHEN ITS GROUND GOES.
+        //
+        // Settled pieces are taken out of the solver (see World::kFreezeAfterMs),
+        // and NOTHING FLOATS is this engine's oldest rule. So: find one that is
+        // frozen and out of the player's reach, dig the ground out from under
+        // it, and it has to come down -- thawed, and standing on a window cut
+        // from the ground as it now is rather than the one it froze on.
+        // -------------------------------------------------------------------
+        {
+            std::printf("\n\n=== THAW TEST -- digging out from under a frozen piece ===\n");
+            int pick = -1, frozenN = 0;
+            Vec3 p0{0, 0, 0};
+            for (int i = 0; i < kDebrisInstances; ++i) {
+                if (!world_.debrisFrozen(i)) continue;
+                ++frozenN;
+                Vec3 p{0, 0, 0};
+                float q[4] = {0, 0, 0, 1};
+                if (!world_.debrisPose(i, &p, q)) continue;
+                const float dx = p.x - player_.pos.x, dz = p.z - player_.pos.z;
+                if (pick < 0 && dx * dx + dz * dz > 6.0f * 6.0f) { pick = i; p0 = p; }
+            }
+            if (pick < 0) {
+                std::printf("  %d frozen, none out of reach -- %s\n", frozenN,
+                            frozenN ? "nothing to test here" : "WRONG, nothing ever froze");
+            } else {
+                const WalkWorld dw = walkWorld();
+                const float g = walkGroundM(dw, p0.x, p0.z);
+                for (int k = 0; k < 3; ++k)
+                    for (int oz = -2; oz <= 2; ++oz)
+                        for (int ox = -2; ox <= 2; ++ox)
+                            world_.dig(Vec3{p0.x + float(ox) * 0.5f, g - 0.3f - float(k) * 0.6f,
+                                            p0.z + float(oz) * 0.5f},
+                                       6);
+                for (int f = 0; f < 180; ++f) {
+                    maybeRebuildGroundPatch();
+                    physics_.step(1.0f / 60.0f);
+                    simMs_ += 1000.0 / 60.0;
+                    world_.updateDebris(
+                        physics_, player_.eyePosition(), simMs_,
+                        [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
+                }
+                Vec3 p1{0, 0, 0};
+                float q1[4] = {0, 0, 0, 1};
+                const bool still = world_.debrisPose(pick, &p1, q1);
+                const float drop = still ? p0.y - p1.y : 0.0f;
+                // A PIECE THAT DID NOT DROP MAY BE HELD BY ITS NEIGHBOURS, which
+                // is a pile bridging a hole and is real. Only one standing on the
+                // STATIC world at its old height is floating.
+                const int sup = still ? world_.debrisSupport(physics_, pick) : -1;
+                const char *on = sup == 1 ? "the static world" : sup == 2 ? "a moving piece"
+                               : sup == 3 ? "a frozen piece" : "nothing";
+                const bool ok = !still || drop > 0.2f || sup == 2 || sup == 3;
+                std::printf("  slot %d, frozen at y %.2f over ground %.2f: now y %.2f (%s, on %s), "
+                            "dropped %.2f m  %s\n",
+                            pick, double(p0.y), double(g), double(p1.y),
+                            world_.debrisFrozen(pick) ? "frozen again" : "free", on, double(drop),
+                            ok ? (drop > 0.2f ? "correct, it fell" : "correct, a pile holds it")
+                               : "WRONG -- IT IS FLOATING OVER THE HOLE");
+            }
+        }
+
         {
             std::printf("\n=== ABSORB TEST -- walking up to the pieces ===\n");
             int live0 = 0, target = -1;
@@ -4192,6 +4596,117 @@
         // six-connected pieces that left, so "it broke" is the loose count
         // going up on the blow that reached the far side of the trunk.
         // -------------------------------------------------------------------
+        // -- AND NOTHING INVISIBLE IS LEFT STANDING -------------------
+        //
+        // (user 2026-09-22: "still when cutting down a tree, Im getting
+        //  invisible barriers to the player".) See World::ghostColliders: a
+        // barrier the player can feel and not see is a Solid whose instance is
+        // hidden, and felling is the one operation that hides instances.
+        // -- WHERE THE PLAYER IS STOPPED, AND WHETHER ANYTHING IS THERE --
+        //
+        // (user 2026-09-22: "still when cutting down a tree, Im getting
+        //  invisible barriers to the player".)
+        //
+        // THE BOOKKEEPING CHECK FOUND NOTHING, so this asks the question the
+        // player actually asks: walk a grid over the felled tree and, at every
+        // point Player::blocked refuses, look for something to SEE there.
+        //
+        // `blocked` is the walk's own test -- the same call moveAxis makes --
+        // and insideWorld at chest height is "are there voxels here", terrain
+        // and models alike. Blocked with nothing at chest height is an
+        // invisible barrier by definition, and this prints where they are
+        // rather than what they are, which is the half a theory cannot supply.
+        std::printf("\n  -- invisible barriers --\n");
+        world_.ghostColliders(true);
+        {
+            const WalkWorld bw = wideWalkWorld(40.0f);
+            const float cx = wx, cz = wz;
+            int blockedN = 0, ghostN = 0;
+            float gx0 = 1e9f, gx1 = -1e9f, gz0 = 1e9f, gz1 = -1e9f;
+            const Vec3 keep = player_.pos;
+            // -- LIKE FOR LIKE, WHICH THE FIRST CUT OF THIS WAS NOT -------
+            //
+            // blocked() tests the BODY'S BOX -- halfWidth either side of
+            // (x, z), from the feet to the top of the head -- and the first
+            // version of this probe compared that against insideWorld at a
+            // single POINT and two heights. Of course they disagreed: a body
+            // standing beside a trunk overlaps it without the trunk being at
+            // the body's centre, and a voxel anywhere else in the two-metre
+            // band is missed between the samples. It reported 605 barriers,
+            // nearly every cell it found blocked, which is the tell -- a
+            // measurement that condemns almost everything it looks at is
+            // measuring itself.
+            //
+            // So the seen-test now sweeps the SAME box: the body's footprint
+            // at nine points, over the whole standing height at a voxel's
+            // spacing. Anything blocked with nothing in that box is a barrier
+            // with nothing in it, which is the thing being hunted.
+            const float hw = player_.halfWidth;
+            for (float dz = -14.0f; dz <= 14.0f; dz += 0.5f)
+                for (float dx = -14.0f; dx <= 14.0f; dx += 0.5f) {
+                    const float x = cx + dx, z = cz + dz;
+                    // blocked() anchors to the ground under (x, z) unless
+                    // flying, so the body does not have to be moved there.
+                    if (!player_.blocked(bw, x, z)) continue;
+                    ++blockedN;
+                    const float g = walkGroundM(bw, x, z);
+                    bool seen = false;
+                    for (int sy = 0; sy <= 26 && !seen; ++sy) {
+                        const float y = g + float(sy) * VOXEL_M;
+                        for (int sj = -1; sj <= 1 && !seen; ++sj)
+                            for (int si = -1; si <= 1 && !seen; ++si)
+                                if (insideWorld(bw, Vec3(x + float(si) * hw, y,
+                                                         z + float(sj) * hw)))
+                                    seen = true;
+                    }
+                    if (seen) continue;
+                    ++ghostN;
+                    gx0 = minf(gx0, x); gx1 = maxf(gx1, x);
+                    gz0 = minf(gz0, z); gz1 = maxf(gz1, z);
+                    // WHICH ONE. blocked() returns a bool, so the loop is
+                    // repeated here over the same list with the same tests --
+                    // the only way to get the culprit out without changing the
+                    // walk's own signature for a diagnostic.
+                    if (ghostN <= 6) {
+                        for (int i = 0; i < bw.solidCount; ++i) {
+                            const Solid &sl = bw.solids[i];
+                            bool hit = false;
+                            if (sl.interior)
+                                hit = solidBoxOverlap(sl, x, player_.pos.y + player_.stepUp, z,
+                                                      player_.pos.y + kBodyHeightM, hw, VOXEL_M);
+                            else if (sl.standable)
+                                hit = sl.vol && solidBoxOverlap(sl, x,
+                                                                player_.pos.y + player_.stepUp, z,
+                                                                player_.pos.y + kBodyHeightM, hw,
+                                                                VOXEL_M);
+                            else if (sl.vol)
+                                hit = solidBoxOverlap(sl, x, g, z, g + kBodyHeightM, hw, VOXEL_M);
+                            else
+                                hit = touches(sl, x, z, hw);
+                            if (!hit) continue;
+                            std::printf("    at %.1f, %.1f  blocked by slot %d kind %d  "
+                                        "centre %.1f, %.1f  half %.2f x %.2f  top %.1f  "
+                                        "base %.1f  %s%s\n",
+                                        x, z, int(sl.decorSlot), int(sl.modelKind), sl.cx, sl.cz,
+                                        sl.hx, sl.hz, sl.top, sl.baseY,
+                                        sl.vol ? "voxels" : "NO VOXELS",
+                                        sl.standable ? "  standable" : "");
+                            break;
+                        }
+                    }
+                }
+            player_.pos = keep;
+            std::printf("  walk     %d of %d sampled cells block the player\n", blockedN,
+                        57 * 57);
+            if (ghostN == 0) {
+                std::printf("  walk     none of them is empty -- no invisible barrier\n");
+            } else {
+                std::printf("  walk     %d BLOCK WITH NOTHING THERE  "
+                            "x %.1f..%.1f  z %.1f..%.1f  (trunk at %.1f, %.1f)\n",
+                            ghostN, gx0, gx1, gz0, gz1, cx, cz);
+            }
+            std::fflush(stdout);
+        }
         std::printf("\n=== CHOP TEST -- the axe against the log on the ground ===\n");
         int log = -1;
         Vec3 lo{0, 0, 0}, hi{0, 0, 0};

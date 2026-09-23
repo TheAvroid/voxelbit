@@ -275,25 +275,50 @@
     // pinned here (user 2026-09-21). Written as constants rather than inline
     // so the two halves of a coordinate cannot drift apart in an edit -- the
     // same reason kPinnedSpawns is a table.
-    static constexpr float kOpenAtX = -2131.0f;
-    static constexpr float kOpenAtZ = -2073.0f;
+    // -- MOVED TO THE PINE'S FIRST PINNED CLEARING (user 2026-09-22: "make
+    //    the 2067 152 231 the very first spawn point ... This needs to be the
+    //    first pine forest spawn point") ------------------------------------
+    //
+    //    THE ROTATION WAS ALREADY RIGHT AND THAT WAS THE CONFUSION. --hop-test
+    //    drives the real respawnToNextBiome and prints every landing: press 5
+    //    is 2056, 224, which is row one of kPinnedSpawns. What a player never
+    //    sees is that row, because the game OPENED in the pine wood and [G]
+    //    leaves the wood you are in -- so the first pine you are taken to is
+    //    five presses away, and the clearing the game opens at was a different
+    //    one entirely.
+    //
+    //    ONE CLEARING NOW. The opening spawn and the pine rotation's first row
+    //    are the same place, so "the first pine forest spawn point" means one
+    //    thing however you arrive at it.
+    //
+    //    THIS SUPERSEDES -2131, -2073 AND ITS NORTH-EAST BEARING (user
+    //    2026-09-22, earlier the same day). That clearing is not lost -- it is
+    //    row two of the pine rotation at -2121, -2073, where it keeps its own
+    //    east-facing bearing.
+    static constexpr float kOpenAtX = 2056.0f;
+    static constexpr float kOpenAtZ = 224.0f;
     // ...AND WHICH WAY YOU ARE POINTED WHEN YOU GET THERE ------------------
     //
     // (user 2026-09-22: "when the player spawns at -2131 234 -2073, have the
     //  person face north east".)
     //
-    // 45 IS NORTH-EAST BECAUSE 0 IS NORTH. yaw is built everywhere in this
+    // 225 IS SOUTH-WEST BECAUSE 0 IS NORTH. yaw is built everywhere in this
     // engine as atan2(d.x, -d.z), so zero looks down -Z and the angle grows
     // toward +X -- and the compass in app_hud.inl labels exactly that: N at 0,
-    // NE at 45, E at 90. The heading and the letters drawn over it cannot
-    // disagree, because this number is read against the same convention they
-    // are.
+    // NE at 45, E at 90, SW at 225. The heading and the letters drawn over it
+    // cannot disagree, because this number is read against the same convention
+    // they are.
+    //
+    // IT IS THE PINNED ROW'S OWN BEARING, not a fresh choice. kPinnedSpawns
+    // says 225 for this clearing, and arriving by [G] and arriving by launching
+    // the game are the same arrival -- a composed view that faces two different
+    // ways depending on how you got there is two views.
     //
     // A CONSTANT BESIDE THE COORDINATE IT BELONGS TO, for the reason the
     // coordinate is two constants rather than an inline pair: the place and the
-    // facing are one decision, and a bare 45.0f in the branch below is the half
-    // of it that goes stale when somebody moves the clearing.
-    static constexpr float kOpenYaw = 45.0f;
+    // facing are one decision, and a bare number in the branch below is the
+    // half of it that goes stale when somebody moves the clearing.
+    static constexpr float kOpenYaw = 225.0f;
 
     void chooseSpawn() {
         uint32_t seed = opt_.spawnSeed;
@@ -333,6 +358,31 @@
         if (!opt_.camGiven && !opt_.camPlace && !t.forced && opt_.spawnSeed == 0) {
             opt_.camX = kOpenAtX;
             opt_.camZ = kOpenAtZ;
+            // -- ...AND THAT COUNTS AS A VISIT TO THE PINE -----------------
+            //
+            // (user 2026-09-22: "when pressing g, you spawn me at the first
+            //  pine spawn point AGAIN. instead of rotating to the next pine
+            //  spawn point." -- reported twice.)
+            //
+            // THE ROTATION WAS NEVER BROKEN. --hop-test 16 walks the cycle and
+            // presses 5, 10 and 15 land on the three pine rows in order. What
+            // was wrong is where it STARTS: pinnedVisit_ is zero at launch, and
+            // this line puts the player on pine row 0 -- so the first time [G]
+            // comes back round to the pine, five presses later, it serves row 0
+            // again. From the seat that is the same clearing twice with four
+            // other woods in between, which is exactly the report.
+            //
+            // SO THE OPENING CLEARING IS COUNTED. It IS a visit to the pine;
+            // it simply did not go through respawnToNextBiome to be counted as
+            // one. Found by index rather than by comparing coordinates, so
+            // moving kOpenAtX/Z to another pinned row keeps this honest.
+            for (uint32_t k = 0, seen = 0; k < uint32_t(std::size(kPinnedSpawns)); ++k) {
+                const PinnedSpawn &ps = kPinnedSpawns[k];
+                if (ps.biome != Biome::Pine) continue;
+                if (ps.x == kOpenAtX && ps.z == kOpenAtZ)
+                    pinnedVisit_[size_t(Biome::Pine)] = seen + 1;
+                ++seen;
+            }
             // -- ...FACING NORTH-EAST -------------------------------------
             //
             //    AND --yaw STILL WINS, which is the same deference every other
@@ -347,7 +397,7 @@
             //    --cam-x, a forced biome, a seeded roll -- and moving it would
             //    re-aim all of them to answer a question about one clearing.
             if (!opt_.yawGiven) opt_.yaw = kOpenYaw;
-            std::printf("  spawn    the opening clearing, %.0f, %.0f, facing NE (yaw %.0f)\n",
+            std::printf("  spawn    the opening clearing, %.0f, %.0f, facing SW (yaw %.0f)\n",
                         double(kOpenAtX), double(kOpenAtZ), double(opt_.yaw));
             std::fflush(stdout);
             return;

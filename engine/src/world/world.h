@@ -69,6 +69,7 @@
 #include <sstream>
 #include <condition_variable>
 #include <deque>
+#include <array>
 #include <map>
 #include <mutex>
 #include <atomic>
@@ -667,7 +668,42 @@ class Remesher {
 // kFellSlotsKeep still holds 4 back and the margin over the share is 64, the
 // same as it was, so felling a tree still cannot leave the world unable to cut
 // anything else.
-constexpr int kDebrisInstances = 512;
+// -- 512 -> 1024, AND THE SHARE WITH IT (user 2026-09-22) -----------------
+//
+// "all trees should share the same mechanics. the pine tree is looking the
+// best right now." The timers were already shared and measured identical; what
+// was not shared was CHUNK SIZE, because `K` is capped at the tree's share of
+// this table and an oak has 400k voxels against a pine's 35k. Swept, --oak
+// --fell-test, median voxels per piece against the pine's 162:
+//
+//      512 /  448    447 pieces   median 929   5.7x the pine   drain 275 ms
+//     1024 /  896    893          median 336   2.1x           drain 380 ms
+//     2048 / 1792   1694          median 176   1.1x           drain 703 ms
+//
+// 2048 REACHES PARITY and is not taken, for two measured reasons: its drain
+// overran the 2000 ms lead by 233 ms in the test, and 1694 rigid bodies per
+// tree means two felled oaks fill the table. 1024 is most of the improvement
+// for none of that -- +0.1 GB of video memory, the swap still 0 ms late, and
+// no loud solver step in any wood.
+// -- 1024 -> 2048, AND THE SHARE STAYS 896 (user 2026-09-22) ---------------
+//
+// "the cherry and oak trees seem to break on a delay ... every tree/object
+// that breaks off the terrain is subject to a 5 second timer." --fell-live,
+// three oaks felled six seconds apart in the real frame loop:
+//
+//     oak 1   896 pieces of    ~464 voxels
+//     oak 2   115 pieces of  ~3,600          <- the 118 slots oak 1 left
+//     oak 3     6 pieces of ~77,000          <- a tree that barely broke
+//
+// ONE BIG TREE HELD THE WHOLE TABLE FOR A MINUTE, so the next one came apart
+// eight times coarser and the one after that hardly at all -- on exactly the
+// two woods with trees that big. The share is not the problem (it is what makes
+// an oak's chunks the size they are); the table is. At 2048 two big trees fit
+// at full size inside the same minute, and past that the oldest pieces give way
+// (see World::reclaimLoot). What it costs is per LIVE piece -- about 220 KB of
+// video memory each by the measurement above, so ~0.2 GB more only while two
+// felled oaks are lying in pieces; an empty slot is one masked-off instance.
+constexpr int kDebrisInstances = 2048;
 // How red a corpse piece stays once v1's half-second blink has run -- see
 // corpseFade. Not zero, because zero is a grey lump of an animal lying in the
 // wood, which is the one thing a corpse must never look like.
@@ -1155,6 +1191,11 @@ constexpr float kBulbBurstMs = 1.0f;
 // bounds the body may travel before it is rebuilt. The gap between the two is
 // what stops a rebuild every frame.
 constexpr float kStaticPadM = 3.0f;
+// HOW FAR BELOW ITSELF A WINDOW WILL REACH FOR THE GROUND -- see
+// buildSolidWindow's reachGround. Enough for the butt of a felled oak resting
+// on its crown; past it, falling out of the window and being given a new one
+// is the better answer than a window that is mostly empty air.
+constexpr float kWinGroundReachM = 30.0f;
 // -- HOW BIG A BODY MAY BE AND STILL BE TREATED AS A CHIP ------------------
 //
 // (user 2026-09-18: "when things become rigid bodies on nuketown, they fall
@@ -1493,7 +1534,7 @@ constexpr int kFellSlotsKeep = 4;
 //
 // THE PINE DOES NOT USE IT. At 36k voxels its count is set by kFellChunkVox
 // long before the share binds, so it stays at 218 pieces either way.
-constexpr int kFellSlotsShare = 448;
+constexpr int kFellSlotsShare = 896;
 // -- WHAT THE CROWN GETS, HELD AT WHAT IT ALREADY HAD -------------------------
 //
 // (user 2026-09-20: "break them up more. the leave chunks are fine".)
@@ -1624,6 +1665,38 @@ constexpr double kFellBreakMs = 20000.0;
 // which is exactly "the moment it breaks from the static terrain". Nothing has
 // to detect an impact for that to be true.
 constexpr double kBreakAfterMs = 5000.0;
+// HOW LONG BEFORE THAT THE PIECES START BEING BUILT -- see the trigger in
+// updateDebris and the hold in drainShatterQueue.
+//
+// LONGER THAN THE WORST DRAIN, which is what makes the wait the same for every
+// tree: one that finishes early simply waits for the clock.
+//
+// MEASURED at 1200: birch 0 ms late, pine 0, oak 17, **cherry 167**. The
+// biggest trees were still overrunning it, and a lead that is too short shows
+// up as exactly the complaint it was meant to fix.
+//
+// -- AND 2000 WAS TOO SHORT IN THE GAME, WHILE --fell-test SAID 0 ms LATE ----
+//
+// (user 2026-09-22, twice: "the cherry and oak trees seem to break on a
+//  delay. ... every tree/object that breaks off the terrain is subject to a
+//  5 second timer".)
+//
+// THE DRAIN IS BUDGETED PER FRAME, SO ITS LENGTH IN GAME TIME IS FRAMES x
+// FRAME TIME. --fell-live, the same fell inside the real frame loop, measured
+// an oak's 896 pieces at 81 frames. 2000 ms holds 81 frames only above 40 fps;
+// at a full-screen 30 fps that is 2.7 s, and the tree stood whole for most of a
+// second past its five. The pine needs about 20 frames and fits at any rate,
+// which is why only the big woods were late. --fell-test could never see it:
+// its frames are a fixed sixtieth of a second with nothing else in them.
+//
+// SO THE WORK STARTS AT THE CUT. Nothing was gaining from the wait -- the
+// pieces are built hidden and re-placed against the tree's pose at the swap
+// (see revealShatter), so it does not matter how far the tree moves while they
+// are made -- and five seconds holds 81 frames down to 16 fps. A chop into the
+// trunk while they are being made starts them again (see cancelShatter), and
+// a drain that is still behind near the end spends more of each frame to catch
+// up (see kShatterBudgetMaxMs).
+constexpr double kShatterLeadMs = kBreakAfterMs;
 // HOW MANY CELLS A PIECE TAKES PER ROUND OF THE SHATTER'S SEEDED FLOOD.
 // See the burst note in shatterFelled: one-at-a-time is a cache pattern,
 // not a rule, and sixteen is the same growth rate at a grain the machine
@@ -1774,6 +1847,19 @@ constexpr double kFelledLifeMs = 60000.0;
 // piece has to be genuinely still rather than merely slow.
 constexpr double kDebrisSettleMs = 2000.0;
 constexpr float kDebrisSleepThresh = 0.005f;
+// -- ...BUT A TREE'S PIECES ARE A PILE, AND A PILE SLEEPS AS ONE --------------
+//
+// (user 2026-09-22: "the cherry and oak trees are significantly delayed".)
+//
+// PhysX puts an ISLAND to sleep -- every body touching every other -- only
+// when all of them are under the threshold at once, and a felled tree's pieces
+// are one island. At the chip's 0.005 an oak's 896 never got there: 860 still
+// awake at fifteen seconds, the solver paying for all of them every step.
+// 0.05 is the number addCompoundBody gives the felled trunk itself, and at it
+// the whole pile goes to sleep about six seconds after the break (measured,
+// pinned oak, 864 awake -> 0 in one step at 11 s). A sleeping piece still
+// wakes on contact.
+constexpr float kLootSleepThresh = 0.05f;
 
 // ...AND WHAT HAS BEEN PUT DOWN. Eight, which is the JS engine's own cap on
 // dropped items, reserved for the same reason every other band here is: an
@@ -1908,9 +1994,17 @@ class TransientPool {
         name_ = name;
     }
 
+    // HIT OR MISS, AND HOW FAR THE SCAN WENT -- temporary, see the drain
+    // report. 82 ms of a 202 ms drain is spent in this function and the two
+    // candidate explanations want opposite fixes: a MISS is a device
+    // allocation and wants a finer granule, a HIT that costs anything is the
+    // linear scan below and wants an index.
+    size_t hits_ = 0, misses_ = 0, scanned_ = 0;
+    double allocMs_ = 0.0;
     ref<Buffer> acquire(size_t bytes, uint64_t deviceDone) {
         bytes = granule(bytes);
         Slot *best = nullptr;
+        scanned_ += slots_.size();
         for (Slot &s : slots_) {
             if (s.busy || s.freeAt > deviceDone || s.size < bytes) continue;
             // Smallest that fits, so a 12 MB request cannot consume the one
@@ -1918,12 +2012,18 @@ class TransientPool {
             if (!best || s.size < best->size) best = &s;
         }
         if (!best) {
+            const auto a0 = std::chrono::steady_clock::now();
             slots_.push_back({});
             best = &slots_.back();
             best->buf = device_->createBuffer(bytes, flags_, Falcor::MemoryType::DeviceLocal);
             best->buf->setName(name_);
             best->size = bytes;
             bytes_ += bytes;
+            ++misses_;
+            allocMs_ += std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - a0).count();
+        } else {
+            ++hits_;
         }
         best->busy = true;
         return best->buf;
@@ -1946,6 +2046,23 @@ class TransientPool {
     size_t bytes() const { return bytes_; }
     size_t count() const { return slots_.size(); }
 
+    void poolStats(const char *what, uint64_t deviceDone) {
+        size_t busy = 0, fence = 0, freeNow = 0;
+        const double alloc = allocMs_;
+        allocMs_ = 0.0;
+        uint64_t oldest = ~0ull;
+        for (const Slot &s : slots_) {
+            if (s.busy) { ++busy; continue; }
+            if (s.freeAt > deviceDone) { ++fence; oldest = s.freeAt < oldest ? s.freeAt : oldest; }
+            else ++freeNow;
+        }
+        std::printf("  drain    pool %-7s %4zu slot(s) %5.0f MB   %4zu hit  %4zu MISS   "
+                    "%zu busy  %zu fenced  %zu FREE NOW   %.1f ms in createBuffer\n",
+                    what, slots_.size(), double(bytes_) / (1024.0 * 1024.0), hits_, misses_,
+                    busy, fence, freeNow, alloc);
+        hits_ = misses_ = scanned_ = 0;
+    }
+
   private:
     struct Slot {
         ref<Buffer> buf;
@@ -1960,9 +2077,35 @@ class TransientPool {
     // megabyte the classes were as fine-grained as the mesh sizes themselves,
     // so almost every request missed and the pool became a list of every size
     // a chunk had ever happened to be.
+    // -- ...AND POWERS OF TWO BELOW THAT, DOWN TO 64 KB ------------------
+    //
+    // (user 2026-09-22: "its still freezing as well before it turns into
+    //  chunks".)
+    //
+    // A MEGABYTE WAS THE FLOOR AND A SHATTER PIECE NEEDS EIGHT KILOBYTES.
+    // Measured on a 220-piece oak: 222 slots holding 226 MB in each of three
+    // pools -- two thirds of a gigabyte of device memory for a few megabytes of
+    // actual triangles -- and 300 misses per pool per tree, every one of them a
+    // one-megabyte device allocation. That is 95 ms of the 218 ms drain, which
+    // is most of the second the tree spends standing whole before it comes
+    // apart.
+    //
+    // THE FLOOR WAS WRITTEN FOR CHUNKS, which are megabytes each and for which
+    // it is exactly right. Debris was not a thing this pool was sized for when
+    // it was written, and a tree makes hundreds of pieces at once.
+    //
+    // THE CLASS COUNT IS STILL SMALL, which is the property the note above is
+    // really defending: four classes below a megabyte, not the continuum a flat
+    // granularity would give. And the two populations now stop competing --
+    // a piece can no longer take the slot a chunk was about to need, because
+    // they no longer ask for the same size.
     static size_t granule(size_t b) {
+        if (b <= (1u << 20)) {
+            size_t k = 1u << 16;   // 64 KB, the smallest worth keeping one of
+            while (k < b) k <<= 1;
+            return k;
+        }
         size_t mb = (b + (1u << 20) - 1) >> 20;
-        if (mb == 0) mb = 1;
         size_t step = 1;
         while ((mb >> 3) >= step) step <<= 1;  // keep the top three bits
         mb = ((mb + step - 1) / step) * step;
@@ -3497,8 +3640,61 @@ class World {
         return made;
     }
 
+    // -----------------------------------------------------------------------
+    // WHAT EACH DEBRIS SLOT WAS DRAWN WITH LAST FRAME -- for its motion.
+    //
+    // (user 2026-09-22: "the trees are flickering when the player chops them
+    //  down", reported twice.)
+    //
+    // THE MOTION VECTOR OF A LOOSE BODY WAS ITS CENTRE'S, AND NOTHING ELSE.
+    // place() hands the tracer how far the instance's box centre travelled,
+    // and the tracer moves every surface of the instance by that. Right for a
+    // chip sliding; wrong for anything that TURNS -- and a felled tree does
+    // nothing but turn: a 26 m trunk going over about its butt was reported to
+    // Ray Reconstruction as moving its butt half as far as its crown really
+    // did, and its crown half as far. Every pixel of a falling tree carried a
+    // motion vector that was wrong by up to half its real motion, which is the
+    // lie DLSS turns into smearing and flicker -- the songbird perch bug over
+    // again (see place), at the size of a tree. The oak and the cherry are the
+    // biggest and slowest-turning, and were the ones that looked worst.
+    //
+    // So a debris instance carries its rotation too: `cur` is what this frame
+    // wrote, `drawn` is what the last frame uploaded (copied across once a
+    // frame in flushDebrisInstances), and setDebrisInstance sends the
+    // difference -- the translation of the instance ORIGIN in prevOffset and
+    // the turn as an axis-angle in V6Instance::flap, which only flyers
+    // otherwise read. Trace.cs.slang reprojects each hit through both.
+    // -----------------------------------------------------------------------
+    struct SlotXf {
+        float m[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        float t[3] = {0, 0, 0};
+        bool valid = false;
+    };
+    std::array<SlotXf, kDebrisInstances> debrisCurXf_{}, debrisDrawnXf_{};
+    // The rotation taking a vector of the body NOW back to where it pointed
+    // THEN, as axis * angle: Delta = was * now^T, whose skew part is
+    // 2 sin(theta) [k]x.
+    static float3 rotationSince(const float *was, const float *now) {
+        float dm[9];
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c)
+                dm[r * 3 + c] = was[r * 3 + 0] * now[c * 3 + 0] + was[r * 3 + 1] * now[c * 3 + 1] +
+                                was[r * 3 + 2] * now[c * 3 + 2];
+        const float vx = 0.5f * (dm[7] - dm[5]), vy = 0.5f * (dm[2] - dm[6]),
+                    vz = 0.5f * (dm[3] - dm[1]);
+        const float sn = sqrtf(vx * vx + vy * vy + vz * vz);
+        const float cs = 0.5f * (dm[0] + dm[4] + dm[8] - 1.0f);
+        if (sn < 1e-7f) return float3(0.0f, 0.0f, 0.0f);
+        const float k = atan2f(sn, cs) / sn;
+        return float3(vx * k, vy * k, vz * k);
+    }
+
     // The loose band, in two writes, once a frame and before the refit.
     void flushDebrisInstances() {
+        // WHAT IS UPLOADED THIS FRAME IS "LAST FRAME" TO THE NEXT ONE -- see
+        // SlotXf. Before the dirty test: a frame that changed nothing still
+        // ends with cur and drawn equal, which is what it drew.
+        debrisDrawnXf_ = debrisCurXf_;
         if (!debrisDirty_ || debrisBase_ < 0 || !instanceDescBuf_ || !instanceInfo_) return;
         debrisDirty_ = false;
         const size_t base = size_t(debrisBase_);
@@ -3539,6 +3735,7 @@ class World {
         const bool own = d.blas.valid();
         // AN UNSEEN PIECE IS DRAWN THE WAY A DEAD SLOT IS -- see Debris::unseen.
         if (!d.live || d.unseen || (!own && !d.borrowAs)) {
+            debrisCurXf_[size_t(slot)].valid = false;   // not drawn: no motion to carry
             instanceDescs_[idx].instanceMask = 0;
             // THE SAME REASON AS retireDebris, and the same one line. A
             // hidden slot is still parsed by every top-level build, so it
@@ -3563,6 +3760,26 @@ class World {
         const float ty = p.y + (m[3] * ox + m[4] * oy + m[5] * oz);
         const float tz = p.z + (m[6] * ox + m[7] * oy + m[8] * oz);
         place(idx, m, tx, ty, tz, kMaskWorld, true, d.halfM[0], d.halfM[1], d.halfM[2]);
+        // ...AND THE MOTION IT ACTUALLY HAD, TURN INCLUDED -- see SlotXf. This
+        // replaces what place() just wrote, which was the box centre's travel
+        // and nothing about the rotation.
+        {
+            SlotXf &cur = debrisCurXf_[size_t(slot)];
+            const SlotXf &was = debrisDrawnXf_[size_t(slot)];
+            float3 moved(0.0f, 0.0f, 0.0f), spin(0.0f, 0.0f, 0.0f);
+            if (was.valid) {
+                moved = float3(tx - was.t[0], ty - was.t[1], tz - was.t[2]);
+                spin = rotationSince(was.m, m);
+            }
+            instanceInfos_[idx].prevOffset = moved;
+            instanceInfos_[idx].flap = spin;
+            instanceInfos_[idx].flapPad = 0.0f;
+            for (int k = 0; k < 9; ++k) cur.m[k] = m[k];
+            cur.t[0] = tx;
+            cur.t[1] = ty;
+            cur.t[2] = tz;
+            cur.valid = true;
+        }
         instanceDescs_[idx].accelerationStructure = own ? d.blas.as->getGpuAddress() : d.borrowAs;
         instanceInfos_[idx].triOffset = own ? d.triOffset : d.borrowTri;
         // See Debris::matBase -- a corpse keeps the table its model's ids mean
@@ -3633,6 +3850,300 @@ class World {
         return f < kCorpseRedFloor ? kCorpseRedFloor : f;
     }
 
+    // -----------------------------------------------------------------------
+    // A STATIC WINDOW MAY BE SHARED -- see the windows at the end of
+    // revealShatter. Every place that used to removeStatic a body's window
+    // hands it back through here instead: a shared one goes when its LAST
+    // holder lets go, anything else goes at once, exactly as before.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // A SETTLED PIECE IS TAKEN OUT OF THE SOLVER -- AND PUT BACK THE MOMENT
+    // ANYTHING UNDER IT CHANGES.
+    //
+    // (user 2026-09-22: "the cherry and oak trees seem to break on a delay",
+    //  the third time.)
+    //
+    // --fell-live, four oaks felled six seconds apart in the real frame loop:
+    // the piles NEVER went to sleep. 1,650 of 1,766 bodies were still awake
+    // twenty seconds after the last break, the solver took 85 ms of every
+    // frame, and the game ran at 11 fps for as long as anyone watched. The
+    // headless test had shown one isolated pile asleep at 13 s; in play the
+    // piles merge, and PhysX only puts an ISLAND to sleep when every one of its
+    // bodies is still at once -- with thousands in one island, one of them
+    // always shivers. Longer frames then run more substeps, and it spirals.
+    //
+    // SO A PIECE THAT HAS BEEN STILL FOR kFreezeAfterMs GOES KINEMATIC: it
+    // keeps its place, stays solid for everything else, and costs the solver
+    // nothing -- and a kinematic body is not part of any island, so the piles
+    // around it fall apart into small ones that can sleep. You collect it the
+    // same way (the absorb makes it kinematic anyway).
+    //
+    // NOTHING FLOATS, SO TWO RULES:
+    //   * it freezes only on something FIXED -- a static or another frozen
+    //     piece, straight down (Physics::supportBelow). One lying on a piece
+    //     that is still free to slide waits for that one first.
+    //   * anything that could take its support away THAWS what is near it:
+    //     a dig, a carve, a tree felled, a piece collected, retired or broken.
+    //     They queue here (the callers do not all hold the Physics) and are
+    //     applied at the top of the next updateDebris.
+    // -----------------------------------------------------------------------
+    static constexpr double kFreezeAfterMs = 1000.0;
+    static constexpr float kFreezeLin = 0.15f;   // m/s -- slower than this is "still"
+    static constexpr float kFreezeAng = 0.30f;   // rad/s
+    static constexpr float kThawPadM = 1.5f;     // a stack's worth above what changed
+    struct ThawAt {
+        Vec3 at;
+        float r;
+        double t0;   // anything born after this was built from the world as it now is
+        bool world;  // the STATIC world changed here, so windows over it are stale
+    };
+    std::vector<ThawAt> thawQueue_;
+    int frozenNow_ = 0, thawedTotal_ = 0;
+    // WHERE THE LAST updateDebris WENT -- for --fell-live's hitch lines.
+    double udDrainMs_ = 0.0, udThawMs_ = 0.0, udStumpMs_ = 0.0, udWakeMs_ = 0.0;
+    std::chrono::steady_clock::time_point udLoopT0_{};
+    void debrisPhases(double *drain, double *thaw, double *stump, double *wake) const {
+        *drain = udDrainMs_;
+        *thaw = udThawMs_;
+        *stump = udStumpMs_;
+        *wake = udWakeMs_;
+    }
+    // WHY THE REST ARE NOT FROZEN, counted over the last updateDebris.
+    int whyMoving_ = 0, whyOnNothing_ = 0, whyOnMoving_ = 0;
+    void freezeWhy(int *moving, int *onNothing, int *onMoving) const {
+        *moving = whyMoving_; *onNothing = whyOnNothing_; *onMoving = whyOnMoving_;
+    }
+    // `world`: the static world itself changed here (a dig, a carve, a tree
+    // leaving it), so every window over the spot is stale too. False when only
+    // a loose body went -- windows never hold loose bodies.
+    void thawAt(const Vec3 &at, float r, bool world = false) {
+        thawQueue_.push_back(ThawAt{at, r + kThawPadM, lastDebrisMs_, world});
+    }
+    int frozenPieces() const { return frozenNow_; }
+    // WHAT A PIECE IS RESTING ON -- Physics::supportBelow's answer, for tests.
+    int debrisSupport(const Physics &ph, int slot) const {
+        if (slot < 0 || slot >= kDebrisInstances || !debris_[slot].live) return -1;
+        const Debris &d = debris_[slot];
+        return ph.supportBelow(d.phys, d.pos,
+                               maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2])) + 0.35f);
+    }
+    // --fell-live's axe: strike the newest felled trunk through carveDebris,
+    // the door a swing uses, a quarter of the way up its own box and nearest
+    // its middle column -- the trunk, not the crown. Returns the slot hit.
+    int testHitFelled(Physics &ph, double nowMs, int radiusVox) {
+        int best = -1;
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            const Debris &q = debris_[i];
+            if (!q.live || !q.felled || q.absorbing || q.unseen || q.vox.empty()) continue;
+            if (best < 0 || q.bornMs > debris_[best].bornMs) best = i;
+        }
+        if (best < 0) return -1;
+        const Debris &d = debris_[best];
+        int hx = -1, hy = -1, hz = -1;
+        long bestD = LONG_MAX;
+        for (int y = d.vsy / 4; y < mini(d.vsy, d.vsy / 4 + 30) && hx < 0; ++y)
+            for (int z = 0; z < d.vsz; ++z)
+                for (int x = 0; x < d.vsx; ++x) {
+                    if (d.vox[size_t(x) + size_t(z) * size_t(d.vsx) +
+                              size_t(y) * size_t(d.vsx) * size_t(d.vsz)] == mat::AIR)
+                        continue;
+                    const long dx = x - d.vsx / 2, dz = z - d.vsz / 2;
+                    if (dx * dx + dz * dz < bestD) { bestD = dx * dx + dz * dz; hx = x; hy = y; hz = z; }
+                }
+        if (hx < 0) return -1;
+        DebrisHit h;
+        h.slot = best;
+        h.vox[0] = hx;
+        h.vox[1] = hy;
+        h.vox[2] = hz;
+        h.takes = d.takesAs;
+        return carveDebris(ph, h, radiusVox, nowMs) ? best : -1;
+    }
+    bool debrisFrozen(int slot) const {
+        return slot >= 0 && slot < kDebrisInstances && debris_[slot].live && debris_[slot].frozen;
+    }
+    // -- ...AND ITS FLOOR IS CUT AGAIN FROM THE GROUND AS IT IS NOW ----------
+    //
+    // THAWING ALONE WOULD NOT HAVE BEEN ENOUGH, and this was true before any
+    // piece was ever frozen: a loose body stands on its WINDOW, which is a
+    // snapshot of the terrain taken when it was cut, and nothing ever re-cut
+    // one after a dig. A chip, a log or a piece resting over ground the player
+    // then dug away stayed up on the ground that used to be there. So every
+    // body near a change also gives its window up -- a shared one is struck off
+    // the join list at once, so nobody joins the stale copy -- and updateDebris
+    // hands it a fresh one on the next pass, the ordinary way.
+    void applyThaws(Physics &ph) {
+        if (thawQueue_.empty()) return;
+        // -- EVERY WINDOW OVER THE CHANGE GOES, WHOEVER HOLDS IT ------------
+        //
+        // A window is a static actor and every static holds up everything, so
+        // it is not enough to re-cut the windows of the bodies NEAR a dig: a
+        // neighbour's window reaching over the hole still has the old ground in
+        // it, and a thawed piece landed straight back on that -- measured, the
+        // first version of this failed --fell-test's thaw arm in all three
+        // woods with the piece "frozen again" at the height it started. So any
+        // window whose box meets a change is struck off the join list and let
+        // go by every holder, near or far; each re-cuts on its next pass (a
+        // frozen piece needs none until it thaws).
+        const float cubeHalf = 0.5f * float(kWindowCells) * VOXEL_M;
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            Debris &d = debris_[i];
+            if (!d.live || d.unseen || d.absorbing || d.window < 0) continue;
+            const bool box = d.winHi.x > d.winLo.x;
+            const Vec3 lo = box ? d.winLo
+                                : Vec3{d.winCentre.x - cubeHalf, d.winCentre.y - cubeHalf,
+                                       d.winCentre.z - cubeHalf};
+            const Vec3 hi = box ? d.winHi
+                                : Vec3{d.winCentre.x + cubeHalf, d.winCentre.y + cubeHalf,
+                                       d.winCentre.z + cubeHalf};
+            for (const ThawAt &t : thawQueue_) {
+                if (!t.world || d.bornMs > t.t0) continue;   // nothing stale, or cut since
+                const float cx = maxf(lo.x, minf(t.at.x, hi.x)) - t.at.x;
+                const float cy = maxf(lo.y, minf(t.at.y, hi.y)) - t.at.y;
+                const float cz = maxf(lo.z, minf(t.at.z, hi.z)) - t.at.z;
+                if (cx * cx + cy * cy + cz * cz > t.r * t.r) continue;
+                winShared_.erase(d.window);
+                dropWindow(ph, d.window);
+                d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
+                d.winCentre = Vec3{d.pos.x + 1e4f, d.pos.y, d.pos.z};
+                ph.wake(d.phys);
+                break;
+            }
+        }
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            Debris &d = debris_[i];
+            if (!d.live || d.unseen || d.absorbing) continue;
+            const float ext = maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2]));
+            for (const ThawAt &t : thawQueue_) {
+                const float dx = d.pos.x - t.at.x, dy = d.pos.y - t.at.y, dz = d.pos.z - t.at.z;
+                const float rr = t.r + ext;
+                if (dx * dx + dy * dy + dz * dz > rr * rr) continue;
+                if (d.bornMs > t.t0 && !d.frozen) continue;   // already cut from the new world
+                if (d.frozen) {
+                    ph.setKinematic(d.phys, false);   // and wakes it
+                    d.frozen = false;
+                    --frozenNow_;
+                    ++thawedTotal_;
+                }
+                d.stillT0 = -1.0;
+                // A THAW THAT FROZE NOTHING STILL WAKES WHAT IS NEAR: a sleeping
+                // body over a change is as stuck as a frozen one. Its window was
+                // already dealt with above if the change was to the world.
+                // (A frozen piece carries no window maintenance while frozen, so
+                // one without a window is simply re-cut on its next pass.)
+                ph.wake(d.phys);
+                break;
+            }
+        }
+        thawQueue_.clear();
+    }
+    std::map<int, int> winRefs_;   // static id -> holders, for shared windows only
+    // ...AND WHAT EACH SHARED ONE COVERS, and when it was cut -- see shareWindow.
+    struct SharedWin {
+        Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+        double bornMs = 0.0;
+    };
+    std::map<int, SharedWin> winShared_;
+    int winSharedBuilt_ = 0, winSharedJoined_ = 0;   // for --fell-test
+    // HOW MANY TIMES THE FLOOR BACKSTOP HAS LIFTED A PIECE -- see updateDebris.
+    // A piece resting on the ground must never be one of them.
+    int floorClamps_ = 0;
+    int floorClamps() const { return floorClamps_; }
+    void sharedWindowStats(int *alive, int *built, int *joined) const {
+        *alive = int(winShared_.size());
+        *built = winSharedBuilt_;
+        *joined = winSharedJoined_;
+    }
+    void dropWindow(Physics &ph, int &w) {
+        if (w < 0) return;
+        const auto it = winRefs_.find(w);
+        if (it != winRefs_.end()) {
+            if (--it->second > 0) { w = -1; return; }
+            winRefs_.erase(it);
+            winShared_.erase(w);
+        }
+        ph.removeStatic(w);
+        w = -1;
+    }
+
+    // -----------------------------------------------------------------------
+    // PUT A PIECE ON A SHARED WINDOW: one that already covers it, or a new one
+    // cut to a kWinShareCellM cell that the next piece to arrive can join.
+    //
+    // (user 2026-09-22: "the trees are flickering when the player chops them
+    //  down. the cherry and oak trees are significantly delayed".)
+    //
+    // WHY THIS AND NOT ONE WINDOW A PIECE. Measured on a felled oak, 896
+    // pieces: with a window each, the solver ran 1.0-1.5 s PER SECOND for as
+    // long as anyone watched -- 60 steps a second over 20 ms, 860 bodies still
+    // awake at fifteen seconds -- against ~100 ms for the pine's 218. The
+    // counters named it: 300 static actors and 56,000 static boxes, most of
+    // them copies of the same few square metres of ground. A piece that
+    // rolled out of its window cut a private 3.2 m one and cut it again every
+    // metre it moved, and REMOVING A STATIC WAKES EVERYTHING TOUCHING IT -- so
+    // the pile kept waking itself, never slept, and every waking body met
+    // every overlapping copy of the ground.
+    //
+    // A SHARED WINDOW IS ONLY JOINED WHILE IT IS FRESH (kWinShareAgeMs). It is
+    // a snapshot of the world when it was cut, and a piece arriving much later
+    // should see the ground as it is now -- dug, felled or built on since.
+    // `mayBuild` is the per-frame budget: joining is free, cutting is not.
+    // -----------------------------------------------------------------------
+    bool shareWindow(Physics &ph, int slot, double nowMs, bool mayBuild) {
+        Debris &d = debris_[slot];
+        Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+        if (!ph.boundsOf(d.phys, &lo, &hi)) {
+            const float r = sqrtf(d.halfM[0] * d.halfM[0] + d.halfM[1] * d.halfM[1] +
+                                  d.halfM[2] * d.halfM[2]);
+            lo = Vec3{d.pos.x - r, d.pos.y - r, d.pos.z - r};
+            hi = Vec3{d.pos.x + r, d.pos.y + r, d.pos.z + r};
+        }
+        for (auto &kv : winShared_) {
+            const SharedWin &s = kv.second;
+            if (nowMs - s.bornMs > kWinShareAgeMs) continue;
+            if (lo.x < s.lo.x || lo.y < s.lo.y || lo.z < s.lo.z || hi.x > s.hi.x ||
+                hi.y > s.hi.y || hi.z > s.hi.z)
+                continue;
+            if (d.window != kv.first) {
+                ++winRefs_[kv.first];
+                dropWindow(ph, d.window);   // a different actor: see the test
+                d.window = kv.first;
+            }
+            d.winLo = s.lo;
+            d.winHi = s.hi;
+            d.winCentre = d.pos;
+            ++winSharedJoined_;
+            return true;
+        }
+        if (!mayBuild) return false;
+        // THE CELL THE PIECE IS IN, grown to hold the piece, plus the pad on
+        // every side -- so a neighbour up to kStaticPadM outside the cell is
+        // still inside the window, and joins it rather than cutting another.
+        const float c = kWinShareCellM;
+        Vec3 wlo{std::floor(d.pos.x / c) * c, std::floor(d.pos.y / c) * c,
+                 std::floor(d.pos.z / c) * c};
+        Vec3 whi{wlo.x + c, wlo.y + c, wlo.z + c};
+        wlo = Vec3{minf(wlo.x, lo.x) - kStaticPadM, minf(wlo.y, lo.y) - kStaticPadM,
+                   minf(wlo.z, lo.z) - kStaticPadM};
+        whi = Vec3{maxf(whi.x, hi.x) + kStaticPadM, maxf(whi.y, hi.y) + kStaticPadM,
+                   maxf(whi.z, hi.z) + kStaticPadM};
+        // NOT skipTrees: a piece must still meet the standing wood. AND DOWN
+        // TO THE GROUND -- pieces are shown wherever the tree's wood is, which
+        // for an oak lying on its crown is well up in the air.
+        const int w = buildSolidWindow(ph, wlo, whi, /*skipTrees=*/false,
+                                       /*reachGround=*/true, &wlo, /*skipStumps=*/true);
+        if (w < 0) return false;
+        winShared_[w] = SharedWin{wlo, whi, nowMs};
+        winRefs_[w] = 1;
+        dropWindow(ph, d.window);
+        d.window = w;
+        d.winLo = wlo;
+        d.winHi = whi;
+        d.winCentre = d.pos;
+        ++winSharedBuilt_;
+        return true;
+    }
+
     void retireDebris(Physics &ph, int slot) {
         Debris &d = debris_[slot];
         d.borrowAs = 0;
@@ -3691,9 +4202,19 @@ class World {
         d.takesAs = kDebrisStone;
         if (d.phys >= 0) ph.releaseBody(d.phys);
         d.phys = -1;
-        // ...and the stone that was standing by for it.
-        if (d.window >= 0) ph.removeStatic(d.window);
-        d.window = -1;
+        // ...and the stone that was standing by for it -- which may be shared
+        // with the rest of its tree, see dropWindow.
+        dropWindow(ph, d.window);
+        d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
+        d.sharesWin = false;   // spawnPiece sets fields one at a time
+        // ...AND WHATEVER WAS RESTING ON IT MAY NOT STAY FROZEN -- see thawNear.
+        if (d.frozen || d.loot) thawAt(d.pos, maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2])));
+        if (d.frozen) --frozenNow_;
+        d.frozen = false;
+        d.stillT0 = -1.0;
+        // ...AND THE NEXT OCCUPANT DID NOT MOVE FROM HERE -- see SlotXf.
+        debrisCurXf_[size_t(slot)].valid = false;
+        debrisDrawnXf_[size_t(slot)].valid = false;
         d.live = false;
         d.absorbing = false;
         if (debrisBase_ >= 0 && size_t(debrisBase_ + slot) < instanceDescs_.size()) {
@@ -4562,6 +5083,11 @@ class World {
                     ++removed;
                 }
         if (removed == 0) return false;   // the swing missed the body's own voxels
+        // ITS PIECES ARE BEING MADE FROM THE VOXELS THIS JUST CHANGED -- see
+        // cancelShatter.
+        if (h.slot == shatterParent_ && d.bornMs == shatterParentBorn_) cancelShatter(ph);
+        // ...AND WHAT WAS RESTING ON IT MAY HAVE LOST ITS FOOTING.
+        thawAt(d.pos, maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2])));
 
         // WHERE THE BITE LANDED, in world metres: the struck voxel's centre
         // carried out through the body's own rotation. Not the point the swing
@@ -4856,11 +5382,17 @@ class World {
         d.blas = std::move(b);
         d.triOffset = pool_.upload(ctx_, mesh.tri);
         d.tris = mesh.tri.size();
-        // The instance is pointed at the new structure NOW rather than on the
-        // next updateDebris, so the TLAS built below is not built over an
-        // address that has just been handed back.
+        // The instance is pointed at the new structure NOW, so nothing is ever
+        // built over the address that has just been handed back.
+        //
+        // AND NO TOP-LEVEL REBUILD. The slot already exists, so a new
+        // structure address is a REFIT -- the band's own rule, and the one the
+        // shatter's reveal relies on. The rebuild this used to end with blanked
+        // every debris slot in the world, cost ~20 ms a blow, and was half of
+        // "everytime I hit the tree as it is falling, it flickers" (see the
+        // publish at the break trigger in updateDebris for the other half).
         setDebrisInstance(slot, d.pos, d.quat);
-        rebuildTlas();
+        looseFail_ = nullptr;   // got all the way here
         return true;
     }
 
@@ -4879,18 +5411,28 @@ class World {
     bool makeLooseBody(Physics &ph, int slot, std::vector<uint8_t> &&vox, int sx, int sy, int sz,
                        const Vec3 &originOff, const Vec3 &pos, const float *quat, const Vec3 &lin,
                        const Vec3 &ang, bool felled, bool scenery, uint8_t takesAs,
-                       const float3 &tint, double bornMs, double nowMs) {
+                       const float3 &tint, double bornMs, double nowMs,
+                       bool withWindow = true) {
+        // WHICH EXIT THIS TOOK, for the drain's LOST report -- four ways to
+        // return false and no way to tell them apart was how 69 of a birch's
+        // 336 pieces went missing without a word.
+        looseFail_ = "bad slot or size";
         if (slot < 0 || slot >= kDebrisInstances || sx <= 0 || sy <= 0 || sz <= 0) return false;
         int count = 0;
         for (uint8_t v : vox)
             if (v != mat::AIR) ++count;
+        looseFail_ = "no voxels in the box";
+        looseVox_ = 0;
         if (count <= 0) return false;
+        looseVox_ = count;
 
         const auto mb0 = std::chrono::steady_clock::now();
         const VoxMesh mesh = meshVolume(vox, sx, sy, sz, VOXEL_M, !felled);
+        looseFail_ = "meshed to no triangles";
         if (mesh.triCount() == 0) return false;
         const auto mb1 = std::chrono::steady_clock::now();
         Blas b = recordLooseBuild(mesh);
+        looseFail_ = "no acceleration structure";
         if (!b.valid()) return false;
         const auto mb2 = std::chrono::steady_clock::now();
         bodyMeshMs_ += std::chrono::duration<double, std::milli>(mb1 - mb0).count();
@@ -4947,9 +5489,37 @@ class World {
         // and a two metre offcut can be thinner than one of its cells. Without
         // it a chopped-off branch comes back with no boxes and therefore no
         // body, and simply disappears.
-        const bool wood = takesAs == kDebrisWood;
+        // -- ...AND A CHUNK OF CROWN IS NOT A CROWN -----------------------
+        //
+        // (user 2026-09-22: "the trees are now dissapearing briefly again...
+        //  the birch forest froze again, and then broke down... the pine trees
+        //  look fine. make sure every tree shares the same fellen/chunk
+        //  mechanic as the pine tree".)
+        //
+        // THE WOOD-ONLY RULE BELOW IS RIGHT FOR A TREE AND WRONG FOR A PIECE OF
+        // ONE. Skipping foliage is what stops a standing crown becoming a fat
+        // cone that cannot lie down -- but a SHATTER piece cut out of that
+        // crown is often nothing but leaves, and for those the filter leaves
+        // the box builder with no occupied cells at all. No boxes, no body,
+        // and makeLooseBody returns false: the piece is dropped and never
+        // drawn. Silently, until the drain was made to count them.
+        //
+        // MEASURED, a felled birch: **398 pieces drained, 303 revealed** --
+        // ninety-five leaf chunks thrown away, every one of them reported
+        // "no collider boxes" with four to seven hundred solid voxels in it.
+        // That is a quarter of the tree failing to arrive, which is exactly
+        // "the tree disappears" and exactly why a PINE, which shatters mostly
+        // into wood, looked fine while the birch did not.
+        //
+        // SO THE FILTER IS A PREFERENCE, NOT A REQUIREMENT. Wood first, because
+        // for anything with wood in it that is still the better collider; and
+        // if that yields nothing, the same search again counting every solid
+        // voxel. A clump of leaves then gets a clump-of-leaves collider, which
+        // is the right answer for something the size of a bush.
+        bool woodOnly = takesAs == kDebrisWood;
+        const bool wasWood = woodOnly;
         float cell = kFellCellM;
-        for (int tries = 0; tries < 8; ++tries) {
+        for (int tries = 0; tries < 16; ++tries) {
             const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
             const int cx = (sx + q - 1) / q, cy = (sy + q - 1) / q, cz = (sz + q - 1) / q;
             const int need = maxi(1, int(float(q * q * q) * kFellFillFrac));
@@ -4969,7 +5539,7 @@ class World {
                                 const uint8_t mv = vox[size_t(x) + size_t(z) * size_t(sx) +
                                                        size_t(y) * size_t(sx) * size_t(sz)];
                                 if (mv == mat::AIR) continue;
-                                if (wood && palette.isFoliage(mv)) continue;
+                                if (woodOnly && palette.isFoliage(mv)) continue;
                                 if (++n >= need) return true;
                             }
                     return false;
@@ -4979,10 +5549,18 @@ class World {
                 cell *= 0.5f;
                 continue;
             }
+            // NOTHING EVEN AT ONE VOXEL: it is all foliage. Drop the filter and
+            // start the search again rather than dropping the piece.
+            if (winBoxes_.empty() && woodOnly) {
+                woodOnly = false;
+                cell = kFellCellM;
+                continue;
+            }
             if (winBoxes_.size() <= kFellMaxBoxes) break;
             cell *= 1.5f;
         }
         if (winBoxes_.empty()) {
+            looseFail_ = "no collider boxes";
             retireLoose(std::move(b), TriPool::kInvalid, 0);
             return false;
         }
@@ -4991,12 +5569,18 @@ class World {
         // was lying down has to be lying down -- see addCompoundBody's quat.
         const int phys =
             ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()), at, 0.0f,
-                               wood ? kTimberDensity : kStoneDensity, quat);
+                               wasWood ? kTimberDensity : kStoneDensity, quat);
         if (phys < 0) {
+            looseFail_ = "PhysX refused the body";
             retireLoose(std::move(b), TriPool::kInvalid, 0);
             return false;
         }
-        if (wood) {
+        // (A piece keeps addCompoundBody's 16/8 solver iterations. PhysX's
+        //  default 4/1 was tried on the pinned oak: a quarter cheaper while
+        //  the pile is awake, and the pile then never went to sleep at all --
+        //  an under-solved pile shivers, and a shivering island stays awake.
+        //  See kLootSleepThresh.)
+        if (wasWood) {
             // FROM THE BOXES THE SOLVER ACTUALLY HAS -- fellTree's note: left
             // to the shape volume at timber density a pine weighed 128 tonnes.
             double logVol = 0.0;
@@ -5040,6 +5624,13 @@ class World {
         d.halfM[2] = hzM;
         d.pos = at;
         for (int k = 0; k < 4; ++k) d.quat[k] = quat[k];
+        // KEPT, so a piece that is going to wait can be re-placed against the
+        // parent's LATER pose -- see Debris::bornLocal and revealShatter.
+        //
+        // AFTER the `d = Debris{}` above, which is why it is down here rather
+        // than beside the line that computes `mid`: the reset wipes the struct,
+        // and a field written before it is a field that was never written.
+        d.bornLocal = mid;
         d.winCentre = at;
         // -------------------------------------------------------------------
         // ...AND IT IS A LONG BODY IF IT IS LONG, WHICH THIS PATH NEVER SAID.
@@ -5066,7 +5657,27 @@ class World {
         // only shows once the tree has BROKEN and the pieces stop being felled.
         // -------------------------------------------------------------------
         d.longBody = 2.0f * maxf(hxM, maxf(hyM, hzM)) > kLongBodyM;
-        {
+        // -- A SHATTER PIECE IS BUILT WITH NO WINDOW AT ALL ------------------
+        //
+        // (user 2026-09-22: "the trees are flickering when the player chops
+        //  them down. the cherry and oak trees are significantly delayed ...
+        //  the pine tree looks the best".)
+        //
+        // A WINDOW IS A LIVE STATIC ACTOR, AND IT COLLIDES WITH EVERYTHING.
+        // A shatter piece is out of the simulation while it waits (see the
+        // drain), but the window built for it here was not: it went into the
+        // scene at the piece's stale pose, holding the terrain AND THE
+        // NEIGHBOURING TREES -- which the falling trunk's own window leaves out
+        // on purpose -- for the whole of the drain. And at the reveal every
+        // piece is re-placed against the tree's pose on that frame, up to 30 m
+        // from where it was built, so the window it was given was somewhere
+        // else entirely. The pieces get SHARED windows at the reveal instead,
+        // cut where they actually are. See revealShatter and shareWindow.
+        //
+        // (NOT the cause of a pine hanging at 30 degrees before it breaks, or
+        //  of an oak going over past flat -- both measured unchanged with this
+        //  in. That is the STILL OPEN over-rotation in the fell itself.)
+        if (withWindow) {
             Vec3 lo{0, 0, 0}, hi{0, 0, 0};
             if (ph.boundsOf(phys, &lo, &hi)) {
                 d.winLo = Vec3{lo.x - kStaticPadM, lo.y - kStaticPadM, lo.z - kStaticPadM};
@@ -5453,6 +6064,66 @@ class World {
     // a claim: every read of it is still followed by a `live` test.
     int debrisCursor_ = 0;
     double drainCompact0_ = 0.0;
+    // WHAT THE REVEAL FRAME COSTS -- the one frame every piece goes dynamic and
+    // the structure is rebuilt. See revealShatter.
+    double revealMs_ = 0.0, revealTlasMs_ = 0.0;
+    // THE FURTHEST ANY PIECE HAD TO BE MOVED AT THE REVEAL -- see the
+    // re-place. Zero means every piece was already where the tree is.
+    float revealSkewM_ = 0.0f;
+    int revealN_ = 0;
+    // THE SHARED WINDOWS THE REVEAL BUILT, and what they cost -- see the end
+    // of revealShatter. The count is the thing to watch: it is what used to be
+    // one per piece.
+    int revealWinN_ = 0;
+    double revealWinMs_ = 0.0;
+    std::vector<int> revealed_;   // scratch: this reveal's pieces
+    // HOW BIG A PATCH OF PIECES ONE SHARED WINDOW COVERS. Eight metres puts a
+    // pine in two or three and an oak in a dozen or so; each is that cell plus
+    // the pieces' own extent plus kStaticPadM, so neighbours overlap by the pad
+    // and a piece near a cell edge still has ground on both sides of it.
+    static constexpr float kWinShareCellM = 8.0f;
+    // HOW LONG A SHARED WINDOW MAY BE JOINED AFTER IT WAS CUT. Long enough for
+    // a tree's worth of pieces to scatter and settle into it; short enough that
+    // a piece arriving later meets the ground as it is now. See shareWindow.
+    static constexpr double kWinShareAgeMs = 20000.0;
+    double drainWall0_ = 0.0;
+    // PIECES THE DRAIN COULD NOT BUILD -- see the else branch, which used to
+    // not exist.
+    int drainLost_ = 0;
+    int revWatch_ = 0;
+    const char *looseFail_ = nullptr;   // why the last makeLooseBody said no
+    int looseVox_ = 0;
+    // HOW MANY FRAMES THE TREE STANDS IN FOR ITS OWN PIECES AFTER THEY ARE
+    // SHOWN -- see the note in drainShatterQueue.
+    static constexpr int kShatterHoldFrames = 3;
+    int shatterHold_ = 0;
+    // THE PIECES SHOWN BUT NOT YET HANDED TO GRAVITY -- see the reveal.
+    // A PIECE WAITING ITS TURN, AND THE MOTION IT IS OWED. See the reveal:
+    // setVelocity on a kinematic body does nothing, so the velocity travels
+    // with the entry and is applied on the frame the body actually goes
+    // dynamic. (user 2026-09-22: "make all of the chunks obey physics from the
+    // original tree/object".)
+    struct Waking {
+        int slot = -1;
+        double bornMs = 0.0;
+        Vec3 lin{0.0f, 0.0f, 0.0f}, ang{0.0f, 0.0f, 0.0f};
+        bool atRest = false;   // ...and whether it may sleep as soon as it stops
+    };
+    std::vector<Waking> wake_;
+    // HOW MANY OF THEM PER FRAME. Sixty is about an eighth of a big oak, so a
+    // still tree is fully loose in eight frames -- an eighth of a second in
+    // which nothing has visibly moved, because nothing has.
+    // HOW MANY PIECES RE-ENTER THE SIMULATION PER FRAME.
+    //
+    // MEASURED: all 448 at once is a 23.1 ms solver step, because the
+    // broadphase takes every one of them in the same tick. At 64 a big oak is
+    // fully live in seven frames -- an eighth of a second, during which every
+    // piece is already DRAWN and none has moved from where it is drawn.
+    //
+    // The number is a solver-cost knob and nothing else. It used to be 160,
+    // set when the queue only cleared a kinematic flag; it now also re-inserts
+    // the actor, which is the part that costs.
+    static constexpr int kShatterWakePerFrame = 64;
     // -- WHAT ONE BLAS RECORD IS MADE OF -- see the drain report.
     double blasAcquireMs_ = 0.0, blasUpdateMs_ = 0.0, blasPrebuildMs_ = 0.0;
     double blasResultMs_ = 0.0, blasCreateMs_ = 0.0;
@@ -5463,6 +6134,9 @@ class World {
     double bodyMeshMs_ = 0.0, bodyBlasMs_ = 0.0, bodyUploadMs_ = 0.0, bodyPhysMs_ = 0.0;
     bool shatterJobLive_ = false;
     double shatterJobT0_ = 0.0;
+    // WHEN THIS BATCH LAST BUILT SOMETHING. The give-up is a stall detector and
+    // this is what it measures against -- see kShatterGiveUpMs.
+    double shatterProgressMs_ = 0.0;
     // HOW LONG A PARTITION MAY RUN before the latch is forced open. The worker
     // always finishes, so this is not about a hang -- it is about a job whose
     // result nothing ever collects, which would otherwise stop every tree in
@@ -5531,16 +6205,146 @@ class World {
     // exists: --fell-test does not chop the same tree twice, so both arms of a
     // sweep have to come out of one build.
     static constexpr int kShatterPerFrame = 4;
-    // HOW LONG A BATCH MAY SIT UNDRAINED before it is abandoned -- see the
-    // give-up in drainShatterQueue. Two seconds is far longer than the seven
-    // frames a healthy drain takes and far shorter than the minute a chunk
-    // holds its slot for, so it only ever fires on a genuinely full table.
+    // HOW LONG A DRAIN FRAME MAY SPEND BUILDING PIECES -- see the loop, which
+    // takes as many as fit rather than a fixed count. Six milliseconds is
+    // about a third of a 16.7 ms frame, which is what is left once frame
+    // generation has taken its share.
+    static constexpr double kShatterBudgetMs = 6.0;
+    // ...AND THE MOST IT MAY SPEND WHEN IT IS RUNNING LATE. The six is what
+    // a frame can spare; this is what it will spare rather than miss the five
+    // seconds. The drain works out, each frame, how many pieces a frame it
+    // still needs at the rate this frame is going and what a piece has cost so
+    // far, and spends up to this to make it. With the work starting at the cut
+    // (see kShatterLeadMs) it is only reached when a tree's batch had to queue
+    // behind another's, or the game is running very slowly.
+    static constexpr double kShatterBudgetMaxMs = 14.0;
+    double drainPrevNowMs_ = 0.0;
+    // HOW LONG A BATCH MAY GO WITHOUT BUILDING ANYTHING before it is
+    // abandoned -- see the give-up in drainShatterQueue.
+    //
+    // -- IT USED TO BE HOW LONG THE BATCH HAD EXISTED, AND THAT BROKE IT ----
+    //
+    // (user 2026-09-22: "when knocking over an oak tree, it never broke into
+    //  chunks. instead its glitching and dissapearing briefly".)
+    //
+    // THE OLD NOTE'S ARITHMETIC WAS RIGHT AND ITS PREMISE EXPIRED. It said
+    // "two seconds is far longer than the seven frames a healthy drain takes",
+    // which was true at kShatterPerFrame = 24. At 4 a 448-piece oak drains over
+    // 112 frames -- 1.9 s at 60 fps, and MORE THAN TWO SECONDS at anything
+    // slower. So a perfectly healthy drain started tripping a timer written for
+    // a jammed one, and what the give-up does is exactly the report:
+    //
+    //   * it clears the queue and RETIRES every piece built so far, which on an
+    //     oak is hundreds of bodies destroyed on one frame -- the freeze;
+    //   * it lifts `noBreak`, so the break fires again, partitions again, and
+    //     gives up again two seconds later, for ever -- never breaks;
+    //   * and the churn of building and retiring hundreds of bodies a cycle is
+    //     what flickers.
+    //
+    // IT IS NOT A DEADLINE, IT IS A STALL DETECTOR. The thing it was written to
+    // catch is a full debris table -- the drain asks for a slot, gets none, and
+    // sits. That state builds NOTHING, so measuring time since the last piece
+    // was built catches it just as fast and cannot be tripped by a drain that
+    // is merely long. See shatterProgressMs_.
     static constexpr double kShatterGiveUpMs = 2000.0;
+    // HOW STILL A FELLED BODY HAS TO BE for its pieces to be allowed to sleep
+    // as soon as they settle -- see the reveal. A quarter of a metre a second
+    // and a tenth of a radian a second: below that nothing on screen is moving,
+    // and above it the pieces have somewhere to be and must stay awake to get
+    // there.
+    static constexpr float kShatterRestLin = 0.25f;
+    static constexpr float kShatterRestAng = 0.10f;
 
     // Builds up to kShatterPerFrame of them. Called once a frame from update.
     void drainShatterQueue(Physics &ph, double nowMs) {
-        // LAST FRAME'S TREE, whose pieces are already on screen.
-        if (shatterRetire_ >= 0) retireShatterParent(ph);
+        // -- THE PARENT IS HELD FOR SEVERAL FRAMES, NOT ONE --------------
+        //
+        // (user 2026-09-22: "now it is dissapearing breifly".)
+        //
+        // THE SIM HANDOVER IS CLEAN AND IT IS STILL NOT ENOUGH. Counted at the
+        // reveal: frame 1 has the parent live AND 448 pieces drawable, frame 2
+        // has the parent gone and 448 drawable -- there is never a frame with
+        // neither, which is what the one-frame overlap was written to
+        // guarantee. So whatever is being seen is downstream of the instance
+        // array: revealShatter rebuilds the TLAS BEFORE flushDebrisInstances
+        // uploads, the parent's BLAS and triangles are handed back the moment
+        // it retires, and frame generation puts another frame between the
+        // simulation and the screen.
+        //
+        // ONE FRAME OF SLACK CANNOT ABSORB ANY OF THAT. Three can, and the cost
+        // of being wrong in this direction is nil: the note over revealShatter
+        // already says a frame of the tree twice is invisible, because a chunk
+        // is born exactly where its part of the tree was, so the overlap reads
+        // as the tree. Holding it for three frames is fifty milliseconds of
+        // drawing the same voxels twice.
+        if (shatterHold_ > 0) --shatterHold_;
+        // -- WHAT IS ACTUALLY DRAWABLE EITHER SIDE OF THE SWAP -------------
+        //
+        // (user 2026-09-22: "I still say it dissapear very quickly and come
+        //  back".) V2_REVEAL_WATCH=1. Counts the instances that would be drawn
+        //  and whether the parent is still one of them, for a few frames after
+        //  the reveal -- a frame where the total dips is the artifact, and a
+        //  frame where it does not means the flicker is downstream of here.
+        if (revWatch_ > 0) {
+            --revWatch_;
+            int shown = 0, kin = 0;
+            for (int i = 0; i < kDebrisInstances; ++i) {
+                const Debris &q = debris_[i];
+                if (!q.live || q.unseen) continue;
+                ++shown;
+                if (q.phys >= 0 && !q.sleepy) ++kin;
+            }
+            const bool parentLive = shatterRetire_ >= 0 &&
+                                    shatterRetire_ < kDebrisInstances &&
+                                    debris_[shatterRetire_].live;
+            std::printf("  reveal+  frame %d  parent %-11s %d drawable  %d awaiting wake\n",
+                        8 - revWatch_, parentLive ? "STILL THERE" : "gone", shown,
+                        int(wake_.size()));
+            std::fflush(stdout);
+        }
+        // -- AND THE PIECES THAT ARE WAITING TO FALL -- see the reveal -----
+        //
+        // kShatterWakePerFrame at a time, so the solver meets sixty new
+        // contacts a step instead of four hundred and fifty. They are drawn
+        // already; this only decides when each one is handed to gravity.
+        const auto wk0 = std::chrono::steady_clock::now();
+        if (!wake_.empty()) {
+            int woke = 0;
+            while (!wake_.empty() && woke < kShatterWakePerFrame) {
+                const Waking w = wake_.back();
+                wake_.pop_back();
+                ++woke;
+                if (w.slot < 0 || w.slot >= kDebrisInstances) continue;
+                // THE SLOT MAY HAVE BEEN HANDED TO SOMETHING ELSE by now --
+                // the same birthday check retireShatterParent makes, and for
+                // the same reason: waking a stranger is a body chosen at
+                // random from the world being dropped where it stands.
+                Debris &d = debris_[w.slot];
+                if (!d.live || d.phys < 0 || d.bornMs != w.bornMs) continue;
+                // ALREADY ON ITS WAY TO THE PLAYER: it was put back in the
+                // simulation when the absorb began, and making it dynamic now
+                // would drop it out of the flight half way.
+                if (d.absorbing) continue;
+                d.stillT0 = -1.0;   // its stillness is counted from here, not from birth
+                // THE WHOLE HAND-OVER, IN THIS ORDER. Back into the simulation
+                // first -- see Physics::setSimulated -- then dynamic, then the
+                // velocity, which a kinematic body would have ignored.
+                ph.setSimulated(d.phys, true);
+                ph.setKinematic(d.phys, false);
+                ph.setVelocity(d.phys, w.lin, w.ang);
+                // ...AND IF THE TREE WAS STILL, IT MAY SLEEP AS SOON AS IT
+                // STOPS. See the note at the reveal: a tree that has lain
+                // still for five seconds has pieces that are already where they
+                // are going to be, and holding them awake for the ordinary two
+                // seconds is what a felled oak's worth of contact pile costs.
+                if (w.atRest) ph.allowSleep(d.phys, kLootSleepThresh);
+            }
+        }
+        udWakeMs_ = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - wk0).count();
+        // LAST FRAME'S TREE, whose pieces are already on screen -- held for
+        // kShatterHoldFrames, see the note above.
+        if (shatterRetire_ >= 0 && shatterHold_ <= 0) retireShatterParent(ph);
         // ...AND THE PARTITION, IF THE WORKER HAS FINISHED ONE. Before the
         // drain rather than after it, so the cuts it collects start draining on
         // this frame rather than the next.
@@ -5548,7 +6352,12 @@ class World {
         // ...and any stump a fell left standing -- see pumpStumps. Here because
         // this is already the once-a-frame door for everything to do with a
         // body coming apart, and fellTree must not be re-entered from itself.
-        pumpStumps(ph, nowMs);
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            pumpStumps(ph, nowMs);
+            udStumpMs_ = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - t0).count();
+        }
         // A JOB WHOSE RESULT NOBODY COLLECTED -- see kShatterJobGiveUpMs. This
         // cannot happen while the worker is healthy and is here because the
         // cost of it happening is that felling stops working for the session.
@@ -5587,8 +6396,9 @@ class World {
         // `noBreak` is lifted so the ordinary trigger can try it again once
         // there is room.
         if (!shatterQueue_.empty() && shatterParent_ >= 0 &&
-            nowMs - shatterQueue_.front().bornMs > kShatterGiveUpMs) {
-            std::printf("  shatter  GAVE UP on %d queued chunk(s) after %.1f s -- no free slots\n",
+            nowMs - shatterProgressMs_ > kShatterGiveUpMs) {
+            std::printf("  shatter  GAVE UP on %d queued chunk(s) -- nothing built for "
+                        "%.1f s, the table is full\n",
                         int(shatterQueue_.size()), kShatterGiveUpMs * 0.001);
             std::fflush(stdout);
             shatterQueue_.clear();
@@ -5614,6 +6424,7 @@ class World {
         // PhysX. They are timed apart.
         const auto dq0 = std::chrono::steady_clock::now();
         if (drainFrames_ == 0 && !shatterQueue_.empty()) {
+            drainWall0_ = nowMs;
             drainCompact0_ = prof_.drainMs;
             // RESET AT THE START OF A BATCH, not at the end of the report: the
             // first report otherwise carries every chunk build since launch,
@@ -5629,8 +6440,57 @@ class World {
             const int v = e ? std::atoi(e) : 0;
             return v > 0 ? v : kShatterPerFrame;
         }();
+        // -- A BUDGET IN MILLISECONDS, NOT A COUNT -------------------------
+        //
+        // (user 2026-09-22: "the cherry trees and oak trees break into chunks
+        //  very late".)
+        //
+        // A FIXED COUNT MAKES A BIG TREE SLOW IN WALL CLOCK, which is exactly
+        // what was reported. Four a frame is four whether the tree has seven
+        // pieces or four hundred and forty-eight, so an oak -- which hits the
+        // slot cap -- took 112 frames, and the note below measures that as
+        // 1850 ms of standing there whole. A pine took 55. The count was tuned
+        // against the cost of a piece at the time, and the cost of a piece has
+        // since halved twice.
+        //
+        // SO IT SPENDS TIME. As many pieces as fit in kShatterBudgetMs, which
+        // is what the frame can actually afford, and the number per frame then
+        // follows the cost of a piece automatically -- every optimisation below
+        // this line now shortens the wait instead of just making the frames
+        // emptier.
+        //
+        // THE FIRST PIECE IS ALWAYS BUILT, budget or no budget: a drain that
+        // can build nothing never finishes, and the give-up timer would
+        // eventually abandon a tree that was making progress.
+        //
+        // V2_DRAIN_PER_FRAME STILL OVERRIDES, as a hard count, because that is
+        // what a sweep needs -- see the table above.
+        const bool byCount = perFrame != kShatterPerFrame;
+        // -- ...AND MORE OF IT IF THE CLOCK WILL NOT WAIT -------------------
+        //
+        // See kShatterBudgetMaxMs. Game ms to the swap, over this frame's game
+        // ms, is the frames left; the pieces left over that is the rate
+        // needed; times what a piece has cost so far, with a quarter spare, is
+        // the budget. Nothing to aim at for a breakNow body (a stump), and
+        // nothing measured yet on the first frame of a batch.
+        double budget = kShatterBudgetMs;
+        const double frameGameMs = nowMs - drainPrevNowMs_;
+        drainPrevNowMs_ = nowMs;
+        if (!byCount && !shatterQueue_.empty() && drainBuilt_ > 0 && frameGameMs > 0.0 &&
+            shatterParent_ >= 0 && shatterParent_ < kDebrisInstances &&
+            debris_[shatterParent_].live && !debris_[shatterParent_].breakNow) {
+            const double left = debris_[shatterParent_].bornMs + kBreakAfterMs - nowMs;
+            const double framesLeft = std::max(1.0, left / frameGameMs);
+            const double perPiece = drainMs_ / double(drainBuilt_);
+            const double need = double(shatterQueue_.size()) / framesLeft * perPiece * 1.25;
+            budget = std::min(kShatterBudgetMaxMs, std::max(kShatterBudgetMs, need));
+        }
         int built = 0;
-        while (!shatterQueue_.empty() && built < perFrame) {
+        while (!shatterQueue_.empty() &&
+               (byCount ? built < perFrame
+                        : (built == 0 ||
+                           std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - dq0).count() < budget))) {
             PendingChunk &c = shatterQueue_.front();
             int use = -1;
             const auto ds0 = std::chrono::steady_clock::now();
@@ -5693,7 +6553,7 @@ class World {
             }
             if (makeLooseBody(ph, use, std::move(c.vox), c.sx, c.sy, c.sz, c.off, cp, cq,
                               cl, ca, /*felled=*/false, /*scenery=*/false, c.takesAs,
-                              c.tint, c.bornMs, nowMs)) {
+                              c.tint, c.bornMs, nowMs, /*withWindow=*/false)) {
                 Debris &nb = debris_[use];
                 // SCENERY STAYS SCENERY. See PendingChunk::scenery -- loot is
                 // the felled tree's rule and the pieces of anything else keep
@@ -5715,15 +6575,55 @@ class World {
                 // ...AND IT IS NOT DRAWN YET -- see Debris::unseen. The tree it
                 // came out of is still standing in for it.
                 nb.unseen = true;
-                // ...AND FROZEN WHILE IT WAITS -- see Physics::setKinematic.
-                // An unseen piece that keeps falling is out of register with
-                // the tree by the time the tree is taken away.
+                // ...AND OUT OF THE SIMULATION WHILE IT WAITS.
+                //
+                // (user 2026-09-22: "it also shakes as whole tree right before
+                //  breaking into chunks".)
+                //
+                // KINEMATIC ALONE WAS NOT ENOUGH AND WAS THE SHAKE. A
+                // kinematic body does not fall -- which is all this needed --
+                // but it still has shapes and still PUSHES what it overlaps.
+                // Every piece is born exactly where the parent's own voxels
+                // are, a handful per frame for the whole drain, so the tree
+                // spent that whole time rolling around inside hundreds of
+                // colliders it had just produced, being shoved out of each one
+                // as it appeared. See Physics::setSimulated, which is the flag
+                // that means what was wanted: pose kept, contacts none.
+                //
+                // BOTH, not one. The disable is what stops the shoving; the
+                // kinematic flag is what the reveal clears to let go, and
+                // leaving it set means a piece cannot start falling early even
+                // if it is re-simulated by some path this does not know about.
                 ph.setKinematic(nb.phys, true);
+                ph.setSimulated(nb.phys, false);
                 setDebrisInstance(use, nb.pos, nb.quat);   // which hides it
                 shatterShown_.push_back(use);
+            } else {
+                // -- A PIECE THAT COULD NOT BE BUILT, AND SAID NOTHING ------
+                //
+                // (user 2026-09-22: "the trees are now dissapearing briefly
+                //  again... the birch forest froze again, and then broke
+                //  down".)
+                //
+                // THIS BRANCH DID NOT EXIST. makeLooseBody returns false four
+                // different ways -- no voxels, no triangles, no structure, a
+                // bad slot -- and every one of them dropped the piece on the
+                // floor: the queue entry was erased, drainBuilt_ counted it,
+                // and nothing was ever shown. A birch reported 120 pieces
+                // drained and 61 revealed, and the missing 59 were the reason
+                // the tree appeared to lose half of itself.
+                ++drainLost_;
+                // NOT c.vox -- it was std::move'd into the call above. The
+                // DIMENSIONS are what identify the piece anyway.
+                if (drainLost_ <= 6)
+                    std::printf("  drain    piece LOST: %d x %d x %d box, %d solid voxel(s)"
+                                "  --  %s\n",
+                                c.sx, c.sy, c.sz, looseVox_,
+                                looseFail_ ? looseFail_ : "(no reason recorded)");
             }
             shatterQueue_.erase(shatterQueue_.begin());
             ++drainBuilt_;
+            shatterProgressMs_ = nowMs;   // see kShatterGiveUpMs
             ++built;
         }
         if (built > 0) {
@@ -5734,7 +6634,22 @@ class World {
             drainFrames_ += 1;
             if (ms > drainWorstMs_) drainWorstMs_ = ms;
         }
-        if (shatterQueue_.empty() && shatterParent_ >= 0) {
+        // -- THE PIECES MAY BE READY EARLY; THE SWAP IS NOT -----------------
+        //
+        // See the trigger, which now starts the work kShatterLeadMs before the
+        // five seconds are up. The tree still comes apart ON the five seconds:
+        // a small tree finishes its drain long before then and waits, a big one
+        // finishes just in time, and neither of them looks different from the
+        // other any more. Without this the lead would simply make everything
+        // break early, which is a different wrong answer.
+        //
+        // breakNow BODIES ARE EXEMPT -- a stump has no clock to wait for and is
+        // sinking into the ground while it waits. See Debris::breakNow.
+        const bool onTheClock =
+            shatterParent_ >= 0 && shatterParent_ < kDebrisInstances &&
+            debris_[shatterParent_].live && !debris_[shatterParent_].breakNow &&
+            nowMs - debris_[shatterParent_].bornMs < kBreakAfterMs;
+        if (shatterQueue_.empty() && shatterParent_ >= 0 && !onTheClock) {
             if (drainFrames_ > 0) {
                 std::printf("  drain    %d piece(s) over %d frame(s)  %.1f ms total, "
                             "worst frame %.1f, %.2f ms each   (slot scan %.1f, "
@@ -5752,12 +6667,61 @@ class World {
                 std::printf("  drain    compaction spent %.1f ms while it ran%s\n",
                             prof_.drainMs - drainCompact0_,
                             std::getenv("V2_COMPACT_ALL") ? "   (V2_COMPACT_ALL)" : "");
+                // WHERE A DRAIN'S DEVICE MEMORY GOES -- V2_POOL_STATS=1.
+                // Kept because it is what found the megabyte floor: 222 slots
+                // holding 226 MB in each of three pools, for pieces that need
+                // eight kilobytes each. Off by default; the answer it gives is
+                // a property of the pools, not of any one tree, so it does not
+                // belong in the ordinary report.
+                static const bool poolStats = [] {
+                    const char *e = std::getenv("V2_POOL_STATS");
+                    return e && *e && *e != '0';
+                }();
+                if (poolStats) {
+                    vertPool_.poolStats("verts", deviceDone_);
+                    idxPool_.poolStats("idx", deviceDone_);
+                    scratchPool_.poolStats("scratch", deviceDone_);
+                    rawPool_.poolStats("raw", deviceDone_);
+                }
                 std::fflush(stdout);
             }
+            const bool report = drainFrames_ > 0;
+            // HOW LATE THE SWAP WAS, against the five seconds the tree was
+            // promised -- see kShatterLeadMs. This used to be the length of the
+            // drain, which stopped being the interesting number when the drain
+            // moved INTO the wait: what matters now is whether the tree came
+            // apart on time, and zero is the answer to look for.
+            const double stood =
+                (shatterParent_ >= 0 && shatterParent_ < kDebrisInstances &&
+                 debris_[shatterParent_].live)
+                    ? std::max(0.0, (nowMs - debris_[shatterParent_].bornMs) - kBreakAfterMs)
+                    : (nowMs - drainWall0_);
             drainMs_ = drainSlotMs_ = drainWorstMs_ = 0.0;
-            drainFrames_ = drainBuilt_ = 0;
+            drainFrames_ = drainBuilt_ = drainLost_ = 0;
             bodyMeshMs_ = bodyBlasMs_ = bodyUploadMs_ = bodyPhysMs_ = 0.0;
-            revealShatter(ph);
+            revealShatter(ph, nowMs);
+            shatterHold_ = kShatterHoldFrames;
+            static const bool watch = [] {
+                const char *e = std::getenv("V2_REVEAL_WATCH");
+                return e && *e && *e != '0';
+            }();
+            if (watch) revWatch_ = 8;
+            // AFTER THE REVEAL, or it prints the previous batch's numbers --
+            // which it did, and the 448 it showed belonged to the tree before
+            // the stump.
+            //
+            // `stood` IS THE ONE THE PLAYER FEELS: how long the parent stood in
+            // for its own pieces, in sim time. It is what the drain budget buys
+            // and what the give-up must never be allowed to mistake for a stall
+            // -- see kShatterGiveUpMs.
+            if (report) {
+                std::printf("  reveal   %d piece(s) let go on one frame: %.1f ms "
+                            "(%d shared window(s), %.1f ms of it);  the swap was "
+                            "%.0f ms LATE;  worst piece was %.2f m stale%s\n",
+                            revealN_, revealMs_, revealWinN_, revealWinMs_, stood, revealSkewM_,
+                            drainLost_ ? "  *** AND PIECES WERE LOST ***" : "");
+                std::fflush(stdout);
+            }
         }
     }
 
@@ -5774,7 +6738,7 @@ class World {
     // match or the retire is skipped. Getting this wrong deletes a body chosen
     // at random from the world.
     // -----------------------------------------------------------------------
-    void revealShatter(Physics &ph) {
+    void revealShatter(Physics &ph, double nowMs) {
         // -- THE PIECES FIRST, THE TREE NEXT FRAME ----------------------
         //
         // (user 2026-09-19: "when the tree breaks into chunks, right at the
@@ -5797,29 +6761,300 @@ class World {
         //
         // OVERLAP IS CHEAP AND A GAP IS NOT. A frame of the tree twice is
         // invisible; a frame of nothing is the thing being complained about.
+        const auto rv0 = std::chrono::steady_clock::now();
+        const int shown = int(shatterShown_.size());
         shatterRetire_ = shatterParent_;
         shatterRetireBorn_ = shatterParentBorn_;
         shatterParent_ = -1;
         // THE WHOLE SET LET GO ON ONE FRAME. Until here every piece has been
         // kinematic and exactly where the tree's voxels were; this is the
         // moment the tree becomes the chunks, and nothing has moved before it.
-        Vec3 plin{0, 0, 0}, pang{0, 0, 0};
+        Vec3 plin{0, 0, 0}, pang{0, 0, 0}, pcom{0, 0, 0};
+        bool spin = false;
         const int par = shatterRetire_;   // the tree is still standing in
-        if (par >= 0 && par < kDebrisInstances && debris_[par].live && debris_[par].phys >= 0)
+        // -- WHERE THE TREE IS *NOW*, NOT WHERE EACH PIECE WAS BORN ---------
+        //
+        // (user 2026-09-22: "it looks like the tree goes back in time and then
+        //  breaks".)
+        //
+        // THE PIECES ARE STALE AND THAT IS UNAVOIDABLE. They are built a few
+        // per frame across the whole drain and frozen as they are made, so the
+        // first of them holds a pose forty frames older than the last. Nothing
+        // is wrong with any one of them; what is wrong is that they are not all
+        // from the SAME MOMENT, and the moment they should all be from is this
+        // one -- the frame the substitution actually happens on.
+        //
+        // So the parent's pose is taken here, once, and every piece is placed
+        // against it from its own parent-local centre. The tree stops jumping
+        // because the chunks are now exactly where the tree is, which is what
+        // the overlap frame was always claiming.
+        Vec3 ppos{0, 0, 0};
+        float pquat[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        bool haveParent = false;
+        if (par >= 0 && par < kDebrisInstances && debris_[par].live && debris_[par].phys >= 0) {
             ph.velocityOf(debris_[par].phys, &plin, &pang);
+            spin = ph.centreOfMass(debris_[par].phys, &pcom);
+            // THE POSE THE TREE IS DRAWN AT THIS FRAME -- the solver has
+            // already stepped, and d.pos is last frame's. Placing the pieces
+            // against that put them a step behind the tree they overlap.
+            if (!ph.poseOf(debris_[par].phys, &ppos, pquat)) {
+                ppos = debris_[par].pos;
+                for (int t = 0; t < 4; ++t) pquat[t] = debris_[par].quat[t];
+            }
+            haveParent = true;
+        }
+        float prot[9];
+        quatMat3(pquat, prot);
+        revealSkewM_ = 0.0f;   // per reveal, not per session
+        // WAS IT ACTUALLY DOING ANYTHING -- see the sleep note in the loop.
+        // Both speeds, because a trunk can be turning on the spot without its
+        // centre of mass going anywhere.
+        const float lin2 = plin.x * plin.x + plin.y * plin.y + plin.z * plin.z;
+        const float ang2 = pang.x * pang.x + pang.y * pang.y + pang.z * pang.z;
+        const bool atRest = lin2 < kShatterRestLin * kShatterRestLin &&
+                            ang2 < kShatterRestAng * kShatterRestAng;
         for (int slot : shatterShown_) {
             if (slot < 0 || slot >= kDebrisInstances) continue;
             Debris &nb = debris_[slot];
             if (!nb.live || !nb.unseen) continue;
             nb.unseen = false;
+            // -- MOVED TO WHERE IT BELONGS ON *THIS* FRAME ------------------
+            //
+            // See the note above. The body is still out of the simulation here,
+            // which is why this is placeAt (a teleport) and not setPose (a
+            // kinematic target the solver would interpolate towards, and that a
+            // disabled actor never receives at all).
+            if (haveParent) {
+                const Vec3 was = nb.pos;
+                const Vec3 &m = nb.bornLocal;
+                nb.pos = Vec3{ppos.x + prot[0] * m.x + prot[1] * m.y + prot[2] * m.z,
+                              ppos.y + prot[3] * m.x + prot[4] * m.y + prot[5] * m.z,
+                              ppos.z + prot[6] * m.x + prot[7] * m.y + prot[8] * m.z};
+                for (int t = 0; t < 4; ++t) nb.quat[t] = pquat[t];
+                ph.placeAt(nb.phys, nb.pos, nb.quat);
+                // HOW STALE IT WAS. This distance is the artifact itself: it is
+                // how far the piece had drifted from the tree between being
+                // built and being shown, and before the re-place it was what
+                // you SAW -- the tree apparently jumping back to an older pose.
+                // Reported below so a regression here is a number and not a
+                // video.
+                const float dx = nb.pos.x - was.x, dy = nb.pos.y - was.y,
+                            dz = nb.pos.z - was.z;
+                const float d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > revealSkewM_ * revealSkewM_) revealSkewM_ = sqrtf(d2);
+            }
             // Dynamic again, carrying whatever the tree was doing -- a trunk
             // still rolling hands its motion to every piece of itself.
-            ph.setKinematic(nb.phys, false);
-            ph.setVelocity(nb.phys, plin, pang);
+            // -- EACH PIECE'S SHARE OF WHAT THE TREE WAS DOING -------------
+            //
+            // WORKED OUT BEFORE THE STAGGER BELOW, because a piece that waits
+            // its turn has to take this with it: setVelocity on a body that is
+            // still kinematic does nothing, so applying it here and waking the
+            // body three frames later would hand it exactly zero.
+            // -- ...BUT A STILL TREE DOES NOT GET A SYNTHESISED KICK -------
+            //
+            // v = v_cm + w x r is the right hand-over for a body that is
+            // MOVING. At rest it is a trap: "at rest" means under
+            // kShatterRestAng, which is 0.10 rad/s, and r reaches twelve metres
+            // at the crown of an oak -- so a tree that is visibly doing nothing
+            // was handing its outermost pieces 1.2 m/s. Four hundred of them,
+            // all outward, all at once.
+            //
+            // MEASURED, and it is not subtle: a dozen consecutive
+            // "PHYSICS STEP 20-30 ms with 448 live bodies" several seconds
+            // AFTER the break, which is a pile that was kicked apart and could
+            // not settle. The centre-of-mass velocity is still handed over --
+            // it is under 0.25 m/s by definition here -- and so is the spin.
+            // What is dropped is the lever arm, which at rest is amplifying
+            // noise.
+            Vec3 v = plin;
+            if (spin && !atRest) {
+                Vec3 pc{0.0f, 0.0f, 0.0f};
+                if (!ph.centreOfMass(nb.phys, &pc)) pc = nb.pos;
+                const Vec3 r{pc.x - pcom.x, pc.y - pcom.y, pc.z - pcom.z};
+                v = Vec3{plin.x + pang.y * r.z - pang.z * r.y,
+                         plin.y + pang.z * r.x - pang.x * r.z,
+                         plin.z + pang.x * r.y - pang.y * r.x};
+            }
+            // -- A STILL TREE LETS ITS PIECES GO A FEW AT A TIME ----------
+            //
+            // (user 2026-09-22: "its still freezing as well before it turns
+            //  into chunks".)
+            //
+            // MEASURED: the frame every piece goes dynamic costs 21 ms in the
+            // SOLVER alone, with 449 live bodies. They are born overlapping --
+            // the colliders are 0.4 m cells around 1 m pieces -- so waking all
+            // of them at once hands PhysX a dense contact pile to resolve in
+            // one step.
+            //
+            // THE VISUAL REVEAL STAYS ATOMIC, which is the part that must not
+            // change: every piece is shown on this frame, all of them, because
+            // the tree is being substituted and a substitution that arrives in
+            // instalments is the "grows from a tiny point" this whole
+            // arrangement exists to prevent. What is staggered is only when
+            // each piece starts to FALL -- and they are all standing exactly
+            // where the tree's voxels were, so a piece that waits two frames
+            // has not moved from where it is drawn.
+            //
+            // ONLY WHEN THE TREE WAS STILL. If it was rolling, every piece has
+            // somewhere to be on this frame and a stagger would show as the
+            // crown hanging while the bole goes -- see the momentum hand-over
+            // below, which is the case this must not touch.
+            // -- SHOWN NOW, SIMULATED OVER THE NEXT FEW FRAMES -------------
+            //
+            // (user 2026-09-22: "the tree should just smoothly transition into
+            //  chunks".)
+            //
+            // BOTH CASES GO THROUGH THE QUEUE NOW, moving tree or still one.
+            // Taking 448 actors out of eDISABLE_SIMULATION on a single frame
+            // costs a 23.1 ms solver step -- measured, with the loud-step
+            // warning -- because the broadphase has to take all of them at
+            // once. That is a visible stutter at exactly the moment this whole
+            // arrangement exists to make invisible.
+            //
+            // THE VISUAL SWAP IS STILL ATOMIC. Every piece is drawn on THIS
+            // frame; what is spread is only when each one starts being solved.
+            // A piece is born exactly where the tree's voxels were, so one that
+            // waits two frames has not moved from where it is drawn -- and it
+            // carries its share of the tree's velocity with it, so when it does
+            // start it starts from the right speed rather than from nothing.
+            //
+            // EVEN FOR A MOVING TREE. Two frames at a metre a second is three
+            // centimetres; a third of a voxel, against a body the size of a
+            // tree. The alternative is the stutter above.
+            wake_.push_back(Waking{slot, nb.bornMs, v, pang, atRest});
+            // -- AND IF THE TREE WAS NOT MOVING, THEY MAY SLEEP AT ONCE ----
+            //
+            // (user 2026-09-22: "right before it breaks into chunks, it
+            //  freezes for a second".)
+            //
+            // A PIECE IS BORN UNSLEEPABLE ON PURPOSE -- see Physics::allowSleep
+            // -- and updateDebris only lifts that after kDebrisSettleMs, which
+            // is TWO SECONDS. That rule was written for a chip you might walk
+            // into mid-wobble, and for one chip it costs nothing. For a felled
+            // oak it means 448 bodies, every one of them born overlapping its
+            // neighbours because the colliders are 0.4 m cells around 1 m
+            // pieces, held awake in a contact pile for two seconds. That is the
+            // freeze, and the solver step that measures 20 ms is one frame of
+            // it.
+            //
+            // A TREE THAT HAS LAIN STILL FOR FIVE SECONDS HAS NOTHING TO DO.
+            // Its pieces are already where they are going to be, so they can be
+            // allowed to sleep the moment they stop moving rather than two
+            // seconds later. They still WAKE on contact -- walking into one, or
+            // landing on it, behaves exactly as before -- which is the same
+            // argument allowSleep's own note makes.
+            //
+            // AND IF IT WAS STILL MOVING THEY STAY AWAKE, which is the other
+            // half of the ask above: a rolling trunk hands its momentum to its
+            // pieces, and a piece that fell asleep holding it would simply stop
+            // in mid-air.
+            if (atRest) nb.sleepy = true;   // the threshold is set on waking
+            // -- ITS "LAST FRAME" IS THE TREE'S -- see SlotXf. A piece was
+            //    hidden last frame, so it has no motion of its own to report;
+            //    but it IS the tree, and the tree was drawn last frame. Carrying
+            //    the tree's last pose onto the piece -- rigidly, through the
+            //    tree's pose now -- gives the swap frame the same motion the
+            //    tree had, instead of a frame where 896 pieces claim to have
+            //    stood still (or, in a recycled slot, to have jumped from
+            //    wherever the last occupant was).
+            if (haveParent && debrisDrawnXf_[size_t(par)].valid) {
+                const SlotXf &pw = debrisDrawnXf_[size_t(par)];
+                const Vec3 &po = debris_[par].originOff;
+                const float tpn[3] = {ppos.x + prot[0] * po.x + prot[1] * po.y + prot[2] * po.z,
+                                      ppos.y + prot[3] * po.x + prot[4] * po.y + prot[5] * po.z,
+                                      ppos.z + prot[6] * po.x + prot[7] * po.y + prot[8] * po.z};
+                float xr[9];
+                quatMat3(nb.quat, xr);
+                const Vec3 &xo = nb.originOff;
+                const float tx[3] = {nb.pos.x + xr[0] * xo.x + xr[1] * xo.y + xr[2] * xo.z,
+                                     nb.pos.y + xr[3] * xo.x + xr[4] * xo.y + xr[5] * xo.z,
+                                     nb.pos.z + xr[6] * xo.x + xr[7] * xo.y + xr[8] * xo.z};
+                // D = (tree then) * (tree now)^T; the piece then is D * piece now
+                // for its rotation, and D * (t - tree now) + tree then for its
+                // origin.
+                float dm[9];
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 3; ++c)
+                        dm[r * 3 + c] = pw.m[r * 3 + 0] * prot[c * 3 + 0] +
+                                        pw.m[r * 3 + 1] * prot[c * 3 + 1] +
+                                        pw.m[r * 3 + 2] * prot[c * 3 + 2];
+                SlotXf &sw = debrisDrawnXf_[size_t(slot)];
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c)
+                        sw.m[r * 3 + c] = dm[r * 3 + 0] * xr[0 * 3 + c] +
+                                          dm[r * 3 + 1] * xr[1 * 3 + c] +
+                                          dm[r * 3 + 2] * xr[2 * 3 + c];
+                    sw.t[r] = dm[r * 3 + 0] * (tx[0] - tpn[0]) + dm[r * 3 + 1] * (tx[1] - tpn[1]) +
+                              dm[r * 3 + 2] * (tx[2] - tpn[2]) + pw.t[r];
+                }
+                sw.valid = true;
+            }
             setDebrisInstance(slot, nb.pos, nb.quat);
+            revealed_.push_back(slot);
         }
         shatterShown_.clear();
-        rebuildTlas();
+        // -- ...AND THE SOLID WORLD UNDER THEM: A FEW WINDOWS, SHARED ---------
+        //
+        // (user 2026-09-22: "the trees are flickering when the player chops
+        //  them down. the cherry and oak trees are significantly delayed ...
+        //  all the trees should mimic the pine tree chunk mechanics".)
+        //
+        // ONE WINDOW PER PIECE WAS THE DELAY -- see shareWindow for the
+        // measurement. A window is a static actor and every static collides
+        // with every dynamic, so a pile of pieces each carrying its own copy of
+        // the same ground met that ground once per copy it overlapped.
+        //
+        // SO THE PIECES SHARE, ONE WINDOW PER kWinShareCellM CELL OF WHERE THEY
+        // ARE NOW -- built here, after the re-place above, not at each piece's
+        // stale birth pose (see makeLooseBody). Every piece still has the same
+        // world under it that its own window gave it; it is simply given once.
+        // `sharesWin` keeps it that way for the piece's whole life: one that
+        // rolls out of its window joins another rather than cutting its own.
+        const auto rw0 = std::chrono::steady_clock::now();
+        const int built0 = winSharedBuilt_;
+        for (int slot : revealed_) {
+            Debris &nb = debris_[slot];
+            nb.sharesWin = true;
+            // NOTHING SOLID NEAR: no window, and updateDebris' ordinary
+            // re-centre takes over for this piece as it would for a chip.
+            shareWindow(ph, slot, nowMs, /*mayBuild=*/true);
+        }
+        revealWinN_ = winSharedBuilt_ - built0;
+        revealed_.clear();
+        revealWinMs_ = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - rw0).count();
+        // -- NO TOP-LEVEL REBUILD HERE. A PIECE APPEARING IS A REFIT --------
+        //
+        // (user 2026-09-22: "I still say it dissapear very quickly and come
+        //  back", after the simulation side was shown gapless twice: counted
+        //  per frame with V2_REVEAL_WATCH, the drawable total never dips.)
+        //
+        // rebuildTlas DOES NOT REBUILD FROM THE DEBRIS -- it writes the WHOLE
+        // debris band back to mask 0 with a placeholder structure and sets
+        // debrisDirty_, trusting a later pass to re-publish every live piece.
+        // That is correct when the instance layout has actually changed, and
+        // on this frame it has not: the band is reserved whole at start-up
+        // precisely so that showing or hiding a piece is a mask write and a
+        // refit. Its own note says so -- "A SLOT THAT ALWAYS EXISTS IS A
+        // REFIT".
+        //
+        // SO THE REBUILD WAS DOING TWO THINGS AND ONLY WANTED ONE. It blanked
+        // every piece of debris in the world -- not just this tree's -- and
+        // leaned on the re-publish to put them back inside the same frame.
+        // Anything that reads the structure between the two sees a world with
+        // no debris in it at all, which is a flicker of exactly the shape
+        // being reported and one that no counter on this side can see.
+        //
+        // setDebrisInstance has already written each piece's transform, mask
+        // and structure address into the instance array; the frame's ordinary
+        // flush uploads them and refitTlas picks them up. Changing an
+        // instance's acceleration structure on a refit is allowed, which is
+        // what the band was built to rely on.
+        revealTlasMs_ = 0.0;
+        revealMs_ = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - rv0).count();
+        revealN_ = shown;
     }
 
     // ...AND THE FRAME AFTER THAT, THE TREE GOES. See revealShatter: the two
@@ -5828,6 +7063,44 @@ class World {
     // THE BIRTHDAY IS CHECKED, NOT ASSUMED -- the slot may have been retired
     // and handed to something else in the meantime, and retiring a stranger
     // deletes a body chosen at random from the world.
+    // -----------------------------------------------------------------------
+    // THE TREE WAS CHOPPED WHILE ITS PIECES WERE BEING MADE.
+    //
+    // The partition works on a COPY of the voxels taken at the submit, so a
+    // bite taken out of the trunk afterwards is not in it: the pieces would put
+    // back wood the player had just cut away, and a chop that splits the trunk
+    // retires the parent and leaves its hidden pieces to be revealed, stale,
+    // beside the two new halves. With the work starting at the cut (see
+    // kShatterLeadMs) the whole fall is that window, so the batch is thrown
+    // away and asked for again from the voxels as they now are. The clock is
+    // the parent's birthday and does not restart; see kShatterBudgetMaxMs for
+    // how a late restart still makes the five seconds.
+    // -----------------------------------------------------------------------
+    bool shatterDiscard_ = false;   // the worker's result is stale; drop it
+    void cancelShatter(Physics &ph) {
+        if (shatterParent_ < 0) return;
+        shatterQueue_.clear();
+        for (int slot : shatterShown_)
+            if (slot >= 0 && slot < kDebrisInstances && debris_[slot].live &&
+                debris_[slot].unseen)
+                retireDebris(ph, slot);
+        shatterShown_.clear();
+        if (shatterParent_ < kDebrisInstances && debris_[shatterParent_].live &&
+            debris_[shatterParent_].bornMs == shatterParentBorn_)
+            debris_[shatterParent_].noBreak = false;   // ask again, with the new voxels
+        drainFrames_ = drainBuilt_ = drainLost_ = 0;
+        drainMs_ = drainSlotMs_ = drainWorstMs_ = 0.0;
+        // A PARTITION STILL RUNNING HOLDS THE LATCH until it lands, and is then
+        // dropped -- see pumpShatter. Releasing it now would let the retry
+        // submit a second job behind it, and the first result to come back
+        // would be taken for the second.
+        if (shatterJobLive_) shatterDiscard_ = true;
+        else shatterParent_ = -1;
+        std::printf("  shatter  CANCELLED -- the trunk was chopped while its pieces were "
+                    "being made; starting again from its voxels as they are now\n");
+        std::fflush(stdout);
+    }
+
     void retireShatterParent(Physics &ph) {
         const int p = shatterRetire_;
         shatterRetire_ = -1;
@@ -5961,14 +7234,43 @@ class World {
         // break used to throw away a bbox scan and a sort, and would now throw
         // away a thread's worth of partition. It needs no count, only the
         // table, so it is the one question that can still be asked here.
-        const int room = mini(debrisFree() - kFellSlotsKeep, kFellSlotsShare);
-        if (room < 2) return 0;   // no room yet: the caller asks again
-
         // THE BODY'S OWN TARGET WINS -- see Debris::chunkVox. The argument is
         // the caller's default (the wheat passes its own); the field is set
         // only where two bodies out of one object have to come apart the same
         // way, which today is a felled tree and its stump.
         if (d.chunkVox > 0) chunkVox = d.chunkVox;
+
+        // -- A FULL TABLE MAY NOT HOLD A TREE PAST ITS FIVE SECONDS ----------
+        //
+        // (user 2026-09-22: "every tree/object that breaks off the terrain is
+        //  subject to a 5 second timer before it breaks into chunks".)
+        //
+        // An oak or a cherry takes 896 of the table's 1024 slots and keeps
+        // them for kFelledLifeMs. The next big tree inside that minute got the
+        // 118 that were left, and the one after that got NOTHING: `room < 2`
+        // refused it, and it lay there whole until a minute-old piece expired.
+        // That is a delay of up to sixty seconds, on exactly the woods with
+        // trees big enough to fill the table.
+        //
+        // So the oldest settled pieces of earlier trees make way -- only as
+        // many as this body wants, and only ones past kFellReclaimAgeMs, which
+        // were going to vanish at kFelledLifeMs anyway. See reclaimLoot.
+        {
+            // `voxels` on a felled trunk is its BOX, not its wood -- so the
+            // solid count is taken, and only when the table is actually short:
+            // a pine wants 218 slots, not the 896 its box would ask for.
+            const int free0 = debrisFree();
+            if (free0 - kFellSlotsKeep < kFellSlotsShare) {
+                int solid = 0;
+                for (uint8_t v : d.vox)
+                    if (v != mat::AIR) ++solid;
+                const int want = mini(kFellSlotsShare, maxi(2, solid / maxi(1, chunkVox)));
+                const int short_ = want + kFellSlotsKeep - free0;
+                if (short_ > 0) reclaimLoot(ph, short_, nowMs, slot);
+            }
+        }
+        const int room = mini(debrisFree() - kFellSlotsKeep, kFellSlotsShare);
+        if (room < 2) return 0;   // no room yet: the caller asks again
 
         ShatterJob j;
         j.vox = d.vox;             // the copy -- see the note above
@@ -6007,6 +7309,10 @@ class World {
         shatterShown_.clear();
         shatterJobLive_ = true;
         shatterJobT0_ = nowMs;
+        // THE STALL CLOCK STARTS HERE -- see kShatterGiveUpMs. The partition
+        // itself counts as progress: nothing can be built while it runs, and
+        // shatterJobLive_ already holds the drain off until it lands.
+        shatterProgressMs_ = nowMs;
         shatterer_.submit(std::move(j));
         return 1;   // accepted, not finished: see pumpShatter
     }
@@ -6023,6 +7329,13 @@ class World {
         ShatterDone done;
         if (!shatterer_.take(&done)) return;
         shatterJobLive_ = false;
+        // CANCELLED WHILE IT RAN -- see cancelShatter. The parent's noBreak is
+        // already lifted, so the trigger submits a fresh partition next frame.
+        if (shatterDiscard_) {
+            shatterDiscard_ = false;
+            shatterParent_ = -1;
+            return;
+        }
         const double wall = nowMs - shatterJobT0_;
 
         Debris *p = nullptr;
@@ -6975,6 +8288,34 @@ class World {
     // HOW MANY BODIES THE WORLD CAN STILL TAKE. The float watch asks before it
     // commits: see kFloatDicePerPiece, and the 12,625 voxels that were deleted
     // when it did not.
+    // -----------------------------------------------------------------------
+    // MAKE ROOM FOR A BREAK BY RETIRING THE OLDEST LOOT -- see the note at the
+    // room check in shatterFelled. Pieces only (`loot`, not a felled trunk or a
+    // chip), never one still hidden, flying to the player, or younger than
+    // kFellReclaimAgeMs; oldest first. Returns how many went.
+    // -----------------------------------------------------------------------
+    static constexpr double kFellReclaimAgeMs = 15000.0;
+    int reclaimLoot(Physics &ph, int need, double nowMs, int keepSlot) {
+        if (need <= 0) return 0;
+        std::vector<std::pair<double, int>> old;
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            const Debris &q = debris_[i];
+            if (i == keepSlot || !q.live || !q.loot || q.felled || q.unseen || q.absorbing)
+                continue;
+            if (nowMs - q.bornMs < kFellReclaimAgeMs) continue;
+            old.push_back({q.bornMs, i});
+        }
+        std::sort(old.begin(), old.end());
+        const int n = mini(need, int(old.size()));
+        for (int k = 0; k < n; ++k) retireDebris(ph, old[size_t(k)].second);
+        if (n > 0) {
+            std::printf("  shatter  made room: retired the %d oldest piece(s) of earlier "
+                        "trees (asked for %d)\n", n, need);
+            std::fflush(stdout);
+        }
+        return n;
+    }
+
     int debrisFree() const {
         int n = 0;
         for (int i = 0; i < kDebrisInstances; ++i)
@@ -7318,6 +8659,9 @@ class World {
             d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
         } else {
             d.window = buildWindow(ph, com);
+            // A CUBE -- and spawnPiece sets fields one at a time, so say so
+            // rather than inherit a box from the slot's last occupant.
+            d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
         }
         d.winCentre = com;
         debrisDirty_ = true;
@@ -7445,8 +8789,44 @@ class World {
     // ONLY FOR THE THING THAT IS FALLING. Chips, boulders and the player still
     // collide with trees, and a felled tree's own PIECES do too -- by then they
     // are not `felled`.
-    int buildSolidWindow(Physics &ph, const Vec3 &lo, const Vec3 &hi, bool skipTrees = false) {
+    // -- ...AND `reachGround` TAKES IT DOWN TO THE TERRAIN ---------------
+    //
+    // For a window built around things that are still IN THE AIR -- a felled
+    // oak comes to rest on its crown with the butt seventeen metres up, and its
+    // pieces are shown where the wood is. A window of their bounds plus
+    // kStaticPadM has no ground in it, so every piece fell out of the bottom of
+    // its window, waited its turn for a new one (two a frame), and in the
+    // meantime went through the terrain and was hauled back up by the floor
+    // backstop, over and over. With the floor inside the window they land.
+    // The lowered bottom is handed back through `loOut` so the holder's own
+    // "am I still inside" test agrees with what was built. Not in the level,
+    // whose floor is sampled from `lo` and whose terrain is 640 m further down.
+    // `skipStumps` leaves out every stump queued to come away (stumpQueue_):
+    // a shatter's pieces are shown a few frames before their own stump goes,
+    // and a window holding it would be a stale stump the moment it did.
+    int buildSolidWindow(Physics &ph, const Vec3 &loIn, const Vec3 &hi, bool skipTrees = false,
+                         bool reachGround = false, Vec3 *loOut = nullptr,
+                         bool skipStumps = false) {
         if (!ph.available()) return -1;
+        Vec3 lo = loIn;
+        if (reachGround && !level_) {
+            TerrainMemo memo;
+            const int i0 = int(std::floor(lo.x / VOXEL_M)), i1 = int(std::floor(hi.x / VOXEL_M));
+            const int j0 = int(std::floor(lo.z / VOXEL_M)), j1 = int(std::floor(hi.z / VOXEL_M));
+            int low = INT_MAX;
+            for (int j = j0; j <= j1; j += kFellGroundStep)
+                for (int i = i0; i <= i1; i += kFellGroundStep)
+                    low = mini(low, terrainTopAt(i, j, memo));
+            if (low != INT_MAX) {
+                // A floor box is kFellGroundThickM deep under its top; the
+                // bottom has to reach below that or the filter drops it.
+                const float floorY = float(low + 1) * VOXEL_M - kFellGroundThickM - 0.5f;
+                // ...within reason: a piece forty metres over a ravine gets a
+                // new window as it falls, the ordinary way.
+                if (floorY < lo.y && lo.y - floorY < kWinGroundReachM) lo.y = floorY;
+            }
+        }
+        if (loOut) *loOut = lo;
         const Vec3 c{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
         const float reach = 0.5f * maxf(hi.x - lo.x, hi.z - lo.z) + 24.0f;
         collidersNear(c, reach, &winSolids_);
@@ -7456,7 +8836,24 @@ class World {
         for (const Solid &sl : winSolids_) {
             if (!sl.vol || sl.hx <= 0.0f) continue;
             // modelKind 0 IS A TREE -- the same test fellTree uses for isTree.
+            // A STUMP IS A PENDING ENTRY IN stumpQueue_: the part of a felled
+            // tree still standing in the ground until its trunk comes apart.
+            bool stump = false;
+            if (sl.modelKind == 0 && skipStumps)
+                for (const PendingStump &q : stumpQueue_)
+                    if (q.chunk == sl.ownerChunk && q.slot == int(sl.decorSlot)) {
+                        stump = true;
+                        break;
+                    }
+            // (A stump is NOT kept in a felled trunk's window. Tried
+            //  2026-09-22 for "the top half of the tree clips through the
+            //  bottom trunk": --fell-test's `stump` column measured 0 of the
+            //  trunk's voxels inside its stump through the whole fall WITHOUT
+            //  it, and WITH it an oak hinged on the stump and was only 24
+            //  degrees over at 4.5 s against 89 -- it would come apart standing.
+            //  debrisInStump is the measure to use before trying it again.)
             if (skipTrees && sl.modelKind == 0) { ++winTreesCut_; continue; }
+            if (skipStumps && stump) continue;
             if (sl.modelKind == 0) ++winTreesIn_;
             if (sl.baseY > hi.y || sl.top < lo.y) continue;
             const std::vector<VoxBox> &mb = boxesFor(sl);
@@ -7682,6 +9079,44 @@ class World {
         }
     }
 
+    // HOW MANY OF A FELLED BODY'S OWN VOXELS ARE INSIDE A STUMP -- its own
+    // or any other still standing in stumpQueue_. What "the top half of the
+    // tree clips through the bottom trunk" looks like, as a number.
+    int debrisInStump(int slot) {
+        if (slot < 0 || slot >= kDebrisInstances) return 0;
+        const Debris &d = debris_[slot];
+        if (!d.live || d.vox.empty()) return 0;
+        collidersNear(d.pos, 60.0f, &underSolids_);
+        std::vector<const Solid *> stumps;
+        for (const Solid &sl : underSolids_) {
+            if (!sl.vol || sl.modelKind != 0) continue;
+            for (const PendingStump &q : stumpQueue_)
+                if (q.chunk == sl.ownerChunk && q.slot == int(sl.decorSlot)) {
+                    stumps.push_back(&sl);
+                    break;
+                }
+        }
+        if (stumps.empty()) return 0;
+        float m[9];
+        quatMat3(d.quat, m);
+        int inside = 0;
+        for (int y = 0; y < d.vsy; ++y)
+            for (int z = 0; z < d.vsz; ++z)
+                for (int x = 0; x < d.vsx; ++x) {
+                    if (d.vox[size_t(x) + size_t(z) * size_t(d.vsx) +
+                              size_t(y) * size_t(d.vsx) * size_t(d.vsz)] == mat::AIR)
+                        continue;
+                    const float lx = d.originOff.x + (float(x) + 0.5f) * VOXEL_M;
+                    const float ly = d.originOff.y + (float(y) + 0.5f) * VOXEL_M;
+                    const float lz = d.originOff.z + (float(z) + 0.5f) * VOXEL_M;
+                    const float wx = m[0] * lx + m[1] * ly + m[2] * lz + d.pos.x;
+                    const float wy = m[3] * lx + m[4] * ly + m[5] * lz + d.pos.y;
+                    const float wz = m[6] * lx + m[7] * ly + m[8] * lz + d.pos.z;
+                    for (const Solid *sl : stumps)
+                        if (solidAtWorld(*sl, wx, wy, wz, VOXEL_M)) { ++inside; break; }
+                }
+        return inside;
+    }
     int debrisClip(int slot) {
         if (slot < 0 || slot >= kDebrisInstances) return 0;
         Debris &d = debris_[slot];
@@ -8765,7 +10200,16 @@ class World {
         // shatterQueue_. Before the sweep below, so a piece built this frame is
         // live for the rest of it; and once per frame, so the cost is a known
         // eight bodies rather than however many a tree happened to make.
+        const auto ud0 = std::chrono::steady_clock::now();
         drainShatterQueue(ph, nowMs);
+        const auto ud1 = std::chrono::steady_clock::now();
+        // ...AND EVERYTHING THAT CHANGED UNDER A FROZEN PIECE SINCE LAST FRAME.
+        applyThaws(ph);
+        const auto ud2 = std::chrono::steady_clock::now();
+        udDrainMs_ = std::chrono::duration<double, std::milli>(ud1 - ud0).count();
+        udThawMs_ = std::chrono::duration<double, std::milli>(ud2 - ud1).count();
+        udLoopT0_ = ud2;
+        whyMoving_ = whyOnNothing_ = whyOnMoving_ = 0;
 
         int winBudget = kWinRebuildsPerFrame;
         for (int i = 0; i < kDebrisInstances; ++i) {
@@ -8781,8 +10225,39 @@ class World {
                 // whether the piece actually sleeps is PhysX's call, and a
                 // piece still rolling downhill will not.
                 if (!d.sleepy && d.phys >= 0 && nowMs - d.bornMs > kDebrisSettleMs) {
-                    ph.allowSleep(d.phys, kDebrisSleepThresh);
+                    // A TREE'S PIECES SLEEP AT THE TREE'S THRESHOLD -- see
+                    // kLootSleepThresh. Everything else keeps the chip's.
+                    ph.allowSleep(d.phys, d.loot ? kLootSleepThresh : kDebrisSleepThresh);
                     d.sleepy = true;
+                }
+                // ...AND ONCE IT HAS SETTLED ON SOMETHING FIXED, IT LEAVES THE
+                // SOLVER -- see kFreezeAfterMs. A tree's pieces only (`loot`),
+                // and not while it is still hidden behind its tree.
+                if (d.loot && !d.frozen && !d.unseen && d.phys >= 0) {
+                    Vec3 lv{0, 0, 0}, av{0, 0, 0};
+                    ph.velocityOf(d.phys, &lv, &av);
+                    const bool moving =
+                        lv.x * lv.x + lv.y * lv.y + lv.z * lv.z > kFreezeLin * kFreezeLin ||
+                        av.x * av.x + av.y * av.y + av.z * av.z > kFreezeAng * kFreezeAng;
+                    if (moving) {
+                        d.stillT0 = -1.0;
+                        ++whyMoving_;
+                    } else if (d.stillT0 < 0.0) {
+                        d.stillT0 = nowMs;
+                    } else if (nowMs - d.stillT0 > kFreezeAfterMs) {
+                        const float reach =
+                            maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2])) + 0.35f;
+                        const int sup = ph.supportBelow(d.phys, d.pos, reach);
+                        if (sup == 1 || sup == 3) {   // the world, or a frozen piece
+                            ph.makeKinematic(d.phys);
+                            d.frozen = true;
+                            ++frozenNow_;
+                        } else {
+                            d.stillT0 = nowMs;   // not on anything fixed yet: ask again
+                            if (sup == 0) ++whyOnNothing_;
+                            else ++whyOnMoving_;   // 2: a piece still free to move
+                        }
+                    }
                 }
 
                 // ...and a floor under it wherever the ground patch does not
@@ -8854,6 +10329,7 @@ class World {
                     if (d.pos.y < floorY - 0.5f) {
                         ph.clampAbove(d.phys, floorY);
                         ph.poseOf(d.phys, &d.pos, d.quat);
+                        ++floorClamps_;
                     }
                 }
                 // ---- THE HINGE FIRES ON THE FRAME IT LANDS ---------------
@@ -8903,7 +10379,28 @@ class World {
                 // are asked every frame -- they are free, PhysX keeps them --
                 // and the window is rebuilt only when the body has actually
                 // reached the edge of what it covers.
-                if (d.felled || d.longBody) {
+                // A SHATTER PIECE NEVER CUTS A WINDOW OF ITS OWN -- see
+                // shareWindow. While it is inside the one it holds nothing
+                // happens; once it is not, it joins whichever shared window
+                // covers it now, or cuts one that the next piece can join.
+                // Joining is free; only a cut spends the frame's budget.
+                if (d.sharesWin && d.frozen) {
+                    // KINEMATIC: statics do not touch it, so it needs no floor
+                    // until it thaws -- see applyThaws, which re-cuts one then.
+                } else if (d.sharesWin) {
+                    Vec3 bl{0, 0, 0}, bh{0, 0, 0};
+                    const bool inside =
+                        d.window >= 0 && ph.boundsOf(d.phys, &bl, &bh) && bl.x >= d.winLo.x &&
+                        bl.y >= d.winLo.y && bl.z >= d.winLo.z && bh.x <= d.winHi.x &&
+                        bh.y <= d.winHi.y && bh.z <= d.winHi.z;
+                    if (inside) {
+                        d.winCentre = d.pos;
+                    } else {
+                        const int built0 = winSharedBuilt_;
+                        shareWindow(ph, i, nowMs, winBudget > 0);
+                        if (winSharedBuilt_ != built0) --winBudget;
+                    }
+                } else if (d.felled || d.longBody) {
                     Vec3 bl{0, 0, 0}, bh{0, 0, 0};
                     if (ph.boundsOf(d.phys, &bl, &bh) &&
                         (bl.x < d.winLo.x || bl.y < d.winLo.y || bl.z < d.winLo.z ||
@@ -8911,7 +10408,7 @@ class World {
                         d.winLo = Vec3{bl.x - kStaticPadM, bl.y - kStaticPadM, bl.z - kStaticPadM};
                         d.winHi = Vec3{bh.x + kStaticPadM, bh.y + kStaticPadM, bh.z + kStaticPadM};
                         const int nw = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
-                        if (d.window >= 0) ph.removeStatic(d.window);
+                        dropWindow(ph, d.window);   // it may be shared
                         d.window = nw;
                     }
                 }
@@ -8944,20 +10441,39 @@ class World {
                 // after falling a metre, which at terminal speed is several
                 // frames apart, and a piece that waits one frame for its
                 // collider falls 5 mm further than it should have.
-                else if (winBudget > 0) {
+                else {
                     const float dx = d.pos.x - d.winCentre.x;
                     const float dy = d.pos.y - d.winCentre.y;
                     const float dz = d.pos.z - d.winCentre.z;
-                    if (dx * dx + dy * dy + dz * dz > kWinRecentreM * kWinRecentreM) {
+                    // -- ...UNLESS IT IS STILL INSIDE A WINDOW THAT KNOWS ITS
+                    //    OWN BOUNDS. A shatter piece is handed a window many
+                    //    metres across (see revealShatter), and trading that
+                    //    for a private 3.2 m cube the first time the piece
+                    //    rolls a metre is how a felled oak's 896 pieces would
+                    //    each end up with one again. winHi > winLo only for a
+                    //    window cut to a box; buildWindow's cube leaves it zero.
+                    Vec3 bl{0, 0, 0}, bh{0, 0, 0};
+                    const bool inside =
+                        d.window >= 0 && d.winHi.x > d.winLo.x &&
+                        ph.boundsOf(d.phys, &bl, &bh) && bl.x >= d.winLo.x &&
+                        bl.y >= d.winLo.y && bl.z >= d.winLo.z && bh.x <= d.winHi.x &&
+                        bh.y <= d.winHi.y && bh.z <= d.winHi.z;
+                    if (inside) {
+                        d.winCentre = d.pos;
+                    } else if (winBudget > 0 &&
+                               dx * dx + dy * dy + dz * dz > kWinRecentreM * kWinRecentreM) {
                         const int nw = buildWindow(ph, d.pos);
                         // ONLY IF THE NEW ONE IS REAL. buildWindow returns -1
                         // where there is nothing solid nearby, and swapping a
                         // good window for that would take the floor out from
                         // under a piece that was resting on it.
                         if (nw >= 0) {
-                            if (d.window >= 0) ph.removeStatic(d.window);
+                            dropWindow(ph, d.window);   // it may be shared
                             d.window = nw;
                             d.winCentre = d.pos;
+                            // A CUBE, NOT A BOX -- so the inside test above
+                            // stops applying to it.
+                            d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
                             --winBudget;
                         } else {
                             // Nothing near it: re-centre the bookkeeping anyway
@@ -9266,8 +10782,32 @@ class World {
                     //    A stump is born inside the ground it is standing in
                     //    and has no floor backstop to hold it there, so five
                     //    seconds of lying about is five seconds of sinking.
-                    const bool byClock = falls ? (d.breakNow || age > kBreakAfterMs)
-                                               : (byHit || byCalm || byTime);
+                    // -- STARTED EARLY, SO IT IS READY ON TIME ------------
+                    //
+                    // (user 2026-09-22: "the cherry trees seem to be on a
+                    //  delay", and "make it match the pine forests
+                    //  physics/chunking mechanics".)
+                    //
+                    // THE DELAY WAS THE DRAIN, AND IT SCALED WITH THE TREE.
+                    // Measured, standing whole after the clock ran out: a pine
+                    // 300 ms, a small birch 150, a big birch 600, a cherry and
+                    // an oak 850. Every one of those is the time it takes to
+                    // BUILD the pieces, and a big tree has twice as many as a
+                    // pine -- so the woods with the biggest trees were the
+                    // woods that looked broken, which is exactly the pair that
+                    // got reported.
+                    //
+                    // AND THE FIVE SECONDS BEFORE IT ARE DEAD. The tree is
+                    // lying there whole, doing nothing, with its voxels
+                    // settled. So the partition and the drain are moved INTO
+                    // that window -- started kShatterLeadMs before the clock --
+                    // and the swap still happens at exactly five seconds, for
+                    // every tree, whatever its size. The work is the same work;
+                    // it just happens while nobody is waiting for it.
+                    const bool byClock = falls
+                                             ? (d.breakNow ||
+                                                age > kBreakAfterMs - kShatterLeadMs)
+                                             : (byHit || byCalm || byTime);
                     if (byClock) {
                         // WHAT THE TREE WAS DOING WHEN THE CLOCK RAN OUT.
                         // A tree that broke on IMPACT and one that sat there
@@ -9303,7 +10843,29 @@ class World {
                                 std::printf("  shatter  submit %.1f ms (the volume copy)\n", sms);
                                 std::fflush(stdout);
                             }
-                            if (made > 0) continue;
+                            // -- ...AND IT IS STILL DRAWN THIS FRAME ------------
+                            //
+                            // (user 2026-09-22: "everytime I hit the tree as it
+                            //  is falling, it flickers".)
+                            //
+                            // This `continue` used to skip the publish at the
+                            // bottom of the loop, and on its own that was
+                            // harmless: last frame's instance was still in the
+                            // array. Not on a frame that REBUILT the top level
+                            // -- rebuildTlas writes every debris slot back to
+                            // mask 0 and trusts this loop to show each one again
+                            // -- and a hit on a falling trunk is exactly that
+                            // frame: the re-mesh rebuilds, and the hit cancels
+                            // the tree's in-flight pieces (cancelShatter), which
+                            // lifts noBreak, which brings it straight back here
+                            // to submit again. So the trunk was the one body not
+                            // re-shown, for one frame per blow. Captured with
+                            // --fell-live V2_FELL_LIVE_SHOTS: the frame after a
+                            // hit had no tree in it at all.
+                            if (made > 0) {
+                                setDebrisInstance(i, d.pos, d.quat);
+                                continue;
+                            }
                         }
                         d.calmT0 = nowMs;
                         d.hitT0 = -1e9;
@@ -9382,6 +10944,16 @@ class World {
                 d.absorbing = true;
                 d.absorbT0 = nowMs;
                 d.from = d.pos;
+                // BACK IN THE SIMULATION FIRST -- a shatter piece can be
+                // collected on the frame it is shown, while it is still waiting
+                // its turn in wake_ with simulation disabled, and a kinematic
+                // body the solver is not running cannot be flown. See
+                // Physics::setPose, which is where that used to crash.
+                ph.setSimulated(d.phys, true);
+                // ...AND WHAT WAS LYING ON IT MUST BE FREE TO FALL -- see
+                // kFreezeAfterMs. It is kinematic from here either way.
+                thawAt(d.pos, maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2])));
+                if (d.frozen) { d.frozen = false; --frozenNow_; }
                 // The solver stops owning it. It is on a curve now, not in a
                 // fall, and the two would argue.
                 ph.makeKinematic(d.phys);
@@ -9560,8 +11132,24 @@ class World {
             // are about to collect reads as frozen in the half second before it
             // lifts; nothing is about to collect a cap, so the same motion is
             // just scenery that will not settle.
+            // -- ...AND NOT ON THE PIECES OF A TREE --------------------------
+            //
+            // (user 2026-09-22: "the trees are flickering when the player chops
+            //  them down", the second time -- "still flickering".)
+            //
+            // THE MUSHROOM ARGUMENT ABOVE, AT THE SIZE OF A TREE. A shatter
+            // piece is not a chip about to be picked up: it lies in the wood for
+            // up to kFelledLifeMs, and it goes to the player the moment they are
+            // within kFellLootReachM, so there is no half second of "frozen" for
+            // this to cure. What it did instead was shiver every chunk of every
+            // felled tree at 3.3 Hz, 3.5 degrees, for ever -- 896 of them on an
+            // oak, each a metre across, so a couple of centimetres of edge
+            // motion apiece -- and until V6Instance::flap it did so with NO
+            // motion vector, which Ray Reconstruction draws as shimmer. The big
+            // woods have the most pieces and the biggest ones, which is where
+            // it was reported. `sharesWin` is exactly the shatter's pieces.
             float wq[4] = {d.quat[0], d.quat[1], d.quat[2], d.quat[3]};
-            if (!d.absorbing && !d.felled && !d.scenery) {
+            if (!d.absorbing && !d.felled && !d.scenery && !d.sharesWin) {
                 const float t = float((nowMs - d.bornMs) * 0.001);
                 const float a = kWobbleRad * (0.55f + 0.45f * expf(-2.0f * t));
                 const float w = sinf(t * 21.0f) * a;
@@ -9629,9 +11217,203 @@ class World {
     // passes the tree's. See Debris::chunkVox.
     // `breakAtOnce` IS FOR A STUMP and for nothing else -- see
     // Debris::breakNow, which carries the measurement.
+    // -----------------------------------------------------------------------
+    // THE WHOLE PLACEMENT COMES AWAY -- IN ITS OWN BOX, NOT THE MODEL'S.
+    //
+    // (user 2026-09-22: "the trees are flickering when the player chops them
+    //  down", and the hitch --fell-live put a number on: 60 ms on ONE frame,
+    //  three frames after every tree came apart, in every wood.)
+    //
+    // THAT FRAME WAS THE STUMP. pumpStumps fells it `whole`, and fellTree did
+    // every step of that over the TREE MODEL'S box -- 171 x 250 x 182 voxels
+    // for an oak, 7.8 million cells: a ground-connectivity flood whose answer a
+    // whole fell throws away, a solid count, two full-size copies, a mesh of
+    // the whole box, a collider search of the whole box, a copy into the body
+    // and a second mesh of the (empty) stump left behind -- to move the few
+    // hundred voxels of stump sitting in its bottom rows.
+    //
+    // So a whole fell crops to the solid voxels first and does the same work
+    // on that: the body's voxels, mesh and collider are the crop, and
+    // `originOff` carries where the crop sits in the model -- the same
+    // arrangement every shatter piece already uses. For a stump it is a few
+    // hundred cells instead of millions; for an undermined tree it is most of
+    // the model and costs what it did. Nothing is left standing, so the
+    // placement is simply dropped.
+    // -----------------------------------------------------------------------
+    bool fellWhole(Physics &ph, const Solid &so, Chunk &c, const ModelTemplate &t,
+                   const std::vector<uint8_t> &vol, double nowMs, int chunkVoxHint,
+                   bool breakAtOnce) {
+        const auto fw0 = std::chrono::steady_clock::now();
+        const int sx = t.sx, sy = t.sy, sz = t.sz;
+        int x0 = sx, y0 = sy, z0 = sz, x1 = -1, y1 = -1, z1 = -1, solid = 0;
+        for (int y = 0; y < sy; ++y) {
+            const uint8_t *row = vol.data() + size_t(y) * size_t(sx) * size_t(sz);
+            for (int z = 0; z < sz; ++z)
+                for (int x = 0; x < sx; ++x) {
+                    if (row[size_t(x) + size_t(z) * size_t(sx)] == mat::AIR) continue;
+                    ++solid;
+                    x0 = mini(x0, x); x1 = maxi(x1, x);
+                    y0 = mini(y0, y); y1 = maxi(y1, y);
+                    z0 = mini(z0, z); z1 = maxi(z1, z);
+                }
+        }
+        if (solid == 0) return false;
+        const int cx = x1 - x0 + 1, cy = y1 - y0 + 1, cz = z1 - z0 + 1;
+        std::vector<uint8_t> box(size_t(cx) * size_t(cy) * size_t(cz), mat::AIR);
+        for (int y = 0; y < cy; ++y)
+            for (int z = 0; z < cz; ++z)
+                for (int x = 0; x < cx; ++x)
+                    box[size_t(x) + size_t(z) * size_t(cx) + size_t(y) * size_t(cx) * size_t(cz)] =
+                        vol[size_t(x + x0) + size_t(z + z0) * size_t(sx) +
+                            size_t(y + y0) * size_t(sx) * size_t(sz)];
+        const Vec3 off{float(x0) * VOXEL_M, float(y0) * VOXEL_M, float(z0) * VOXEL_M};
+
+        int slot = -1;
+        for (int i = 0; i < kDebrisInstances; ++i)
+            if (!debris_[i].live) { slot = i; break; }
+        if (slot < 0) return false;
+        // THE SAME TARGET fellTree works out -- see Debris::chunkVox.
+        const int wholeK = maxi(2, mini((solid + kFellChunkVox - 1) / kFellChunkVox,
+                                        kFellSlotsShare));
+        const int wholeCap =
+            chunkVoxHint > 0
+                ? mini(chunkVoxHint, maxi(kStumpMinVox, solid / kStumpPieces))
+                : maxi(kFellChunkVox, (solid + wholeK - 1) / wholeK);
+
+        const VoxMesh mesh = meshVolume(box, cx, cy, cz, VOXEL_M);
+        if (mesh.triCount() == 0) return false;
+        Blas blas = recordLooseBuild(mesh);
+        if (!blas.valid()) return false;
+        const bool isTree = (so.modelKind == 0);
+        // THE COLLIDER, fellTree's search on the crop: the same cells, the same
+        // wood-or-dense-crown rule, the grid shifted to where the crop sits.
+        float cell = kFellCellM;
+        for (int tries = 0; tries < 6; ++tries) {
+            const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
+            const int gx = (cx + q - 1) / q, gy = (cy + q - 1) / q, gz = (cz + q - 1) / q;
+            const int need = maxi(1, int(float(q * q * q) * kFellFillFrac));
+            const int needAny = isTree ? maxi(1, int(float(q * q * q) * kFellCrownFrac)) : need;
+            greedyBoxes(
+                gx, gy, gz, off, cell,
+                [&](int i, int j, int k) {
+                    int wood = 0, any = 0;
+                    for (int b2 = 0; b2 < q; ++b2)
+                        for (int a2 = 0; a2 < q; ++a2)
+                            for (int e2 = 0; e2 < q; ++e2) {
+                                const int x = i * q + e2, y = j * q + b2, z = k * q + a2;
+                                if (x >= cx || y >= cy || z >= cz) continue;
+                                const uint8_t mv = box[size_t(x) + size_t(z) * size_t(cx) +
+                                                       size_t(y) * size_t(cx) * size_t(cz)];
+                                if (mv == mat::AIR) continue;
+                                ++any;
+                                if (!(isTree && palette.isFoliage(mv))) ++wood;
+                                if (wood >= need || any >= needAny) return true;
+                            }
+                    return false;
+                },
+                &winBoxes_, kFellMaxBoxes * 4);
+            // TOO COARSE TO HOLD A SMALL STUMP: halve, as makeLooseBody does.
+            if (winBoxes_.empty() && cell > VOXEL_M * 1.01f) { cell *= 0.5f; continue; }
+            if (winBoxes_.size() <= kFellMaxBoxes) break;
+            cell *= 1.5f;
+        }
+        if (winBoxes_.empty()) {
+            retireLoose(std::move(blas), TriPool::kInvalid, 0);
+            return false;
+        }
+        const float yawRad = float(so.yaw & 3) * 1.57079633f;
+        const int phys = ph.addCompoundBody(winBoxes_.data(), int(winBoxes_.size()),
+                                            Vec3{so.tx, so.baseY, so.tz}, yawRad,
+                                            isTree ? kTimberDensity : kStoneDensity);
+        if (phys < 0) {
+            retireLoose(std::move(blas), TriPool::kInvalid, 0);
+            return false;
+        }
+        if (isTree) {
+            double logVol = 0.0;
+            for (const VoxBox &b : winBoxes_) logVol += 8.0 * double(b.hx) * b.hy * b.hz;
+            ph.setBodyMass(phys, maxf(50.0f, float(logVol * kTimberDensity)));
+        }
+        ph.stopBody(phys);
+
+        Debris &d = debris_[slot];
+        d = Debris{};
+        d.live = true;
+        d.felled = true;
+        d.chunkVox = wholeCap;
+        d.breakNow = breakAtOnce;
+        d.boxes = winBoxes_;
+        d.phys = phys;
+        d.bornMs = nowMs;
+        d.lastMs = nowMs;
+        d.blas = std::move(blas);
+        d.triOffset = pool_.upload(ctx_, mesh.tri);
+        d.tris = mesh.tri.size();
+        d.tint = c.decorInfo[size_t(so.decorSlot)].tint;
+        d.voxels = cx * cy * cz;   // the box, as fellTree records it
+        d.vox = std::move(box);
+        d.vsx = cx;
+        d.vsy = cy;
+        d.vsz = cz;
+        const bool fleshy = so.modelKind == 3 || so.modelKind == 7 || so.modelKind == 8;
+        d.takesAs = isTree ? uint8_t(kDebrisWood)
+                    : fleshy ? uint8_t(kDebrisSoft)
+                             : uint8_t(kDebrisStone);
+        d.halfM[0] = 0.5f * float(cx) * VOXEL_M;
+        d.halfM[1] = 0.5f * float(cy) * VOXEL_M;
+        d.halfM[2] = 0.5f * float(cz) * VOXEL_M;
+        d.originOff = off;
+        d.pos = Vec3{so.tx, so.baseY, so.tz};
+        d.quat[0] = 0.0f;
+        d.quat[1] = std::sin(yawRad * 0.5f);
+        d.quat[2] = 0.0f;
+        d.quat[3] = std::cos(yawRad * 0.5f);
+        d.winCentre = d.pos;
+        if (isTree) dropHangers(c, so, t);
+
+        // NOTHING IS LEFT STANDING. The placement's own record goes to all air
+        // at its full size -- other code indexes it by the model's dimensions --
+        // and the instance and its collider go.
+        const std::pair<long long, int> key{so.ownerChunk, int(so.decorSlot)};
+        auto dit = damaged_.find(key);
+        if (dit == damaged_.end()) dit = damaged_.emplace(key, Damaged{}).first;
+        Damaged &dm = dit->second;
+        dm.vol.assign(size_t(sx) * size_t(sy) * size_t(sz), mat::AIR);
+        ++dm.seq;
+        dm.meshed = dm.seq;
+        c.decorDesc[size_t(so.decorSlot)].instanceMask = 0;
+        dropSolid(c, so);
+        fellSlots_.insert({so.ownerChunk, int(so.decorSlot)});
+        {
+            Vec3 lo{0, 0, 0}, hi{0, 0, 0};
+            if (ph.boundsOf(phys, &lo, &hi)) {
+                d.winLo = Vec3{lo.x - kStaticPadM, lo.y - kStaticPadM, lo.z - kStaticPadM};
+                d.winHi = Vec3{hi.x + kStaticPadM, hi.y + kStaticPadM, hi.z + kStaticPadM};
+                d.window = buildSolidWindow(ph, d.winLo, d.winHi, d.felled);
+            }
+        }
+        std::printf("  fell     whole, cropped to %d x %d x %d of %d x %d x %d  (%d voxels, "
+                    "%.1f ms)\n",
+                    cx, cy, cz, sx, sy, sz, solid,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                              fw0).count());
+        std::fflush(stdout);
+        debrisDirty_ = true;
+        rebuildTlas();
+        return true;
+    }
+
     bool fellTree(Physics &ph, const Solid &so, const Vec3 &swingDir, double nowMs,
                   bool whole = false, int chunkVoxHint = 0, bool breakAtOnce = false) {
         if (so.decorSlot < 0 || so.modelKind < 0) return false;
+        // A TREE (OR STUMP) LEAVING THE STATIC WORLD takes its trunk out from
+        // under anything frozen against it -- see kFreezeAfterMs.
+        thawAt(Vec3{so.cx, 0.5f * (so.baseY + so.top), so.cz},
+               maxf(maxf(so.hx, so.hz), 0.5f * (so.top - so.baseY)),
+               // A STUMP IS IN NO PIECE'S WINDOW (see skipStumps), so its going
+               // thaws what leans on it without re-cutting every window round
+               // the tree -- which measured 52 ms on the frame after the swap.
+               /*world=*/!breakAtOnce);
         const auto ch = chunks_.find(so.ownerChunk);
         if (ch == chunks_.end()) return false;
         Chunk &c = ch->second;
@@ -9643,6 +11425,9 @@ class World {
         const std::pair<long long, int> key{so.ownerChunk, int(so.decorSlot)};
         auto dit = damaged_.find(key);
         const std::vector<uint8_t> &vol = (dit == damaged_.end()) ? t.volume : dit->second.vol;
+        // A WHOLE BODY -- a stump, or a placement with nothing left under it --
+        // goes the cropped way. See fellWhole.
+        if (whole) return fellWhole(ph, so, c, t, vol, nowMs, chunkVoxHint, breakAtOnce);
 
         // The fill leaves sevSolid_ and sevSeen_ describing this volume: which
         // coarse cells hold wood, and which of those are still standing on the
@@ -10197,13 +11982,73 @@ class World {
         const float z0 = minf(az, bz), z1 = maxf(az, bz);
         for (size_t i = 0; i < c.decorAt.size() && i < c.decorDesc.size(); ++i) {
             const DecorAt &q = c.decorAt[i];
-            if (q.kind != 4 && q.kind != 5) continue;   // cones and hives
+            if (q.kind != 4 && q.kind != 5 && q.kind != 6) continue;   // cones, hives, fruit
             if (!c.decorDesc[i].instanceMask) continue;
             if (q.x < x0 || q.x > x1 || q.z < z0 || q.z > z1) continue;
             if (q.y < so.baseY) continue;
             c.decorDesc[i].instanceMask = 0;
+            // -- THE FRUIT COMES DOWN; IT DOES NOT VANISH AND IT DOES NOT HANG --
+            //
+            // (user 2026-09-22: "when cutting down a oak tree with
+            //  apples/oranges, they float in place and dont fall with the
+            //  tree".)
+            //
+            // This loop hid cones and hives and never looked at kind 6, so an
+            // oak's crop stayed hanging in the air where its branches had been.
+            // Hiding it would be the cone's answer; a fruit is food, so it is
+            // queued with where it hung and which fruit it is, and the app --
+            // which owns the drops and the kit -- lets it fall: as a pickable
+            // fruit, exactly as one shot off the branch does, while there is a
+            // drop slot for it, and as a falling body after that (see
+            // spawnFruitBody). Recorded as taken the way a pick records it, so
+            // a re-adopted chunk does not hang it back up.
+            if (q.kind == 6) {
+                const ModelTemplate &ft = templateFor(6, int(q.index));
+                fallenFruit_.push_back(
+                    FallenFruit{Vec3{q.midX(), q.y + 0.5f * float(ft.sy) * VOXEL_M, q.midZ()},
+                                int(q.index)});
+                hiddenScatter_.insert({so.ownerChunk, int(i)});
+                continue;
+            }
             fellSlots_.insert({so.ownerChunk, int(i)});
         }
+    }
+    // -- THE CROP A FELLED TREE SHED -- see dropHangers ----------------------
+    struct FallenFruit {
+        Vec3 at;
+        int kind;   // 0 apple, 1 orange -- the placement's index, as takeFruitAlong returns
+    };
+    std::vector<FallenFruit> fallenFruit_;
+    bool takeFallenFruit(Vec3 *at, int *kind) {
+        if (fallenFruit_.empty()) return false;
+        *at = fallenFruit_.back().at;
+        *kind = fallenFruit_.back().kind;
+        fallenFruit_.pop_back();
+        return true;
+    }
+    // ...AND ONE THE DROPS HAD NO ROOM FOR: the fruit's own voxels as a
+    // falling body, in its own colours -- dropScatterUndermined's arrangement,
+    // with the model's table passed through (see Debris::matBase).
+    void spawnFruitBody(Physics &ph, const Vec3 &at, int kind, double nowMs) {
+        if (!ph.available()) return;
+        const ModelTemplate &t = templateFor(6, kind);
+        if (t.volume.empty() || t.sx <= 0) return;
+        const int n = maxi(maxi(t.sx, t.sy), t.sz);
+        std::vector<uint8_t> cube(size_t(n) * size_t(n) * size_t(n), mat::AIR);
+        const int ox = (n - t.sx) / 2, oy = (n - t.sy) / 2, oz = (n - t.sz) / 2;
+        for (int y = 0; y < t.sy; ++y)
+            for (int z = 0; z < t.sz; ++z)
+                for (int x = 0; x < t.sx; ++x) {
+                    const uint8_t v = t.volume[size_t(x) + size_t(z) * size_t(t.sx) +
+                                               size_t(y) * size_t(t.sx) * size_t(t.sz)];
+                    if (v == mat::AIR) continue;
+                    cube[size_t(x + ox) + size_t(z + oz) * size_t(n) +
+                         size_t(y + oy) * size_t(n) * size_t(n)] = v;
+                }
+        const Vec3 still{0.0f, 0.0f, 0.0f};
+        const Vec3 spin{jitter(1.4f), jitter(1.4f), jitter(1.4f)};
+        spawnDebris(ph, cube, n, at, still, spin, nowMs, 0.0f, nullptr, kDebrisSoft,
+                    kAbsorbAnywhere, t.matBase);
     }
 
     // HOW MUCH OF THE TREE IS NO LONGER STANDING ON ANYTHING    // HOW MUCH OF THE TREE IS NO LONGER STANDING ON ANYTHING -- as a fraction
@@ -10341,6 +12186,13 @@ class World {
             if (retiredLoose_[i].at > deviceDone_) { ++i; continue; }
             if (retiredLoose_[i].triOffset != TriPool::kInvalid && retiredLoose_[i].tris)
                 pool_.release(retiredLoose_[i].triOffset, retiredLoose_[i].tris);
+            // ...AND THE STRUCTURE'S BUFFER, BACK TO THE LOOSE POOL. This is
+            // the only place it may happen: the test above is precisely "the
+            // device has finished with this body", which is the guarantee the
+            // pool needs and the one a compaction drain could not give.
+            // A buffer this pool never issued is not found and nothing
+            // happens, so a Blas from anywhere else passes through harmlessly.
+            looseRawPool_.release(retiredLoose_[i].blas.buffer, retiredLoose_[i].at, frameNo_);
             retiredLoose_[i] = std::move(retiredLoose_.back());
             retiredLoose_.pop_back();
         }
@@ -11120,6 +12972,7 @@ class World {
 
     size_t dig(const Vec3 &p, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
                int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
+        thawAt(p, float(radiusVox) * VOXEL_M, /*world=*/true);   // see kFreezeAfterMs -- nothing floats
         // ASK AGAIN ABOUT THIS PLACE, LATER AND WIDER. dropTerrainHangers below
         // answers for the 2.7 m around the bite in this frame; the watch
         // answers for 9.6 m of it a fraction of a second from now, which is the
@@ -13516,6 +15369,18 @@ class World {
         double drainMs = 0.0, takeMs = 0.0, reringMs = 0.0;
         size_t drains = 0, forcedDrains = 0;
     };
+    // -- IS A BODY COMING APART RIGHT NOW ---------------------------------
+    //
+    // True from the moment a partition is submitted to the frame its last
+    // piece is retired. Read by the frame loop, which is the only place a
+    // freeze that happens on the RENDER path can be seen at all: --fell-test
+    // measures the drain at 0.84 ms a frame and no headless run has ever
+    // reproduced the freeze that gets reported, because headless does not
+    // render. See the warning in app_frame.inl.
+    bool shatterBusy() const {
+        return shatterJobLive_ || !shatterQueue_.empty() || shatterRetire_ >= 0;
+    }
+
     Profile profile() const {
         Profile p = prof_;
         p.meshMs = const_cast<ChunkMesher &>(mesher_).meshMs.load(std::memory_order_relaxed);
@@ -13572,6 +15437,7 @@ class World {
         idxPool_.init(device_, ResourceBindFlags::ShaderResource, "v2::blasIndices");
         scratchPool_.init(device_, ResourceBindFlags::UnorderedAccess, "v2::blasScratch");
         rawPool_.init(device_, ResourceBindFlags::AccelerationStructure, "v2::blasRaw");
+        looseRawPool_.init(device_, ResourceBindFlags::AccelerationStructure, "v2::looseRaw");
 
         // Templates first: the terrain's grass and soil colours are sampled
         // from the palette the models bring with them.
@@ -14416,6 +16282,63 @@ class World {
     }
 
     // -----------------------------------------------------------------------
+    // A COLLIDER WITH NOTHING DRAWN AT IT -- the invisible barrier check.
+    //
+    // (user 2026-09-22: "still when cutting down a tree, Im getting invisible
+    //  barriers to the player".)
+    //
+    // THE PLAYER WALKS INTO `Solid`s AND NOTHING ELSE. collidersNear gathers
+    // them out of the chunks and collide.h tests them; debris bodies are not in
+    // that list at any point, so a barrier the player can feel and not see is a
+    // Solid whose instance is no longer drawn. That is one comparison, and it
+    // is exactly what this reports.
+    //
+    // dropSolid is what SHOULD have zeroed it -- it sets hx/hz to zero and the
+    // pointers to null -- so anything this finds is a slot that was hidden
+    // down one path and released down another.
+    //
+    // A DIAGNOSTIC, NOT A FIX. It names the slot, so the next question is which
+    // code path hid the instance without dropping its collider.
+    // -----------------------------------------------------------------------
+    int ghostColliders(bool verbose) {
+        int found = 0;
+        for (auto &kv : chunks_) {
+            Chunk &c = kv.second;
+            for (const Solid &sl : c.solids) {
+                if (sl.hx <= 0.0f || sl.hz <= 0.0f) continue;   // already dropped
+                if (sl.decorSlot < 0 || size_t(sl.decorSlot) >= c.decorDesc.size()) continue;
+                const bool hidden = !c.decorDesc[size_t(sl.decorSlot)].instanceMask;
+                // -- TWO SHAPES OF THE SAME FAULT --------------------------
+                //
+                //    HIDDEN: nothing is drawn at a live collider.
+                //
+                //    NO VOXELS: the collider is live and DRAWN, but carries no
+                //    volume -- and Player::blocked falls through to touches(),
+                //    which is the ELLIPSE inscribed in hx/hz. That stops the
+                //    player on a circle drawn round the model instead of on
+                //    its voxels, so a thin trunk blocks a body standing in
+                //    clear air beside it. Both read as an invisible barrier
+                //    and only one of them is a hidden instance, which is why
+                //    the first version of this check found nothing.
+                const bool ghostBox = sl.vol == nullptr;
+                if (!hidden && !ghostBox) continue;
+                ++found;
+                if (verbose && found <= 12)
+                    std::printf("  GHOST    chunk %lld slot %d  at %.1f, %.1f  "
+                                "half %.2f x %.2f  top %.1f  kind %d  %s%s\n",
+                                (long long)kv.first, int(sl.decorSlot), sl.cx, sl.cz, sl.hx,
+                                sl.hz, sl.top, sl.modelKind,
+                                hidden ? "HIDDEN" : "drawn",
+                                ghostBox ? "  NO VOXELS -> ellipse blocking" : "");
+            }
+        }
+        if (verbose)
+            std::printf("  ghosts   %d collider(s) with nothing drawn at them\n", found);
+        std::fflush(stdout);
+        return found;
+    }
+
+    // -----------------------------------------------------------------------
     // WHERE THE DECOR OF ONE KIND IS, near a point.
     //
     // collidersNear's sibling, and it exists because a bee has to be able to
@@ -15059,6 +16982,23 @@ class World {
         // wrong is not subtle: the piece rotates about a point that is not its
         // middle, which reads as orbiting rather than tumbling.
         Vec3 originOff{0, 0, 0};
+        // -- ...AND WHERE THIS BODY'S CENTRE SITS IN ITS PARENT'S FRAME -----
+        //
+        // (user 2026-09-22: "it looks like the tree goes back in time and then
+        //  breaks".)
+        //
+        // A SHATTER'S PIECES ARE BUILT OVER MANY FRAMES AND THE PARENT KEEPS
+        // MOVING. Each piece is placed at the parent's pose AT THE MOMENT IT
+        // WAS BUILT and then frozen, so by the reveal they are smeared across
+        // the whole drain -- forty frames of a rolling trunk -- and the set of
+        // them reads as the tree jumping back to where it used to be. Caught on
+        // video: flat on the ground one frame, risen and tilted the next.
+        //
+        // This is what makes the pose recoverable. It is the piece's centre in
+        // the parent's LOCAL frame, which does not change as the parent moves,
+        // so the reveal can work out where the piece belongs from whatever pose
+        // the parent has reached by then. See revealShatter.
+        Vec3 bornLocal{0, 0, 0};
         double lastMs = 0.0;
         // IT IS A RIGID BODY. `phys` is a PxRigidDynamic -- a convex hull of
         // this piece's own voxels, with granite's density, friction and
@@ -15262,6 +17202,14 @@ class World {
         Vec3 wobbleAxis{1, 0, 0};
 
         int window = -1;
+        // A SHATTER PIECE, WHICH ONLY EVER HOLDS SHARED WINDOWS -- see
+        // World::shareWindow. Everything else keeps a window of its own.
+        bool sharesWin = false;
+        // SETTLED AND TAKEN OUT OF THE SOLVER -- see kFreezeAfterMs. Kinematic
+        // while true; `stillT0` is when it last stopped moving (-1: it is not
+        // still).
+        bool frozen = false;
+        double stillT0 = -1.0;
         Vec3 winCentre{0, 0, 0};
         // WHAT THE STATIC WINDOW ACTUALLY COVERS, for a body too big for a
         // fixed cube. Rebuilt when the body leaves the inner box -- see
@@ -15643,6 +17591,9 @@ class World {
     std::deque<CompactGroup> groups_;
     std::vector<ref<RtAccelerationStructurePostBuildInfoPool>> freePools_;
     TransientPool vertPool_, idxPool_, scratchPool_, rawPool_;
+    // ...AND THE ONE A LOOSE BODY'S STRUCTURE LIVES IN -- see recordBuild.
+    // Released only by sweepLoose, which is what makes it safe.
+    TransientPool looseRawPool_;
     // The always-alive structure an empty debris slot points at. See the
     // note where the band is reserved, and retireDebris.
     uint64_t debrisSafeAs_ = 0;
@@ -15728,15 +17679,109 @@ class World {
     // `ownResult`: put the finished structure in a buffer of ITS OWN rather
     // than one from the recycling pool. See recordLooseBuild, which is the only
     // caller that needs it and explains why.
-    Staged recordBuild(const VoxMesh &m, CompactGroup &group, bool ownResult = false) {
+    //
+    // `group` MAY BE NULL, and that means the structure will never be
+    // compacted: no AllowCompaction on the build, no post-build-info query, and
+    // no membership of a group. See recordLooseBuild for who wants that and
+    // why it is worth a branch.
+    // `ring`: build out of THESE three buffers instead of the pools, and do
+    // not hand them back. See LooseRing, and recordLooseBuild which is the only
+    // caller that passes one.
+    // -----------------------------------------------------------------------
+    // THE SCRATCH A LOOSE BUILD IS MADE OUT OF, ALLOCATED ONCE.
+    //
+    // (user 2026-09-22: "it freezes right before it turns into chunks... also
+    //  the cherry trees and oak trees break into chunks very late".)
+    //
+    // THE WHOLE COST OF A SHATTER WAS THREE createBuffer CALLS PER PIECE.
+    // Measured on a felled oak -- 448 pieces, V2_POOL_STATS=1:
+    //
+    //     drain  448 piece(s) over 112 frame(s)  435.5 ms   (blas 349.2)
+    //     blas   acquire 177.3  prebuild 76.7  resultbuf 73.0
+    //     pool   verts    450 slot(s)  1132 hit  514 MISS  143.9 ms in createBuffer
+    //     pool   idx      450 slot(s)  1133 hit  513 MISS  113.2 ms in createBuffer
+    //     pool   scratch  450 slot(s)  1131 hit  515 MISS  121.5 ms in createBuffer
+    //
+    // **450 slots for 448 pieces, and 378 of the 435 ms inside createBuffer.**
+    // One pool slot per piece: across a whole drain not one buffer was reused.
+    // The shared TransientPool is sized and fenced for the chunk streamer,
+    // which asks for a few big buffers a frame and gets them back two frames
+    // later; a shatter asks for hundreds of small ones in a burst and the pool
+    // simply grows to the size of the tree.
+    //
+    // SO A SHATTER STOPS ASKING. This is a small ring of its own -- three
+    // buffers a slot, grown to the biggest piece ever seen and then never
+    // allocated again. The first tree of a session pays kLooseRing * 3
+    // allocations; every tree after it pays NONE.
+    //
+    // FENCED THE SAME WAY the pool fences, and that is the part that has to be
+    // right: a slot is reusable only once the device has passed the submit its
+    // build was recorded into. A ring long enough to cover the few frames a
+    // build is in flight therefore never waits, and never has to be asked to.
+    struct LooseRing {
+        struct Slot {
+            Falcor::ref<Buffer> verts, idx, scratch;
+            size_t vbytes = 0, ibytes = 0, sbytes = 0;
+            uint64_t at = 0;   // the epoch its last build was recorded into
+
+            // GROWN, NEVER SHRUNK. A piece bigger than anything before it
+            // replaces the buffer; everything smaller reuses it as it is, which
+            // is the whole point. Rounded up so a run of slightly-growing
+            // pieces does not reallocate on every one of them.
+            static size_t grow(size_t want) {
+                size_t k = size_t(64) << 10;
+                while (k < want) k <<= 1;
+                return k;
+            }
+            void fit(const Falcor::ref<Device> &dev, size_t vb, size_t ib) {
+                if (!verts || vbytes < vb) {
+                    vbytes = grow(vb);
+                    verts = dev->createBuffer(vbytes, ResourceBindFlags::ShaderResource,
+                                              Falcor::MemoryType::DeviceLocal);
+                    verts->setName("v2::looseVerts");
+                }
+                if (!idx || ibytes < ib) {
+                    ibytes = grow(ib);
+                    idx = dev->createBuffer(ibytes, ResourceBindFlags::ShaderResource,
+                                            Falcor::MemoryType::DeviceLocal);
+                    idx->setName("v2::looseIndices");
+                }
+            }
+            void fitScratch(const Falcor::ref<Device> &dev, size_t sb) {
+                if (!scratch || sbytes < sb) {
+                    sbytes = grow(sb);
+                    scratch = dev->createBuffer(sbytes, ResourceBindFlags::UnorderedAccess,
+                                                Falcor::MemoryType::DeviceLocal);
+                    scratch->setName("v2::looseScratch");
+                }
+            }
+        };
+        std::vector<Slot> slots;
+        size_t cursor = 0;
+    };
+    // LONG ENOUGH THAT A SLOT IS ALWAYS PAST THE FENCE by the time it comes
+    // round again. The device runs about a frame behind, the drain builds a
+    // handful of pieces a frame, and this is several frames of them.
+    static constexpr size_t kLooseRing = 64;
+    LooseRing looseRing_;
+
+    Staged recordBuild(const VoxMesh &m, CompactGroup *group, bool ownResult = false,
+                       LooseRing::Slot *ring = nullptr) {
+        const bool compacted = group != nullptr;
         Staged g;
-        g.query = uint32_t(group.items.size());
+        g.query = compacted ? uint32_t(group->items.size()) : 0u;
 
         const auto rb0 = std::chrono::steady_clock::now();
         const size_t vbytes = m.position.size() * sizeof(Vec3);
         const size_t ibytes = m.index.size() * sizeof(uint32_t);
-        g.verts = vertPool_.acquire(vbytes, deviceDone_);
-        g.idx = idxPool_.acquire(ibytes, deviceDone_);
+        if (ring) {
+            ring->fit(device_, vbytes, ibytes);
+            g.verts = ring->verts;
+            g.idx = ring->idx;
+        } else {
+            g.verts = vertPool_.acquire(vbytes, deviceDone_);
+            g.idx = idxPool_.acquire(ibytes, deviceDone_);
+        }
         const auto rb1 = std::chrono::steady_clock::now();
         ctx_->updateBuffer(g.verts.get(), m.position.data(), 0, vbytes);
         ctx_->updateBuffer(g.idx.get(), m.index.data(), 0, ibytes);
@@ -15770,21 +17815,42 @@ class World {
 
         RtAccelerationStructureBuildInputs inputs = {};
         inputs.kind = RtAccelerationStructureKind::BottomLevel;
-        inputs.flags = RtAccelerationStructureBuildFlags::PreferFastTrace |
-                       RtAccelerationStructureBuildFlags::AllowCompaction;
+        // ALLOW COMPACTION ONLY IF SOMETHING IS GOING TO COMPACT IT. The flag
+        // is not free -- it makes the driver lay the structure out so its size
+        // can be reported and a compacted copy taken -- and a loose piece's
+        // compacted copy is thrown away, so it is paid for nothing.
+        inputs.flags = compacted ? (RtAccelerationStructureBuildFlags::PreferFastTrace |
+                                    RtAccelerationStructureBuildFlags::AllowCompaction)
+                                 : RtAccelerationStructureBuildFlags::PreferFastTrace;
         inputs.descCount = 1;
         inputs.geometryDescs = &geom;
 
         const auto rb3 = std::chrono::steady_clock::now();
         const auto pre = RtAccelerationStructure::getPrebuildInfo(device_.get(), inputs);
         g.uncompactedSize = pre.resultDataMaxSize;
-        g.scratch = scratchPool_.acquire(pre.scratchDataSize, deviceDone_);
+        if (ring) {
+            ring->fitScratch(device_, pre.scratchDataSize);
+            g.scratch = ring->scratch;
+        } else {
+            g.scratch = scratchPool_.acquire(pre.scratchDataSize, deviceDone_);
+        }
         const auto rb4 = std::chrono::steady_clock::now();
-        g.uncompacted =
-            ownResult ? device_->createBuffer(pre.resultDataMaxSize,
-                                              ResourceBindFlags::AccelerationStructure,
-                                              Falcor::MemoryType::DeviceLocal)
-                      : rawPool_.acquire(pre.resultDataMaxSize, deviceDone_);
+        // -- THE STRUCTURE'S OWN BUFFER, FROM A POOL OF ITS OWN -----------
+        //
+        // `ownResult` used to mean a fresh createBuffer every time, and with
+        // the scratch ring in place that was the last per-piece allocation
+        // left: 87.4 ms of a 223 ms oak drain.
+        //
+        // A SEPARATE POOL FROM rawPool_, AND THAT IS THE WHOLE POINT. The note
+        // over recordLooseBuild says why a loose build may not take a rawPool_
+        // buffer: rawPool_ is handed back when a COMPACTION drains, and a loose
+        // build keeps its uncompacted structure, so the pool reissued a buffer
+        // that a rock was still being drawn out of. This pool is released from
+        // exactly one place -- sweepLoose, when the body retires and the device
+        // has passed it -- so nothing can take it while it is still on screen.
+        g.uncompacted = ownResult
+                            ? looseRawPool_.acquire(pre.resultDataMaxSize, deviceDone_)
+                            : rawPool_.acquire(pre.resultDataMaxSize, deviceDone_);
         const auto rb5 = std::chrono::steady_clock::now();
 
         RtAccelerationStructure::Desc cd;
@@ -15803,11 +17869,15 @@ class World {
         bd.dest = g.as.get();
         bd.scratchData = g.scratch->getGpuAddress();
 
-        RtAccelerationStructurePostBuildInfoDesc pbi = {};
-        pbi.type = RtAccelerationStructurePostBuildInfoQueryType::CompactedSize;
-        pbi.index = g.query;
-        pbi.pool = group.pool.get();
-        ctx_->buildAccelerationStructure(bd, 1, &pbi);
+        if (compacted) {
+            RtAccelerationStructurePostBuildInfoDesc pbi = {};
+            pbi.type = RtAccelerationStructurePostBuildInfoQueryType::CompactedSize;
+            pbi.index = g.query;
+            pbi.pool = group->pool.get();
+            ctx_->buildAccelerationStructure(bd, 1, &pbi);
+        } else {
+            ctx_->buildAccelerationStructure(bd, 0, nullptr);
+        }
         recorded_ = true;
         return g;
     }
@@ -16063,7 +18133,7 @@ class World {
     Blas recordChunkBuild(const VoxMesh &m, long long key) {
         const auto t0 = std::chrono::steady_clock::now();
         CompactGroup &grp = openGroup();
-        Staged g = recordBuild(m, grp);
+        Staged g = recordBuild(m, &grp);
 
         Blas raw;
         raw.buffer = g.uncompacted;
@@ -16203,7 +18273,7 @@ class World {
     // that is about to be absorbed anyway.
     // -----------------------------------------------------------------------
     Blas recordLooseBuild(const VoxMesh &m) {
-        CompactGroup &grp = openGroup();
+        // NO GROUP -- see the note over the releases below.
         // ITS OWN BUFFER, AND THAT IS THE WHOLE POINT.
         //
         // recordBuild normally takes the structure's buffer from rawPool_, and
@@ -16218,21 +18288,54 @@ class World {
         // boulder vanished, and reading it took the device out. It showed up as
         // "I was moving while hitting the rock" because moving is what makes
         // the streamer build chunks, which is what consumes the pool.
-        Staged g = recordBuild(m, grp, /*ownResult=*/true);
+        // THE RING, NOT THE POOLS -- see LooseRing for the measurement that
+        // put it here. Filled lazily so a session that never fells anything
+        // never pays for it.
+        if (looseRing_.slots.empty()) looseRing_.slots.resize(kLooseRing);
+        LooseRing::Slot &rs = looseRing_.slots[looseRing_.cursor];
+        looseRing_.cursor = (looseRing_.cursor + 1) % looseRing_.slots.size();
+        Staged g = recordBuild(m, nullptr, /*ownResult=*/true, &rs);
+        rs.at = epoch_;
         Blas raw;
         raw.buffer = g.uncompacted;
         raw.as = g.as;
-        PendingCompact p;
-        p.staged = std::move(g);
-        p.key = kNoOwner;   // nothing will claim the compacted copy
-        grp.epoch = epoch_;
-        grp.items.push_back(std::move(p));
+        // -- AND THE THREE SCRATCH BUFFERS GO STRAIGHT BACK ---------------
+        //
+        // THIS IS THE WHOLE COST OF A SHATTER. Measured on a 220-piece oak:
+        // 222 ms of drain, 178 of it in the BLAS phase, and 95 of THAT inside
+        // TransientPool::acquire -- 300 misses, one device allocation each,
+        // leaving a pool of 222 slots holding 226 MB for three pools at once.
+        // One slot per piece, for a burst of 220. Nothing recycled at all.
+        //
+        // AND NOTHING COULD, because until now a loose build joined a compaction
+        // group and its Staged -- which owns the vertex, index and scratch
+        // buffers -- was held by that group until the group drained. Every
+        // piece of the tree therefore held three megabyte buffers for the whole
+        // 55-frame drain, so the pool had no choice but to grow to the size of
+        // the biggest tree anyone ever felled.
+        //
+        // THE GROUP WAS BUYING NOTHING. A loose build keeps the uncompacted
+        // structure and DROPS the compacted copy -- that is stated three notes
+        // up, and drainCompactions has a branch whose only job is to throw the
+        // result away. So the membership cost three pinned buffers per piece to
+        // produce a result that was discarded.
+        //
+        // These three are dead the moment the build is recorded. Handing them
+        // back at `epoch_` is the same promise drainCompactions makes: unusable
+        // again until the device has passed the submit that reads them, which is
+        // exactly the submit this build was just recorded into.
+        // NOTHING IS RELEASED HERE ANY MORE. The three buffers belong to the
+        // ring and are reused by whichever piece comes round to that slot next;
+        // handing them to the pools as well would be handing away something we
+        // still own. They are cleared out of the Staged so nothing downstream
+        // can mistake them for pooled buffers.
+        g.verts = g.idx = g.scratch = nullptr;
         return raw;
     }
 
     Blas recordHeldBuild(const VoxMesh &m, int index) {
         CompactGroup &grp = openGroup();
-        Staged g = recordBuild(m, grp);
+        Staged g = recordBuild(m, &grp);
         Blas raw;
         raw.buffer = g.uncompacted;
         raw.as = g.as;
@@ -16257,7 +18360,7 @@ class World {
         Blas result;
         CompactGroup &grp = openGroup();
         PendingCompact p;
-        p.staged = recordBuild(m, grp);
+        p.staged = recordBuild(m, &grp);
         p.direct = &result;
         grp.epoch = epoch_;
         grp.items.push_back(std::move(p));
@@ -18819,6 +20922,7 @@ class World {
     bool carveLevel(const Vec3 &at, int radiusVox, std::vector<uint8_t> *spoil = nullptr,
                     int *spoilN = nullptr, Vec3 *spoilAt = nullptr) {
         if (levelBlocks_.empty() || levelDisplay_.a.empty()) return false;
+        thawAt(at, float(radiusVox) * VOXEL_M, /*world=*/true);   // see kFreezeAfterMs -- nothing floats
         const int cx = int((at.x - kLevelAtX) / VOXEL_M);
         const int cy = int((at.y - kLevelAtY) / VOXEL_M);
         const int cz = int((at.z - kLevelAtZ) / VOXEL_M);

@@ -317,37 +317,177 @@ h1 .tver {
 }
 .dl:hover { box-shadow: 0 7.5px 19.5px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.6); }
 
-/* ---- the discord button, pinned bottom-right ---------------------------- */
+/* ---- the credit under the download ------------------------------------- */
+/*
+   (user 2026-09-22: "under the download button ... put the text 'powered by
+   nvidia' put it in grey text. put some extra spacing in between the words".)
 
-/* FIXED TO THE VIEWPORT rather than sitting in the middle stack. It is a
-   standing way through to the server, not one of two things the page is
-   offering you, and the bottom-right corner is where that convention lives.
+   GREY AND NOT GOLD, deliberately: gold is what the page spends on the two
+   things you can ACT on -- the download and the watermark -- and a credit is
+   read once and never clicked. #8d97a5 sits between --ink and the background
+   at about 4.6:1 on the video's darkest frames, which is still legible when
+   the footage behind it is bright.
+
+   TWO KINDS OF SPACING, because "between the words" is the word gap and the
+   button above it is already tracked out. letter-spacing keeps it in the same
+   family as the button; word-spacing is the part that was asked for, and at
+   0.5em the three words read as three rather than as one long run.
+
+   THE SAME px3 FACE the rest of the page uses, at the copyright's size -- it
+   is the same weight of statement. */
+.nv {
+  margin: 14px 0 0;
+  text-align: center;
+  color: #8d97a5;
+  font: 6px/1.6 'px3', Consolas, monospace;
+  letter-spacing: 2.25px;
+  word-spacing: 0.5em;
+  text-transform: lowercase;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  user-select: none;
+}
+
+/* ---- the rule on each side of it --------------------------------------- */
+/*
+   (user 2026-09-22: "can you put -- on each side of the nvidia text. so it
+   should read: -- powered by nvidia --".)
+
+   DRAWN, NOT TYPED, AND THE FONT IS THE REASON. 3x3-pixel.otf HAS NO EM DASH
+   and no en dash either -- checked against its cmap, which carries U+002D and
+   neither U+2013 nor U+2014. An &mdash; here would fall out of 'px3' and be
+   served by Consolas, so the one smooth glyph on the page would sit between
+   two pixel words.
+
+   #copyr ALREADY SOLVES THIS ONCE, for the same reason: that face has no
+   copyright glyph either, so the ring is stroked by hand around a bare c. This
+   is the same answer for the same gap.
+
+   A BOX IS EXACTLY WHAT A PIXEL DASH IS -- a solid bar one pixel tall -- so
+   drawing it loses nothing and cannot be hinted into a different weight than
+   the letters beside it. currentColor keeps it on the text, so the grey only
+   has to be right in one place.
+
+   THE MARGIN IS THE WORD GAP, matching word-spacing: the dash reads as another
+   word in the line rather than as a rule butted against one. */
+.nv::before,
+.nv::after {
+  content: "";
+  display: inline-block;
+  width: 1.4em;
+  height: 1px;
+  background: currentColor;
+  vertical-align: middle;
+  /* DOUBLED (user 2026-09-22: "double the spacing of the -- from the words"). */
+  margin: 0 1em;
+}
+
+/*
+   ...AND THE TWO SIDES ARE EQUAL NOW (same ask: "make sure the spacing is equal
+   on both sides of the text").
+
+   THEY WERE NOT, AND IT IS letter-spacing. Measured off a 4x render, the ink
+   gap was 12 device pixels on the left and 26 on the right -- better than two
+   to one, which is what was noticed.
+
+   letter-spacing IS APPLIED AFTER EVERY CHARACTER, INCLUDING THE LAST. So the
+   run "powered by nvidia" carries a trailing 2.25px that nothing balances at
+   its head, and the right-hand dash is pushed out by exactly that much before
+   its own margin even starts.
+
+   TAKEN BACK AT THE SOURCE rather than by shaving the dash's margin. A negative
+   margin on the dash would be a number that has to be kept equal to
+   letter-spacing by hand, and would go wrong the moment either moved; a wrapper
+   that cancels its own trailing space is the same correction expressed once,
+   where the cause is.
+
+   WHAT IS LEFT IS GLYPH BEARING -- the white space built into the right of "a"
+   against the left of "p" -- and that belongs to the typeface, not to the
+   layout. It is well under a pixel at this size.
+*/
+.nv > span {
+  margin-right: -2.25px;   /* == letter-spacing, cancelled at the tail */
+}
+
+/* ---- the social stack, pinned bottom-right ------------------------------ */
+
+/* FIXED TO THE VIEWPORT rather than sitting in the middle stack. These are
+   standing ways through to us, not things the page is offering you, and the
+   bottom-right corner is where that convention lives.
    z-index 12 puts it over the watermark's 11 -- they never touch on desktop,
    but the watermark is centred and a narrow phone brings them close.
-   SIZED IN ITS OWN RIGHT, not off .btn: it shares none of the pill's box, so
-   inheriting the pill's padding and clamped font would only fight it. */
-.dc {
+
+   THE COLUMN OWNS THE CORNER, NOT THE BUTTONS. Each badge used to be fixed in
+   its own right; four of them fixed to the same corner would stack on top of
+   one another, and pinning each to its own `bottom` would hard-code the
+   spacing in a box whose height is a clamp. One fixed flex column and the
+   buttons are laid out by the flow, so the gap survives every viewport width
+   the clamp passes through. `column-reverse` puts the FIRST child at the
+   BOTTOM: discord is written first because it is the one that was here, and
+   the three added above it read top-to-bottom in source order after it. */
+.social {
   position: fixed;
   right: 20px;
   bottom: 20px;
   z-index: 12;
-  width:  clamp(42px, 4.2vw, 54px);
-  height: clamp(42px, 4.2vw, 54px);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  /* SCALED WITH THE BADGE, not a fixed px: at the clamp's floor a 12px gap is
+     38% of a button and the column reads as four loose dots. 30% of the badge
+     holds the grouping at both ends of the range. */
+  gap: clamp(9.5px, 0.95vw, 12px);
+}
+
+/* THE SHARED BADGE. .dc keeps its name -- it is what the reduced-motion rule
+   and v1's notes already refer to -- and is now the shape only; the colour is
+   the per-brand class beside it.
+   SIZED IN ITS OWN RIGHT, not off .btn: it shares none of the pill's box, so
+   inheriting the pill's padding and clamped font would only fight it. */
+.dc {
+  /* 25% SMALLER (user 2026-09-22). All three terms of the clamp scaled by
+     0.75, so the badge keeps the same behaviour across viewport widths -- it
+     still grows with the page between the floor and the ceiling, just from a
+     smaller one to a smaller one. Scaling only the ceiling would have left it
+     the old size on a phone, which is where it is most in the way. */
+  width:  clamp(31.5px, 3.15vw, 40.5px);
+  height: clamp(31.5px, 3.15vw, 40.5px);
+  flex: 0 0 auto;          /* a flex child may not shrink its own circle */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  color: #fff;
-  background: linear-gradient(180deg, #7b86ff 0%, var(--blurple) 52%, #404ec9 100%);
+  color: #fff;             /* EVERY mark is white -- the paths are currentColor */
   box-shadow: 0 4.5px 15px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.28);
   cursor: pointer;
   transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
 
+/* THE BRAND FACES. Each is the house colour under the same top-lit ramp the
+   discord badge already had -- lighter at 0%, the brand at 52%, darker at the
+   foot -- so four different palettes still read as one row of buttons.
+   Instagram is the exception and has to be: its mark IS the corner-to-corner
+   gradient, and a vertical ramp through those hues is unrecognisable. */
+.dc-discord   { background: linear-gradient(180deg, #7b86ff 0%, var(--blurple) 52%, #404ec9 100%); }
+.dc-github    { background: linear-gradient(180deg, #555e68 0%, #24292f 52%, #14171a 100%); }
+.dc-instagram { background: linear-gradient(135deg, #feda75 0%, #fa7e1e 25%, #d62976 60%, #962fbf 82%, #4f5bd5 100%); }
+/* TikTok's ground is black, which a drop shadow cannot separate from a dark
+   page. The ramp stops at #0b0b0b rather than #000 and the inset highlight
+   above does the rest -- the badge keeps an edge without turning grey. */
+.dc-tiktok    { background: linear-gradient(180deg, #3d3d3d 0%, #161616 52%, #0b0b0b 100%); }
+
 /* A PERCENTAGE, not an em: the circle is sized in px here, so the mark has to
    follow the circle rather than a font-size it no longer has any relation to.
-   55% leaves the ring of blurple that makes it read as a badge. */
+   55% leaves the ring of brand colour that makes it read as a badge. */
 .dc svg { width: 55%; height: 55%; }
+
+/* GITHUB AND TIKTOK RUN SMALLER. 55% is tuned to the discord mark, which is a
+   wide, squat wordless shape with its own built-in margin. The octocat fills
+   its viewBox corner to corner and the tiktok note is TALL; at a flat 55%
+   both crowd the rim while discord and instagram sit comfortably inside it.
+   Optical size, not geometric -- the number that matters is how much ring is
+   left, and these two need a smaller box to leave the same amount. */
+.dc-github svg { width: 52%; height: 52%; }
+.dc-tiktok svg { width: 48%; height: 48%; }
 
 .dc:hover  { transform: translateY(-3px); box-shadow: 0 7.5px 19.5px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.34); }
 .dc:active { transform: translateY(0); }
@@ -440,9 +580,13 @@ h1 .tver {
   <h1><span class="tv" data-t="voxel">voxel</span><span class="tb" data-t="bit">bit</span><sup class="tver">v<span class="vd"><span class="vdr"><i>0</i></span></span>.<span class="vd"><span class="vdr"><i>0</i></span></span></sup></h1>
 
   <div class="row">
-    <!-- THE REAL BUILD, one directory up -- voxelbit.exe lives at the repo
-         root, not in here, and at 782 MB it is not worth a second copy. The
-         `download` attribute is what makes the click SAVE the file instead
+    <!-- THE REAL BUILD, right here. This used to say the exe lived at the
+         repository root -- while linking to it RELATIVELY, which meant the
+         site was already serving the copy beside it and the root one was half
+         a gigabyte nothing pointed at. The installer is built straight into
+         this folder now; see OutputDir in tools/voxelbit.iss, which has to
+         agree with the href below.
+         The `download` attribute is what makes the click SAVE the file instead
          of navigating to it, and naming it explicitly means it lands as
          voxelbit.exe whatever the URL ends up looking like.
          AN INSTALLER, NOT THE OLD SELF-EXTRACTING EXE. That one was an
@@ -457,13 +601,51 @@ h1 .tver {
     <a class="btn dl" href="voxelbit.exe" download="voxelbit.exe">download</a>
 
   </div>
+
+  <!-- OUTSIDE .row, not in it. That row is a centred flex line and the button
+       is its only child; adding a second one puts the credit BESIDE the
+       download at any width wide enough to fit both, which is every desktop.
+       A block after the row is under it at every width. -->
+  <p class="nv"><span>powered by nvidia</span></p>
 </main>
 
 <!-- Pinned to the corner, so it sits outside <main> with the watermark
-     rather than inside the centred stack. -->
-<a class="dc" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" title="discord">
-  <svg viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>
-</a>
+     rather than inside the centred stack.
+
+     EVERY MARK IS AN INLINE PATH, NOT AN ICON FONT OR AN <img>. The page ships
+     four files and adding a sprite sheet or a webfont for four glyphs would be
+     a fifth request for ~1 KB of geometry. Inline also means fill="currentColor"
+     can take the white from the badge's own `color`, which is the one thing
+     that has to be true of all four of them.
+
+     `aria-hidden` on the svg with the label on the <a>: the mark is not content,
+     it is the button's face, and a screen reader that reads both says the name
+     twice.
+
+     SOURCE ORDER IS BOTTOM-UP -- .social is column-reverse, so discord is first
+     here and lowest on screen. See the note on .social for why. -->
+<nav class="social" aria-label="voxelbit elsewhere">
+
+  <a class="dc dc-discord" href="https://discord.gg/AtW5fWZtSG" target="_blank" rel="noopener noreferrer" aria-label="discord" title="discord">
+    <svg viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>
+  </a>
+
+  <!-- TODO(links): the three hrefs below are the voxelbit handle guessed from
+       the name -- nothing in the tree records the real accounts. Correct any
+       that are wrong before this goes up; the markup does not care. -->
+  <a class="dc dc-tiktok" href="https://www.tiktok.com/@voxelbit" target="_blank" rel="noopener noreferrer" aria-label="tiktok" title="tiktok">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z"/></svg>
+  </a>
+
+  <a class="dc dc-instagram" href="https://www.instagram.com/voxelbit" target="_blank" rel="noopener noreferrer" aria-label="instagram" title="instagram">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C8.74 0 8.333.015 7.053.072 5.775.132 4.905.333 4.14.63c-.789.306-1.459.717-2.126 1.384S.935 3.35.63 4.14C.333 4.905.131 5.775.072 7.053.012 8.333 0 8.74 0 12s.015 3.667.072 4.947c.06 1.277.261 2.148.558 2.913.306.788.717 1.459 1.384 2.126.667.666 1.336 1.079 2.126 1.384.766.296 1.636.499 2.913.558C8.333 23.988 8.74 24 12 24s3.667-.015 4.947-.072c1.277-.06 2.148-.262 2.913-.558.788-.306 1.459-.718 2.126-1.384.666-.667 1.079-1.335 1.384-2.126.296-.765.499-1.636.558-2.913.06-1.28.072-1.687.072-4.947s-.015-3.667-.072-4.947c-.06-1.277-.262-2.149-.558-2.913-.306-.789-.718-1.459-1.384-2.126C21.319 1.347 20.651.935 19.86.63c-.765-.297-1.636-.499-2.913-.558C15.667.012 15.26 0 12 0zm0 2.16c3.203 0 3.585.016 4.85.071 1.17.055 1.805.249 2.227.415.562.217.96.477 1.382.896.419.42.679.819.896 1.381.164.422.36 1.057.413 2.227.057 1.266.07 1.646.07 4.85s-.015 3.585-.074 4.85c-.061 1.17-.256 1.805-.421 2.227-.224.562-.479.96-.899 1.382-.419.419-.824.679-1.38.896-.42.164-1.065.36-2.235.413-1.274.057-1.649.07-4.859.07-3.211 0-3.586-.015-4.859-.074-1.171-.061-1.816-.256-2.236-.421-.569-.224-.96-.479-1.379-.899-.421-.419-.69-.824-.9-1.38-.165-.42-.359-1.065-.42-2.235-.045-1.26-.061-1.649-.061-4.844 0-3.196.016-3.586.061-4.861.061-1.17.255-1.814.42-2.234.21-.57.479-.96.9-1.381.419-.419.81-.689 1.379-.898.42-.166 1.051-.361 2.221-.421 1.275-.045 1.65-.06 4.859-.06l.045.03zm0 3.678a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm7.846-10.405a1.441 1.441 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z"/></svg>
+  </a>
+
+  <a class="dc dc-github" href="https://github.com/TheAvroid/voxelbit" target="_blank" rel="noopener noreferrer" aria-label="github" title="github">
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+  </a>
+
+</nav>
 
 <div id="copyr"><span class="cmark">c</span>2026 voxelbit - all rights reserved</div>
 

@@ -37,7 +37,9 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <chrono>   // the solver step timer -- see step()
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <vector>
@@ -359,12 +361,51 @@ class Physics {
 #endif
     }
 
+    // -----------------------------------------------------------------------
+    // PUT A BODY SOMEWHERE, NOW.
+    //
+    // (user 2026-09-22: "it looks like the tree goes back in time and then
+    //  breaks".)
+    //
+    // NOT setPose BELOW, and the difference is the whole reason this exists:
+    // that one sets a KINEMATIC TARGET, which is a request the solver
+    // interpolates towards over the next step and which a body outside the
+    // simulation never receives at all. This is a teleport -- the pose is the
+    // pose the moment it returns -- and it works on a body that has been taken
+    // out with setSimulated(false), which is exactly when the shatter needs it.
+    void placeAt(int h, const Vec3 &p, const float *quat) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        const physx::PxQuat q = quat ? physx::PxQuat(quat[0], quat[1], quat[2], quat[3])
+                                     : physx::PxQuat(physx::PxIdentity);
+        bodies_[size_t(h)]->setGlobalPose(physx::PxTransform(physx::PxVec3(p.x, p.y, p.z), q));
+#else
+        (void)h; (void)p; (void)quat;
+#endif
+    }
+
     void setPose(int h, const Vec3 &p, const float *quat) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
         const physx::PxQuat q = quat ? physx::PxQuat(quat[0], quat[1], quat[2], quat[3])
                                      : physx::PxQuat(physx::PxIdentity);
-        bodies_[size_t(h)]->setKinematicTarget(physx::PxTransform(physx::PxVec3(p.x, p.y, p.z), q));
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        // -- A TARGET IS ONLY FOR A KINEMATIC BODY THE SOLVER IS RUNNING ------
+        //
+        // THIS WAS THE CRASH IN --fell-test (PhysX_64 + 0x11F1A3, "read of
+        // 0xC0", five of them in v2-crash.log). A shatter piece is shown out of
+        // the simulation and woken a few a frame (see World::wake_), and one the
+        // player absorbed in between was driven here: setKinematicTarget on an
+        // actor with eDISABLE_SIMULATION has no simulation object behind it, and
+        // the release DLL does not check -- the checked build's "not allowed"
+        // is compiled out, and what is left reads through a null. The same goes
+        // for a body that is not kinematic. Both are TELEPORTS, which is all
+        // an unsolved body can take.
+        const bool disabled = a->getActorFlags() & physx::PxActorFlag::eDISABLE_SIMULATION;
+        const bool kinematic = a->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC;
+        const physx::PxTransform t(physx::PxVec3(p.x, p.y, p.z), q);
+        if (disabled || !kinematic) a->setGlobalPose(t);
+        else a->setKinematicTarget(t);
 #else
         (void)h; (void)p; (void)quat;
 #endif
@@ -881,6 +922,47 @@ class Physics {
 #endif
     }
 
+    // -----------------------------------------------------------------------
+    // OUT OF THE SIMULATION ALTOGETHER, without leaving the scene.
+    //
+    // (user 2026-09-22: "it also shakes as whole tree right before breaking
+    //  into chunks".)
+    //
+    // KINEMATIC IS NOT ABSENT. A kinematic body does not fall, which is what
+    // the shatter wanted -- but it still has shapes and it still PUSHES what
+    // it overlaps. A felled tree's pieces are born exactly where that tree's
+    // own voxels are, a few every frame, so the tree spent the whole drain
+    // rolling around inside four hundred colliders it had just given birth to,
+    // being shoved out of every one of them. That is the shake.
+    //
+    // eDISABLE_SIMULATION is the flag that means what was wanted: the actor
+    // keeps its pose and can be moved and queried, and it generates no contacts
+    // and is not solved. PhysX supports it on PxRigidStatic and PxRigidDynamic,
+    // which is what every body here is.
+    // Wake a sleeping dynamic body -- its world just changed under it. A
+    // kinematic one has nothing to wake.
+    void wake(int h) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        if (a->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) return;
+        if (a->getActorFlags() & physx::PxActorFlag::eDISABLE_SIMULATION) return;
+        a->wakeUp();
+#else
+        (void)h;
+#endif
+    }
+
+    void setSimulated(int h, bool on) {
+#if V2_HAS_PHYSX
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
+        bodies_[size_t(h)]->setActorFlag(physx::PxActorFlag::eDISABLE_SIMULATION, !on);
+#else
+        (void)h;
+        (void)on;
+#endif
+    }
+
     void setKinematic(int h, bool on) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return;
@@ -984,6 +1066,33 @@ class Physics {
 #endif
     }
 
+    // -- WHERE A BODY IS TURNING ABOUT ------------------------------------
+    //
+    // (user 2026-09-22: "if the felled object is moving even after the 5
+    //  seconds, have the broken chunks move with the momentum of the pre
+    //  existing full body tree".)
+    //
+    // THE LINEAR VELOCITY PhysX REPORTS IS THE CENTRE OF MASS's, not the
+    // origin's, and a rolling trunk's pieces each want v + w x r measured from
+    // THAT point. Without it the cross product is taken about the model's base
+    // corner, which for a 26 m tree is metres away from where it is actually
+    // turning -- so the far pieces would be flung and the near ones dragged.
+    //
+    // The actor's own mass pose, transformed to world. Nothing else in the
+    // engine needed this, which is why it was not here.
+    bool centreOfMass(int h, Vec3 *out) const {
+#if !V2_HAS_PHYSX
+        (void)h; (void)out;
+        return false;
+#else
+        if (h < 0 || size_t(h) >= bodies_.size() || !bodies_[size_t(h)]) return false;
+        physx::PxRigidDynamic *a = bodies_[size_t(h)];
+        const physx::PxVec3 c = a->getGlobalPose().transform(a->getCMassLocalPose().p);
+        if (out) *out = Vec3{c.x, c.y, c.z};
+        return true;
+#endif
+    }
+
     // What it is doing right now, for the hand-over to the absorb.
     bool velocityOf(int h, Vec3 *lin, Vec3 *ang) const {
 #if !V2_HAS_PHYSX
@@ -1069,6 +1178,44 @@ class Physics {
 #endif
     }
 
+    // -- WHAT IS BODY `self` RESTING ON? --------------------------------------
+    //
+    // Straight down from `from` (the body's own middle), ignoring the body
+    // itself: 1 if the first thing within maxDist is a STATIC, 3 if it is a
+    // kinematic body (a frozen piece), 2 if it is something still being
+    // simulated, 0 if there is nothing. 1 and 3 are both fixed. World::updateDebris freezes a settled piece only on a 1: a
+    // piece frozen on top of one that is still free to slide away would be left
+    // hanging in the air when it did.
+    int supportBelow(int self, const Vec3 &from, float maxDist) const {
+#if !V2_HAS_PHYSX
+        (void)self; (void)from; (void)maxDist;
+        return 0;
+#else
+        if (!ready_ || !scene_) return 0;
+        const physx::PxRigidActor *me =
+            (self >= 0 && size_t(self) < bodies_.size()) ? bodies_[size_t(self)] : nullptr;
+        physx::PxRaycastBufferN<16> buf;
+        physx::PxQueryFilterData fd;
+        // Every hit as a TOUCH, so the body's own shapes -- which the ray starts
+        // inside -- can be stepped over rather than ending the query.
+        fd.flags = physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::eDYNAMIC |
+                   physx::PxQueryFlag::eNO_BLOCK;
+        scene_->raycast(physx::PxVec3(from.x, from.y, from.z), physx::PxVec3(0.0f, -1.0f, 0.0f),
+                        maxDist, buf, physx::PxHitFlags(physx::PxHitFlag::eDEFAULT), fd);
+        float best = 1e30f;
+        int kind = 0;
+        for (physx::PxU32 k = 0; k < buf.getNbTouches(); ++k) {
+            const physx::PxRaycastHit &h = buf.getTouch(k);
+            if (!h.actor || h.actor == me || h.distance >= best) continue;
+            best = h.distance;
+            const physx::PxRigidDynamic *dyn = h.actor->is<physx::PxRigidDynamic>();
+            kind = !dyn ? 1
+                        : ((dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) ? 3 : 2);
+        }
+        return kind;
+#endif
+    }
+
     // The id addStaticConvex gave this actor, for a body that must ignore it.
     int staticIdOf(int h) const { return h; }
 
@@ -1100,14 +1247,125 @@ class Physics {
         const float h = 1.0f / 60.0f;
         int guard = 0;
         while (acc_ >= h && guard++ < 4) {
+            // -- A SOLVER STEP THAT COSTS A FRAME SAYS SO ------------------
+            //
+            // (user 2026-09-22: "right before it breaks into chunks, it
+            //  freezes for a second".)
+            //
+            // NOTHING ELSE CAN SEE THIS. --hitch has a `phys` column and it
+            // only fills on the ordinary render path; every headless
+            // diagnostic drives step() from its own loop, so the one moment
+            // worth measuring -- hundreds of bodies waking into contact at
+            // once -- was invisible to every instrument in the engine.
+            //
+            // ONE LINE, ONLY WHEN IT IS BAD, so it costs nothing to leave in.
+            // The body count is printed with it because that is the whole
+            // question: a slow step with forty bodies is a different fault
+            // from a slow step with five hundred.
+            const auto t0 = std::chrono::steady_clock::now();
             scene_->simulate(h);
             scene_->fetchResults(true);
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t0).count();
+            stepMs_ = ms;
+            stepSumMs_ += ms;
+            if (ms > kStepLoudMs) ++stepLoudAll_;
+            if (ms > worstStepMs_) worstStepMs_ = ms;
+            // EVERY loud step, not only a new worst: the question is how MANY
+            // of them follow a break, because that is the length of the freeze.
+            // Capped so a genuinely broken scene cannot fill the log.
+            if (ms > kStepLoudMs && loudLeft_ > 0) {
+                --loudLeft_;
+                loudMs_ += ms;
+                ++loudN_;
+                std::printf("v2: PHYSICS STEP %.1f ms with %d live bodies  "
+                            "(%d loud steps, %.0f ms total)\n",
+                            ms, liveBodies(), loudN_, loudMs_);
+                // ...AND WHAT THE SOLVER WAS DOING, for the first few. A body
+                // count cannot tell a contact pile from a CCD storm from a
+                // broadphase full of statics; PhysX's own counters can.
+                if (loudN_ <= 3) {
+                    physx::PxSimulationStatistics st;
+                    scene_->getSimulationStatistics(st);
+                    physx::PxU32 ccd = 0;
+                    for (int a = 0; a < physx::PxGeometryType::eGEOMETRY_COUNT; ++a)
+                        for (int b = 0; b < physx::PxGeometryType::eGEOMETRY_COUNT; ++b)
+                            ccd += st.nbCCDPairs[a][b];
+                    std::printf("v2:   active %u dynamic, %u static actor(s), %u box shape(s);  "
+                                "pairs %u (%u touching, %u new touches), %u CCD pair(s), "
+                                "%u constraint(s), %u partition(s)\n",
+                                st.nbActiveDynamicBodies, st.nbStaticBodies,
+                                st.nbShapes[physx::PxGeometryType::eBOX],
+                                st.nbDiscreteContactPairsTotal,
+                                st.nbDiscreteContactPairsWithContacts, st.nbNewTouches, ccd,
+                                st.nbActiveConstraints, st.nbPartitions);
+                }
+                std::fflush(stdout);
+            }
             acc_ -= h;
+        }
+        // -- AND THE BACKLOG IS DROPPED, NOT CARRIED ---------------------
+        //
+        // (user 2026-09-22: "right before it breaks into chunks, it freezes
+        //  for a second".)
+        //
+        // THE GUARD CAPPED THE SUBSTEPS AND KEPT THE REMAINDER, which is how
+        // one expensive step becomes a second of them. Measured: the frame a
+        // tree's 448 pieces are let go costs 20 ms in the solver alone. That
+        // makes the FRAME long, so the next one accumulates more than one
+        // substep, so it runs two, so it is twice as long, so the next runs
+        // three, then four -- and at four it stays, because a 4 x 20 ms step
+        // guarantees the next frame has another four queued. It does not
+        // recover until the pile settles.
+        //
+        // The policy is already written one line up for a different case: "a
+        // long hitch is dropped, never caught up on". A backlog IS a long
+        // hitch, seen from the other end. Running the simulation slightly
+        // behind real time for a few frames is invisible; running it four
+        // times per frame to catch up is the freeze.
+        if (guard >= 4) {
+            // SAID OUT LOUD THE FIRST FEW TIMES, because this is the difference
+            // between "one slow frame" and "a second of them" and it cannot be
+            // seen from outside. A run that never prints this never had the
+            // cascade; one that prints it in a burst was in it.
+            if (loudLeft_ > 0) {
+                --loudLeft_;
+                std::printf("v2: PHYSICS backlog dropped (%d substeps queued, %.1f ms each)\n",
+                            guard, stepMs_);
+                std::fflush(stdout);
+            }
+            acc_ = 0.0f;
         }
 #else
         (void)dt;
 #endif
     }
+
+    // WHAT THE LAST SOLVER STEP COST, and the worst since launch -- see the
+    // note in step(). kStepLoudMs is "a whole frame at 60 fps and then some":
+    // below it a step is doing its job, above it something has been handed a
+    // pile it was not expecting.
+    static constexpr double kStepLoudMs = 20.0;
+    double stepMs() const { return stepMs_; }
+    // EVERY step's cost, summed, and every loud one counted -- uncapped, unlike
+    // the printed lines, which stop at forty and so cannot say how long a
+    // freeze really was. --fell-test reads these either side of a break.
+    double stepSumMs() const { return stepSumMs_; }
+    int stepLoudAll() const { return stepLoudAll_; }
+    // HOW MANY BODIES THE SOLVER IS STILL WORKING ON -- a pile that never
+    // goes to sleep costs a pile's worth every step, for ever.
+    int activeDynamics() const {
+#if V2_HAS_PHYSX
+        if (!scene_) return 0;
+        physx::PxSimulationStatistics st;
+        scene_->getSimulationStatistics(st);
+        return int(st.nbActiveDynamicBodies);
+#else
+        return 0;
+#endif
+    }
+    double worstStepMs() const { return worstStepMs_; }
+    void resetWorstStep() { worstStepMs_ = 0.0; }
 
     bool available() const { return ready_; }
     bool active() const { return ready_ && enabled; }
@@ -1156,6 +1414,9 @@ class Physics {
     int convexMade_ = 0, convexTried_ = 0;
     int groundI0_ = 0, groundJ0_ = 0, groundN_ = 0, groundStep_ = 1;
     float acc_ = 0.0f;
+    double stepMs_ = 0.0, worstStepMs_ = 0.0, loudMs_ = 0.0, stepSumMs_ = 0.0;
+    int stepLoudAll_ = 0;
+    int loudN_ = 0, loudLeft_ = 40;
     bool ready_ = false;
     std::string status_ = "not initialised";
 };

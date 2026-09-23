@@ -1072,6 +1072,14 @@
             shutdown(0);
             return;
         }
+        if (opt_.hopTest > 0) {
+            // The clock first, like the locate test below -- see its note.
+            clock_.tday = opt_.timeOfDay;
+            clock_.cycleSpeed = opt_.cycleSpeed;
+            runHopTest();
+            shutdown(0);
+            return;
+        }
         if (opt_.locateTest) {
             // -- THE CLOCK FIRST, AND IT WAS NOT --------------------------
             //
@@ -2085,10 +2093,19 @@
     };
     std::vector<HitchFrame> hitch_;
     World::Profile hitchWas_{};
+    // -- AND THE SAME, FOR THE LOUD-FRAME WARNING -------------------------
+    //
+    // Separate from hitchWas_ on purpose: that one is only stepped when
+    // --hitch is on, and this warning runs always. Sharing it would have made
+    // the warning's deltas the whole session's totals on any ordinary run.
+    // See the frame block in app_frame.inl.
+    World::Profile shatterLoudWas_{};
+    static constexpr double kShatterLoudMs = 30.0;   // twice a 60 fps frame
+    int shatterLoudLeft_ = 6;
     // Three running totals for the frame in progress. Plain doubles and a
     // stack clock: the recorder has to cost less than the thing it is looking
     // for, and the thing it is looking for is a millisecond.
-    double hPhys_ = 0.0, hLife_ = 0.0, hPub_ = 0.0;
+    double hPhys_ = 0.0, hLife_ = 0.0, hPub_ = 0.0, hDebris_ = 0.0;
     std::chrono::steady_clock::time_point hMark_;
     void hStart() { hMark_ = std::chrono::steady_clock::now(); }
     double hStop() {

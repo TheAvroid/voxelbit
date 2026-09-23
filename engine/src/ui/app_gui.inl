@@ -63,7 +63,23 @@
     static constexpr int kCards = 4;
     // Each box's height as it was LAST frame -- see the placement block.
     float cardH_[kCards] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // ...AND HOW WIDE, for the same reason and read the same way.
+    //
+    // (user 2026-09-22: "bring the right side of the ui boxes over to the left
+    //  more. have it hug the text just as much as the left side hugs the text".)
+    //
+    // THE WIDTH USED TO BE PINNED and that is what left the slack. colW is
+    // `sliderW + 26 characters + 32`, and twenty-six characters is a guess at
+    // the longest label in the panel -- the real longest is "time of day",
+    // eleven. Everything past it was empty box. The constraint is a CEILING now
+    // rather than a fixed size, so AlwaysAutoResize fits each card to its own
+    // widest row and the placement reads the result back here.
+    float cardW_[kCards] = {0.0f, 0.0f, 0.0f, 0.0f};
     float cardHWas_[kCards] = {-1.0f, -1.0f, -1.0f, -1.0f};   // ...and the frame before
+    // THE SCREEN THE PLACEMENT WAS WORKED OUT FOR. A latched placement is four
+    // absolute positions derived from these two numbers, so they are part of
+    // it -- see the re-place test in the panel.
+    float menuFbW_ = -1.0f, menuFbH_ = -1.0f;
     // Where each box's top edge was, and how tall the heading is -- the two
     // things that let the word sit on the boxes. See the header placement.
     float cardY_[kCards] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -167,10 +183,122 @@
         explicit cardWidgets(Gui *g) { mpGui = g; }
     };
 
+    // NoTitleBar IS NEW AND IT IS WHAT LETS THE NAME BE GOLD -- see cardHead.
+    // ImGui draws a title bar in ONE flat colour and offers no way to reach the
+    // glyphs it emitted, so a gradient on the card's name is only possible if
+    // the name is a widget. Dragging survives: ImGui moves a window from
+    // anywhere in its body unless io.ConfigWindowsMoveFromTitleBarOnly is set,
+    // and nothing in this engine or in Falcor sets it.
     static ImGuiWindowFlags cardWinFlags() {
         return ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
+               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+               ImGuiWindowFlags_NoTitleBar;
     }
+
+    // -----------------------------------------------------------------------
+    // SHADE EVERYTHING DRAWN SINCE v0 WITH THE PANEL'S GOLD.
+    //
+    // (user 2026-09-22: "a gold gradient ... lighter color on top".)
+    //
+    // A GRADIENT IS A SHADE OF THE VERTICES, which is the same trick the slider
+    // handle already uses -- ImDrawList has AddRectFilledMultiColor and nothing
+    // of the kind for a rounded rect, a circle, a stroke or a glyph. Emitting
+    // the shape in any colour and then interpolating what came out covers all
+    // four, which is why every gold thing in the panel can share one call.
+    //
+    // PER ELEMENT, NOT PER PANEL. y0/y1 are the band being shaded, so a slider
+    // fill gets the whole ramp across its own height and so does a card's
+    // outline across its own. One ramp over the whole panel would leave the
+    // bottom card flat dark and the top one flat light, which is a tint, not a
+    // gradient.
+    //
+    // THE AXIS IS VERTICAL, so x is zero in both points: ShadeVerts projects
+    // each vertex onto p1 - p0, and only the y term may contribute.
+    // -----------------------------------------------------------------------
+    static void goldGradient(ImDrawList *dl, int v0, float y0, float y1) {
+        if (dl->VtxBuffer.Size <= v0 || !(y1 > y0)) return;
+        ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+            dl, v0, dl->VtxBuffer.Size, ImVec2(0.0f, y0), ImVec2(0.0f, y1),
+            ImGui::GetColorU32(ui::kGoldTop()), ImGui::GetColorU32(ui::kGoldBot()));
+    }
+
+    // The card's name, as a widget -- see cardWinFlags for why it is not a
+    // title bar any more.
+    void cardHead(const char *title) {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const int v0 = dl->VtxBuffer.Size;
+        ImGui::TextUnformatted(title);
+        goldGradient(dl, v0, at.y, at.y + ImGui::GetTextLineHeight());
+    }
+
+    // ...AND ITS OUTLINE, DRAWN LAST so it lies over the rows rather than under
+    // them, which is what an edge has to do at four pixels.
+    //
+    // INSET BY HALF THE STROKE. AddRect centres a stroke on its path and a
+    // window's draw list is clipped to the window, so an edge drawn exactly on
+    // the rectangle loses its outer half and reads two pixels thin.
+    //
+    // THE SIZE IS LAST FRAME'S, which is what an AlwaysAutoResize window can
+    // offer and is the same lag the card placement already lives with: the
+    // boxes settle in two or three frames and then never move again.
+    void cardEdge() {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        const ImVec2 p = ImGui::GetWindowPos();
+        const ImVec2 s = ImGui::GetWindowSize();
+        const float t = kCardEdgePx, h = t * 0.5f;
+        // -- OUT FROM UNDER THE INNER CLIP RECT --------------------------
+        //
+        // (user 2026-09-22: "fix the gradient outlines around the settings
+        //  boxes. on the sides it is cut off".)
+        //
+        // ImGui::Begin PUSHES InnerClipRect, not the window rect, and that
+        // rectangle is the window inset by its padding -- sixteen pixels of it
+        // on the left and right (styleV2 sets WindowPadding 16,14). So an edge
+        // stroked two pixels in from the window was being clipped away down
+        // both SIDES while the top and bottom, where the padding is smaller
+        // relative to the stroke, survived. That asymmetry is the report.
+        //
+        // The watermark meets the same thing and answers it the same way -- see
+        // the PushClipRectFullScreen where the copyright ring is drawn, which
+        // reaches further left than the cursor its window sized itself around.
+        //
+        // THE WINDOW RECT, NOT THE SCREEN. A card may be dragged half off the
+        // edge of the display and its edge should go with it; clipping to the
+        // window is what the border always wanted and never had.
+        dl->PushClipRect(p, ImVec2(p.x + s.x, p.y + s.y), false);
+        const int v0 = dl->VtxBuffer.Size;
+        // -- THE ROUNDING HAS TO BE INSET WITH THE RECTANGLE --------------
+        //
+        // (user 2026-09-22: "the outline of the ui is not reaching all of the
+        //  ui box. theres an edge poking outside the gold outline. put the
+        //  outline on the outter edge of the ui boxes".)
+        //
+        // AddRect CENTRES ITS STROKE, so a 4 px edge asked for at the window
+        // rect would hang half outside it and be clipped to two. That is why
+        // the rectangle is inset by half the stroke -- and inset with the SAME
+        // corner radius, which is where the fill escaped.
+        //
+        // TWO ROUNDED RECTANGLES WITH ONE RADIUS ARE NOT CONCENTRIC. Move a
+        // corner arc's centre inward by `h` and keep its radius and the arc
+        // moves inward by `h` at the sides but pulls AWAY from the true corner
+        // on the diagonal -- so the window's own background, drawn at the full
+        // rect with the full radius, showed past the gold at all four corners.
+        // That is the edge poking out.
+        //
+        // The inset of a rounded rect by `h` is the rect inset by `h` with the
+        // radius reduced by `h`. Done that way the stroke's OUTER boundary is
+        // exactly the window rect at exactly the window's rounding -- which is
+        // the ask in one line: the outline is on the outer edge of the box.
+        const float r = maxf(0.0f, ImGui::GetStyle().WindowRounding - h);
+        dl->AddRect(ImVec2(p.x + h, p.y + h), ImVec2(p.x + s.x - h, p.y + s.y - h),
+                    IM_COL32_WHITE, r, 0, t);
+        goldGradient(dl, v0, p.y, p.y + s.y);
+        dl->PopClipRect();
+    }
+    // HOW THICK THAT EDGE IS. It was WindowBorderSize and is drawn by hand now,
+    // so the number moved here with the drawing.
+    static constexpr float kCardEdgePx = 4.0f;
 
     // The fill, the edge and the title strip -- pushed around the three and
     // popped after them, because styleV2 is shared with the water panel, the
@@ -227,7 +355,11 @@
             //    panel, the stack and the HUD; this struct is pushed around
             //    the settings boxes only, which is what "the settings gold
             //    outline" names.
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 4.0f);
+            // ZERO, BECAUSE THE EDGE IS DRAWN BY HAND NOW -- see cardEdge.
+            // ImGui strokes a border in one flat colour; the gradient needs the
+            // vertices, so the stroke has to be ours. The push stays so the
+            // pop count in the destructor is unchanged.
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         }
         ~cardSkin() {
             ImGui::PopStyleVar(2);   // FramePadding, WindowBorderSize
@@ -416,9 +548,15 @@
             //    is the whole of the fill, which is what a pill-shaped track
             //    wants; AddRectFilled clamps the radius to half the short side,
             //    so a sliver never renders as a lozenge wider than itself.
-            if (c.x > p0.x + 1.0f)
+            //    AND IT IS A GRADIENT, lighter at the top -- see goldGradient.
+            //    Shaded rather than drawn with AddRectFilledMultiColor, because
+            //    that one cannot round its corners and this bar is a pill.
+            if (c.x > p0.x + 1.0f) {
+                const int gv = dl->VtxBuffer.Size;
                 dl->AddRectFilled(ImVec2(p0.x, by), ImVec2(c.x, by + bh),
-                                  ImGui::GetColorU32(ui::kGold()), bh * 0.5f);
+                                  IM_COL32_WHITE, bh * 0.5f);
+                goldGradient(dl, gv, by, by + bh);
+            }
             // -- 3. THE HANDLE, WHITE AND LIT FROM ABOVE ----------------
             //
             //    `sliderGrow_` is 0..1 and eased in onGuiRender; SMOOTHSTEPPED
@@ -1637,6 +1775,36 @@
         // until all three have reported. The panel therefore settles on its
         // second frame and then stops moving, which is one frame nobody sees
         // and no guessed constants.
+        // -- A SCREEN THAT CHANGED SIZE HAS NOT BEEN PLACED ON -------------
+        //
+        // (user 2026-09-22: "settings completely glitch out on the screen when
+        //  going from fullscreen to windowed. and vice versa. keep the settings
+        //  in the center of the screen at all times.")
+        //
+        // menuPlaced_ LATCHES, and that is right -- the boxes settle on their
+        // second frame and then stop moving, so a card is the player's to drag
+        // afterwards. What it was missing is that the latch is a statement
+        // about a SCREEN SIZE: four absolute positions worked out from fbW and
+        // fbH. Change those and the positions are answers to a question nobody
+        // is asking any more, which at a fullscreen toggle means the block
+        // sitting wherever it landed, off centre and overlapping.
+        //
+        // So the size is remembered with the placement and compared against the
+        // live one. It re-centres on a fullscreen toggle, on a drag to a
+        // monitor of another size, and on an ordinary window resize -- all of
+        // which are the same event as far as this is concerned.
+        //
+        // THE STEADY TEST IS RESTARTED TOO, not just the flag. It compares each
+        // card's height with last frame's, and at a resize last frame's belongs
+        // to the old screen -- leaving it would let the very first frame at the
+        // new size look "steady" and latch a placement made from stale heights,
+        // which is the two-boxes-on-top-of-each-other the note below describes.
+        if (fbW != menuFbW_ || fbH != menuFbH_) {
+            menuPlaced_ = false;
+            for (int i = 0; i < kCards; ++i) cardHWas_[i] = -1.0f;
+            menuFbW_ = fbW;
+            menuFbH_ = fbH;
+        }
         const bool place = !menuPlaced_;
         //
         // -- AND SOUND MAKES IT FOUR (user 2026-09-22) ------------------
@@ -1653,11 +1821,16 @@
             const float rightH =
                 cardH_[1] + cardGap_ + cardH_[2] + cardGap_ + cardH_[3];
             const float blockH = maxf(cardH_[0], rightH);
-            const float blockW = ctlW + cardGap_ + colW;
+            // MEASURED, NOT RESERVED -- see cardW_. The right column is as wide
+            // as its widest card, which is the only number that can centre a
+            // block whose parts size themselves.
+            const float leftW = cardW_[0] > 0.0f ? cardW_[0] : ctlW;
+            const float rightW = maxf(cardW_[1], maxf(cardW_[2], cardW_[3]));
+            const float blockW = leftW + cardGap_ + (rightW > 0.0f ? rightW : colW);
             const float x0 = floorf(maxf(0.0f, (fbW - blockW) * 0.5f));
             const float y0 = floorf(maxf(0.0f, (fbH - blockH) * 0.5f));
             at[0] = ImVec2(x0, y0);
-            at[1] = ImVec2(x0 + ctlW + cardGap_, y0);
+            at[1] = ImVec2(x0 + leftW + cardGap_, y0);
             at[2] = ImVec2(at[1].x, y0 + cardH_[1] + cardGap_);
             at[3] = ImVec2(at[1].x, at[2].y + cardH_[2] + cardGap_);
             // -- SETTLED, NOT MERELY NON-ZERO -------------------------
@@ -1679,7 +1852,7 @@
             // terms in two places and getting both right.
             bool steady = true;
             for (int i = 0; i < kCards; ++i)
-                steady = steady && cardH_[i] > 0.0f &&
+                steady = steady && cardH_[i] > 0.0f && cardW_[i] > 0.0f &&
                          fabsf(cardH_[i] - cardHWas_[i]) < 0.5f;
             for (int i = 0; i < kCards; ++i) cardHWas_[i] = cardH_[i];
             if (steady) menuPlaced_ = true;
@@ -1766,7 +1939,7 @@
             //
             // SetWindowPos acts on the CURRENT window and nothing overwrites
             // it. It is what the one-panel version did, for the same reason.
-            ImGui::SetNextWindowSizeConstraints(ImVec2(ctlW, 0.0f),
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f),
                                                 ImVec2(ctlW, float(fbH) * 0.96f));
             {
                 // ONE PUSH NOW, not two: we drive Begin ourselves, so nothing
@@ -1776,9 +1949,13 @@
                 cardWidgets w(pGui);
                 // ...and how tall it came out, for next frame's centring.
                 cardH_[0] = ImGui::GetWindowSize().y;
+                cardW_[0] = ImGui::GetWindowSize().x;
                 cardY_[0] = ImGui::GetWindowPos().y;
                 if (place) ImGui::SetWindowPos(at[0]);
                 ImGui::SetWindowFontScale(style.scale);
+                // AFTER THE FONT SCALE, or the name is laid out at the wrong
+                // size and the rows under it start in the wrong place.
+                cardHead("controls");
                 ImGui::PushItemWidth(sliderW);
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::kText());
                 // -- THE KEYS THEMSELVES, FIRST ---------------------------
@@ -1810,14 +1987,19 @@
                 //
                 // The monospace font is not decoration: the string is laid out
                 // in columns and the proportional face closes them up.
-                {
-                    if (px3_) ImGui::PushFont(px3_);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
-                    ImGui::TextUnformatted(keyBriefText());
-                    ImGui::PopStyleColor();
-                    if (px3_) ImGui::PopFont();
-                    cardRule();
-                }
+                // -- THE SLIDERS COME FIRST NOW (user 2026-09-22: "under
+                //    controls have the sliders be at the top vs at the
+                //    bottom") ---------------------------------------------
+                //
+                //    THE KEY LIST IS A REFERENCE AND THE SLIDERS ARE CONTROLS.
+                //    Forty lines of keys are read once, when you are learning
+                //    the game; sensitivity and field of view are dragged, and
+                //    dragged again, by somebody who already knows the keys. The
+                //    thing you come back to belongs where the eye lands.
+                //
+                //    THE RULE MOVED WITH THEM rather than staying put: it
+                //    separates the two groups, so it belongs under whichever is
+                //    on top. It used to close the key list and now opens it.
             // -- NO WALK SPEED ROW (user 2026-09-22: "remove the walk speed
             //    slider").
             //
@@ -1843,6 +2025,14 @@
             // note in Options says why they were removed rather than zeroed.
             // Sensitivity is now the whole of it, which is what a raw mouse means.
             if (hoverSlider(w, "Field of view", fov_, 10.0f, 100.0f)) invalidate();
+                cardRule();
+                {
+                    if (px3_) ImGui::PushFont(px3_);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ui::kNote());
+                    ImGui::TextUnformatted(keyBriefText());
+                    ImGui::PopStyleColor();
+                    if (px3_) ImGui::PopFont();
+                }
 
             // ---- THE THING IN YOUR HAND ---------------------------------------
             //
@@ -1898,9 +2088,10 @@
             //    would have been a line ruling off the bottom edge of the box.
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
+                cardEdge();
                 ImGui::End();
             }
-            ImGui::SetNextWindowSizeConstraints(ImVec2(colW, 0.0f),
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f),
                                                 ImVec2(colW, float(fbH) * 0.96f));
             {
                 // ONE PUSH NOW, not two: we drive Begin ourselves, so nothing
@@ -1910,18 +2101,47 @@
                 cardWidgets w(pGui);
                 // ...and how tall it came out, for next frame's centring.
                 cardH_[1] = ImGui::GetWindowSize().y;
+                cardW_[1] = ImGui::GetWindowSize().x;
                 cardY_[1] = ImGui::GetWindowPos().y;
                 if (place) ImGui::SetWindowPos(at[1]);
                 ImGui::SetWindowFontScale(style.scale);
+                // AFTER THE FONT SCALE, or the name is laid out at the wrong
+                // size and the rows under it start in the wrong place.
+                cardHead("visuals");
                 ImGui::PushItemWidth(sliderW);
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::kText());
+            // ---- the whole screen, or the window --------------------------
+            //
+            // (user 2026-09-22: "add a fullscreen mode to the settings menu.
+            //  under visuals. it should switch between fullscreen and window".)
+            //
+            // ABOVE THE COMPASS, because it is the only row in this panel that
+            // is about the WINDOW rather than about anything inside it -- the
+            // compass changes what is drawn on the screen and the mode below
+            // changes how, and this changes what the screen is.
+            //
+            // ON THE EDGE, NOT EVERY FRAME. applyFullscreen already declines a
+            // call that would not change anything, but driving it off the
+            // checkbox's own return keeps the window untouched on the frames
+            // nobody clicked -- and a SetWindowPos per frame is a resize storm
+            // that would rebuild the swapchain sixty times a second.
+            if (w.checkbox("Fullscreen", opt_.fullscreen)) applyFullscreen(opt_.fullscreen);
             // ---- the compass ----------------------------------------------
             //
             // (user 2026-09-21: "let it be toggleable in the settings under
-            //  visuals".) FIRST IN THE CARD, because it is the one row here
-            // that changes what is ON the screen rather than how the screen
-            // is RENDERED -- everything below it is the renderer.
+            //  visuals".) It is the one row here that changes what is ON the
+            // screen rather than how the screen is RENDERED -- everything
+            // below it is the renderer.
             w.checkbox("Compass", opt_.compass);
+            // ---- the mark you aim with ------------------------------------
+            //
+            // (user 2026-09-22: "let me toggle the cursor off and on the
+            //  settings under visual".)
+            //
+            // NEXT TO THE COMPASS, because they are the same kind of thing:
+            // both are drawn ON the frame rather than being part of how the
+            // frame is made, and everything below them is the renderer.
+            w.checkbox("Crosshair", opt_.crosshair);
             // ---- the denoiser ---------------------------------------------------
             //
             // NO ON/OFF ROW. Ray Reconstruction is always on -- at one sample a
@@ -1996,9 +2216,10 @@
             //    at. The rest was tuning, and tuning is work that finishes.
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
+                cardEdge();
                 ImGui::End();
             }
-            ImGui::SetNextWindowSizeConstraints(ImVec2(colW, 0.0f),
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f),
                                                 ImVec2(colW, float(fbH) * 0.96f));
             {
                 // ONE PUSH NOW, not two: we drive Begin ourselves, so nothing
@@ -2008,9 +2229,13 @@
                 cardWidgets w(pGui);
                 // ...and how tall it came out, for next frame's centring.
                 cardH_[2] = ImGui::GetWindowSize().y;
+                cardW_[2] = ImGui::GetWindowSize().x;
                 cardY_[2] = ImGui::GetWindowPos().y;
                 if (place) ImGui::SetWindowPos(at[2]);
                 ImGui::SetWindowFontScale(style.scale);
+                // AFTER THE FONT SCALE, or the name is laid out at the wrong
+                // size and the rows under it start in the wrong place.
+                cardHead("general");
                 ImGui::PushItemWidth(sliderW);
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::kText());
             // -- WHERE YOU ARE --------------------------------------------
@@ -2150,6 +2375,7 @@
             //    true, and not a setting. --stats still prints all three.
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
+                cardEdge();
                 ImGui::End();
             }
 
@@ -2177,7 +2403,7 @@
             // EVERY ROW WRITES opt_ AND THEN CALLS applyVolumes -- see the note
             // on that function. No row touches a voice directly, which is what
             // lets the master be a master rather than a fourth level.
-            ImGui::SetNextWindowSizeConstraints(ImVec2(colW, 0.0f),
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f),
                                                 ImVec2(colW, float(fbH) * 0.96f));
             {
                 // ONE PUSH NOW, not two: we drive Begin ourselves, so nothing
@@ -2187,9 +2413,13 @@
                 cardWidgets w(pGui);
                 // ...and how tall it came out, for next frame's centring.
                 cardH_[3] = ImGui::GetWindowSize().y;
+                cardW_[3] = ImGui::GetWindowSize().x;
                 cardY_[3] = ImGui::GetWindowPos().y;
                 if (place) ImGui::SetWindowPos(at[3]);
                 ImGui::SetWindowFontScale(style.scale);
+                // AFTER THE FONT SCALE, or the name is laid out at the wrong
+                // size and the rows under it start in the wrong place.
+                cardHead("sound");
                 ImGui::PushItemWidth(sliderW);
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::kText());
 
@@ -2274,6 +2504,7 @@
 
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
+                cardEdge();
                 ImGui::End();
             }
         }

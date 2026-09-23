@@ -140,6 +140,171 @@
                        (want.bottom - want.top) + m.t + m.b, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
+    // -----------------------------------------------------------------------
+    // WHOLE SCREEN, AND BACK AGAIN.
+    //
+    // (user 2026-09-22: "fullscreen mode should take up my whole screen...
+    //  also half the game was cut off. like it was zoomed in to far. make sure
+    //  the game hugs the monitors edges correctly.")
+    //
+    // THE FRAME COMES OFF AND THE WINDOW COVERS THE MONITOR. That part is the
+    // usual three lines. Everything else here is about the fact that GLFW IS
+    // UNDERNEATH US AND DOES NOT KNOW WE DID IT.
+    //
+    // -- WHY THE OBVIOUS VERSION CUT THE GAME OFF ---------------------------
+    //
+    // Falcor owns this window through GLFW; GLFW keeps its own `decorated`
+    // flag and builds a style from THAT rather than asking the window
+    // (win32_window.c, getWindowStyle). Clearing WS_CAPTION behind its back
+    // leaves the two disagreeing, and every resize runs through the
+    // disagreement:
+    //
+    //     WM_SIZE -> GLFW size callback -> Falcor Window::resize(w, h)
+    //             -> glfwSetWindowSize(w, h)
+    //             -> AdjustWindowRectEx(w, h, THE STYLE GLFW THINKS WE HAVE)
+    //             -> a window inflated by a caption and a border that are not
+    //                there any more
+    //             -> SetWindowPos -> another WM_SIZE -> round again
+    //
+    // MEASURED on this desktop (7680x2160 at 168 dpi), with a real window
+    // carrying exactly GLFW's style -- see fstest.py:
+    //
+    //     after the toggle           client 7680x2160   fits
+    //                                GLFW would resize to 7704x2224  RUNAWAY 24x64
+    //     one correction later       client 7704x2224   CROPPED
+    //                                GLFW would resize to 7728x2288  RUNAWAY 24x64
+    //
+    // The client area ends up BIGGER than the screen, so the game is drawn at
+    // that size and the screen shows a crop of it -- "cut off... zoomed in too
+    // far" -- growing again every time anything resizes.
+    //
+    // -- AND WHY LEAVING THE FRAME ON DOES NOT FIX IT -----------------------
+    //
+    // The tidy alternative is to keep every style bit and oversize the window
+    // so its CLIENT lands on the monitor with the chrome hanging off the
+    // edges. GLFW's sum is then right and the loop is stable -- and the window
+    // still comes up short, because a sizable window may not exceed
+    // SM_CXMAXTRACK/SM_CYMAXTRACK, which is the virtual screen plus a border.
+    // Measured, same run: max track 7708x2188 against the 7704x2224 needed, so
+    // Windows clamped it and the client came out 7680x2124, 36 rows short of
+    // the bottom of the screen. A decorated window can never have a
+    // full-screen client area. The frame has to go.
+    //
+    // -- SO THE CORRECTION IS NEUTRALISED BEFORE IT HAPPENS -----------------
+    //
+    // WM_WINDOWPOSCHANGING arrives BEFORE a move is carried out and its
+    // WINDOWPOS is writable. While fullscreen, this rewrites every proposed
+    // rect back to the monitor -- so GLFW's SetWindowPos becomes a no-op, no
+    // WM_SIZE comes of it, and there is no second round to correct. It is not
+    // a fight with GLFW: GLFW never gets as far as being wrong.
+    //
+    // GOING THROUGH GLFW PROPERLY IS NOT AVAILABLE. glfwSetWindowAttrib with
+    // GLFW_DECORATED is the supported way to do this; it needs the GLFWwindow*,
+    // which Falcor keeps private, and GLFW is linked PRIVATE into Falcor.dll
+    // (checked -- the dll exports no glfw symbol at all), so our own copy would
+    // be a second GLFW with its own state and no knowledge of this window.
+    //
+    // ONE WINDOW, so the hook's state is a function-local singleton rather than
+    // anything threaded through the class: a WNDPROC has no `this`, and this
+    // engine has exactly one window for its whole life.
+    struct FsHook {
+        WNDPROC prev = nullptr;   // GLFW's own, chained to for everything else
+        RECT rect{};              // the monitor being covered
+        bool on = false;
+    };
+    static FsHook &fsHook() {
+        static FsHook h;
+        return h;
+    }
+
+    static LRESULT CALLBACK fsWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+        FsHook &k = fsHook();
+        // NOT WHILE MINIMISED. --background lives its whole life iconic and
+        // alt-tab does the same by hand; forcing the rect there would leave a
+        // window that refuses to minimise.
+        if (k.on && msg == WM_WINDOWPOSCHANGING && !::IsIconic(h)) {
+            WINDOWPOS *p = (WINDOWPOS *)lp;
+            // A pure z-order message moves and sizes nothing, so it has nothing
+            // to correct.
+            if (!((p->flags & SWP_NOSIZE) && (p->flags & SWP_NOMOVE))) {
+                p->x = k.rect.left;
+                p->y = k.rect.top;
+                p->cx = k.rect.right - k.rect.left;
+                p->cy = k.rect.bottom - k.rect.top;
+                p->flags &= ~(SWP_NOSIZE | SWP_NOMOVE);
+            }
+        }
+        return ::CallWindowProcW(k.prev, h, msg, wp, lp);
+    }
+
+    // THE MONITOR THE WINDOW IS ON, not the primary one -- dragging v2 to a
+    // second screen and going fullscreen there is the whole reason anybody has
+    // two of them.
+    //
+    // WHAT IT WAS IS REMEMBERED HERE, not in the file. The file is a promise
+    // about where the window lives between sessions and fullscreen is not part
+    // of that promise -- see Options::fullscreen, which is deliberately not
+    // persisted, and saveWindowPlacement, which declines to write while this is
+    // on.
+    void applyFullscreen(bool on) {
+        if (!getWindow()) return;
+        HWND hwnd = (HWND)getWindow()->getApiHandle();
+        if (!hwnd) return;
+        if (on == fsOn_) return;
+        FsHook &k = fsHook();
+
+        if (on) {
+            // WHAT TO COME BACK TO, and the style with it.
+            if (!::GetWindowRect(hwnd, &fsWas_)) return;
+            fsStyle_ = ::GetWindowLongPtrW(hwnd, GWL_STYLE);
+
+            HMONITOR mon = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi{};
+            mi.cbSize = sizeof(mi);
+            if (!mon || !::GetMonitorInfoW(mon, &mi)) return;
+
+            // HOOKED ONCE AND LEFT HOOKED. It is a pass-through whenever `on`
+            // is false, and swapping a window procedure back and forth is the
+            // one part of this that could race a message already in flight.
+            if (!k.prev)
+                k.prev = (WNDPROC)::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&fsWndProc);
+            if (!k.prev) return;
+
+            // rcMonitor IS THE WHOLE SCREEN; rcWork is the screen minus the
+            // taskbar, and the ask says whole screen.
+            k.rect = mi.rcMonitor;
+            // ARMED BEFORE THE MOVE, so the hook rewrites our own SetWindowPos
+            // as well -- to the same rectangle, which costs nothing and leaves
+            // one place that decides where a fullscreen window goes.
+            k.on = true;
+            // WS_POPUP, AND WS_VISIBLE KEPT. Clearing WS_VISIBLE would hide the
+            // window; the caption, the border and the resize grip all go, which
+            // is what lets the client area reach the glass.
+            ::SetWindowLongPtrW(hwnd, GWL_STYLE,
+                                (fsStyle_ & ~(WS_CAPTION | WS_THICKFRAME)) | WS_POPUP);
+            // SWP_FRAMECHANGED, or the style change is not applied until
+            // something else moves the window -- which, since this is the thing
+            // moving it, is never.
+            ::SetWindowPos(hwnd, nullptr, k.rect.left, k.rect.top, k.rect.right - k.rect.left,
+                           k.rect.bottom - k.rect.top,
+                           SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            fsOn_ = true;
+        } else {
+            // DISARMED FIRST, or the hook rewrites the restore straight back to
+            // the monitor and nothing happens.
+            k.on = false;
+            ::SetWindowLongPtrW(hwnd, GWL_STYLE, fsStyle_);
+            ::SetWindowPos(hwnd, nullptr, fsWas_.left, fsWas_.top, fsWas_.right - fsWas_.left,
+                           fsWas_.bottom - fsWas_.top,
+                           SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            fsOn_ = false;
+        }
+    }
+
+    bool fsOn_ = false;
+    RECT fsWas_{};
+    LONG_PTR fsStyle_ = 0;
+
     void saveWindowPlacement() {
         const std::string path = windowStateFile();
         if (path.empty()) return;
@@ -150,7 +315,11 @@
         // one to come back to -- --background runs minimised for its whole
         // life, and saving that would move the window to the corner of the
         // world on the next ordinary launch.
-        if (::IsIconic(hwnd) || ::IsZoomed(hwnd)) return;
+        // ...AND NEITHER IS A FULLSCREEN ONE. It is the whole monitor, which
+        // is not a window position to come back to -- and Options::fullscreen
+        // is not persisted, so the next launch would open windowed at the size
+        // of the screen with no frame to grab. Same rule, one more case.
+        if (::IsIconic(hwnd) || ::IsZoomed(hwnd) || fsOn_) return;
         RECT fr{};
         if (!visibleFrame(hwnd, &fr)) return;
         if (FILE *f = std::fopen(path.c_str(), "wb")) {
@@ -672,8 +841,9 @@
     // Negative x means "never opened", which is the only state that centres.
     ImVec2 menuPos_ = ImVec2(-1.0f, -1.0f);
     bool captureBeforeMenu_ = false;
-    bool shotRequested_ = false;
-    int shotIndex_ = 0;
+    // NO shotRequested_/shotIndex_ ANY MORE -- the in-game screenshot was
+    // removed (user 2026-09-22: "no screenshots"). shotFrames_ stays: it is
+    // --shot's and --profile's frame counter, which is a different thing.
     int shotFrames_ = 0;
 
     // -- the recorder -----------------------------------------------------

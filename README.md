@@ -4,8 +4,9 @@ A voxel world path traced in real time. No rasteriser and no textures — every 
 casts rays through a grid of 10 cm voxels on the GPU, and what you see is where the
 light actually went.
 
-**One file: `voxelbit.exe`.** Double-click it. It unpacks itself the first time and
-starts immediately after that. No installer, no admin rights, nothing to install first.
+**One file: `voxelbit.exe`.** Download it and run it. It is an installer — it asks
+where to put the game, puts it there, and adds a Start menu entry and an uninstaller.
+No admin rights, and nothing to install first.
 
 The wood stands on real ground — a Rocky Mountain National Park elevation model, with
 pine, birch, oak, cherry and desert bands laid over it. Trees fall where you cut them
@@ -17,10 +18,14 @@ everything that comes loose from the world obeys the same rule: nothing floats.
 **An NVIDIA RTX card.** Ray tracing, DLSS Ray Reconstruction, Frame Generation and the
 neural radiance cache all go through the NVIDIA stack, so this is not a portable
 renderer and was never meant to be one. An RTX 4070 is the lowest that has been
-measured. Windows 10 or 11, 16 GB of RAM, about 3 GB of disk after unpacking.
+measured. Windows 10 or 11, 16 GB of RAM, about 3 GB of disk once installed.
 
-`voxelbit.exe` unpacks into `%LOCALAPPDATA%\voxelbit` and runs from there. Screenshots
-and recordings land in that folder; delete it to remove the game.
+It installs to `%LOCALAPPDATA%\voxelbit` by default. Screenshots and recordings land in
+that folder, and there is an uninstaller in the Start menu and in Add/Remove Programs.
+
+**Windows will call it an unrecognized app the first time.** The installer is unsigned,
+so SmartScreen shows its click-through warning — *More info* then *Run anyway*. A code
+signing certificate is the only thing that removes it.
 
 ## What is in it
 
@@ -47,6 +52,11 @@ tools. **I** for settings, **O** for the arcade level, **R** to record, **ESC** 
 pause. **/locate** takes you to anything in the world — a species, a summit, a lake by
 its real name.
 
+The settings menu is four cards: **controls** (sensitivity and the key list), **visuals**
+(fullscreen, the compass, the crosshair, the reconstruction mode), **general**, and
+**sound** (master, ambient and effects). Fullscreen covers whichever monitor the window
+is on; the game starts windowed every time, whatever you left it as.
+
 ## Building it
 
 ```
@@ -59,16 +69,36 @@ The engine lives in [`engine/`](engine/). It needs the NVIDIA SDKs it links — 
 says which, and every one of them degrades to "unavailable" at startup rather than
 failing to build, so a checkout with none of them still compiles and runs.
 
-### Building the shipped executable
+### Building the shipped installer
 
 ```
-launcher\build.bat         # the self-extracting launcher (one .cpp, no dependencies)
-python tools\package.py    # stages the game and writes dist\voxelbit.exe
+python tools\package.py --installer   # stages the game and writes voxelbit.exe
+python tools\package.py --check       # is the shipped exe older than the engine?
 ```
 
-`package.py` copies the engine and the content into `dist/stage`, compresses it with the
-Windows Compression API and appends it to the launcher — so no third-party packer is
-needed to build it and none is needed to run it. It ships ~1.2 GB as a 755 MB exe.
+`package.py` lays the engine and the content out under `dist/stage`, then hands that tree
+to [Inno Setup](https://jrsoftware.org/isinfo.php) — `tools/voxelbit.iss` — which
+compresses it with LZMA2 and writes `voxelbit.exe` into [`website/`](website/), which is
+where the download link points. About 1.2 GB of game as a 547 MB installer. `dist/` is
+swept afterwards; `--stage-only` keeps it.
+
+Inno Setup 6 has to be installed — `package.py` finds `ISCC.exe` in the usual places
+and on `PATH`, and says so if it cannot.
+
+**It is an Inno installer because the old one was being deleted as malware.** The
+original `voxelbit.exe` was a launcher stub with the whole game appended after its PE
+image and unpacked at runtime, which is structurally what a dropper does — Defender's
+ML classifier scored it `Trojan:Win32/Sabsik.FL.A!ml` and *silently deleted it on
+download*. The game's own binaries were never the problem: the same files in a plain zip
+pass a clean scan. It was the hand-rolled self-extractor around them. A recognised
+package format gives a classifier far less to object to.
+
+That is not a substitute for code signing — the installer is unsigned, so SmartScreen
+still shows "unrecognized app" on first run. A click-through warning instead of a silent
+deletion.
+
+The self-extracting path still builds (`launcher\build.bat`, then `package.py` with no
+flag, or `--zip` for a plain archive) and is kept for comparison. It is not what ships.
 
 The layout under `dist/stage/data` is the same shape as this repository on purpose:
 every asset path in the engine goes through `asset()` in
@@ -84,9 +114,10 @@ engine/        the engine: C++ and Slang, on NVIDIA Falcor
 game/          the art -- .vox models, sound, the pixel font
 source/        the authoring tree the art is built from
 tools/         the voxelisers and bakers that produced it
-launcher/      the self-extracting launcher
+launcher/      the old self-extracting launcher -- superseded, see above
 docs/          architecture notes
-voxelbit.exe   the shipped game, built by tools/package.py
+website/       the download page, and the shipped installer it serves --
+               built into it by tools/package.py --installer
 ```
 
 ## History
@@ -106,6 +137,8 @@ retired and it became the only one.
 
 Yes, please — see [contributing.md](contributing.md). Fork it, branch, open a pull
 request. You do not need to be invited.
+
+There is a Discord: **https://discord.gg/AtW5fWZtSG**.
 
 ## Licence
 

@@ -607,6 +607,10 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         // BEFORE THE CHAIN, like every flag added since the C1061 -- see the
         // note above. Surveys the /locate life table with no window at all.
         if (a == "--locate-test") { o->locateTest = true; continue; }
+        if (a == "--hop-test") {
+            o->hopTest = (i + 1 < argc) ? std::atoi(argv[++i]) : 15;
+            continue;
+        }
         // ...AND THE SAME, for the check that no animal is inside anything.
         if (a == "--clip-test") { o->clipTest = true; continue; }
         // What each of a model's authored colours became -- see addFlyerModel.
@@ -641,6 +645,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         // HERE, NOT IN THE else-if CHAIN BELOW -- that chain is at MSVC's
         // block nesting limit and one more arm is a C1061, not a warning.
         if (a == "--hitch") { o->hitch = true; continue; }
+        if (a == "--fell-live") { o->fellLive = true; continue; }
         if (a == "--lbug-test") { o->lbugTest = true; continue; }
         if (a == "--oak") { o->oakOnly = true; continue; }
         if (a == "--cherry") { o->cherryOnly = true; continue; }
@@ -1001,7 +1006,8 @@ int main(int argc, char **argv) {
     //    disjunction, so a flag that does not run the game is headless only if
     //    somebody remembered to say so, and the cost of forgetting lands on
     //    whoever is at the keyboard.
-    c.headless = o.spawnPick || o.outGiven || o.fellTest || o.floatTest || o.digTest || o.locateTest ||
+    c.headless = o.spawnPick || o.outGiven || o.fellTest || o.floatTest || o.digTest ||
+                 o.hopTest > 0 || o.locateTest ||
                  o.clipTest || o.wheatTest || o.hoeTest || o.foodTest || o.floatAudit || o.floatSweep || o.ripTest || o.poleTest || o.levelResetTest ||
                  o.shaftTest || o.killTest || o.soilTest || o.duckTest || o.lbugTest ||
                  o.recTest;
@@ -1035,7 +1041,13 @@ int main(int argc, char **argv) {
     v2::loadTraceOn = o.loadTrace;
     v2::loadMark("args parsed  (this gap is the C runtime, Streamline and NGX)");
     try {
-        ForestApp app(c, o);
+        // ON THE HEAP, NOT THE STACK. The app holds the World by value, and
+        // the World holds its debris table inline -- at 2048 slots that pushed
+        // the object past the main thread's 1 MB stack and the exe died before
+        // its first line of output with 0xC00000FD. The heap has no such
+        // ceiling, so the table can be sized for what it holds.
+        const auto appHeap = std::make_unique<ForestApp>(c, o);
+        ForestApp &app = *appHeap;
         v2::loadMark("Falcor device + window");
         // Remembered for the crash path, which runs when the device is
         // already dead and cannot go looking for it.
