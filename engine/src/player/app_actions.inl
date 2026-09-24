@@ -269,7 +269,11 @@
         // SWINGING IS HOW AN ACTIVE PLAYER GETS HUNGRY -- v1's vitOnAttack, on
         // every landed blow. See player/vitals.h.
         vitals_.onAttack();
-        if (!b.killed) return true;
+        if (!b.killed) {
+            toolSfx_.lifeHit();
+            return true;
+        }
+        toolSfx_.lifeKilled();
         v2::crumbAction("killing the %s (arrow) at (%.1f, %.1f, %.1f)", kind.name, p.x,
                         p.y, p.z);
         lastPieces_ = world_.shatterFlyer(physics_, slot, p, simMs_);
@@ -1170,6 +1174,7 @@
                 std::printf("v2: the swarm is up -- %d bees\n", woke);
         }
         if (!b.killed) {
+            toolSfx_.lifeHit();
             std::printf("v2: hit the %s -- %d of %d\n", kind.name, b.hits, b.needed);
             std::fflush(stdout);
             return true;
@@ -1185,6 +1190,7 @@
         // NAMED BEFORE THE SHATTER, NOT AFTER IT. The corpse is what builds
         // geometry and touches the solver, so a crash in the shatter itself
         // must already be carrying the name of the animal that caused it.
+        toolSfx_.lifeKilled();
         v2::crumbAction("killing the %s (melee) at (%.1f, %.1f, %.1f)", kind.name, pos_.x,
                         pos_.y, pos_.z);
         const int pieces = world_.shatterFlyer(physics_, slot, pos_, simMs_);
@@ -1219,6 +1225,10 @@
         if (!lastSwing_.hit || lastSwing_.kind != Swing::Ground) return false;
         const size_t n = world_.till(lastSwing_.point, kTillRadiusM, simMs_ * 0.001);
         if (!n) return false;
+        // THE SHOVEL'S DIRT TAKE (user 2026-09-24: "also when the hoe tills
+        // dirt/grass as well") -- only once a column has turned, so a hoe on
+        // ground it has already been over stays silent.
+        toolSfx_.soil();
         if (opt_.swingLog) {
             std::printf("v2: [f%d] tilled %zu columns at (%.1f, %.1f, %.1f), %zu still turned\n",
                         frameTick_, n, lastSwing_.point.x, lastSwing_.point.y,
@@ -1475,6 +1485,9 @@
         // made the sheaf green and made it shake.
         if (!world_.mow(Vec3(sx, bh.point.y, sz), rad, &cut, &cutN, &cutAt, &isWheat))
             return false;
+        // THE SHOVEL'S DIRT TAKE, AFTER mow AND NOT BEFORE: a swing at a
+        // tuft that is already cut returns above and stays silent.
+        toolSfx_.soil();
         if (cutN > 0) {
             const Vec3 kNoVel{0.0f, 0.0f, 0.0f};
             // -- IT COMES APART THE WAY A FELLED TREE DOES -----------------

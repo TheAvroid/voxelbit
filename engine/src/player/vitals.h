@@ -195,7 +195,7 @@ struct Vitals {
         // NO DRAIN WITH HUNGER OFF -- see the flag. Refused at the door rather
         // than by holding the bar full in tick(), or the gold burst still fires
         // and the HUD flashes a point being spent that was not.
-        if (!hunger) return;
+        if (!hunger || frozen) return;
         if (!(e > 0.0f) || hp <= 0) return;
         exh = minf(exh + e, kExhStep * 4.0f);
         for (int guard = 0; exh >= kExhStep && guard < 8; ++guard) {
@@ -227,8 +227,8 @@ struct Vitals {
         // damage is APPLIED covers all three without any of them knowing.
         //
         // `flying` is set by tick() every frame, so it cannot go stale while
-        // the mode is held.
-        if (flying) return;
+        // the mode is held. `frozen` is cinema's -- see its note.
+        if (flying || frozen) return;
         const int points = maxi(1, (amount + kVitDmgPerPoint - 1) / kVitDmgPerPoint);
         hp = maxi(0, hp - points);
         if (!bypass) exhaust(kExhHurt);
@@ -278,6 +278,13 @@ struct Vitals {
     // coming back to the wood on an empty bar you never had a chance to fill
     // would be the map taxing the world.
     bool hunger = true;
+    // -- CINEMA: NOTHING CHANGES (user 2026-09-23: "dont let the player die in
+    // cinema mode. dont let the player take damage or hunger") --
+    // Not fly mode's rule, which REFILLS both bars every frame -- in cinema that
+    // would make [C] a free heal. Frozen is where they stood: no blow lands, no
+    // step or second costs food, no breath runs out, and both bars come back
+    // out of cinema exactly as they went in. Set every frame by the app.
+    bool frozen = false;
 
     // Seconds of air left -- see kBreathSecs. Public so the HUD can read it.
     float breath = kBreathSecs;
@@ -285,6 +292,19 @@ struct Vitals {
 
     void tick(float dt, const Vec3 &p, bool onGround, bool fly, bool swimming, bool sprintJump,
               bool underwater = false) {
+        if (frozen) {
+            // Breath held full and the drowning clock stopped; the red flash
+            // still fades; and the position is followed, so the step out of
+            // cinema is not charged as one long walk.
+            breath = minf(kBreathSecs, breath + dt * kBreathRefillMul);
+            drownT = 0.0f;
+            if (hurtT > 0.0f) hurtT = maxf(0.0f, hurtT - dt / kVitHurtFall);
+            lx_ = p.x;
+            lz_ = p.z;
+            wasAir_ = !onGround;
+            flying = fly;
+            return;
+        }
         // -- THE BREATH, WHICH IS ITS OWN CLOCK -------------------------
         //
         // FLYING IS EXEMPT, like every other hazard here: fly mode is how the

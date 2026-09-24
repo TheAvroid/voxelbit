@@ -17,6 +17,12 @@
         if (quitting_) return true;
 
         if (e.key == Input::Key::X) return true;  // held modifier for the wheel
+        // CINEMA -- see ui/app_cinema.inl. Ctrl+C is the level's bulb export.
+        if (e.key == Input::Key::C && !e.hasModifier(Input::Modifier::Ctrl) && !consoleOpen_ &&
+            !menuOpen_) {
+            toggleCinema();
+            return true;
+        }
         if (e.key == Input::Key::F) {
             player_.fly = !player_.fly;
             if (!player_.fly) player_.vy = 0.0f;  // do not inherit a climb as a fall
@@ -324,8 +330,10 @@
         // that flies is the thing you were looking at, which is the JS engine's
         // own rule for this ("launch from the held item's true world spot ...
         // it FLIES out of the hand").
+        // NOT IN CINEMA: the tool is only hidden there, still in the hand, and
+        // Q would throw away something you cannot see go.
         if (e.key == Input::Key::Q && held_.ready() && held_.shown && held_.carrying() &&
-            looking_ && !menuOpen_) {
+            looking_ && !menuOpen_ && !cinema_) {
             const Vec3 dir = forward();
             const Vec3 from = pos_ + camRight() * lastHeld_.cam.x + camUp() * lastHeld_.cam.y +
                               dir * lastHeld_.cam.z;
@@ -395,16 +403,10 @@
             }
             return true;
         }
-        if (e.key == Input::Key::H && held_.ready()) {
-            // An empty hand, and back again. The JS engine reaches the same
-            // state by scrolling to an empty hotbar slot; there is no hotbar
-            // here yet, so it is a key -- and it is worth having whatever
-            // happens next, because comparing a shot with the tool and without
-            // it is the first thing anyone does after adding one.
-            held_.shown = !held_.shown;
-            std::printf("v2: hand %s\n", held_.shown ? held_.name() : "empty");
-            std::fflush(stdout);
-        }
+        // [H] IS NOT BOUND (user 2026-09-23: "remove the h keybind"). It put
+        // the hand away and back. The same toggle is still the "in hand" row
+        // in the settings menu, and the wheel's "empty hand" slot reaches the
+        // same state, so nothing it did has become unreachable.
         // -- [R] RELOADS THE GUN, AND R IS ALREADY THE RECORDER --------------
         //
         // (user 2026-09-18: "reload with r.")
@@ -561,6 +563,11 @@
             // still belongs to the slider in the settings menu. This is not a
             // return to the zoom: it is the hotbar, and with nothing in the
             // hand it still does nothing.
+            // CINEMA: the wheel is the follow camera's distance -- see cinemaZoom.
+            if (cinema_) {
+                cinemaZoom(e.wheelDelta.y);
+                return true;
+            }
             if (held_.ready() && !menuOpen_) {
                 held_.cycle(e.wheelDelta.y > 0.0f ? 1 : -1);
                 std::printf("v2: hand %s\n", held_.name());
@@ -638,6 +645,20 @@
         // with a loose cursor the crosshair is not where the pointer is, so a
         // click that had not taken the mouse yet would pick whatever happened
         // to be in the middle of the screen.
+        // -- CINEMA: left click follows a creature, right click lets go --------
+        // See ui/app_cinema.inl. Every other use of the buttons -- the swing,
+        // the bow, the gun, the bulb -- is off while it is on (the polled
+        // block in app_capture.inl asks cinema_ too).
+        if (cinema_ && !pauseOpen_ && e.type == MouseEvent::Type::ButtonDown) {
+            if (!looking_) {
+                setCapture(true);
+                swingArmed_ = false;
+                return true;
+            }
+            if (e.button == Input::MouseButton::Left) cinemaPick();
+            if (e.button == Input::MouseButton::Right) cinemaRelease();
+            return true;
+        }
         if (world_.staged() && looking_ && e.button == Input::MouseButton::Left) {
             if (e.type == MouseEvent::Type::ButtonDown) {
                 if (edit_.click(pos_, Camera::direction(yaw_, pitch_))) {

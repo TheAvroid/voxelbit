@@ -102,13 +102,29 @@ inline constexpr float kDropBobM = 0.13f;   // ...and its 1.3
 inline constexpr float kDropFloorM = 0.3f;  // three 10 cm voxels
 inline constexpr float kDropBobHz = 0.32f;  // sin(t * 0.002 ms) = 0.32 Hz
 
-// AUTO_PICK_R 16, in metres. Walk this close with a free hand and it comes back
-// to you -- the same rule that engine has, and the reason a drop is not a way
-// to lose your axe permanently.
-inline constexpr float kPickupM = 1.6f;
+// AUTO_PICK_R 16, in metres -- DOUBLED. Walk this close with a free hand and it
+// comes back to you -- the same rule that engine has, and the reason a drop is
+// not a way to lose your axe permanently.
+//
+// (user 2026-09-23: "double the range of the players absorption of chunks or
+//  any levitating object. basically anything that can be absorbed by the
+//  player, double the absorption distance.") 1.6 -> 3.2, with kArrowAbsorbM and
+// kFellLootReachM doubled beside it in world/world.h.
+inline constexpr float kPickupM = 3.2f;
 // ...but not the instant it leaves your hand. A throw that could be walked into
 // on the frame it was thrown would be a Q that does nothing.
 inline constexpr float kPickupArmSec = 0.6f;
+// -- ...AND A THROW HAS TO BE WALKED AWAY FROM BEFORE IT COMES BACK ----------
+//
+// THE DOUBLING BROKE THE ARM ABOVE, and by arithmetic: a Q toss (kTossSpeed
+// 5.5 along the view, kTossUp 1.8 over it, kTossG -17, from hand height) lands
+// about 2.7 m out, which was well outside 1.6 m and is well INSIDE 3.2. Armed
+// after 0.6 s with you still standing there, every dropped tool would fly
+// straight back -- the Q-that-does-nothing the arm exists to prevent, only
+// 0.6 s late. So an item YOU threw (Item::leaveFirst, set by toss and cleared
+// by spill) arms only once you have been out of reach of it; walk back and it
+// comes to you, stand still and it stays down. A steak, a seed or a fruit that
+// the world spills beside you is not a throw and is collected as before.
 
 // -- AND IT FLIES TO YOU RATHER THAN VANISHING (user 2026-09-07) ------------
 //
@@ -179,6 +195,7 @@ class Drops {
         // How far it turned since the last frame -- what the motion vector
         // needs, which is not the same as how fast it is turning.
         float dspin = 0.0f;
+        bool leaveFirst = false;   // a throw of yours -- see kPickupM
     };
 
     // -----------------------------------------------------------------------
@@ -218,6 +235,7 @@ class Drops {
         d.spin = atan2f(dir.x, dir.z);  // it leaves facing the way you were
         d.phase = float(slot) * 0.79f;  // an arbitrary spread, not a random one
         d.flying = true;
+        d.leaveFirst = true;            // spill clears it: see kPickupM
         return slot;
     }
 
@@ -247,6 +265,7 @@ class Drops {
         d.vel = out * kSpillSpeed;
         d.vel.y = kSpillUp;
         d.floorY = floorY;   // toss() reset it; set it after, not before
+        d.leaveFirst = false;   // the world spilled it; nobody threw it
     }
 
     // -----------------------------------------------------------------------
@@ -560,7 +579,9 @@ class Drops {
                 // steak floating on it -- the same bug, one decimetre smaller.
                 const float loY = minf(player.y, eye.y), hiY = maxf(player.y, eye.y);
                 const Vec3 o = d.pos - Vec3(player.x, minf(hiY, maxf(loY, d.pos.y)), player.z);
-                if (lengthSq(o) < kPickupM * kPickupM) {
+                const bool inReach = lengthSq(o) < kPickupM * kPickupM;
+                if (d.leaveFirst && !inReach) d.leaveFirst = false;   // you walked away: armed
+                if (inReach && !d.leaveFirst) {
                     d.taken = true;
                     d.fly = 0.0f;
                     d.from = d.pos;
@@ -647,6 +668,12 @@ class Drops {
         const Item &d = items_[size_t(i)];
         if (!d.live) return false;
         *outM = d.pos.y - 0.5f * float(d.sy) * VOXEL_M - d.groundY;
+        return true;
+    }
+    // ...and where it is, for the same report -- see --drop-frame.
+    bool position(int i, Vec3 *out) const {
+        if (i < 0 || i >= kDropSlots || !items_[size_t(i)].live) return false;
+        *out = items_[size_t(i)].pos;
         return true;
     }
 

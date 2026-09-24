@@ -4035,13 +4035,12 @@ class LakeLife {
         // when they stop: 0.15 m of motion vector on a bird that had not moved.
         // See World::place.
         const float anchor[3] = {f.x, f.y, f.z};
-        // ...AND THE TURN, which the translation cannot carry -- see
-        // Fish::dth. The pivot is the fish's own point, which is what it turns
-        // about; a spin with no angle is dropped by setFlyerInstance, so a fish
-        // swimming straight publishes none.
-        const float spin[4] = {f.x, f.y, f.z, f.dth};
+        // ...AND THE TURN, which setFlyerInstance derives from `m` about this
+        // anchor -- the leap's pitch included, which Fish::dth (a yaw) could
+        // not carry, and which went stale on a fish skipped off the water
+        // field (user 2026-09-24, "creatures are ghosting").
         world.setFlyerInstance(slot, fr.model, m, f.x - ox, f.y - oy, f.z - oz, nullptr, true,
-                               spin, anchor);
+                               nullptr, anchor);
     }
 
     void putPad(World &world, int slot, const Pad &p) const {

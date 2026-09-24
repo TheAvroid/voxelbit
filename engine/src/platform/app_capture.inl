@@ -205,6 +205,10 @@
             edit_.dragBy(rx, ry, yaw_, pitch_);
             return false;   // the view did not move, so nothing to re-accumulate
         }
+        // THE CINEMA RIG HAS THE CAMERA -- see ui/app_cinema.inl. Turning the
+        // head you are not looking through would only change where the camera
+        // comes back to.
+        if (cinemaHoldsPlayer()) return false;
 
         // Wrapped rather than left to grow: a long session spinning one way
         // otherwise walks yaw into the thousands, where a float's steps get
@@ -342,7 +346,9 @@
         // A scripted walk drives the player exactly as W would, so the motion
         // vectors, the head bob and the collision are all the real ones.
         if (opt_.shotWalk) move += flat;
-        if (!menuOpen_) {
+        // ...and nothing while the cinema rig has the camera: a body you cannot
+        // see, walking off somewhere the camera then has to fly back to.
+        if (!menuOpen_ && !cinemaHoldsPlayer()) {
             if (in.isKeyDown(Input::Key::W)) move += flat;
             if (in.isKeyDown(Input::Key::S)) move -= flat;
             if (in.isKeyDown(Input::Key::A)) move -= r;
@@ -386,6 +392,7 @@
         // the world's own state rather than latched at the door, so stepping
         // out of the map puts it back without anybody having to remember.
         vitals_.hunger = !world_.levelOn();
+        vitals_.frozen = cinema_;   // no damage, hunger or death in cinema -- see Vitals::frozen
         vitals_.tick(dt, player_.pos, player_.onGround, player_.fly, player_.swimming(),
                      sprint, player_.submerged());
         // -- ...AND THE SPINES, WHICH ARE v1's -----------------------------
@@ -464,7 +471,7 @@
         // the blow still lands 250 ms into whichever swing is running -- see
         // HeldItem::update.
         {
-            const bool lmb = opt_.swingHold || in.isMouseButtonDown(Input::MouseButton::Left);
+            const bool lmb = opt_.swingHold || (!cinema_ && in.isMouseButtonDown(Input::MouseButton::Left));
             if (!lmb) swingArmed_ = true;
             // -- A GUN DOES NOT SWING -------------------------------------
             //
@@ -500,7 +507,7 @@
                                     held_.selected() == bulbTool_ && held_.carrying() &&
                                     world_.levelOn();
             if (bulbInHand && (looking_ || opt_.swingHold) && !menuOpen_) {
-                const bool rmb = in.isMouseButtonDown(Input::MouseButton::Right);
+                const bool rmb = (!cinema_ && in.isMouseButtonDown(Input::MouseButton::Right));
                 if (!lmb && !rmb) bulbArmed_ = true;
                 if (bulbArmed_ && (lmb || rmb)) {
                     bulbArmed_ = false;
@@ -560,7 +567,7 @@
             // what fires it, so a still of an arrow leaving is reproducible.
             const bool scripted =
                 opt_.drawHold && (opt_.shotLoose < 0 || shotFrames_ < opt_.shotLoose);
-            const bool drawing = scripted || (in.isMouseButtonDown(Input::MouseButton::Right) &&
+            const bool drawing = scripted || ((!cinema_ && in.isMouseButtonDown(Input::MouseButton::Right)) &&
                                               looking_ && !menuOpen_ && !holdLook_);
             // -- WHAT THE RIGHT BUTTON IS DOING, ON THE FRAME IT GOES DOWN ---
             //
@@ -574,7 +581,7 @@
             // has, and the palette table the hand is resolving against, so one
             // press settles which of those two is wrong. V2_HELD_PROBE=1.
             {
-                const bool rmbNow = in.isMouseButtonDown(Input::MouseButton::Right);
+                const bool rmbNow = (!cinema_ && in.isMouseButtonDown(Input::MouseButton::Right));
                 if (rmbNow && !rmbWas_ && held_.ready() && std::getenv("V2_HELD_PROBE")) {
                     const int selT = held_.selected();
                     const Tool &ht = held_.tool(selT);
@@ -869,7 +876,22 @@
                 // the wrong thing about their tool" -- and it is a felled log,
                 // which is nearly always lying ON something, that made it
                 // happen every time instead of occasionally.
-                const Blow heard = toolSfx_.blow(held_.takes(), lastSwing_);
+                // -- ...EXCEPT THE HOE'S, WHICH WAITS FOR THE TILL ---------
+                //
+                // (user 2026-09-24: "the hoe is still playing the block.mp4
+                //  sometimes".)
+                //
+                // blow() judges ONE voxel -- the one the ray touched -- and the
+                // till turns every tillable column within kTillRadiusM of it. A
+                // swing that landed on a stray un-tillable voxel (the ground
+                // ramp, a seed, a pebble) still turned the dirt around it, and
+                // knocked as it did. So the hoe is not asked here: breakWheat
+                // and tillGround below play the dirt take when they change
+                // something, and only a hoe blow that changed NOTHING is
+                // judged by blow() -- where the knock is the truth.
+                const bool hoeBlow = held_.takes() == Takes::Earth;
+                const Swing hoeSwing = lastSwing_;
+                Blow heard = hoeBlow ? Blow::Silent : toolSfx_.blow(held_.takes(), lastSwing_);
                 // -- ...AND FOUR SPARKS OFF IT ---------------------------
                 //
                 // (user 2026-09-14: "everytime a tool hits something, play 4
@@ -957,8 +979,12 @@
                 // now; see the mouse handler.
                 if (breakWheat()) {
                     lastSwing_ = Swing{};   // the blow is spent
+                    if (hoeBlow) heard = Blow::Soil;   // breakWheat played it
                 } else if (tillGround()) {
                     lastSwing_ = Swing{};
+                    heard = Blow::Soil;   // tillGround played it
+                } else if (hoeBlow) {
+                    heard = toolSfx_.blow(Takes::Earth, hoeSwing);   // see hoeBlow
                 }
                 if (lastSwing_.hit) {
                     const Takes t = held_.takes();
@@ -1154,7 +1180,6 @@
                             int hn = 0;
                             Vec3 hat{0.0f, 0.0f, 0.0f};
                             float hyaw = 0.0f;
-                            const Vec3 kStill{0.0f, 0.0f, 0.0f};
                             // AND THIS IS THE BODY THAT WAS FLYING. A model
                             // smaller than dropModelHangers' 39-voxel box has
                             // its whole severed half taken as hangers -- the
@@ -1165,12 +1190,17 @@
                             // small chips are collected: half a second on the
                             // ground and then a curve into the player's hands.
                             if (world_.takeHangers(&hv, &hn, &hat, &hyaw)) {
-                                const int hslot = world_.spawnDebris(
-                                    physics_, *hv, hn, hat, kStill, kStill, simMs_, hyaw, nullptr,
+                                // A PLANT IS BUILT THE WAY A TREE'S PIECE IS,
+                                // not as a chip -- see World::spawnCutPlant,
+                                // which is the whole of "it gets slingshot
+                                // everywhere" (user 2026-09-23).
+                                world_.spawnHangerBody(
+                                    physics_, *hv, hn, hat, hyaw,
                                     lastSwing_.soft ? uint8_t(kDebrisSoft)
                                     : isSoilMat(lastSwing_.material)
                                         ? uint8_t(kDebrisSoil)
-                                        : uint8_t(kDebrisStone));
+                                        : uint8_t(kDebrisStone),
+                                    lastSwing_.soft, simMs_);
                                 // ...AND A MUSHROOM THAT CAME OFF THE GROUND
                                 // STAYS ON IT. This is the body that was
                                 // flying: a model smaller than
@@ -1197,7 +1227,12 @@
                                 // ever does nick off, it lies on the ground
                                 // instead of being collected -- which is the
                                 // safe way round to be wrong.
-                                if (hslot >= 0 && lastSwing_.soft) world_.markScenery(hslot);
+                                //
+                                // (spawnHangerBody marks it.)
+                                //
+                                // THE CAP, NOT ITS CHUNKS. When it breaks on
+                                // its clock the pieces are loot, the same as a
+                                // felled tree's -- see PendingChunk in World.
                             }
                         }
                     }
@@ -1205,7 +1240,7 @@
 
                 if (opt_.swingLog) {
                     static const char *kWhat[] = {"air", "ground", "trunk", "rock", "loose"};
-                    static const char *kHeard[] = {"silent", "wood", "rock", "knock"};
+                    static const char *kHeard[] = {"silent", "wood", "rock", "knock", "soil"};
                     // The FRAME, so a --swing-log run can be replayed one frame
                     // at a time with --shot-frame and the terrain compared
                     // across the blow. Correlating them by eye does not work:

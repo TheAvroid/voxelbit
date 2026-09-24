@@ -771,11 +771,12 @@ class BirdFlock {
         // World::place, where the perched songbirds' version of this was
         // measured.
         const float anchor[3] = {b.x, b.y, b.z};
-        // ...AND THE TURN -- see Bird::dth. A flock wheels constantly, which is
-        // the case this channel exists for.
-        const float spin[4] = {b.x, b.y, b.z, b.dth};
-        world.setFlyerInstance(slot, st.model[size_t(fi)], m, b.x, b.y, b.z, nullptr, true, spin,
-                               anchor);
+        // ...AND THE TURN, WHICH IS NOT HANDED IN. A flock wheels AND banks AND
+        // pitches, and `spin` could only say the first: setFlyerInstance now
+        // derives all three from `m` (user 2026-09-24, "creatures are
+        // ghosting"). Bird::dth is no longer read here.
+        world.setFlyerInstance(slot, st.model[size_t(fi)], m, b.x, b.y, b.z, nullptr, true,
+                               nullptr, anchor);
     }
 
     bool ready_ = false;

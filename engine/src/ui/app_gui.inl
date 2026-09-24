@@ -652,6 +652,14 @@
         // time; see bakePx3 for why the frame is then given up.
         if (bakePx3(pGui, fbH)) return;
 
+        // CINEMA: the one word, and nothing else -- see ui/app_cinema.inl. The
+        // pause menu and the console still draw when opened: you cannot use a
+        // thing you cannot see.
+        if (cinema_ && !menuOpen_ && !consoleOpen_ && !pauseOpen_) {
+            drawCinemaLabel(pGui, fbW, fbH);
+            return;
+        }
+
         // NO TITLE BAR, NO MOVE, NO RESIZE GRIP on either panel. v2 drew its
         // own title and put the panel where it belonged; ImGui's chrome on top
         // of that is a second title over the first and a drag handle for a
@@ -809,7 +817,7 @@
                 if (held_.count() > 1)
                     hw.text(fmt("  %d of %d -- the wheel changes tools", held_.selected() + 1,
                                 held_.count()));
-                hw.checkbox("in hand  (H)", held_.shown);
+                hw.checkbox("in hand", held_.shown);   // no key any more -- see onKeyEvent
                 hw.separator();
                 // THE RANGES ARE IN WORLD VOXELS, like the pose itself. Thirty
                 // voxels is three metres, further than a hand reaches in any
@@ -2150,15 +2158,17 @@
             // renderer. --no-dlss still exists for a reference render, which is the
             // only context where the accumulating film is the right answer.
             //
-            // THREE MODES, NOT FIVE. Ultra performance and Performance are not
-            // offered: below Balanced, Ray Reconstruction is upscaling from so few
-            // pixels that a conifer canopy -- thin, high-frequency geometry with
-            // bright sky behind it -- comes back as mush that no amount of
-            // denoising recovers. The ENUM still has them and --dlss names them, so
-            // a benchmark keeps a capability the in-game menu does not offer; the
-            // same split --scale got.
+            // FOUR MODES (user 2026-09-23: "can you give me back the other
+            // settings in the dlaa mode", then "remove ultra performance from
+            // the list"). Performance is back; Ultra Performance stays off --
+            // it upscales from a ninth of the pixels, and a conifer canopy,
+            // thin geometry against bright sky, does not survive that. --dlss
+            // ultra-performance still reaches it, and if the live mode is one
+            // this list does not offer it is shown anyway (see below). Lowest
+            // to highest, so the list reads as the dial it is.
             if (dlss_.available() && opt_.dlss) {
                 Falcor::Gui::DropdownList modes = {
+                    {uint32_t(DlssQuality::Performance), "Performance"},
                     {uint32_t(DlssQuality::Balanced), "Balanced"},
                     {uint32_t(DlssQuality::Quality), "Quality"},
                     {uint32_t(DlssQuality::Dlaa), "DLAA (no upscale)"},

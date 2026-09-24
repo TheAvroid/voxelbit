@@ -2025,6 +2025,11 @@
             shutdown(0);
             return;
         }
+        if (opt_.chipHoldTest) {
+            runChipHoldTest();
+            shutdown(0);
+            return;
+        }
         if (opt_.levelResetTest) {
             runLevelResetTest();
             shutdown(0);

@@ -1121,10 +1121,13 @@ class Physics {
 #endif
     }
 
-    void removeStatic(int h) {
+    // `wakeTouching` is PhysX's wakeOnLostTouch: whether a body resting on
+    // this static is woken when it goes. False only for a like-for-like swap
+    // -- see World::applyThaws, which wakes what a change really reaches.
+    void removeStatic(int h, bool wakeTouching = true) {
 #if V2_HAS_PHYSX
         if (h < 0 || size_t(h) >= statics_.size() || !statics_[size_t(h)]) return;
-        scene_->removeActor(*statics_[size_t(h)]);
+        scene_->removeActor(*statics_[size_t(h)], wakeTouching);
         statics_[size_t(h)]->release();
         statics_[size_t(h)] = nullptr;
 #else

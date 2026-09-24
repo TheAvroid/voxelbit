@@ -788,9 +788,10 @@ class Bees {
         const float oz = m[6] * hx_ + m[7] * hy_ + m[8] * hz_;
         // THE ANIMAL, NOT ITS BOX -- see World::place.
         const float anchor[3] = {b.x, b.y, b.z};
-        const float spin[4] = {b.x, b.y, b.z, b.dth};   // see Bee::dth
+        // NO SPIN: the turn is in `m`, and setFlyerInstance derives it from
+        // there -- tilt included, which a yaw about the anchor could not say.
         world.setFlyerInstance(slot, model_[size_t(fi)], m, b.x - ox, b.y - oy, b.z - oz, nullptr,
-                               true, spin, anchor);
+                               true, nullptr, anchor);
     }
 
     std::vector<int> model_;

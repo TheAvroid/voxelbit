@@ -757,6 +757,7 @@
     }
 
     #include "ui/app_hud.inl"
+    #include "ui/app_cinema.inl"
 };
 
 }  // namespace v2

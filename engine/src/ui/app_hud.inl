@@ -1065,6 +1065,8 @@
                     w.evictWorst, w.evicted, w.askWorst);
         // Nonzero on a walk would mean a frame recorded far more than a frame
         // does -- see World::endDeviceFrameIfDue.
+        std::printf("  stale     %zu compactions dropped for a chunk rebuilt since, %zu for one evicted\n",
+                    w.staleCompactions, w.evictedCompactions);
         std::printf("  devframe  %zu ended by the streamer itself: %zu loading, %zu in frames\n",
                     world_.deviceFramesForced(), world_.deviceFramesAtLoad(),
                     world_.deviceFramesForced() - world_.deviceFramesAtLoad());
@@ -1146,6 +1148,10 @@
             "                        KEEP HOLDING IT to go PRONE; release and you rise\n"
             "                        back through the crouch to standing in one go\n"
             "  F                     toggle fly mode\n"
+            "  C                     CINEMA -- no interface, no hand; left click a\n"
+            "                        creature to follow it, right click to let go,\n"
+            "                        scroll wheel to pull the camera back or in,\n"
+            "                        A/D to swing round it, W/S to raise or lower\n"
             "  arrow keys            scrub time (up/down = fast)\n"
             "  X + scroll wheel      day/night speed -- scroll down past 0.25x to REWIND\n"
             "  Y                     SETTINGS MENU\n"

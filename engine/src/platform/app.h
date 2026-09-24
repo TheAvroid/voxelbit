@@ -244,7 +244,10 @@ struct Options {
     // canopy needs at this frame rate; Balanced is where the samples the saving
     // buys are worth more than the resolution they cost. --dlss <mode> still
     // names all five, for an offline render or a benchmark.
-    DlssQuality dlssQuality = DlssQuality::Balanced;
+    // PERFORMANCE BY DEFAULT (user 2026-09-23: "put it on performance mode by
+    // default"). Settings are not saved between launches, so this is the mode
+    // every start opens in; the menu and --dlss still change it.
+    DlssQuality dlssQuality = DlssQuality::Performance;
     // WHICH Ray Reconstruction MODEL, as the NGX preset hint. Pinned rather
     // than left to the driver -- see the note in Dlss::resize for the
     // measurement. 0 hands the choice back to whatever the driver ships.
@@ -776,6 +779,7 @@ struct Options {
     // --rip-test: shoot the level's walls headlessly and measure the SHAPE of
     // whatever the hanger sweep cuts loose. See runRipTest.
     bool ripTest = false;
+    bool chipHoldTest = false;   // --chip-hold-test, see runChipHoldTest
     bool levelResetTest = false;
     // --pole-test: cut every free-standing post in the level and check it
     // comes down. The companion to --rip-test; see runPoleTest for why

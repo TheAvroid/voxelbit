@@ -39,6 +39,12 @@ engine/build.bat   build it            run.bat   run it (--help for every option
 game/assets/       the art the engine loads -- .vox, sound, the pixel font
 tools/             the voxelisers and bakers that produced the art
 launcher/          the OLD self-extracting launcher -- superseded, still builds
+wallet/            the bitcoin price tracker that is becoming the wallet. RUST,
+                   not C++ (BDK is the wallet library), and its own process so
+                   keys never share one with the game. wallet\build.bat builds
+                   and copies wallet\wallet.exe (git-ignored);
+                   --check verifies the live feed headless, and
+                   tests/render.rs draws the window to PNG with no window.
 website/           the download page, and THE SHIPPED INSTALLER it serves:
                    website/voxelbit.exe, built by tools/package.py --installer,
                    never by hand. There is no copy at the repository root any

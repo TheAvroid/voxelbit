@@ -21,7 +21,8 @@ axis swap here is game(x, y, z) = model(x, z, y). Getting this wrong lays the fo
 ── 75 TO 100 FEET ── the engine's voxel is 10 cm (see voxelize_fir.py), so the nine targets
 run 228 voxels (75 ft, 22.86 m) to 305 (100 ft, 30.48 m), evenly spaced. Each tree is scaled to
 its OWN target off its OWN measured height rather than by one shared factor, so every target is
-met exactly. Proportions are kept: the same scalar drives all three axes.
+met exactly. Proportions are kept: the same scalar drives all three axes. The four naturally
+stubby source trees are NOT used: their slots take a slender tree, mirrored - see SLOT_SOURCE.
 (Was 152 = 50 ft, then a single 228, then a single 305 - see the TALL_FT note for why it is a
 range now, and for why tree N gets the height it gets.)
 
@@ -80,6 +81,28 @@ TALL_VOX_HI = int(round(TALL_FT_HI * FT_M / VOX_M))    # 305
                           # back into one grid on load. A tree that fits in 255 is still written as one
                           # plain model - no scene graph, no behaviour change. Only Z is ever split: X and Y
                           # stay under the byte on their own (the widest crown here measures ~134).
+SLOT_SOURCE = {2: (3, True), 7: (5, True), 8: (1, True), 9: (4, True)}
+                          # ── EVERY PINE IS A TALL PINE, SHRUNK (user 2026-09-23: "for the shorter pine trees
+                          # you seem to have just squished it down from the top. you were supposed to shrink
+                          # them porportionally to their size ... make sure every tree is porportional to their
+                          # original pine tree model, we are just shrinking some of them down") ── the scaling
+                          # here was always uniform, but the NINE SOURCE TREES are not nine proportions of one
+                          # pine. Measured in the OBJ, every one is 8-12 units across the crown with one of two
+                          # trunk girths (0.645 or 0.809 at the base) while the heights run 24.0 to 35.6 -- so
+                          # the naturally short ones are the tall ones' width on less height. Crown/height:
+                          #   slender  pine_1 .299  pine_6 .300  pine_4 .313  pine_5 .323  pine_3 .324
+                          #   stubby   pine_9 .374  pine_8 .394  pine_2 .396  pine_7 .449
+                          # and natural rank handed the stubby four the SHORT targets, so the 75-foot end of
+                          # the stand was exactly the trees that read as tall pines squashed from the top.
+                          #
+                          # So those four slots take a SLENDER source instead, MIRRORED in X so that no slot
+                          # repeats another's shape (the engine already turns every tree in quarter turns,
+                          # but a quarter turn cannot make a tree its own mirror image), each shrunk by one
+                          # scalar on all three axes to the height its slot already had. slot -> (source
+                          # trunk in the OBJ, mirror). The numbering and the per-slot heights are unchanged,
+                          # so the scatter still puts a tree of the same height in the same place.
+BAKE_SEED  = 1234         # the sampler draws from numpy's RNG; seeded per tree so a re-bake reproduces
+                          # the same voxels instead of a slightly different forest every run.
 ALPHA_MIN  = 128          # leaf-card cutout
 SAMPLE_DEN = 14.0         # samples per square voxel of triangle area. At 2.2 the trees came out
                           # 1.2% full against pine5.vox's 5.8% - a surface the sampler kept MISSING,
@@ -180,10 +203,12 @@ def tree_span(V, tris, keep):
     return float(V[idx, 1].max() - V[idx, 1].min())
 
 
-def sample_tree(V, VT, tris, texs, keep, tall_vox):
+def sample_tree(V, VT, tris, texs, keep, tall_vox, mirror=False):
     """Rasterise one tree's triangles into {(x,y,z): [rsum,gsum,bsum,n,needle_n]}.
 
-    tall_vox is THIS tree's target height in voxels, not a shared constant - see TALL_FT_LO."""
+    tall_vox is THIS tree's target height in voxels, not a shared constant - see TALL_FT_LO.
+    mirror flips model X, so a source tree can fill a second slot as its own mirror image -
+    see SLOT_SOURCE. One scalar still drives all three axes."""
     acc = {}
     # group triangles by material so each batch samples ONE texture
     by_mat = collections.defaultdict(list)
@@ -201,6 +226,8 @@ def sample_tree(V, VT, tris, texs, keep, tall_vox):
         vi = np.asarray([a for a, b in lst], dtype=np.int64)
         ti = np.asarray([b for a, b in lst], dtype=np.int64)
         P = (V[vi] - lo) * scale                        # (n,3,3) in voxel units
+        if mirror:
+            P[..., 0] = (hi[0] - lo[0]) * scale - P[..., 0]
         # area in voxel^2 -> sample count
         e1 = P[:, 1] - P[:, 0]; e2 = P[:, 2] - P[:, 0]
         area = 0.5 * np.linalg.norm(np.cross(e1, e2), axis=1)
@@ -344,11 +371,16 @@ def main():
               % (t + 1, nat[t], target[t], target[t] * VOX_M, target[t] * VOX_M / FT_M))
     trees = []
     for t in range(9):
-        acc = sample_tree(V, VT, tris, texs, members[t], target[t])
+        # The slot keeps the height it was dealt above; SLOT_SOURCE only changes which tree fills it.
+        src, mirror = SLOT_SOURCE.get(t + 1, (t + 1, False))
+        np.random.seed(BAKE_SEED + t)
+        acc = sample_tree(V, VT, tris, texs, members[src - 1], target[t], mirror)
         trees.append(acc)
-        zs = [k[2] for k in acc]
-        print('  tree %d  %-58s %6d voxels  h=%d' %
-              (t + 1, ','.join(sorted(members[t])[:4]), len(acc), max(zs) - min(zs) + 1))
+        xs = [k[0] for k in acc]; ys = [k[1] for k in acc]; zs = [k[2] for k in acc]
+        h = max(zs) - min(zs) + 1
+        w = max(max(xs) - min(xs), max(ys) - min(ys)) + 1
+        print('  tree %d  from source %d%s  %6d voxels  h=%d  crown/h %.3f' %
+              (t + 1, src, ' mirrored' if mirror else '         ', len(acc), h, w / h))
     # ── ONE RAMP FOR THE WHOLE STAND ── the nine trees are one species and share a bark and a
     # needle ramp, so the forest costs K_BARK + K_NEEDLE palette ids in total rather than nine
     # times that, and a felled trunk beside a standing one is the same wood.

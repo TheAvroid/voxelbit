@@ -1167,7 +1167,14 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
     // the origin back through it, and the difference is how far the surface
     // itself turned. Flyers and the tool own `flap` and are excluded; every
     // other instance leaves it at zero and is untouched.
-    if (inst.kind != KIND_FLYER && inst.kind != KIND_HELD && any(inst.flap != 0.0f))
+    //
+    // ...EXCEPT A FLYER WITH treeFlags BIT 1, which is a creature whose
+    // TRANSFORM turned -- the frog's snap, the flock's bank -- and the host has
+    // put exactly this channel's pair in for it: flap = axis * angle, prevOffset
+    // re-based to the origin. See World::setFlyerInstance and flyerTurn.
+    const bool flyerTurned = inst.kind == KIND_FLYER && (inst.treeFlags & 2u) != 0u;
+    if ((inst.kind != KIND_FLYER && inst.kind != KIND_HELD && any(inst.flap != 0.0f)) ||
+        flyerTurned)
     {
         const float3x4 o2w = q.CommittedObjectToWorld3x4();
         const float3 r = h.p - float3(o2w[0][3], o2w[1][3], o2w[2][3]);
@@ -1244,7 +1251,7 @@ Hit traceRadiance(float3 o, float3 d, uint mask = 0xFFu)
             float3(inst.flap.x + ca * rx + sa * rz, h.p.y, inst.flap.z - sa * rx + ca * rz);
         h.moved += h.p - prev;
     }
-    else if (inst.kind == KIND_FLYER && any(inst.flap.xy != 0.0f))
+    else if (inst.kind == KIND_FLYER && !flyerTurned && any(inst.flap.xy != 0.0f))
     {
         const float3 ax = float3(o2w[0][0], o2w[1][0], o2w[2][0]);
         const float xObj = dot(h.p - float3(o2w[0][3], o2w[1][3], o2w[2][3]), ax) /

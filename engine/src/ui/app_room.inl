@@ -126,7 +126,7 @@
         h = V2Holo{};
         // NOTHING IN THE ROOM. The panel owns the screen there and a number
         // hanging in front of it is the hand intruding on a menu.
-        if (pauseOpen_ || menuOpen_ || !held_.ready() || !held_.shown) return;
+        if (pauseOpen_ || menuOpen_ || cinema_ || !held_.ready() || !held_.shown) return;
         // -- THE GUN ON SCREEN, NOT THE ONE ON ORDER --------------------
         //
         // (user 2026-09-19: "when switching weapons in the fps mode, the ammo

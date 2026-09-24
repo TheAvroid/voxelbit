@@ -1483,10 +1483,11 @@ constexpr int kFellChunkSpan = 22;
 // grow -- see the woodSpan note in shatterFelled. Foliage keeps 22.
 constexpr int kFellChunkSpanWood = 11;
 // HOW NEAR YOU HAVE TO BE TO COLLECT ONE. v1's absorbR, 26 voxels -- "collected
-// by walking up to it, not from across the map", which is the reach a dropped
-// steak already has. A chip cut by a tool keeps kAbsorbAnywhere, because
-// swinging a tool puts you beside what you hit.
-constexpr float kFellLootReachM = 2.6f;
+// by walking up to it, not from across the map" -- DOUBLED to 52 on 2026-09-23
+// with every other absorb reach ("anything that can be absorbed by the player,
+// double the absorption distance"; see kPickupM). A chip cut by a tool keeps
+// kAbsorbAnywhere, because swinging a tool puts you beside what you hit.
+constexpr float kFellLootReachM = 5.2f;
 // ...AND HOW MANY SLOTS ARE HELD BACK FROM THE BREAK. A tree takes every slot
 // it is offered, and a world in which nothing else can be cut loose until the
 // pieces are collected is a world where the NOTHING FLOATS rule quietly stops
@@ -1762,7 +1763,10 @@ constexpr float kAbsorbY = -1.2f;
 // twenty-five metres away, and the piece then sailed the whole way back. So
 // the default stays "no gate" and the arrow states its own reach -- see
 // Debris::absorbR.
-constexpr float kArrowAbsorbM = 1.6f;
+//
+// DOUBLED to 3.2 m on 2026-09-23 with every other absorb reach -- see kPickupM.
+// It is also the radius a stuck arrow is taken back from (takeStuckNear).
+constexpr float kArrowAbsorbM = 3.2f;
 // The sentinel for "from anywhere", which is every chip a tool makes.
 constexpr float kAbsorbAnywhere = 1e9f;
 
@@ -3325,6 +3329,8 @@ class World {
         const bool ok = show && m && model >= 0 && model < int(flyers_.size());
 
         const size_t mi = size_t(ok ? model : 0);
+        // Read BEFORE place() overwrites it: was this slot drawn last frame.
+        const bool had = idx < wasShown_.size() && wasShown_[idx] != 0;
         // METRES here, not voxels: a flyer is meshed at VOXEL_M so its object
         // space already is metres and its transform is a turn and a fade. See
         // addFlyerModel for why, and place() for what the half-box is for.
@@ -3377,6 +3383,50 @@ class World {
         // between species, and a stale bit here would read one animal's flap
         // in another one's convention.
         instanceInfos_[idx].treeFlags = zSweep ? 1u : 0u;
+
+        // -- ...AND HOW THE TRANSFORM ITSELF TURNED -------------------------
+        //
+        // (user 2026-09-24: "creatures are ghosting".)
+        //
+        // place() differences ONE POINT, so a turn of the transform was
+        // described only where a caller remembered to hand in `spin` -- and
+        // spin is a yaw about a vertical axis and nothing else. An audit of
+        // every population found the rest going unsaid: the frog's 90-degree
+        // snap mid-leap (~0.35 m at its extremity), the flock's bank and pitch,
+        // the ladybug's and firefly's instant flee turns, the rabbit's heading
+        // snapping at the start of a hop with dth zeroed, a fish's leap pitch,
+        // and every dragonfly and duck turn. Ray Reconstruction was told those
+        // surfaces held still and blended the old pose over the new one.
+        //
+        // So the turn is DERIVED here, from the 3x3 this slot had last time
+        // against the one it has now -- the same move place() made for travel,
+        // and for the same reason: a parameter that can be left out will be.
+        // It rides the loose-body channel Trace.cs.slang already has for a
+        // falling tree (flap = axis * angle, prevOffset = the ORIGIN's travel),
+        // flagged by treeFlags bit 1 because on a flyer `flap` has two other
+        // meanings. prevOffset is re-based from the anchor to the origin in
+        // the one line below, so the anchor's job -- a point fixed to the
+        // animal while the art changes size under it -- is kept exactly.
+        //
+        // NOT WHEN A CALLER SPINS OR FLAPS. The perched songbird turns INSIDE
+        // its art with its transform stepping a quarter turn a cycle, so its
+        // transform's turn is not the animal's; the butterfly's and the fly's
+        // wings own `flap`. Those keep what they had.
+        // V2_NO_FLYER_TURN=1 switches it off, for an A/B in one build.
+        static const bool kNoTurn = std::getenv("V2_NO_FLYER_TURN") != nullptr;
+        if (ok && had && !spinning && !flap && !kNoTurn) {
+            const float3 rv = flyerTurn(flyerWasM_[size_t(slot)].data(), m);
+            if (rv.x != 0.0f || rv.y != 0.0f || rv.z != 0.0f) {
+                // The anchor place() just measured at, relative to the origin
+                // the shader will rotate about.
+                const float3 r = wasAt_[idx] - float3(tx, ty, tz);
+                instanceInfos_[idx].prevOffset -= r - rotateBy(rv, r);
+                instanceInfos_[idx].flap = rv;
+                instanceInfos_[idx].treeFlags |= 2u;
+            }
+        }
+        if (ok)
+            for (int k = 0; k < 9; ++k) flyerWasM_[size_t(slot)][size_t(k)] = m[k];
         // -- ...AND WHAT THIS SLOT IS, WHICH NOTHING USED TO ASK ------------
         //
         // The band is the one place every animal in the world is drawn, which
@@ -3926,6 +3976,12 @@ class World {
     static constexpr float kFreezeLin = 0.15f;   // m/s -- slower than this is "still"
     static constexpr float kFreezeAng = 0.30f;   // rad/s
     static constexpr float kThawPadM = 1.5f;     // a stack's worth above what changed
+    // ...and a loose piece's: ONE VOXEL. A change that takes its floor
+    // meets its own box, and whatever rests on it the solver wakes in turn.
+    // 0.3 m still woke pieces lying beside a hole, and a chip goes to sleep at
+    // kDebrisSleepThresh while it is still creeping (~0.1 m/s), so a needless
+    // wake is a visible 3 cm roll on every round -- measured, --chip-hold-test.
+    static constexpr float kWakePadM = VOXEL_M;
     struct ThawAt {
         Vec3 at;
         float r;
@@ -3994,6 +4050,26 @@ class World {
         h.takes = d.takesAs;
         return carveDebris(ph, h, radiusVox, nowMs) ? best : -1;
     }
+    // HOW MANY LIVE, SHOWN PIECES ARE MASKED OFF IN THE INSTANCE ARRAY RIGHT
+    // NOW -- i.e. would be missing from a frame drawn at this moment. Zero
+    // between updates is the promise rebuildTlas keeps; see --chip-hold-test.
+    int debrisMissingFromTlas() const {
+        if (debrisBase_ < 0) return 0;
+        int n = 0;
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            const Debris &d = debris_[i];
+            if (!d.live || d.unseen || d.absorbing) continue;
+            const size_t idx = size_t(debrisBase_ + i);
+            if (idx < instanceDescs_.size() && instanceDescs_[idx].instanceMask == 0) ++n;
+        }
+        return n;
+    }
+    int debrisShownCount() const {
+        int n = 0;
+        for (int i = 0; i < kDebrisInstances; ++i)
+            if (debris_[i].live && !debris_[i].unseen && !debris_[i].absorbing) ++n;
+        return n;
+    }
     bool debrisFrozen(int slot) const {
         return slot >= 0 && slot < kDebrisInstances && debris_[slot].live && debris_[slot].frozen;
     }
@@ -4037,11 +4113,37 @@ class World {
                 const float cy = maxf(lo.y, minf(t.at.y, hi.y)) - t.at.y;
                 const float cz = maxf(lo.z, minf(t.at.z, hi.z)) - t.at.z;
                 if (cx * cx + cy * cy + cz * cz > t.r * t.r) continue;
+                // -- GONE AT ONCE, BUT NOBODY IS WOKEN BY IT ----------------
+                //
+                // (user 2026-09-24: "in the arcade mode, when shooting, the
+                //  chunks that are on the floor from the bullet impact, are
+                //  flickering. they flicker everytime the player shoots.")
+                //
+                // A window's box reaches 1.6 m past its piece, so "the window
+                // meets the change" is true of every piece in a pile a round
+                // lands beside. Removing a static wakes whatever rests on it
+                // (PhysX's wakeOnLostTouch), and this also woke each of them by
+                // hand -- then the re-cut is budgeted at kWinRebuildsPerFrame,
+                // so all but two spent a step or more AWAKE WITH NO FLOOR:
+                // dropped through where it had been and shoved back out when
+                // the window came. Up to 99 mm on one shot (--chip-hold-test),
+                // on every trigger pull, and that pop is the flicker.
+                //
+                // A SLEEPING BODY WITH NO FLOOR DOES NOT FALL -- it is not
+                // simulated at all -- so dropping the window quietly is enough
+                // to hold the pile still until its turn to be re-floored comes.
+                // What the change really reaches is woken in the second loop
+                // and re-floored this same pass (Debris::winNow).
+                //
+                // KEEPING THE STALE WINDOW UP INSTEAD WAS TRIED AND IS WRONG:
+                // every static holds up every body, so a neighbour's stale copy
+                // kept the old ground under a thawed piece and it hung over the
+                // hole (--fell-test's thaw arm) -- the reason this drops them
+                // all in the first place.
                 winShared_.erase(d.window);
-                dropWindow(ph, d.window);
+                dropWindow(ph, d.window, /*wakeTouching=*/false);
                 d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
                 d.winCentre = Vec3{d.pos.x + 1e4f, d.pos.y, d.pos.z};
-                ph.wake(d.phys);
                 break;
             }
         }
@@ -4051,7 +4153,16 @@ class World {
             const float ext = maxf(d.halfM[0], maxf(d.halfM[1], d.halfM[2]));
             for (const ThawAt &t : thawQueue_) {
                 const float dx = d.pos.x - t.at.x, dy = d.pos.y - t.at.y, dz = d.pos.z - t.at.z;
-                const float rr = t.r + ext;
+                // A FROZEN PIECE TAKES THE WHOLE PAD, A LOOSE ONE ONLY THE
+                // CHANGE. The pad is "a stack's worth above what changed", and
+                // it is there for the frozen: a kinematic piece is never woken
+                // by the solver, so one frozen on top of another has to be told.
+                // A piece that is merely asleep is not in that position -- if
+                // anything under it moves, PhysX wakes it with its island -- so
+                // it is woken only when the change touches it. Waking the whole
+                // pile every round was the arcade's flicker (see applyThaws'
+                // first loop).
+                const float rr = (d.frozen ? t.r : t.r - kThawPadM + kWakePadM) + ext;
                 if (dx * dx + dy * dy + dz * dz > rr * rr) continue;
                 if (d.bornMs > t.t0 && !d.frozen) continue;   // already cut from the new world
                 if (d.frozen) {
@@ -4061,6 +4172,9 @@ class World {
                     ++thawedTotal_;
                 }
                 d.stillT0 = -1.0;
+                // ...AND RE-FLOORED THIS PASS, past the budget: it is awake,
+                // so a pass without a window is a pass spent falling.
+                d.winNow = true;
                 // A THAW THAT FROZE NOTHING STILL WAKES WHAT IS NEAR: a sleeping
                 // body over a change is as stuck as a frozen one. Its window was
                 // already dealt with above if the change was to the world.
@@ -4089,7 +4203,7 @@ class World {
         *built = winSharedBuilt_;
         *joined = winSharedJoined_;
     }
-    void dropWindow(Physics &ph, int &w) {
+    void dropWindow(Physics &ph, int &w, bool wakeTouching = true) {
         if (w < 0) return;
         const auto it = winRefs_.find(w);
         if (it != winRefs_.end()) {
@@ -4097,7 +4211,7 @@ class World {
             winRefs_.erase(it);
             winShared_.erase(w);
         }
-        ph.removeStatic(w);
+        ph.removeStatic(w, wakeTouching);
         w = -1;
     }
 
@@ -4143,6 +4257,7 @@ class World {
                 ++winRefs_[kv.first];
                 dropWindow(ph, d.window);   // a different actor: see the test
                 d.window = kv.first;
+                d.winNow = false;
             }
             d.winLo = s.lo;
             d.winHi = s.hi;
@@ -4172,6 +4287,7 @@ class World {
         winRefs_[w] = 1;
         dropWindow(ph, d.window);
         d.window = w;
+        d.winNow = false;
         d.winLo = wlo;
         d.winHi = whi;
         d.winCentre = d.pos;
@@ -4224,6 +4340,7 @@ class World {
         d.topples = false;   // see Debris::topples
         d.tipArmed = false;
         d.srcSlot = -1;
+        d.winNow = false;   // see applyThaws
         // Structure and triangles both go back, once the device is done with
         // them -- a chunk that vanished this frame was still being drawn last
         // frame. See retireLoose.
@@ -5456,7 +5573,10 @@ class World {
                        const Vec3 &originOff, const Vec3 &pos, const float *quat, const Vec3 &lin,
                        const Vec3 &ang, bool felled, bool scenery, uint8_t takesAs,
                        const float3 &tint, double bornMs, double nowMs,
-                       bool withWindow = true) {
+                       bool withWindow = true,
+                       // THE COLLIDER'S FIRST CELL. kFellCellM for everything cut
+                       // out of a tree; spawnCutPlant starts at one voxel.
+                       float cell0 = kFellCellM) {
         // WHICH EXIT THIS TOOK, for the drain's LOST report -- four ways to
         // return false and no way to tell them apart was how 69 of a birch's
         // 336 pieces went missing without a word.
@@ -5562,7 +5682,7 @@ class World {
         // is the right answer for something the size of a bush.
         bool woodOnly = takesAs == kDebrisWood;
         const bool wasWood = woodOnly;
-        float cell = kFellCellM;
+        float cell = cell0;
         for (int tries = 0; tries < 16; ++tries) {
             const int q = maxi(1, int(cell / VOXEL_M + 0.5f));
             const int cx = (sx + q - 1) / q, cy = (sy + q - 1) / q, cz = (sz + q - 1) / q;
@@ -5597,7 +5717,7 @@ class World {
             // start the search again rather than dropping the piece.
             if (winBoxes_.empty() && woodOnly) {
                 woodOnly = false;
-                cell = kFellCellM;
+                cell = cell0;
                 continue;
             }
             if (winBoxes_.size() <= kFellMaxBoxes) break;
@@ -5865,8 +5985,25 @@ class World {
         // its wheat and its seed as drops, so a body that could also be
         // collected pays twice for one swing. So the piece takes its parent's
         // answer instead of the tree's.
-        bool scenery = false;
-        float absorbR = kAbsorbAnywhere;
+        //
+        // -- ...AND THAT ANSWER IS GONE: EVERY PIECE IS LOOT (2026-09-23) --
+        //
+        // (user: "I cant absorb the mushroom chunks like I can the tree
+        //  chunks".)
+        //
+        // THE WHEAT THAT NEEDED IT NO LONGER USES IT. It stopped marking its
+        // sheaf scenery on 2026-09-21 (markAbsorbNow instead), and its body is
+        // off behind kWheatBreakBody anyway. A corpse is scenery but never
+        // reaches a shatter (the `corpse` gate in updateDebris). That left ONE
+        // scenery body that breaks: the MUSHROOM CAP a stem cut frees
+        // (markScenery in the swing's hanger spawn). So the inheritance did
+        // exactly one thing, and it was this report -- the cap broke on its
+        // clock and every chunk lay there, scenery, forever.
+        //
+        // SCENERY IS ABOUT THE WHOLE BODY, NOT ITS PIECES -- the same split a
+        // tree has between `felled` (never collected) and its loot. A cap that
+        // is not flown at you while it falls, and whose chunks are, is the
+        // same rule a tree follows.
     };
     std::vector<PendingChunk> shatterQueue_;
 
@@ -5911,8 +6048,7 @@ class World {
         float3 tint{1.0f, 1.0f, 1.0f};
         float quat[4] = {0, 0, 0, 1};
         uint8_t takesAs = 0;
-        bool scenery = false, absorbNow = false;
-        float absorbR = kAbsorbAnywhere;
+        bool absorbNow = false;
     };
 
     struct ShatterDone {
@@ -5931,8 +6067,7 @@ class World {
         float3 tint{1.0f, 1.0f, 1.0f};
         float quat[4] = {0, 0, 0, 1};
         uint8_t takesAs = 0;
-        bool scenery = false, absorbNow = false;
-        float absorbR = kAbsorbAnywhere;
+        bool absorbNow = false;
     };
 
     // ONE THREAD, ONE JOB AT A TIME -- the same shape as Remesher, and for the
@@ -6599,20 +6734,15 @@ class World {
                               cl, ca, /*felled=*/false, /*scenery=*/false, c.takesAs,
                               c.tint, c.bornMs, nowMs, /*withWindow=*/false)) {
                 Debris &nb = debris_[use];
-                // SCENERY STAYS SCENERY. See PendingChunk::scenery -- loot is
-                // the felled tree's rule and the pieces of anything else keep
-                // whatever their parent said about being picked up.
-                if (c.scenery) {
-                    nb.scenery = true;
-                    nb.loot = false;
-                    nb.absorbR = c.absorbR;
-                } else {
-                    nb.loot = true;
-                    nb.absorbR = kFellLootReachM;
-                }
+                // EVERY PIECE IS LOOT, a mushroom cap's as much as a tree's --
+                // see the end of the note on PendingChunk. It used to take its
+                // parent's `scenery`, and the only parent left that had one was
+                // the cap.
+                nb.loot = true;
+                nb.absorbR = kFellLootReachM;
                 // ...AND IT COMES STRAIGHT TO YOU IF ITS PARENT SAID SO -- see
-                // Debris::absorbNow. Outside the scenery branch because it is a
-                // separate question from whether it can be picked up at all.
+                // Debris::absorbNow. A separate question from whether it can be
+                // picked up at all.
                 nb.absorbNow = c.absorbNow;
                 nb.lifeMs = kFelledLifeMs;
                 nb.noBreak = true;   // see the copy in shatterFelled
@@ -7328,9 +7458,7 @@ class World {
         j.pos = d.pos;
         j.oOff = d.originOff;
         j.takesAs = d.takesAs;
-        j.scenery = d.scenery;
         j.absorbNow = d.absorbNow;
-        j.absorbR = d.absorbR;
         j.tint = d.tint;
         for (int k = 0; k < 4; ++k) j.quat[k] = d.quat[k];
         if (d.phys >= 0) ph.velocityOf(d.phys, &j.lin, &j.ang);
@@ -7399,8 +7527,20 @@ class World {
         // A REFUSAL THAT WILL NOT CHANGE -- see Debris::noBreak. `noBreak` is
         // already set from the submit, so this only has to release the latch.
         // ONE PIECE IS ENOUGH FOR A FELLED BODY -- see the note where
-        // shatterWork hands a single lump back.
-        if (done.noBreak || done.cuts.empty() || (done.cuts.size() < 2 && !p->felled)) {
+        // shatterWork hands a single lump back -- AND FOR A CUT PLANT, which
+        // is a felled body in every way but the flag's other meanings (see
+        // spawnCutPlant). --fell-test on a desert shrub: the first blow nicked
+        // off a 3-voxel twig, which lay there as scenery for half an hour.
+        const bool cutPlant = p->scenery && p->severed;
+        if (done.noBreak || done.cuts.empty() ||
+            (done.cuts.size() < 2 && !p->felled && !cutPlant)) {
+            // ...AND ONE THAT CANNOT BE PARTITIONED AT ALL (a lone voxel) IS
+            // ITS OWN PIECE: loot, as its chunks would have been.
+            if (cutPlant) {
+                p->scenery = false;
+                p->loot = true;
+                p->absorbR = kFellLootReachM;
+            }
             shatterParent_ = -1;
             return;
         }
@@ -7513,9 +7653,7 @@ class World {
             for (int t = 0; t < 4; ++t) q.quat[t] = done.quat[t];
             q.takesAs = done.takesAs;
             q.bornMs = nowMs;
-            q.scenery = done.scenery;
             q.absorbNow = done.absorbNow;
-            q.absorbR = done.absorbR;
             shatterQueue_.push_back(std::move(q));
             ++made;
         }
@@ -7560,9 +7698,7 @@ class World {
         out->tint = j.tint;
         for (int k = 0; k < 4; ++k) out->quat[k] = j.quat[k];
         out->takesAs = j.takesAs;
-        out->scenery = j.scenery;
         out->absorbNow = j.absorbNow;
-        out->absorbR = j.absorbR;
         const int nx = j.nx, ny = j.ny, nz = j.nz;
         const size_t plane = size_t(nx) * size_t(nz);
         auto ix = [&](int x, int y, int z) {
@@ -8193,7 +8329,8 @@ class World {
             // partition could not split standing as a felled body -- coarse
             // 0.4 m boxes and no floor backstop -- for kFelledLifeMs, which is
             // the invisible mushroom barrier the stump queue's old tree-only
-            // gate was written to avoid. Anything else still refuses, as before.
+            // gate was written to avoid. A cut plant (scenery + severed) takes
+            // it too. Anything else still refuses, as before.
             if (cuts.size() == 1) {
                 out->cuts = std::move(cuts);
                 out->K = 1;
@@ -8465,6 +8602,127 @@ class World {
     void markScenery(int slot) {
         if (slot < 0 || slot >= kDebrisInstances) return;
         debris_[slot].scenery = true;
+    }
+
+    // -----------------------------------------------------------------------
+    // A PLANT CUT FREE -- a mushroom cap off its stem, the top of a small
+    // cactus or shrub -- AS THE KIND OF BODY A PIECE OF A FELLED TREE IS.
+    //
+    // (user 2026-09-23: "when cutting a mushroom down from its stem, it gets
+    //  slingshot everywhere. fix the physics of the mushrooms. make it more
+    //  natural.")
+    //
+    // IT WAS A CHIP. A model smaller than dropModelHangers' 39-voxel box comes
+    // off whole as hangers -- both mushroom models are, at 0.7 and 1.4 m -- and
+    // the swing spawned that through spawnDebris: ONE 24-vertex convex hull,
+    // 0.02 angular damping, no turn-rate cap. Right for a pebble. The hull of
+    // a cap on a stub of stem is a cone standing on its point, so it balanced
+    // on the stump, went over, and rolled away on its rim like a wheel.
+    // Measured with --fell-test (V2_FELL_KIND=3), a 0.7 m cap: rolled 2 m,
+    // bounced three times at up to 4.6 m/s, spun at 9 r/s and came to rest
+    // upside down.
+    //
+    // makeLooseBody IS WHAT A TREE'S PIECE IS: greedy boxes off its own voxels
+    // and addCompoundBody's damping (0.55) and turn cap (2.5 r/s), whose note
+    // calls them "the difference between a tree coming down and a tree being
+    // thrown". Two things differ from a tree piece, both because this is small:
+    //
+    //   * ONE-VOXEL CELLS. A box is a whole cell and kFellCellM is 0.4 m, so a
+    //     0.7 m cap would be a slab overhanging its own voxels by up to 0.3 m.
+    //     makeLooseBody coarsens by itself if that comes to too many boxes.
+    //   * THE CHIP'S WINDOW (buildWindow), which samples the stump voxel for
+    //     voxel. buildSolidWindow places models as kStaticCellM boxes, and the
+    //     top one of a cut stem reaches up to 0.4 m past the wood -- into the
+    //     gap the bite left, which is exactly where the cap is sitting.
+    //
+    // Scenery, as the chip was: the CAP is not flown at you while it falls;
+    // its chunks are, when it breaks (see PendingChunk). Returns the slot, or
+    // -1 -- spawnHangerBody then falls back to a chip, because a cut that did
+    // not become a body is a cut that vanished.
+    // -----------------------------------------------------------------------
+    int spawnCutPlant(Physics &ph, const std::vector<uint8_t> &vol, int n, const Vec3 &centre,
+                      float yawRad, uint8_t takesAs, double nowMs) {
+        if (n < 1 || vol.size() != size_t(n) * size_t(n) * size_t(n)) return -1;
+        int slot = -1;
+        for (int i = 0; i < kDebrisInstances; ++i)
+            if (!debris_[i].live) { slot = i; break; }
+        if (slot < 0) return -1;
+        auto at = [&](int x, int y, int z) {
+            return size_t(x) + size_t(z) * size_t(n) + size_t(y) * size_t(n) * size_t(n);
+        };
+        int x0 = n, x1 = -1, y0 = n, y1 = -1, z0 = n, z1 = -1, count = 0;
+        for (int y = 0; y < n; ++y)
+            for (int z = 0; z < n; ++z)
+                for (int x = 0; x < n; ++x) {
+                    if (vol[at(x, y, z)] == mat::AIR) continue;
+                    x0 = mini(x0, x); x1 = maxi(x1, x);
+                    y0 = mini(y0, y); y1 = maxi(y1, y);
+                    z0 = mini(z0, z); z1 = maxi(z1, z);
+                    ++count;
+                }
+        if (x1 < 0) return -1;
+        const int tx = x1 - x0 + 1, ty = y1 - y0 + 1, tz = z1 - z0 + 1;
+        std::vector<uint8_t> trimmed(size_t(tx) * size_t(ty) * size_t(tz), mat::AIR);
+        for (int y = 0; y < ty; ++y)
+            for (int z = 0; z < tz; ++z)
+                for (int x = 0; x < tx; ++x)
+                    trimmed[size_t(x) + size_t(z) * size_t(tx) + size_t(y) * size_t(tx) * size_t(tz)] =
+                        vol[at(x + x0, y + y0, z + z0)];
+        // THE CUBE'S MIDDLE IS `centre` AND IT WEARS THE MODEL'S QUARTER TURN
+        // -- spawnPiece's frame -- so the trimmed box's corner is this far from
+        // it, in the model's own axes.
+        const Vec3 corner{(float(x0) - 0.5f * float(n)) * VOXEL_M,
+                          (float(y0) - 0.5f * float(n)) * VOXEL_M,
+                          (float(z0) - 0.5f * float(n)) * VOXEL_M};
+        const float q[4] = {0.0f, std::sin(yawRad * 0.5f), 0.0f, std::cos(yawRad * 0.5f)};
+        const Vec3 still{0.0f, 0.0f, 0.0f};
+        if (!makeLooseBody(ph, slot, std::move(trimmed), tx, ty, tz, corner, centre, q, still, still,
+                           /*felled=*/false, /*scenery=*/true, takesAs, float3{1.0f, 1.0f, 1.0f},
+                           nowMs, nowMs, /*withWindow=*/false, /*cell0=*/VOXEL_M))
+            return -1;
+        Debris &d = debris_[size_t(slot)];
+        // spawnDebris' two stamps: it came off the static world, this big.
+        d.severed = true;
+        d.voxSolid = count;
+        // ...and spawnPiece's window, by the same rule.
+        if (d.longBody) {
+            d.winLo = Vec3{d.pos.x - d.halfM[0] - kStaticPadM, d.pos.y - d.halfM[1] - kStaticPadM,
+                           d.pos.z - d.halfM[2] - kStaticPadM};
+            d.winHi = Vec3{d.pos.x + d.halfM[0] + kStaticPadM, d.pos.y + d.halfM[1] + kStaticPadM,
+                           d.pos.z + d.halfM[2] + kStaticPadM};
+            d.window = buildSolidWindow(ph, d.winLo, d.winHi, false, /*reachGround=*/true, &d.winLo);
+        } else {
+            d.window = buildWindow(ph, d.pos);
+            d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
+        }
+        d.winCentre = d.pos;
+        return slot;
+    }
+
+    // WHAT A BLOW CUT FREE, AS A BODY -- the swing's hanger spawn, here so the
+    // swing and --fell-test run the same lines. A plant (Swing::soft) is
+    // spawnCutPlant's; anything else, or a plant it refused, is a chip, and a
+    // plant that became a chip is still scenery.
+    int spawnHangerBody(Physics &ph, const std::vector<uint8_t> &vol, int n, const Vec3 &centre,
+                        float yawRad, uint8_t takesAs, bool plant, double nowMs) {
+        looseFail_ = "no free slot";
+        int slot = plant ? spawnCutPlant(ph, vol, n, centre, yawRad, takesAs, nowMs) : -1;
+        if (plant) {
+            // WHICH BODY IT BECAME, because the fallback is silent on screen:
+            // a chip looks exactly like the bug this replaced.
+            if (slot >= 0)
+                std::printf("  cut      plant freed as a body of %d voxels, %zu box(es)\n",
+                            debris_[size_t(slot)].voxSolid, debris_[size_t(slot)].boxes.size());
+            else
+                std::printf("  cut      plant freed as a CHIP -- %s\n",
+                            looseFail_ ? looseFail_ : "?");
+            std::fflush(stdout);
+        }
+        if (slot >= 0) return slot;
+        const Vec3 still{0.0f, 0.0f, 0.0f};
+        slot = spawnDebris(ph, vol, n, centre, still, still, nowMs, yawRad, nullptr, takesAs);
+        if (slot >= 0 && plant) markScenery(slot);
+        return slot;
     }
 
     // ...AND THIS ONE IS COLLECTED THE MOMENT IT EXISTS -- see
@@ -10607,6 +10865,7 @@ class World {
                                                         d.topples ? d.srcSlot : -1);
                         dropWindow(ph, d.window);   // it may be shared
                         d.window = nw;
+                        d.winNow = false;
                     }
                 }
 
@@ -10657,7 +10916,7 @@ class World {
                         bh.y <= d.winHi.y && bh.z <= d.winHi.z;
                     if (inside) {
                         d.winCentre = d.pos;
-                    } else if (winBudget > 0 &&
+                    } else if ((winBudget > 0 || d.winNow) &&
                                dx * dx + dy * dy + dz * dz > kWinRecentreM * kWinRecentreM) {
                         const int nw = buildWindow(ph, d.pos);
                         // ONLY IF THE NEW ONE IS REAL. buildWindow returns -1
@@ -10671,13 +10930,14 @@ class World {
                             // A CUBE, NOT A BOX -- so the inside test above
                             // stops applying to it.
                             d.winLo = d.winHi = Vec3{0.0f, 0.0f, 0.0f};
-                            --winBudget;
+                            if (!d.winNow) --winBudget;
                         } else {
                             // Nothing near it: re-centre the bookkeeping anyway
                             // so this is not re-asked every frame for a piece
                             // falling through open air.
                             d.winCentre = d.pos;
                         }
+                        d.winNow = false;
                     }
                 }
 
@@ -10887,7 +11147,17 @@ class World {
                 // already pocket the thing whole, so breaking it buys nothing
                 // and spends debris slots, which are the scarcest thing in
                 // this file -- see kFellSlotsShare.
-                const bool severed = d.severed && d.voxSolid > kAbsorbSize;
+                //
+                // ...UNLESS IT IS SCENERY, which the player cannot pocket at
+                // any size -- so the floor's reason does not hold, and a cut
+                // mushroom cap under 600 voxels was left on the cut-plant
+                // branch: that waits for a tilt past kFellTiltUp, and a cap
+                // that landed upright sat there until the 20 s backstop -- the
+                // cut cactus's bug over again. It takes the tree's five seconds
+                // now. A corpse is scenery too, but it is not `severed` and
+                // never gets here.
+                const bool severed =
+                    d.severed && (d.voxSolid > kAbsorbSize || d.scenery);
                 if ((wood || severed || (d.takesAs == kDebrisSoft && !corpse)) && !d.noBreak) {
                     Vec3 lv{0, 0, 0}, av{0, 0, 0};
                     // A BODY THE SOLVER WILL NOT ANSWER FOR IS NOT MOVING --
@@ -11134,8 +11404,8 @@ class World {
             //
             // HORIZONTAL, so standing on a ledge above a chip does not put it
             // out of reach -- the player's eye is 1.6 m over their feet and the
-            // reach is 1.6 m, which would make a chip at your toes a borderline
-            // case measured in 3D. See kArrowAbsorbM.
+            // reach was 1.6 m when this was written, which made a chip at your
+            // toes a borderline case measured in 3D. See kArrowAbsorbM.
             const float adx = d.pos.x - eye.x, adz = d.pos.z - eye.z;
             const bool inReach = d.absorbR >= kAbsorbAnywhere ||
                                  (d.absorbR >= 0.0f &&
@@ -11168,6 +11438,30 @@ class World {
                 // The solver stops owning it. It is on a curve now, not in a
                 // fall, and the two would argue.
                 ph.makeKinematic(d.phys);
+                // -- ...AND IT STOPS TOUCHING ANYTHING (2026-09-23) ----------
+                //
+                // (user: "when cutting a mushroom down from its stem, it gets
+                //  slingshot everywhere".)
+                //
+                // A KINEMATIC BODY IS NOT A GHOST -- the shatter learned this
+                // as "the shake" (see Physics::setSimulated) and the absorb had
+                // the same bug. PhysX gives a kinematic body infinite mass, so
+                // a chip on its curve to the player SHOVED whatever it went
+                // through, as hard as it was flying. Every bite of a stem is
+                // born in the cut, right under the cap, and flies from there.
+                // Measured with --fell-test (V2_FELL_KIND=3): all five bites
+                // leaving together threw a 0.7 m cap at 7.3 m/s and flipped it
+                // to 164 degrees; at a swing's pace, two in flight shoved it
+                // sideways at 1.9 m/s until it fell off its stump.
+                //
+                // OUT OF THE SIMULATION is the flag that means it: the pose is
+                // still set every frame below (setPose teleports a body the
+                // solver is not running), and it makes no contacts. The pose
+                // it is drawn at is d.pos, which the curve writes, so nothing
+                // on screen depends on the solver from here. Not undone: the
+                // flight ends in retireDebris, and wake_ skips a body that is
+                // absorbing.
+                ph.setSimulated(d.phys, false);
             }
 
             if (d.absorbing) {
@@ -15707,6 +16001,12 @@ class World {
         // `absorbR` stays on the signature because the argument is what the
         // WOOD's callers use, and this function is shared.
         markLeftLying(slot, kLevelChipLifeMs);
+        // ON THE FRAME IT IS CUT, beside the hole it came out of. The band is
+        // otherwise written by updateDebris, which has already run by the time
+        // the bullet drain gets here, so the hole was drawn one frame before
+        // its chip -- V2_FIRE_LIVE counted it on every round.
+        if (slot >= 0)
+            setDebrisInstance(slot, debris_[size_t(slot)].pos, debris_[size_t(slot)].quat);
         // -- ...AND WHATEVER THE CUT LEFT STANDING ON AIR -------------------
         //
         // THE OTHER HALF OF THE RULE. kMinBodyVoxels' note says voxels that
@@ -15784,6 +16084,10 @@ class World {
         // asking for what entered it. Worst single call of each.
         double evictWorst = 0.0, askWorst = 0.0;
         size_t evicted = 0;
+        // Compactions dropped because their chunk was REBUILT first -- each one
+        // a moment the ground would have reverted -- or evicted first, which
+        // was only wasted work.
+        size_t staleCompactions = 0, evictedCompactions = 0;
     };
     // -- IS A BODY COMING APART RIGHT NOW ---------------------------------
     //
@@ -17665,6 +17969,9 @@ class World {
         Vec3 wobbleAxis{1, 0, 0};
 
         int window = -1;
+        // A CHANGE REACHED THIS PIECE AND WOKE IT: re-cut its window on the
+        // next pass whatever the budget says -- see applyThaws.
+        bool winNow = false;
         // A SHATTER PIECE, WHICH ONLY EVER HOLDS SHARED WINDOWS -- see
         // World::shareWindow. Everything else keeps a window of its own.
         bool sharesWin = false;
@@ -17965,6 +18272,12 @@ class World {
     // setFlyerInstance, where both are written, and flyerAt, which is why.
     std::vector<int16_t> flyerModel_ = std::vector<int16_t>(size_t(kFlyerInstances), -1);
     std::vector<float> flyerR_ = std::vector<float>(size_t(kFlyerInstances), 0.0f);
+    // The 3x3 each slot was drawn with LAST publish -- see flyerTurn. Kept
+    // here and not read back off instanceDescs_, because rebuildTlas resets
+    // the band's transforms to identity while wasShown_ survives it: reading
+    // the descriptor would report a turn from identity on every ring step.
+    std::vector<std::array<float, 9>> flyerWasM_ =
+        std::vector<std::array<float, 9>>(size_t(kFlyerInstances), std::array<float, 9>{});
     // -----------------------------------------------------------------------
     // ...AND WHERE THE ANIMAL ACTUALLY IS, WHICH wasAt_ STOPPED BEING.
     //
@@ -18684,8 +18997,32 @@ class World {
                     const char *e = std::getenv("V2_COMPACT_ALL");
                     return e && *e && *e != '0';
                 }();
+                // -- ...NOR ONE WHOSE CHUNK HAS BEEN REBUILT SINCE (2026-09-23) --
+                //
+                // (user: "when using the hoe on the terrain, it glitches the
+                //  ground. same thing when planting seeds. also using the shovel
+                //  ... when the ground heals it also glitches the ground.")
+                //
+                // Every one of those is an edit, and an edit re-meshes the
+                // chunk: a NEW build, handed to the chunk uncompacted, with its
+                // own compaction queued behind it. The chunk's PREVIOUS build
+                // may still be in this queue -- compaction is opportunistic, and
+                // a chunk that streamed in on the walk can wait a long time --
+                // and finishCompact handed its compacted copy to whatever chunk
+                // held the key. So the ground went BACK to how it was before the
+                // swing, for the frames until the new build's own compaction
+                // landed and put the edit back: dug, undug, dug. A heal is a
+                // re-mesh too, so it flickered the edit back in on the way out.
+                // (And a lake re-meshes every wave step the same way.)
+                //
+                // The chunk's structure IS this build's uncompacted one exactly
+                // when this is its latest build -- adoption and this function
+                // are the only two writers. Anything else is history: the copy
+                // is not made, which also saves the buffer and the copy it cost.
+                const bool stale = staleChunkBuild(p);
+                if (stale) ++(chunks_.count(p.key) ? prof_.staleCompactions : prof_.evictedCompactions);
                 const bool wanted =
-                    compactAll || !(p.key == kNoOwner && !p.direct && p.held < 0);
+                    !stale && (compactAll || !(p.key == kNoOwner && !p.direct && p.held < 0));
                 if (wanted && maxItems >= 0 && done >= maxItems) return any;
                 if (wanted) {
                     finishCompact(p, grp);
@@ -18705,6 +19042,15 @@ class World {
         size_t n = 0;
         for (const CompactGroup &g : groups_) n += g.items.size();
         return n;
+    }
+
+    // A chunk build that is no longer the chunk's -- see the drain. Loads
+    // (`direct`), held models (their own generation check) and owner-less
+    // loose builds answer false and keep their own rules.
+    bool staleChunkBuild(const PendingCompact &p) const {
+        if (p.direct || p.held >= 0 || p.key == kNoOwner) return false;
+        const auto it = chunks_.find(p.key);
+        return it == chunks_.end() || it->second.blas.as.get() != p.staged.as.get();
     }
 
     // -----------------------------------------------------------------------
@@ -19445,7 +19791,9 @@ class World {
             // to 30.5 m, the tallest a 100 ft tree exactly. The set was scaled by
             // ONE factor so the saplings stayed saplings in proportion, which makes
             // the spread wide: the shortest birch is barely half the tallest and
-            // stands well under the pines, every one of which is 30.5 m.
+            // stands well under the pines, which run 22.7 to 30.5 m (75-100 ft),
+            // every one a slender pine shrunk whole -- see SLOT_SOURCE in
+            // tools/voxelize_pine9.py.
             //
             // Anything past 25.5 m is TWO STACKED MODELS in one file, that being
             // the tallest a .vox coordinate byte can address -- see the scene-graph
@@ -21892,12 +22240,31 @@ class World {
             reapplyDamage(c, key);
 
             residentTris_ += c.tris;
+            // -- ...AND THE CHUNK IT REPLACES GIVES ITS TRIANGLES BACK --------
+            //
+            // (2026-09-23.) The note below said the old chunk "releases its
+            // structure exactly as eviction does", and for the STRUCTURE that
+            // is true -- the Blas is reference-counted. The triangle range is
+            // not: it is an offset into pool_, and eviction hands it back by
+            // hand (see rering). Nothing did here, so every re-mesh of a
+            // resident chunk -- every hoe swing, dig, planting and heal, and
+            // every wave step of a lake -- leaked the chunk's whole range and
+            // counted its triangles twice. The pool grew instead of recycling,
+            // and a pool that cannot grow drops a chunk: the "missing terrain
+            // squares" of 2026-09-18 had no other known cause.
+            //
+            // Reused at once, as eviction's are: one queue, so the upload that
+            // takes this range lands after every frame already submitted.
+            if (const auto old = chunks_.find(key); old != chunks_.end()) {
+                pool_.release(old->second.triOffset, old->second.tris);
+                residentTris_ -= old->second.tris;
+            }
             // REPLACE, NOT INSERT. emplace() keeps the value already at a key,
             // so a chunk that came back because it was DUG would have been
             // built, uploaded and then silently thrown away -- the hole would
             // never appear and nothing would report an error. The old chunk is
-            // destroyed here, which releases its structure exactly as eviction
-            // does, and the new one draws from the next frame.
+            // destroyed here -- its structure with it, its triangles above --
+            // and the new one draws from the next frame.
             chunks_.insert_or_assign(key, std::move(c));
 
             // THE VALVE, and it is checked HERE -- with the chunk already in
@@ -22328,6 +22695,63 @@ class World {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // HOW FAR A 3x3 TURNED BETWEEN TWO PUBLISHES, as axis * angle.
+    //
+    // The rotation that takes a vector of the body NOW back to where it pointed
+    // THEN -- Rd = Mwas * Mnow^-1 -- which is the convention the loose-body
+    // branch of Trace.cs.slang rotates by. Both are row-major, as
+    // setFlyerInstance takes them.
+    //
+    // THE FADE IS DIVIDED OUT. A flyer's 3x3 is a turn times the uniform scale
+    // it fades in through, so each is normalised by the cube root of its own
+    // determinant first; Mnow^-1 is then its transpose. A mirrored model keeps
+    // its sign on both sides and the product is still a rotation -- a product
+    // that is NOT one (a mirror that came or went) answers zero rather than a
+    // turn that means nothing.
+    //
+    // ZERO PAST ~170 DEGREES, deliberately. Near a half turn the axis is
+    // ill-conditioned, and a body that flipped round in one frame has no
+    // history worth fetching whichever way it is described.
+    // -----------------------------------------------------------------------
+    static float3 flyerTurn(const float *was, const float *now) {
+        auto det = [](const float *a) {
+            return a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) +
+                   a[2] * (a[3] * a[7] - a[4] * a[6]);
+        };
+        const float dw = det(was), dn = det(now);
+        if (std::fabs(dw) < 1e-12f || std::fabs(dn) < 1e-12f || (dw < 0.0f) != (dn < 0.0f))
+            return float3(0.0f, 0.0f, 0.0f);
+        const float s = 1.0f / (std::cbrt(std::fabs(dw)) * std::cbrt(std::fabs(dn)));
+        float R[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)   // (was * now^T)[i][j] = row i of was . row j of now
+                R[i * 3 + j] = s * (was[i * 3 + 0] * now[j * 3 + 0] +
+                                    was[i * 3 + 1] * now[j * 3 + 1] +
+                                    was[i * 3 + 2] * now[j * 3 + 2]);
+        // R - R^T = 2 sin(th) [k]x, and trace = 1 + 2 cos(th).
+        const float wx = R[7] - R[5], wy = R[2] - R[6], wz = R[3] - R[1];
+        const float w = std::sqrt(wx * wx + wy * wy + wz * wz);
+        const float th = std::atan2(0.5f * w, 0.5f * (R[0] + R[4] + R[8] - 1.0f));
+        if (w < 1e-7f || th < 1e-5f || th > 2.97f) return float3(0.0f, 0.0f, 0.0f);
+        const float k = th / w;
+        return float3(wx * k, wy * k, wz * k);
+    }
+
+    // `r` turned by axis * angle `rv` -- Rodrigues, exactly as the shader does
+    // it, so the host's re-basing of prevOffset and the tracer agree.
+    static float3 rotateBy(float3 rv, float3 r) {
+        const float th = std::sqrt(rv.x * rv.x + rv.y * rv.y + rv.z * rv.z);
+        if (th <= 0.0f) return r;
+        const float kx = rv.x / th, ky = rv.y / th, kz = rv.z / th;
+        const float c = std::cos(th), s = std::sin(th);
+        const float kr = kx * r.x + ky * r.y + kz * r.z;
+        const float cx = ky * r.z - kz * r.y, cy = kz * r.x - kx * r.z, cz = kx * r.y - ky * r.x;
+        return float3(r.x * c + cx * s + kx * kr * (1.0f - c),
+                      r.y * c + cy * s + ky * kr * (1.0f - c),
+                      r.z * c + cz * s + kz * kr * (1.0f - c));
+    }
+
     static void writeTransform(RtInstanceDesc &inst, const float *m, float tx, float ty, float tz) {
         inst.transform[0][0] = m[0]; inst.transform[0][1] = m[1]; inst.transform[0][2] = m[2];
         inst.transform[0][3] = tx;
@@ -22343,6 +22767,61 @@ class World {
     void rebuildTlas() {
         const auto tt0 = std::chrono::steady_clock::now();
         static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        // -- WHAT IS ON SCREEN IN THE MOVING BANDS SURVIVES THE REBUILD ---------
+        //
+        // (user 2026-09-24: "in the arcade mode, when shooting, the chunks that
+        //  are on the floor from the bullet impact, are flickering. they
+        //  flicker everytime the player shoots." -- and "this is only a
+        //  problem in the arcade mode".)
+        //
+        // The moving bands are RESERVED below: every slot pushed
+        // masked off, at the identity, with no triangles -- and filled in again
+        // only when their owners next write them (updateDebris, once a frame).
+        // A rebuild that lands AFTER that in the frame therefore draws the
+        // frame with every one of them missing. In the level that is every
+        // round: the carve re-meshes a block and a block is a TLAS instance, so
+        // the bullet drain (app_frame, after stepLoose) rebuilds the TLAS on the
+        // frame the round lands, and every chip on the map vanished for exactly
+        // that frame -- which Ray Reconstruction smeared into a dark ghost where
+        // each one had been (v2_take_029, frames 49 and 62). The wood never saw
+        // it: a chunk edit there is not a TLAS rebuild.
+        //
+        // So a band's live slots are copied out here and put back over the
+        // reservation -- same structure, same transform, same motion vector --
+        // with only the instance id renumbered. Hidden slots take the fresh
+        // reservation, which is what they would have been anyway.
+        struct KeptBand {
+            std::vector<RtInstanceDesc> d;
+            std::vector<V6Instance> i;
+        };
+        auto keepBand = [&](int base, int n) {
+            KeptBand k;
+            if (base >= 0 && size_t(base) + size_t(n) <= instanceDescs_.size() &&
+                size_t(base) + size_t(n) <= instanceInfos_.size()) {
+                k.d.assign(instanceDescs_.begin() + base, instanceDescs_.begin() + base + n);
+                k.i.assign(instanceInfos_.begin() + base, instanceInfos_.begin() + base + n);
+            }
+            return k;
+        };
+        // THE LOOSE BAND ONLY. Its structures are uncompacted loose builds that
+        // nothing swaps behind the slot's back (retire and re-mesh both write
+        // the slot as they go), so last frame's address is still a live one.
+        // The drop band points at HELD models, whose compaction replaces the
+        // structure asynchronously -- restoring a stale address there would be
+        // a device fault, not a flicker, so it keeps the reservation.
+        const KeptBand keptDebris = keepBand(debrisBase_, kDebrisInstances);
+        auto restoreBand = [&](const KeptBand &k, int base) {
+            if (base < 0 || k.d.empty()) return;
+            for (size_t sl = 0; sl < k.d.size(); ++sl) {
+                if (k.d[sl].instanceMask == 0) continue;   // hidden: the reservation is right
+                const size_t idx = size_t(base) + sl;
+                if (idx >= instanceDescs_.size()) break;
+                const uint32_t id = instanceDescs_[idx].instanceID;
+                instanceDescs_[idx] = k.d[sl];
+                instanceDescs_[idx].instanceID = id;
+                instanceInfos_[idx] = k.i[sl];
+            }
+        };
         instanceDescs_.clear();
         instanceInfos_.clear();
 
@@ -22560,6 +23039,7 @@ class World {
                     di.tint = float3(1.0f, 1.0f, 1.0f);
                     push(dd, di);
                 }
+                restoreBand(keptDebris, debrisBase_);
                 // Whatever the old band held went with it, so the next frame
                 // has to publish whether or not anything moved.
                 debrisDirty_ = true;

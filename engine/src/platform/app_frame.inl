@@ -672,6 +672,25 @@
             std::fflush(stdout);
         }
 
+        // ...AND, WITH V2_DROP_RETURN, THE WALK AWAY AND BACK that arms a throw
+        // (see Item::leaveFirst): two seconds after the drop, stand 6 m off it;
+        // a second later, 1.5 m off. It should come to you then and not before.
+        if (opt_.dropFrame >= 0 && std::getenv("V2_DROP_RETURN")) {
+            Vec3 at{0, 0, 0};
+            bool flying = false;
+            const int k = shotFrames_ - opt_.dropFrame;
+            if ((k == 120 || k == 180) && drops_.newestDrop(&at, &flying)) {
+                const float off = k == 120 ? 6.0f : 1.5f;
+                std::printf("v2: drop-return frame +%d: the drop is %.2f m off; standing %.1f m "
+                            "from it\n",
+                            k,
+                            double(sqrtf((at.x - player_.pos.x) * (at.x - player_.pos.x) +
+                                         (at.z - player_.pos.z) * (at.z - player_.pos.z))),
+                            double(off));
+                teleportTo(at.x + off, at.z);
+            }
+        }
+
         // A SCRIPTED DROP, on its named frame. Runs the same three lines the
         // Q handler does; there is no key event on this path to reach them
         // through.
@@ -1419,9 +1438,15 @@
         }
 #endif
 
+        // THE CINEMA RIG MAY HAVE THE CAMERA -- see ui/app_cinema.inl. After
+        // life has published this frame's boxes, so it follows where the animal
+        // IS; and into locals, so pos_ and the player's own look stay the
+        // player's for everything else that reads them.
+        Vec3 camPos = pos_, camDir = forward();
+        tickCinema(dt, &camPos, &camDir);
         Camera cam;
-        cam.origin = pos_;
-        cam.target = pos_ + forward() * 50.0f;
+        cam.origin = camPos;
+        cam.target = camPos + camDir * 50.0f;
         cam.fovDeg = fov_;
         // A PINHOLE, AND IT WENT BACK TO BEING ONE ON PURPOSE. The viewer did
         // briefly drive the thin lens from a "Depth of field" slider, and the
@@ -1463,7 +1488,10 @@
             // frame rather than on a change: the hand bobs and sways, so the
             // point it hangs off moves whether or not the COUNT does.
             setStackBadge();
-            world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, hx.show);
+            // CINEMA HIDES THE TOOL HERE, AT THE DRAW, and nowhere else -- see
+            // toggleCinema for why it no longer touches held_.shown.
+            const bool handDrawn = hx.show && !cinema_;
+            world_.setHeldInstance(held_.model(), hx.m, hx.tx, hx.ty, hx.tz, handDrawn);
             // -- AND NOTHING IS RESET HERE. READ THIS BEFORE ADDING IT BACK --
             //
             // (user 2026-09-20: "when pulling the bow back or switching weapons
@@ -1508,7 +1536,7 @@
             // holds the new tool and the old one is still falling out of frame,
             // and telling the tracer the new one's name there would throw away
             // a perfectly good vector for every frame of the drop.
-            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, hx.show, held_.drawnTool());
+            tracer_.setHeldXform(hx.m, hx.tx, hx.ty, hx.tz, handDrawn, held_.drawnTool());
             hStart();
             arrows_.publish(world_);
             bullets_.publish(world_);
@@ -1616,6 +1644,7 @@
         //
         // Traced BEFORE the camera sample, so the atlas the tracer reads
         // already holds this frame's rays rather than last frame's.
+        tickFireLive();   // V2_FIRE_LIVE only; app_tests_interaction.inl
         if (opt_.r.giMode == 1 && ddgi_.available()) {
             FALCOR_PROFILE(ctx, "probes");
             ddgi_.setOrigin(pos_);
@@ -1829,10 +1858,14 @@
             ctx->blit(tracer_.display()->getSRV(), target->getRenderTargetView(0),
                       Falcor::uint4(0, 0, uint32_t(tracer_.displayWidth()),
                                     uint32_t(tracer_.displayHeight())));
-            drawCrosshair(ctx, target);
-            // AFTER the crosshair, because a dying player should not be
-            // squinting past a mark, and the curtain is meant to cover it.
-            drawVitals(ctx, target);
+            // NOT IN CINEMA -- "all ui dissapears". The game-over curtain stays:
+            // it is not interface, it is the game saying you died.
+            if (!cinema_) {
+                drawCrosshair(ctx, target);
+                // AFTER the crosshair, because a dying player should not be
+                // squinting past a mark, and the curtain is meant to cover it.
+                drawVitals(ctx, target);
+            }
             drawGameOver(ctx, target);
         }
         segEnd(kSegPresent);
@@ -1946,6 +1979,8 @@
             hitch_.push_back(h);
         }
         tickFellLive(ctx, frameMs, streamMs);   // --fell-live only; see app_tests_interaction.inl
+        tickEditLive(ctx);                      // V2_EDIT_LIVE only; same file
+        tickCinemaTest(ctx);                    // V2_CINEMA_TEST only; ui/app_cinema.inl
         if (!opt_.shotPath.empty() || opt_.profile || !opt_.shotUi.empty()) {
             ++shotFrames_;
             // --shot-ui does its own capture at the TOP of a frame, so it must
@@ -2047,10 +2082,15 @@
                 }
                 if (opt_.dropFrame >= 0) {
                     float clear = 0.0f;
+                    Vec3 at{0, 0, 0};
                     for (int i = 0; i < kDropSlots; ++i)
-                        if (drops_.clearance(i, &clear))
-                            std::printf("v2: drop %d clears %.3f m (%.1f voxels)\n", i,
-                                        double(clear), double(clear / VOXEL_M));
+                        if (drops_.clearance(i, &clear) && drops_.position(i, &at))
+                            std::printf("v2: drop %d clears %.3f m (%.1f voxels), %.2f m from you "
+                                        "(reach %.1f)\n",
+                                        i, double(clear), double(clear / VOXEL_M),
+                                        double(sqrtf((at.x - player_.pos.x) * (at.x - player_.pos.x) +
+                                                     (at.z - player_.pos.z) * (at.z - player_.pos.z))),
+                                        double(kPickupM));
                 }
                 std::fflush(stdout);
                 askShutdown(0);

@@ -2260,10 +2260,9 @@ class Bunnies {
         // [[v2-flyer-motion-anchor]]). Using the box centre would describe a
         // turn about a point that is not on the animal.
         //
-        // A SPIN WITH NO ANGLE IS NOT A SPIN -- setFlyerInstance drops it, so a
-        // marcher walking straight costs nothing and publishes no spin at all.
-        const float spin[4] = {p.ax, p.ay, p.az, s.dth};
-        world.setFlyerInstance(slot, p.model, p.m, p.tx, p.ty, p.tz, nullptr, true, spin,
+        // THE TURN IS NO LONGER HANDED IN: it is in p.m, and setFlyerInstance
+        // derives it from there, about this same anchor (user 2026-09-24).
+        world.setFlyerInstance(slot, p.model, p.m, p.tx, p.ty, p.tz, nullptr, true, nullptr,
                                anchor);
     }
 
@@ -2661,11 +2660,12 @@ class Bunnies {
         // with the fade. None of that is the animal moving. See World::place,
         // and pose(), which works this point out with the bake's nudge IN it.
         const float anchor[3] = {p.ax, p.ay, p.az};
-        // ...AND THE TURN -- see the spin note in putSkunk. A rabbit spends a
-        // whole strip turning in place, which is the case that channel exists
-        // for.
-        const float spin[4] = {p.ax, p.ay, p.az, b.dth};
-        world.setFlyerInstance(slot, p.model, p.m, p.tx, p.ty, p.tz, nullptr, true, spin,
+        // ...AND THE TURN, DERIVED FROM p.m BY setFlyerInstance rather than
+        // handed in. Bunny::dth was set only inside kTurn, so the heading
+        // choose() SNAPS at the start of most hops (up to half a radian in one
+        // frame) was never said at all (user 2026-09-24, "creatures are
+        // ghosting"). A derived turn cannot miss a branch.
+        world.setFlyerInstance(slot, p.model, p.m, p.tx, p.ty, p.tz, nullptr, true, nullptr,
                                anchor);
     }
 

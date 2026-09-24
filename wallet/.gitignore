@@ -1,0 +1,5 @@
+/target
+# Built by build.bat from target/release -- a 16 MB binary, not source.
+/wallet.exe
+# A build moves a running exe aside rather than failing on it.
+*.old

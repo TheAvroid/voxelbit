@@ -193,7 +193,7 @@ void usage() {
         "  --rr-preset N             which Ray Reconstruction model: 5 = preset E\n"
         "                            (the default), 4 = D, 0 = the driver's own pick\n"
         "  --dlss MODE               ultra-performance | performance | balanced |\n"
-        "                            quality | dlaa            (default quality)\n"
+        "                            quality | dlaa            (default performance)\n"
         "  --shot PATH               run the viewer, write a png, quit -- the only way\n"
         "                            to see a TEMPORAL renderer, which --out cannot\n"
         "  --shot-frame N            how many frames first          (default 240)\n"
@@ -634,6 +634,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         if (a == "--float-audit") { o->floatAudit = true; continue; }
         if (a == "--float-sweep") { o->floatSweep = true; continue; }
         if (a == "--rip-test") { o->ripTest = true; continue; }
+        if (a == "--chip-hold-test") { o->chipHoldTest = true; continue; }
         if (a == "--level-reset-test") { o->levelResetTest = true; continue; }
         if (a == "--pole-test") { o->poleTest = true; continue; }
         if (a == "--refresh-frame") { argInt(argc, argv, i, &o->refreshFrame); continue; }
@@ -1008,7 +1009,7 @@ int main(int argc, char **argv) {
     //    whoever is at the keyboard.
     c.headless = o.spawnPick || o.outGiven || o.fellTest || o.floatTest || o.digTest ||
                  o.hopTest > 0 || o.locateTest ||
-                 o.clipTest || o.wheatTest || o.hoeTest || o.foodTest || o.floatAudit || o.floatSweep || o.ripTest || o.poleTest || o.levelResetTest ||
+                 o.clipTest || o.wheatTest || o.hoeTest || o.foodTest || o.floatAudit || o.floatSweep || o.ripTest || o.chipHoldTest || o.poleTest || o.levelResetTest ||
                  o.shaftTest || o.killTest || o.soilTest || o.duckTest || o.lbugTest ||
                  o.recTest;
 

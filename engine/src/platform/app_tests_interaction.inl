@@ -651,6 +651,12 @@
                           // in which case it is still turned and they stay down.
                           scatterA == 0 && (wetHere ? true : scatterR == scatter0) &&
                           flowersWent && flowersStayedDown && flowersBack;
+        // How many times a chunk would have been handed back an OLDER shape of
+        // itself during the run -- the ground reverting and re-appearing. See
+        // World::staleChunkBuild; dropped now, counted so the rate stays seen.
+        std::printf("  stale compactions dropped: %zu for a rebuilt chunk (each one a flicker "
+                    "back to the old ground, before 2026-09-23)\n",
+                    world_.profile().staleCompactions);
         std::printf("\n  %s\n", pass ? "PASS -- it turned the earth, refused to dig itself "
                                        "deeper, and grew back."
                                      : "FAIL -- see the lines above.");
@@ -1339,6 +1345,206 @@
         chk("stood back on the map spawn", moved < 0.75f);
         chk("the gun is full again", rifleAmmo_ == kRifleMag);
 
+        std::printf("\n%d wrong\n", bad);
+        std::fflush(stdout);
+    }
+
+    // -----------------------------------------------------------------------
+    // --chip-hold-test -- DO THE CHIPS ON THE FLOOR STAY PUT WHEN YOU FIRE?
+    //
+    // (user 2026-09-24: "in the arcade mode, when shooting, the chunks that are
+    //  on the floor from the bullet impact, are flickering. they flicker
+    //  everytime the player shoots.")
+    //
+    // A round carves the level, and a carve thaws and re-floors every loose
+    // piece whose window meets it (World::applyThaws). This fires a burst into
+    // a wall, lets the pile settle and freeze, then fires three more rounds
+    // beside it and measures how far each piece that was ALREADY LYING THERE
+    // moves. A piece at rest on a floor that did not change should not move at
+    // all; the flicker was each of them dropping through its window and
+    // popping back.
+    // -----------------------------------------------------------------------
+    void runChipHoldTest() {
+        std::printf("\n=== CHIPS ON THE FLOOR, UNDER FIRE ===\n\n");
+        if (!world_.setLevel(true)) {
+            std::printf("  NO LEVEL -- run tools/voxelize_arcade.py\n\n1 wrong\n");
+            std::fflush(stdout);
+            return;
+        }
+        standInLevel();
+        const float dt = 1.0f / 60.0f;
+        auto step = [&](int frames) {
+            for (int f = 0; f < frames; ++f) {
+                physics_.step(dt);
+                simMs_ += double(dt) * 1000.0;
+                world_.updateDebris(physics_, player_.eyePosition(), simMs_,
+                                    [&](float x, float z) {
+                                        return player_.surfaceAt(walkWorld(), x, z);
+                                    });
+            }
+        };
+        // A WALL, FOUND ALONG THE SPAWN'S SIGHTLINE at waist height -- the same
+        // search --level-reset-test makes, for the same reason: a burst into
+        // open air proves nothing.
+        const Vec3 feet = player_.pos;
+        const float yawR = world_.levelSpawnYaw() * PI / 180.0f;
+        const Vec3 fwd{sinf(yawR), 0.0f, -cosf(yawR)};
+        Vec3 wall{0, 0, 0};
+        bool found = false;
+        for (int k = 4; k <= 200 && !found; ++k)
+            for (int a = 0; a < 16 && !found; ++a) {
+                const float ang = yawR + float(a) * (2.0f * PI / 16.0f);
+                const Vec3 p{feet.x + sinf(ang) * float(k) * 0.25f, feet.y + 0.9f,
+                             feet.z - cosf(ang) * float(k) * 0.25f};
+                if (world_.levelSolidAtM(p) && !world_.levelSolidAtM(Vec3{p.x, feet.y + 0.3f, p.z} - Vec3{sinf(ang), 0, -cosf(ang)} * 0.6f)) {
+                    wall = p;
+                    found = true;
+                }
+            }
+        (void)fwd;
+        if (!found) {
+            std::printf("  no wall near the spawn -- nothing to shoot\n\n1 wrong\n");
+            std::fflush(stdout);
+            return;
+        }
+        std::printf("  wall at (%.2f, %.2f, %.2f)\n", wall.x, wall.y, wall.z);
+
+        // -- THE BURST THAT MAKES THE PILE ---------------------------------
+        int made = 0;
+        for (int s = 0; s < 10; ++s) {
+            const Vec3 at{wall.x + float(s % 5 - 2) * 0.12f, wall.y + float(s / 5) * 0.15f - 0.3f,
+                          wall.z + float(s % 5 - 2) * 0.12f};
+            int n = 0;
+            Vec3 sp{0, 0, 0};
+            if (world_.carveLevelToBody(physics_, at, kBulletChipVox, simMs_, kArrowAbsorbM, &n,
+                                        &sp) >= 0)
+                ++made;
+            step(6);   // 100 ms apart, a rifle's rate
+        }
+        step(300);   // five seconds: landed, still, frozen
+        int frozen = 0;
+        std::vector<int> slots;
+        std::vector<Vec3> rest;
+        for (int i = 0; i < kDebrisInstances; ++i) {
+            Vec3 p{0, 0, 0};
+            if (!world_.debrisPose(i, &p, nullptr)) continue;
+            slots.push_back(i);
+            rest.push_back(p);
+            if (world_.debrisFrozen(i)) ++frozen;
+        }
+        std::printf("  burst: %d chips cut, %zu bodies lying, %d frozen\n", made, slots.size(),
+                    frozen);
+        if (slots.empty()) {
+            std::printf("  nothing on the floor to watch\n\n1 wrong\n");
+            std::fflush(stdout);
+            return;
+        }
+
+        // -- THE CONTROL: the same wait with no round fired ----------------
+        {
+            float calm = 0.0f;
+            for (int f = 0; f < 90; ++f) {
+                step(1);
+                for (size_t k = 0; k < slots.size(); ++k) {
+                    Vec3 p{0, 0, 0};
+                    if (world_.debrisPose(slots[k], &p, nullptr)) calm = maxf(calm, length(p - rest[k]));
+                }
+            }
+            int fz = 0;
+            for (int i : slots) fz += world_.debrisFrozen(i) ? 1 : 0;
+            std::printf("  control, no shot: worst move %.1f mm over 1.5 s, %d frozen\n",
+                        double(calm) * 1000.0, fz);
+            for (size_t k = 0; k < slots.size(); ++k) world_.debrisPose(slots[k], &rest[k], nullptr);
+        }
+
+        // -- ...AND THE NEXT ROUNDS, BESIDE IT -----------------------------
+        float worst = 0.0f, worstDrop = 0.0f;
+        int moved = 0, missing = 0;
+        std::vector<float> most(slots.size(), 0.0f);
+        for (int shot = 0; shot < 3; ++shot) {
+            const Vec3 at{wall.x + 0.35f * float(shot + 1), wall.y, wall.z + 0.35f * float(shot + 1)};
+            int n = 0;
+            Vec3 sp{0, 0, 0};
+            world_.carveLevelToBody(physics_, at, kBulletChipVox, simMs_, kArrowAbsorbM, &n, &sp);
+            // ...AND THE FRAME THAT ROUND IS DRAWN ON. The carve rebuilt the
+            // TLAS after this frame's updateDebris had already published the
+            // band -- which is exactly where the game draws from next.
+            missing = maxi(missing, world_.debrisMissingFromTlas());
+            std::vector<Vec3> before(slots.size());
+            for (size_t k = 0; k < slots.size(); ++k) world_.debrisPose(slots[k], &before[k], nullptr);
+            std::vector<int> firstF(slots.size(), -1);
+            std::vector<float> shotMost(slots.size(), 0.0f);
+            for (int f = 0; f < 90; ++f) {
+                step(1);
+                for (size_t k = 0; k < slots.size(); ++k) {
+                    Vec3 p{0, 0, 0};
+                    if (!world_.debrisPose(slots[k], &p, nullptr)) continue;
+                    const Vec3 d = p - rest[k];
+                    const float m = length(d);
+                    most[k] = maxf(most[k], m);
+                    worstDrop = maxf(worstDrop, rest[k].y - p.y);
+                    const float ms = length(p - before[k]);
+                    shotMost[k] = maxf(shotMost[k], ms);
+                    if (ms > 0.002f && firstF[k] < 0) firstF[k] = f + 1;
+                }
+            }
+            for (size_t k = 0; k < slots.size(); ++k) {
+                if (shotMost[k] <= 0.002f) continue;
+                std::printf("    shot %d: chip %2d (%.2f m from the hit) moved %.1f mm, from frame %d\n",
+                            shot + 1, slots[k], double(length(before[k] - at)),
+                            double(shotMost[k]) * 1000.0, firstF[k]);
+            }
+        }
+        for (float m : most) {
+            worst = maxf(worst, m);
+            if (m > 0.01f) ++moved;
+        }
+        std::printf("  3 more rounds beside it: %d of %zu resting chips moved over 1 cm\n", moved,
+                    slots.size());
+        std::printf("  worst move %.1f mm, worst drop %.1f mm\n", double(worst) * 1000.0,
+                    double(worstDrop) * 1000.0);
+        int bad = 0;
+        const bool ok = worst < 0.01f;
+        if (!ok) ++bad;
+        std::printf("  %-34s %s\n", "resting chips hold still", ok ? "ok" : "<== WRONG");
+        // THE ARCADE'S FLICKER, AS A COUNT: pieces the frame after a round
+        // would have drawn without (v2_take_029).
+        std::printf("  on the frame a round lands, %d live chip(s) missing from the TLAS\n",
+                    missing);
+        const bool drawn = missing == 0;
+        if (!drawn) ++bad;
+        std::printf("  %-34s %s\n", "every chip still drawn", drawn ? "ok" : "<== WRONG");
+
+        // -- ...BUT NOTHING FLOATS: shoot the floor out from under one -------
+        //
+        // Holding still is only half the rule. A piece whose floor is really
+        // taken away must still fall, even though its old window now stays up
+        // until the new one is cut and even though it is asleep.
+        step(240);   // back to sleep first, or this proves nothing
+        int target = -1;
+        Vec3 t0{0, 0, 0};
+        for (int i : slots)
+            if (world_.debrisPose(i, &t0, nullptr)) { target = i; break; }
+        if (target < 0) {
+            std::printf("  no resting chip left to undercut\n");
+            ++bad;
+        } else {
+            const float floorY = world_.levelFloorBelowM(t0.x, t0.y, t0.z);
+            // A BARE CARVE, not carveLevelToBody: the spoil of that is a body
+            // born exactly where the floor was, and it shoved the chip UP 42 cm
+            // -- a test of the spoil, not of whether the chip falls.
+            const int n = 5;
+            world_.carveLevelAt(Vec3{t0.x, floorY - 0.1f, t0.z}, n);
+            step(120);
+            Vec3 t1{0, 0, 0};
+            const bool alive = world_.debrisPose(target, &t1, nullptr);
+            const float drop = alive ? t0.y - t1.y : 1.0f;
+            const bool fell = drop > 0.02f;
+            if (!fell) ++bad;
+            std::printf("  floor cut under chip %d (radius %d vox): it dropped %.1f mm\n", target, n,
+                        double(drop) * 1000.0);
+            std::printf("  %-34s %s\n", "an undercut chip still falls", fell ? "ok" : "<== WRONG");
+        }
         std::printf("\n%d wrong\n", bad);
         std::fflush(stdout);
     }
@@ -3976,6 +4182,193 @@
     double fellLiveStream_ = 0.0, fellLiveLife_ = 0.0, fellLivePub_ = 0.0;
     World::Profile fellLiveProf_{};
     std::chrono::steady_clock::time_point fellLiveT0_{}, fellLiveLast_{};
+    // -----------------------------------------------------------------------
+    // V2_EDIT_LIVE=hoe|shovel|seed|heal -- AN EDIT IN THE REAL FRAME LOOP.
+    //
+    // (user 2026-09-23: "when using the hoe on the terrain, it glitches the
+    //  ground. same thing when planting seeds. also using the shovel ... when
+    //  the ground heals it also glitches the ground.")
+    //
+    // --hoe-test and --dig-test run inside onLoad: they drive World::update
+    // with no frame, no trace and no DLSS, so they can prove what an edit
+    // WRITES and never what it LOOKS like. This one runs in the frame loop:
+    // it goes to tillable soil, looks at a patch a few metres off, makes the
+    // edits the tools make on a timer, and with V2_EDIT_LIVE_SHOTS=<dir>
+    // writes every displayed frame from the first edit on. The frames are the
+    // evidence; the stale-compaction count says how often the chunk was about
+    // to be handed an older shape of itself (see World::staleChunkBuild).
+    // Launch it with --background and nothing else; it shuts the run down.
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // V2_FIRE_LIVE -- THE RIFLE IN THE REAL FRAME LOOP, COUNTING WHAT IS DRAWN.
+    //
+    // (user 2026-09-24: the arcade chips "flicker everytime the player
+    //  shoots", and "this is only a problem in the arcade mode".)
+    //
+    // --chip-hold-test cannot see this: headless, no model is loaded, so the
+    // loose band is never reserved and there is nothing to blank. This runs in
+    // the frame, fires a round every kFireLiveGap frames from the level spawn,
+    // and asks -- at the moment the frame is about to be traced -- how many
+    // live chips are masked off in the instance array. Any non-zero is a frame
+    // drawn without them. Launch with --background --level --shot <png>
+    // --shot-frame 620 (the shot is what ends the run).
+    // -----------------------------------------------------------------------
+    static constexpr int kFireLiveWarm = 240, kFireLiveGap = 18, kFireLiveRounds = 16;
+    int fireLiveFrame_ = 0, fireLiveShots_ = 0, fireLiveBad_ = 0, fireLiveWorst_ = 0;
+    int fireLiveSeen_ = 0;
+    void tickFireLive() {
+        static const bool on = std::getenv("V2_FIRE_LIVE") != nullptr;
+        if (!on || !world_.levelOn()) return;
+        ++fireLiveFrame_;
+        if (fireLiveFrame_ > kFireLiveWarm) {
+            const int miss = world_.debrisMissingFromTlas();
+            const int shown = world_.debrisShownCount();
+            fireLiveSeen_ = maxi(fireLiveSeen_, shown);
+            if (miss > 0) {
+                ++fireLiveBad_;
+                fireLiveWorst_ = maxi(fireLiveWorst_, miss);
+                std::printf("  fire     frame %d: %d of %d live chips NOT DRAWN\n",
+                            fireLiveFrame_, miss, shown);
+            }
+        }
+        if (fireLiveFrame_ >= kFireLiveWarm && fireLiveShots_ < kFireLiveRounds &&
+            (fireLiveFrame_ - kFireLiveWarm) % kFireLiveGap == 0) {
+            if (fireGun()) ++fireLiveShots_;
+        }
+        if (fireLiveFrame_ == kFireLiveWarm + kFireLiveRounds * kFireLiveGap + 40) {
+            std::printf("  fire     %d rounds, up to %d chips on the map, %d frame(s) drew "
+                        "without some (worst %d)  %s\n",
+                        fireLiveShots_, fireLiveSeen_, fireLiveBad_, fireLiveWorst_,
+                        fireLiveSeen_ == 0 ? "NOTHING TO SEE -- no chips were made"
+                        : fireLiveBad_ == 0 ? "PASS" : "WRONG");
+            std::fflush(stdout);
+        }
+    }
+
+    static constexpr int kEditLiveWarm = 300, kEditLiveShots = 150;
+    int editLiveFrame_ = 0, editLiveEdits_ = 0, editLiveFirst_ = -1;
+    bool editLiveReady_ = false, editLiveDone_ = false;
+    Vec3 editLiveAt_{0.0f, 0.0f, 0.0f};
+    double editLiveNext_ = 0.0;
+    void tickEditLive(Falcor::RenderContext *ctx) {
+        static const std::string tool = [] {
+            const char *e = std::getenv("V2_EDIT_LIVE");
+            return std::string(e ? e : "");
+        }();
+        if (tool.empty() || editLiveDone_) return;
+        static const std::string shotDir = [] {
+            const char *e = std::getenv("V2_EDIT_LIVE_SHOTS");
+            return std::string(e ? e : "");
+        }();
+        ++editLiveFrame_;
+        if (editLiveFrame_ == kEditLiveWarm / 3) {
+            std::printf("  edit     /locate oak: %s\n", runCommand("/locate oak").c_str());
+            std::fflush(stdout);
+        }
+        if (editLiveFrame_ < kEditLiveWarm) return;
+        const double now = simMs_ * 0.001;
+        if (!editLiveReady_) {
+            // SOIL THE HOE WILL TURN, 2.5 to 5 m off, and dry: the same material
+            // rule the tool uses (isTillableMat), asked on a ring -- for every
+            // spot of the 4 x 2 grid of edits the run will make.
+            const Vec3 feet = player_.pos;
+            TerrainMemo memo;
+            bool found = false;
+            for (float r = 2.5f; r <= 5.0f && !found; r += 0.25f)
+                for (int k = 0; k < 48 && !found; ++k) {
+                    const float a = float(k) / 48.0f * 2.0f * PI;
+                    const float x = feet.x + cosf(a) * r, z = feet.z + sinf(a) * r;
+                    const int ci = int(std::floor(x / VOXEL_M)), cj = int(std::floor(z / VOXEL_M));
+                    bool ok = !wetColumnAt(x, z);
+                    for (int s = 0; s < 8 && ok; ++s) {   // the whole grid of edits
+                        const int si = ci + (s % 4) * 9, sj = cj + (s / 4) * 9;
+                        const int h = world_.terrain.heightVox(si, sj, memo);
+                        ok = isTillableMat(world_.terrain.topMaterial(si, sj, h, memo)) &&
+                             !wetColumnAt((float(si) + 0.5f) * VOXEL_M, (float(sj) + 0.5f) * VOXEL_M);
+                    }
+                    if (!ok) continue;
+                    editLiveAt_ = Vec3(x, walkGroundM(walkWorld(), x, z), z);
+                    found = true;
+                }
+            if (!found) {
+                std::printf("  edit     no tillable soil within 5 m -- nothing to test here\n");
+                editLiveDone_ = true;
+                askShutdown(0);
+                return;
+            }
+            std::printf("\n=== EDIT LIVE: %s === at (%.1f, %.1f, %.1f), frame %d\n", tool.c_str(),
+                        editLiveAt_.x, editLiveAt_.y, editLiveAt_.z, editLiveFrame_);
+            std::fflush(stdout);
+            editLiveReady_ = true;
+            editLiveNext_ = double(editLiveFrame_ + 30);   // let the view settle on it first
+        }
+        // LOOK AT THE MIDDLE OF THE ROW OF EDITS, every frame.
+        pos_ = player_.eyePosition();
+        {
+            const Vec3 aim(editLiveAt_.x + 1.35f, editLiveAt_.y, editLiveAt_.z + 0.45f);
+            const Vec3 look = normalize(Vec3(aim.x - pos_.x, aim.y - pos_.y, aim.z - pos_.z));
+            yaw_ = atan2f(look.x, -look.z) * 180.0f / PI;
+            pitch_ = asinf(look.y) * 180.0f / PI;
+        }
+        const int kEdits = tool == "heal" ? 5 : 8;
+        // PACED IN FRAMES, NOT SECONDS: writing every frame to disk makes a
+        // frame take far longer than it does in play, and a clock-paced run
+        // then lands its edits on consecutive frames. ~16 frames is a hoe
+        // swing at the 40 fps this scene runs at.
+        if (editLiveEdits_ < kEdits && double(editLiveFrame_) >= editLiveNext_) {
+            const int k = editLiveEdits_;
+            const Vec3 at(editLiveAt_.x + 0.9f * float(k % 4), editLiveAt_.y,
+                          editLiveAt_.z + 0.9f * float(k / 4));
+            size_t n = 0;
+            int gap = 16;
+            if (tool == "hoe") {
+                n = world_.till(at, kTillRadiusM, now);
+            } else if (tool == "shovel") {
+                n = world_.dig(Vec3(editLiveAt_.x, editLiveAt_.y - 0.1f * float(k), editLiveAt_.z),
+                               kDigRadiusVox);
+                gap = 10;
+            } else if (tool == "seed") {
+                // Till on the even edits, plant the bed on the odd ones.
+                const Vec3 bed(editLiveAt_.x + 0.9f * float(k / 2), editLiveAt_.y, editLiveAt_.z);
+                n = (k % 2 == 0) ? world_.till(bed, kTillRadiusM, now)
+                                 : world_.plantAt(bed, kTillRadiusM, true);
+            } else if (tool == "heal") {
+                // Four beds, then the fifth "edit" is the heal: every bed older
+                // than kTillSec comes back at once, as it would 45 s later.
+                n = k < 4 ? world_.till(at, kTillRadiusM, now) : 0;
+                if (k == 4) {
+                    world_.tillRevert(now + 3600.0);
+                    n = 1;
+                    editLiveFirst_ = -1;   // the frames that matter start HERE
+                }
+                gap = k < 3 ? 16 : 60;
+            }
+            if (editLiveFirst_ < 0 && (tool != "heal" || k == 4)) editLiveFirst_ = editLiveFrame_;
+            std::printf("  edit     %d at frame %d (+%d): %zu %s, %zu stale compactions so far\n",
+                        k + 1, editLiveFrame_, editLiveFirst_ >= 0 ? editLiveFrame_ - editLiveFirst_ : -1,
+                        n, tool == "shovel" ? "chunks asked" : "columns",
+                        world_.profile().staleCompactions);
+            std::fflush(stdout);
+            ++editLiveEdits_;
+            editLiveNext_ = double(editLiveFrame_ + gap);
+        }
+        if (editLiveFirst_ < 0) return;
+        const int f = editLiveFrame_ - editLiveFirst_;
+        if (!shotDir.empty() && f <= kEditLiveShots) {
+            char name[512];
+            std::snprintf(name, sizeof(name), "%s/f%04d.png", shotDir.c_str(), f);
+            tracer_.writePng(ctx, name);
+        }
+        if (f > kEditLiveShots) {
+            const World::Profile wp = world_.profile();
+            std::printf("  edit     done: %d edits, %zu stale compactions (rebuilt chunk), %zu evicted\n",
+                        editLiveEdits_, wp.staleCompactions, wp.evictedCompactions);
+            std::fflush(stdout);
+            editLiveDone_ = true;
+            askShutdown(0);
+        }
+    }
+
     void tickFellLive(Falcor::RenderContext *ctx, double cpuMs, double streamMs) {
         if (!opt_.fellLive || fellLiveDone_) return;
         const auto now = std::chrono::steady_clock::now();
@@ -4168,7 +4561,8 @@
     // does. --fell-test's own chop, lifted out so --fell-live can fell a tree
     // inside the real frame loop with exactly the same blows.
     // -----------------------------------------------------------------------
-    bool chopNearestTree(float *trunkX = nullptr, float *trunkZ = nullptr) {
+    bool chopNearestTree(float *trunkX = nullptr, float *trunkZ = nullptr, int *bodySlot = nullptr) {
+        if (bodySlot) *bodySlot = -1;
         // NOT NAMED 'near'. windows.h still defines near and far as empty macros
         // from the segmented-memory era, so `std::vector<Solid> near;` compiles
         // as `std::vector<Solid> ;` and the errors name neither of them. This
@@ -4186,8 +4580,15 @@
             const char *e = std::getenv("V2_FELL_KIND");
             return e ? std::atoi(e) : 0;
         }();
+        // ...AND WHICH MODEL OF IT (V2_FELL_MODEL, default any): the two
+        // mushrooms are 0.7 and 1.4 m and behave nothing alike when cut.
+        static const int fellModel = [] {
+            const char *e = std::getenv("V2_FELL_MODEL");
+            return e ? std::atoi(e) : -1;
+        }();
         for (const Solid &s : around) {
             if (s.modelKind != fellKind || !s.vol || s.hx <= 0.0f) continue;
+            if (fellModel >= 0 && int(s.modelIndex) != fellModel) continue;
             const float dx = s.cx - player_.pos.x, dz = s.cz - player_.pos.z;
             if (dx * dx + dz * dz < best) { best = dx * dx + dz * dz; tree = &s; }
         }
@@ -4237,6 +4638,25 @@
         // trunk and over the top of a desert shrub, so the cut is taken a third
         // of the way up anything shorter than that would allow.
         const float cutY = so.baseY + minf(1.2f, 0.35f * (so.top - so.baseY));
+        // -- ANYTHING BUT A TREE IS CUT THE WAY THE SWING CUTS IT -----------
+        //
+        // (user 2026-09-23: "when cutting a mushroom down from its stem, it
+        //  gets slingshot everywhere", and "I cant absorb the mushroom chunks".)
+        //
+        // A MODEL SMALLER THAN dropModelHangers' 39-voxel box NEVER REACHES
+        // fellTree: the carve takes the whole severed cap as hangers, and the
+        // swing (app_capture.inl) spawns it as a body and marks it scenery.
+        // This chop called fellTree and nothing else, so on a small mushroom
+        // the cap went to AIR and the test said "never came down". Each blow's
+        // bite is spawned too, because it lands in the cut right under the cap
+        // -- the swing does both, in this order, after fellTree. Trees keep the
+        // chop they had so their numbers stay comparable.
+        //
+        // And the player stands where the blows come from, as a player would,
+        // rather than inside the thing being cut -- the bite flies to the eye.
+        const bool asSwing = so.modelKind != 0;
+        const bool soft = so.bouncy || so.modelKind == 7 || so.modelKind == 8;
+        if (asSwing) player_.placeOnGround(walkWorld(), wx + 2.5f, wz);
         int blows = 0;
         bool down = false;
         for (; blows < 60 && !down; ++blows) {
@@ -4247,12 +4667,45 @@
                                    &spoilAt_, &spoilYaw_))
                 continue;
             down = world_.fellTree(physics_, so, dir, simMs_);
+            if (!asSwing) continue;
+            // AT A PLAYER'S PACE: the last blow's bite has had time to fall and
+            // fly off before this one lands, as it has in the game. Without it
+            // every bite of the chop is born on one frame, on top of the next.
+            for (int f = 0; f < 24; ++f) {
+                maybeRebuildGroundPatch();
+                physics_.step(1.0f / 60.0f);
+                simMs_ += 1000.0 / 60.0;
+                world_.updateDebris(
+                    physics_, player_.eyePosition(), simMs_,
+                    [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
+            }
+            const Vec3 kStill{0.0f, 0.0f, 0.0f};
+            const uint8_t takes = soft ? uint8_t(kDebrisSoft) : uint8_t(kDebrisStone);
+            world_.spawnDebris(physics_, spoilVol_, spoilN_, spoilAt_, kStill, kStill, simMs_,
+                               spoilYaw_, &so, takes);
+            const std::vector<uint8_t> *hv = nullptr;
+            int hn = 0;
+            Vec3 hat{0.0f, 0.0f, 0.0f};
+            float hyaw = 0.0f;
+            if (world_.takeHangers(&hv, &hn, &hat, &hyaw)) {
+                const int hs = world_.spawnHangerBody(physics_, *hv, hn, hat, hyaw, takes, soft,
+                                                      simMs_);
+                if (hs >= 0) {
+                    std::printf("  blow %d cut it free as a hanger body, slot %d\n", blows + 1, hs);
+                    if (bodySlot) *bodySlot = hs;
+                    down = true;
+                }
+            }
         }
         if (!down) {
             std::printf("  %d blows and it never came down\n", blows);
             return false;
         }
         std::printf("  felled after %d blows\n\n", blows);
+        // ...AND THEN STEPS BACK OUT OF REACH, so the pieces are still lying
+        // there for the ABSORB arm to walk up to. A tree is long enough that
+        // most of it lands out of reach anyway; a 1 m cap lands at your feet.
+        if (asSwing) player_.placeOnGround(walkWorld(), wx + 4.0f * kFellLootReachM, wz);
         if (trunkX) *trunkX = wx;
         if (trunkZ) *trunkZ = wz;
         return true;
@@ -4279,7 +4732,8 @@
                     player_.pos.z);
 
         float wx = 0.0f, wz = 0.0f;   // the trunk -- the barrier probe below walks round it
-        if (!chopNearestTree(&wx, &wz)) return;
+        int cutBody = -1;             // the hanger body, when the chop made one
+        if (!chopNearestTree(&wx, &wz, &cutBody)) return;
         std::printf("  %6s %9s %9s %9s %9s %9s %9s %9s\n", "ms", "x", "y", "z", "pitch",
                     "fall m/s", "spin r/s", "in ground");
         std::printf("        (top = how far the body's highest point still is above the ground"
@@ -4321,14 +4775,25 @@
         // EVERY frame: how far its origin travelled in the second against how
         // far it actually got. A body that is falling travels about as far as
         // it gets; one that is hopping on the spot travels far and gets nowhere.
-        int watch = -1;
-        for (int i = 0; i < kDebrisInstances && watch < 0; ++i) {
-            Vec3 p{0, 0, 0};
-            float q[4] = {0, 0, 0, 1};
-            if (world_.debrisPose(i, &p, q)) watch = i;
+        // THE BIGGEST LIVE BODY, NOT THE FIRST: a non-tree chop spawns each
+        // blow's bite as well (see chopNearestTree), and those take the low
+        // slots. For a tree there is only the one body and nothing changes.
+        int watch = cutBody;
+        {
+            float bestV = -1.0f;
+            for (int i = 0; i < kDebrisInstances && cutBody < 0; ++i) {
+                Vec3 p{0, 0, 0};
+                float q[4] = {0, 0, 0, 1};
+                if (!world_.debrisPose(i, &p, q)) continue;
+                float hx = 0, hy = 0, hz = 0;
+                world_.debrisHalf(i, &hx, &hy, &hz);
+                if (hx * hy * hz > bestV) { bestV = hx * hy * hz; watch = i; }
+            }
         }
+        const int traced = watch;
+        std::printf("  following slot %d\n", watch);
         Vec3 wPrev{0, 0, 0}, wSec0{0, 0, 0};
-        float wPath = 0.0f;
+        float wPath = 0.0f, wPeak = 0.0f, wSpin = 0.0f;
         bool wHave = false;
         for (int f = 0; f < 15 * perSec; ++f) {
             maybeRebuildGroundPatch();
@@ -4342,6 +4807,28 @@
                     const float ex = p.x - wPrev.x, ey = p.y - wPrev.y, ez = p.z - wPrev.z;
                     wPath += sqrtf(ex * ex + ey * ey + ez * ez);
                     wPrev = p;
+                    // THE FASTEST IT WENT, which is what "slingshot" is.
+                    Vec3 lv{0, 0, 0}, av{0, 0, 0};
+                    world_.debrisVel(physics_, watch, &lv, &av);
+                    const float sp = sqrtf(lv.x * lv.x + lv.y * lv.y + lv.z * lv.z);
+                    wPeak = maxf(wPeak, sp);
+                    wSpin = maxf(wSpin, sqrtf(av.x * av.x + av.y * av.y + av.z * av.z));
+                    // ...AND THE FRAME IT HAPPENED ON, with what else was
+                    // moving by hand -- a body flying to the player is
+                    // kinematic and shoves whatever it passes through.
+                    if (cutBody >= 0 && f < 2 * perSec && sp > 1.5f) {
+                        int flying = 0, live = 0;
+                        for (int k = 0; k < kDebrisInstances; ++k) {
+                            Vec3 kp{0, 0, 0};
+                            float kq[4] = {0, 0, 0, 1};
+                            if (!world_.debrisPose(k, &kp, kq)) continue;
+                            ++live;
+                            if (world_.debrisAbsorbing(k)) ++flying;
+                        }
+                        std::printf("  launch   frame %3d: %.2f m/s (vy %+.2f) at y %.2f, "
+                                    "%d live, %d flying to the player\n",
+                                    f, double(sp), double(lv.y), double(p.y), live, flying);
+                    }
                 } else {
                     watch = -1;   // it broke, or went: nothing left to follow
                 }
@@ -4351,12 +4838,15 @@
                     const float nx = wPrev.x - wSec0.x, ny = wPrev.y - wSec0.y,
                                 nz = wPrev.z - wSec0.z;
                     const float net = sqrtf(nx * nx + ny * ny + nz * nz);
-                    std::printf("  jitter   second %2d: the body travelled %.2f m and got %.2f m"
-                                "%s\n",
-                                f / perSec + 1, double(wPath), double(net),
+                    std::printf("  jitter   second %2d: the body travelled %.2f m and got %.2f m, "
+                                "peak %.2f m/s, spin %.1f r/s%s\n",
+                                f / perSec + 1, double(wPath), double(net), double(wPeak),
+                                double(wSpin),
                                 (wPath > 0.3f && wPath > 3.0f * net) ? "  -- HOPPING IN PLACE"
                                                                      : "");
                     wPath = 0.0f;
+                    wPeak = 0.0f;
+                    wSpin = 0.0f;
                     wSec0 = wPrev;
                     if (watch < 0) wHave = false;
                 }
@@ -4377,7 +4867,10 @@
             world_.updateDebris(physics_, player_.eyePosition(), simMs_,
                                 [&](float x, float z) { return player_.surfaceAt(walkWorld(), x, z); });
             if ((f % maxi(1, perSec / 2)) != 0) continue;
-            for (int i = 0; i < 512; ++i) {
+            // The followed body first, while it lives; then the first live one.
+            for (int k = -1; k < 512; ++k) {
+                const int i = k < 0 ? traced : k;
+                if (i < 0) continue;
                 Vec3 p{0, 0, 0}, lin{0, 0, 0}, ang{0, 0, 0};
                 float q[4] = {0, 0, 0, 1};
                 if (!world_.debrisPose(i, &p, q)) continue;

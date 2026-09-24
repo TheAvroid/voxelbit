@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>voxelbit</title>
 <meta name="description" content="A voxel world path traced in real time. No rasteriser and no textures - every frame casts rays through a grid of 10 cm voxels on the GPU.">
-<link rel="icon" href="logo.png">
+<link rel="icon" href="favicon.ico?v=round">
 
 <meta property="og:title" content="voxelbit">
 <meta property="og:description" content="A voxel world path traced in real time.">
@@ -408,6 +408,28 @@ h1 .tver {
   margin-right: -2.25px;   /* == letter-spacing, cancelled at the tail */
 }
 
+/* ---- ...AND ON A PHONE -------------------------------------------------- */
+/*
+   (2026-09-23) The line is now "requires an nvidia 4000 series or higher" --
+   40 characters where the credit was 17. At the desktop tracking it measured
+   about 395 CSS px with its dashes against 358 inside a 390 px phone's
+   gutters, and the right-hand dash wrapped onto a line of its own under
+   "4000". Tighter tracking keeps it one line with both dashes down to about
+   360 px; below that the dashes go and the words wrap, centred -- better than
+   a dash stranded by itself. The span's tail correction moves with the
+   tracking, for the reason given above.
+*/
+@media (max-width: 480px) {
+  .nv { letter-spacing: 1.5px; word-spacing: 0.3em; }
+  .nv > span { margin-right: -1.5px; }
+  .nv::before,
+  .nv::after { width: 1em; margin: 0 0.6em; }
+}
+@media (max-width: 359px) {
+  .nv::before,
+  .nv::after { display: none; }
+}
+
 /* ---- the social stack, pinned bottom-right ------------------------------ */
 
 /* FIXED TO THE VIEWPORT rather than sitting in the middle stack. These are
@@ -606,7 +628,12 @@ h1 .tver {
        is its only child; adding a second one puts the credit BESIDE the
        download at any width wide enough to fit both, which is every desktop.
        A block after the row is under it at every width. -->
-  <p class="nv"><span>powered by nvidia</span></p>
+  <!-- A REQUIREMENT, NOT A CREDIT (user 2026-09-23: "instead of saying powered
+       by nvidia on the website, have it say 'requires an nvidia 4000 series or
+       higher'"). Same line, same grey, same drawn dashes: .nv styles it and
+       its notes still hold -- the tail correction on the span is per LINE, not
+       per word, so it is right for any text. -->
+  <p class="nv"><span>requires an nvidia 4000 series or higher</span></p>
 </main>
 
 <!-- Pinned to the corner, so it sits outside <main> with the watermark
