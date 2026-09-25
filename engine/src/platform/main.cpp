@@ -34,6 +34,9 @@
 #include <stdexcept>
 #include <string>
 
+#include <dxgi1_4.h>   // is the screen on the chosen GPU -- see main()
+#pragma comment(lib, "dxgi.lib")
+
 #include "core/assetroot.h"
 #include "core/loadtrace.h"
 #include "platform/crashlog.h"
@@ -650,6 +653,12 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
         if (a == "--lbug-test") { o->lbugTest = true; continue; }
         if (a == "--oak") { o->oakOnly = true; continue; }
         if (a == "--cherry") { o->cherryOnly = true; continue; }
+        // Out here, not in the else-if chain below: that chain is at MSVC's
+        // nesting limit (C1061) and one more link breaks the build.
+        if (a == "--no-sl") { o->streamline = 0; continue; }
+        if (a == "--sl") { o->streamline = 1; continue; }
+        if (a == "--fullscreen") { o->fullscreen = true; o->fullscreenGiven = true; continue; }
+        if (a == "--windowed") { o->fullscreen = false; o->fullscreenGiven = true; continue; }
         if (a == "--desert") { o->desertOnly = true; continue; }
         if (a == "--coords") { o->coords = true; continue; }
         // -- DEATH VALLEY, CALIFORNIA -------------------------------------
@@ -884,6 +893,7 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
                               : (m == "3x") ? FrameGen::On3x
                               : (m == "4x") ? FrameGen::On4x
                                             : FrameGen::Off;
+                o->frameGenGiven = true;
             }
         }
         else if (a == "--debug") *debugLayer = true;
@@ -908,6 +918,63 @@ bool parse(int argc, char **argv, Options *o, bool *vulkan, bool *debugLayer) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// RUN ON THE DISCRETE GPU OF A HYBRID LAPTOP.
+//
+// (user 2026-09-24: a friend's Ryzen 5 7535HS laptop -- Radeon integrated
+// graphics AND an RTX 4050 -- died at start-up with "v2: string pointer is
+// null".) Windows lists the integrated GPU first on these machines, Falcor
+// takes adapter 0 by default, and this engine is NVIDIA-only. These two
+// exported symbols are the drivers' documented opt-in: the NVIDIA and AMD
+// switchable-graphics drivers both look for them in the EXE and hand it the
+// high-performance GPU. main() also picks the NVIDIA adapter explicitly below,
+// because the symbols steer the driver, not Falcor's own enumeration.
+// ---------------------------------------------------------------------------
+extern "C" {
+__declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
+// ---------------------------------------------------------------------------
+// IS THIS A HYBRID LAPTOP -- an NVIDIA GPU beside another one, on a machine
+// with a battery?
+//
+// NOT "does the NVIDIA GPU drive a display", which was the first version and
+// never fired on the laptop it was written for: NvOptimusEnablement (above)
+// makes Optimus hand this process a DXGI view in which the NVIDIA adapter OWNS
+// the panel's output, so the one question that should have told them apart
+// answers "desktop". What does tell them apart:
+//   * a second HARDWARE adapter that is not NVIDIA -- the integrated GPU. A
+//     laptop switched to "dGPU only" (a MUX) hides it, and there the NVIDIA GPU
+//     really does drive the panel, so that laptop correctly answers no;
+//   * a system battery -- which a desktop that simply has its CPU's iGPU
+//     enabled in the BIOS does not have.
+// Plain system DXGI, because this runs BEFORE Streamline is started. The
+// Microsoft Basic Render Driver (0x1414) and software adapters do not count.
+// ---------------------------------------------------------------------------
+static bool isHybridLaptop() {
+    SYSTEM_POWER_STATUS ps{};
+    const bool battery =
+        GetSystemPowerStatus(&ps) && ps.BatteryFlag != 128u && ps.BatteryFlag != 255u;
+    if (!battery) return false;
+    IDXGIFactory1 *fac = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&fac))))
+        return false;
+    bool nvidia = false, other = false;
+    IDXGIAdapter1 *ad = nullptr;
+    for (UINT i = 0; fac->EnumAdapters1(i, &ad) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 d{};
+        ad->GetDesc1(&d);
+        if (d.VendorId == 0x10DEu)
+            nvidia = true;
+        else if (d.VendorId != 0x1414u && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+            other = true;
+        ad->Release();
+    }
+    fac->Release();
+    return nvidia && other;
+}
 
 int main(int argc, char **argv) {
     // -- BEFORE ANYTHING ELSE, INCLUDING THE STOPWATCH ------------------
@@ -938,6 +1005,19 @@ int main(int argc, char **argv) {
     }
     o.scale = clampf(o.scale, 0.10f, 2.0f);
 
+    // FULLSCREEN FOR PLAYERS, A WINDOW FOR THE DEVELOPER -- see
+    // Options::fullscreen. The installer names the exe voxelbit.exe; the build
+    // tree's is v1.exe, so the file's own name tells the two apart.
+    if (!o.fullscreenGiven) {
+        char self[MAX_PATH] = {};
+        ::GetModuleFileNameA(nullptr, self, MAX_PATH);
+        const char *base = std::strrchr(self, '\\');
+        base = base ? base + 1 : self;
+        o.fullscreen = _stricmp(base, "voxelbit.exe") == 0;
+    }
+    std::printf("v2: %s%s\n", o.fullscreen ? "fullscreen" : "windowed",
+                o.fullscreenGiven ? "" : o.fullscreen ? " (installed game)" : " (dev build)");
+
     // -- Streamline, BEFORE Falcor exists --------------------------------
     //
     // slInit has to run before the D3D12 device is created, because what
@@ -958,11 +1038,48 @@ int main(int argc, char **argv) {
     // resolves entry points; it is init() that needs a device. Skipping it on
     // Vulkan changed nothing there and was one more way for the two engines to
     // differ while chasing why frame generation was inert.
-    Streamline::preInit(Falcor::getRuntimeDirectory());
+    //
+    // ...EXCEPT ON A HYBRID LAPTOP (user 2026-09-24). An RTX 4050 laptop whose
+    // panel is on the integrated Radeon died on its first present() with E_FAIL
+    // -- and still did with --fg off and with --no-dlss, so it was not a
+    // feature: it was Streamline's interposer standing in the present path at
+    // all. --vulkan, which never goes near it, got past that frame, and --no-sl
+    // RAN THE GAME on that laptop. So on a hybrid laptop (isHybridLaptop)
+    // Streamline is not started; the game then runs as it does on a machine
+    // without it (no frame generation, no Reflex, Ray Reconstruction straight
+    // through NGX). --sl / --no-sl decide it by hand.
+    const bool hybrid = !vulkan && isHybridLaptop();
+    if (hybrid) std::printf("v2: hybrid-graphics laptop\n");
+    const bool useSl = o.streamline == 1 || (o.streamline == -1 && !hybrid);
+    if (useSl)
+        Streamline::preInit(Falcor::getRuntimeDirectory());
+    else
+        std::printf("v2: Streamline off%s -- no frame generation or Reflex\n",
+                    o.streamline == 0 ? " (--no-sl)" : " (--sl turns it on)");
 
     SampleAppConfig c;
     c.deviceDesc.type = vulkan ? Falcor::Device::Type::Vulkan : Falcor::Device::Type::D3D12;
     c.deviceDesc.enableDebugLayer = debugLayer;
+    // THE NVIDIA ADAPTER, NOT ADAPTER 0 -- see NvOptimusEnablement above. On a
+    // desktop with one card this picks the same GPU it always did; on a hybrid
+    // laptop it is the difference between the RTX and the integrated Radeon.
+    {
+        const auto gpus = Falcor::Device::getGPUs(c.deviceDesc.type);
+        for (size_t i = 0; i < gpus.size(); ++i) {
+            std::printf("v2: GPU %zu: %s%s\n", i, gpus[i].name.c_str(),
+                        gpus[i].vendorID == 0x10DEu ? "  (NVIDIA)" : "");
+            if (gpus[i].vendorID == 0x10DEu && c.deviceDesc.gpu == 0 &&
+                (i == 0 || gpus[0].vendorID != 0x10DEu))
+                c.deviceDesc.gpu = uint32_t(i);
+        }
+        if (!gpus.empty())
+            std::printf("v2: using GPU %u\n", unsigned(c.deviceDesc.gpu));
+
+        // Frame generation needs Streamline, which a hybrid laptop does not get
+        // (see useSl above) -- so it starts off there unless --fg asked for it.
+        if (hybrid && !o.frameGenGiven) o.frameGen = FrameGen::Off;
+        std::fflush(stdout);
+    }
     c.windowDesc.width = o.r.width;
     c.windowDesc.height = o.r.height;
     // THE NAME THE GAME HAS, NOT THE ONE THE BRANCH HAD (user 2026-09-21).

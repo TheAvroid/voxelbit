@@ -47,6 +47,17 @@
 #include "BlueNoise.slang"
 #include "Material.slang"
 #include "Sky.slang"
+
+// Zero unless the host set them -- see the note at the top of Sharc.slang.
+#ifndef V2_SHARC_QUERY
+#define V2_SHARC_QUERY 0
+#endif
+#ifndef V2_SHARC_UPDATE
+#define V2_SHARC_UPDATE 0
+#endif
+#ifndef V2_SHARC_VOXEL_KEY
+#define V2_SHARC_VOXEL_KEY 0
+#endif
 #include "Restir.slang"
 #include "VolFog.slang"
 #include "Clouds.slang"
@@ -520,6 +531,11 @@ bool projectToPixel(V6Camera c, float3 p, uint2 dim, out float2 outPix)
 // has to be that shape and not linear metres -- and because the projection is
 // written out here rather than inherited from a matrix nobody owns, it is
 // guaranteed to be the same projection the motion vectors were made with.
+//
+// NOT REVERSE-Z, AND THAT WAS MEASURED (2026-09-24). A distant creature's edge
+// is ~3e-5 of depth from the ground behind it here, which looked like the cause
+// of "the ghosting is worse at a distance" -- but a rabbit followed at 20 m
+// ghosted identically with reverse-Z and DLSS told DepthInverted.
 float ndcDepth(float viewZ, float n, float f)
 {
     if (viewZ <= n)

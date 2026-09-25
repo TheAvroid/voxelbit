@@ -12,9 +12,8 @@ amendment that put a **pot** in the middle of both.
 
 **History.** Part I was written 2026-08-22 from the owner's account of prior discussions, and Part II
 the same day against it. They lived as `arcade.md` and `arcade-financial-layer.md` until they were
-squashed into this file on 2026-09-17. Two decisions have been overtaken since, and each is marked
-where it sits rather than quietly edited away: the **dollar peg** (§2.1, dead 2026-08-29) and the
-**one-way economy** (§11.1, overtaken by the pot).
+squashed into this file on 2026-09-17. One decision has been overtaken since, and it is marked where
+it sits rather than quietly edited away: the **one-way economy** (§11.1, overtaken by the pot).
 
 [v2-engine-rewrite.md](v2-engine-rewrite.md) describes how the world is rendered; this describes what
 it is *for*. They intersect in exactly one place, and it is a large one — §7.
@@ -57,59 +56,14 @@ consequence.
 
 ## 2. The currency: bits
 
-Three anchors have been discussed. **They are not all mutually consistent, and reconciling them is
-the first real decision this document is waiting on.** *(Resolved 2026-08-29 — see the amendment at the
-end of §2.1.)*
+**1,000,000 bits = 1 Bitcoin.**
 
-| anchor | as stated | what it implies |
-|---|---|---|
-| **A. The peg** | 1,000,000 bits = 1 Bitcoin | a bit is 100 satoshis — a clean, memorable unit |
-| **B. The unit price** | 1 bit ≈ $0.07 | with A, this sets **BTC = $70,000** |
-| **C. The session price** | ~$1 per game / session | with the "1 bit per match" example in §3, this sets **1 bit = $1** |
+### 2.1 The peg
 
-A and B agree exactly — `1,000,000 × $0.07 = $70,000` — so those two are one consistent system.
+**The bit is pegged to Bitcoin. This is the only way.**
 
-**C is the odd one out, and it is 14× away.** There is one arithmetic reconciliation and it is worth
-stating plainly, because it may well be the actual intent: **1 bit = $1 exactly when 1 BTC =
-$1,000,000.** At a million-dollar Bitcoin, all three anchors hold simultaneously and the whole scheme
-becomes elegant — a bit is a dollar, a match costs a bit, a million bits is a coin. If that is the
-design, it should be written down as the design, because it means the pricing is denominated for a
-future BTC price rather than today's.
-
-### 2.1 The purchasing-power problem
-
-This is the owner's own listed open question and it deserves the sharpest possible statement, because
-it is a **product** problem before it is a finance problem:
-
-If a bit is pegged to Bitcoin, **the shelf price of every game in the Arcade moves with the Bitcoin
-market.** A player buys 100 bits on Monday and comes back a month later to find each match costs twice
-what it did, or half. Simultaneously, Voxelbit's revenue per match doubles or halves in dollar terms
-while its server costs do not move at all. Nobody in the transaction gets what they wanted from it.
-
-Three exits, and they are genuinely different products:
-
-1. **Peg to Bitcoin.** Maximum thematic coherence, maximum volatility, and the pricing problem above is
-   permanent and unfixable — it is the definition of the peg.
-2. **Peg to the dollar.** Bits become a stable closed-loop credit: $1 = 1 bit, always, and the Bitcoin
-   relationship becomes flavour rather than mechanism. Simplest to operate, simplest to explain, and
-   it is what essentially every successful game currency does.
-3. **Float, with bits as the unit of account.** Prices are quoted in bits and stay fixed in bits;
-   the *dollar* cost of buying bits floats with whatever backs them. The player experiences stable
-   prices; the treasury absorbs the volatility.
-
-**Option 2 was the recommendation here, and it was overtaken on 2026-08-29.** The owner ruled that a
-bit is a **denomination of Bitcoin** — 1 bit = 100 satoshis = one millionth of a BTC — and that this is
-a *unit*, not a peg, because there is nothing to choose. **Option 3 is therefore the live design:**
-prices are fixed in bits, the dollar cost of a bit floats, and the player carries the volatility.
-
-The three exits above stay on the page as a record of what was weighed and accepted, **not as a live
-recommendation**, and the dollar peg should not be re-proposed.
-**Part II** was written top-to-bottom on the peg and has not been
-reworked; treat every "$1 = 1 bit" in it as stale, and see §11.1.
-
-The consequence for everything below: **a bit is worth whatever a millionth of a Bitcoin is worth
-today.** At BTC = $100,000 that is **$0.10**, which is the figure the rest of this document now uses.
-Anchor C's $1 bit arrives only at a $1,000,000 Bitcoin, and is a destination rather than a price.
+A bit is always one millionth of a Bitcoin (100 satoshis). At BTC = $100,000 that is **$0.10**, the
+figure the rest of this document uses.
 
 ---
 
@@ -269,16 +223,16 @@ So the model is internally consistent, and $1.50/player-hour is almost exactly t
 
 ### 4.1 What $1.52 per player-hour means in actual purchases
 
-This is where §2's unresolved bit price stops being academic:
+This is where the bit's dollar value stops being academic:
 
 | pricing | sessions needed per player per day | plausible? |
 |---|---|---|
 | $1 per session | **3 sessions** | yes — that is a normal evening |
-| 1 bit per match at $0.07 | **43 matches** | no |
+| 1 bit per match at $0.10 | **30 matches** | no |
 
-**The $0.07 bit and the $10 B model cannot both be right at one bit per match.** Either a bit is worth
-much more than seven cents, or a match costs far more than one bit. This is the same 14× from §2
-showing up in the revenue model, which is a good sign that it is one error and not two.
+**A $0.10 bit and the $10 B model cannot both be right at one bit per match.** At today's Bitcoin
+price a match has to cost more than one bit, which is what §3.2's stake ladder and §4.4's stake mix
+provide.
 
 ### 4.2 The cost side is unusually good, and it is the strongest argument for the model
 
@@ -402,8 +356,8 @@ the dollar value of a bit is a Bitcoin price:
 | $200,000 | $0.200 | $2.00 | $0.120 |
 | $1,000,000 | $1.000 | $10.00 | $0.600 |
 
-**This is §2.1's purchasing-power problem arriving on the cost side.** That the *player* carries the
-volatility on the price of a match is the accepted 2026-08-29 position. That the *house* carries it on
+**This is the Bitcoin peg (§2.1) arriving on the cost side.** That the *player* carries the
+volatility on the price of a match is the accepted position. That the *house* carries it on
 whether the cheapest match is profitable is a consequence nobody agreed to, and the fix is small enough
 to write down now: **the floor stake is a number of bits that gets re-set when the Bitcoin price moves,
 not a constant.** One bit is the floor today because a bit is ten cents today.
@@ -591,9 +545,8 @@ The owner's four, restated with what this document adds:
 
 Added here:
 
-5. **Which of the three currency anchors is real?** — §2. **Settled 2026-08-29: A and B.** A bit is
-   100 satoshis and floats in dollars; anchor C's $1 bit is a $1,000,000 Bitcoin, and is a destination
-   rather than a price.
+5. **What is a bit?** — §2. **Settled: 1,000,000 bits = 1 Bitcoin**, and the bit is pegged to
+   Bitcoin (§2.1).
 6. **Is the $10 B figure gross transaction volume or net revenue?** — §8. **Now a three-way question,
    not a two-way one** (§4.4): handle, rake, or deposits. At a 10% rake those are $100 B, $10 B and
    ~$10 B, and only the last two describe money Voxelbit keeps.
@@ -636,30 +589,22 @@ question in §10.
 
 | decision | consequence |
 |---|---|
-| ~~**Bits are dollar-pegged.** $1 = 1 bit, fixed.~~ **DEAD — see §11.1** | Prices are stable for the player. Closes the §2.1 purchasing-power problem and removes crypto from the payment stack entirely. |
 | **The treasury holds Bitcoin.** Settled fiat converts to BTC. | A treasury policy, *not* part of the game economy. The two are separate ledgers and separate decisions. |
 | **Fiat in, via Stripe.** No player-facing crypto rail. | Stripe sees ordinary digital-goods sales. |
 | **Convert at purchase, batched daily.** | The hedge is created when the liability is created. Batching amortises fixed fees. |
 | **Bits are pre-purchased in packs.** | Forced by arithmetic, not preference — see §13. |
 | **One-way economy at launch.** No cash-out, ~~no player-to-player trading~~ **— see §11.1** | Keeps the whole thing out of money-transmission territory. The marketplace is a later, separate programme (§14, phase 8). |
 
-**The volatility has to sit somewhere.** A dollar-pegged bit with a BTC treasury puts it on Voxelbit
-rather than on a player who bought 100 bits last month. That is the right way round: the company can
-size and understand the exposure, and the player cannot. *(Overturned — see §11.1.)*
+### 11.1 Amendments
 
-### 11.1 Two of the rows above are no longer true
+**Amended 2026-09-17.**
 
-**Amended 2026-09-17. The rest of this document has not been reworked: treat every "$1 = 1 bit" below
-as stale.**
-
-- **The dollar peg was overturned on 2026-08-29.** A bit is a **denomination of Bitcoin**: 1 bit = 100
-  satoshis = one millionth of a BTC. It is a unit, not a peg, and it must not be re-proposed
-  (§2.1). The consequences run through everything below — the liability is
-  denominated in **satoshis**, the treasury becomes a **reserve** measured by coverage ratio rather
-  than a separate policy, purchase needs a **live rate quote** rather than a daily fix, the money path
-  is **integer satoshis with no floats anywhere**, and a balance changes only by a ledger entry, never
-  by a price move. **Phase 5**'s "with a dollar-pegged bit that lag carries no liability risk" is
-  exactly backwards: the ~T+2 Stripe settlement lag is a **real short position**.
+- **The bit is pegged to Bitcoin** (§2.1): 1 bit = 100 satoshis = one millionth of a BTC. The
+  consequences run through everything below — the liability is denominated in **satoshis**, the
+  treasury is a **reserve** measured by coverage ratio, purchase needs a **live rate quote** rather
+  than a daily fix, the money path is **integer satoshis with no floats anywhere**, and a balance
+  changes only by a ledger entry, never by a price move. The ~T+2 Stripe settlement lag in **Phase 5**
+  is a **real short position**.
 - **The one-way economy no longer describes the product.** §3.2 specifies a
   **pot**: ten players stake bits and the winners take them. That is player-to-player value transfer,
   which is the thing this row ruled out by name. "No cash-out" still holds and is doing more work than
@@ -891,8 +836,8 @@ round trip; a deliberately dropped webhook recovered by Stripe's retry with no m
   economy. A Bitcoin price move must never be able to change a player's bit balance.
 - Batch, do not convert per transaction — fixed network and withdrawal fees behave like Stripe's $0.30.
 - Stripe pays out fiat on a rolling schedule (typically ~T+2, longer on a new account), so there is
-  unavoidable settlement lag. With a dollar-pegged bit that lag carries no liability risk, which is a
-  second reason the peg is the right choice.
+  unavoidable settlement lag. Bits are owed in satoshis from the moment of sale, so that lag is a real
+  short position until the BTC is bought (§11.1).
 - Stripe's stablecoin payout support may remove a banking hop; confirm current availability rather
   than assuming it.
 - Accounting: bits sold are **deferred revenue**; BTC is marked to fair value through income under
@@ -1070,9 +1015,8 @@ target discussed is **$10 B a year**, which checks out arithmetically at ~9 M da
 $1.52 per player-hour, and which is top-tier-platform scale rather than successful-game scale. The
 economics are helped enormously by the 2026-08-02 decision to run on the player's own hardware — the
 marginal cost of a rendered session is near zero, where the abandoned streaming plan needed ~$0.30 per
-player-hour just to break even. Three things are genuinely unresolved and two of them are
-load-bearing: the currency's three anchors disagree by 14×, and that same 14× breaks the revenue
-arithmetic; the publisher-or-platform question decides the creator model, the content strategy and the
+player-hour just to break even. The bit is pegged to Bitcoin: 1,000,000 bits = 1 BTC. Two things are
+genuinely unresolved and both are load-bearing: the publisher-or-platform question decides the creator model, the content strategy and the
 DAU math all at once; and **the engine has no networking of any kind**, while every genre named for the
 Arcade is server-authoritative multiplayer — which makes the Arcade a second engineering program the
 size of the renderer rewrite, and makes "networking pillar, or Sandbox-only?" a decision the v2 plan
@@ -1082,7 +1026,7 @@ needs before Phase 2 rather than after.
 
 ## 21. The financial layer in one paragraph
 
-The financial layer is a dollar-pegged bit balance held in an append-only double-entry ledger, funded
+The financial layer is a Bitcoin-pegged bit balance (1,000,000 bits = 1 BTC) held in an append-only double-entry ledger, funded
 by Stripe pack purchases and drawn down per match, with settled fiat batch-converted to Bitcoin as a
 treasury policy that is deliberately kept separate from the player economy. Card economics force the
 shape: at 2.9% + $0.30, a $1 per-match charge loses a third of its value to fees, so bits are
@@ -1113,16 +1057,15 @@ entry and the finest version of the arcade-crowd idea in §9, the other is a lic
 insiders are the ten people deciding the outcome. And **does the floor match pay for its own server** —
 at every rake tested it lands inside §4.2's cost band, so the answer is currently unknown and moves
 with the Bitcoin price, which is §2.1's volatility problem reappearing on the side that did not agree
-to carry it. Two decisions elsewhere are overtaken: the **dollar peg** (dead since 2026-08-29) and the
-**one-way economy with no player-to-player transfer**, which is what a pot is. The good news lands on
+to carry it. One decision elsewhere is overtaken: the **one-way economy with no player-to-player
+transfer**, which is what a pot is. The good news lands on
 the engine: ten players, ten minutes and one bounded arena is the first Arcade requirement small enough
 to build against, and it comes with two netcode items — a spectator path and a signed settlement
 authority — that pay-per-play never needed.
 
 ### What it does to the ledger
 
-Two of §11's decisions have been overtaken: the **dollar peg** (dead since 2026-08-29 — a bit is 100
-satoshis and floats) and the **one-way economy**, because §3.2's pot is
+One of §11's decisions has been overtaken: the **one-way economy**, because §3.2's pot is
 player-to-player transfer by construction. The spend path becomes an **escrow**: the ledger grows a pot
 account per match, revenue moves from the bit to the **rake**, and the worst bug in the system is
 promoted from "charged without a session" to **"a pot that does not settle"** — ten people's money,

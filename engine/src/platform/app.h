@@ -152,12 +152,17 @@ struct Options {
     // (user 2026-09-22: "add a fullscreen mode to the settings menu. under
     //  visuals... by default it will always be windowed mode".)
     //
-    // FALSE HERE AND NOT PERSISTED, which is the ask taken literally: every
-    // launch is windowed, whatever the last one ended as. That is also why it
-    // is not written to windowStateFile -- see saveWindowPlacement, which has
-    // to be told to ignore a fullscreen rect for exactly the same reason it
-    // already ignores a maximised one.
+    // NOT PERSISTED, and it is not written to windowStateFile -- see
+    // saveWindowPlacement, which has to be told to ignore a fullscreen rect for
+    // exactly the same reason it already ignores a maximised one.
+    //
+    // TWO RULES (user 2026-09-24: "make it fullscreen by default. but for me
+    // personally, I want to keep it windowed. make different rules for me and
+    // for the players"). main() decides it from which exe is running: the
+    // INSTALLED game, voxelbit.exe, opens fullscreen; the dev build, v1.exe
+    // from run.bat, opens windowed. --fullscreen / --windowed override both.
     bool fullscreen = false;
+    bool fullscreenGiven = false;
 
     // -- THE MARK IN THE MIDDLE OF THE SCREEN -------------------------------
     //
@@ -271,6 +276,10 @@ struct Options {
     //
     // --fg off turns it back off.
     FrameGen frameGen = FrameGen::On2x;
+    // --fg was given: main() then leaves frameGen alone on a hybrid laptop.
+    bool frameGenGiven = false;
+    // Streamline: -1 decide (off on a hybrid laptop), 0 --no-sl, 1 --sl.
+    int streamline = -1;
 
     // RESTIR GI. Off by default -- it changes how indirect light is estimated,
     // and a renderer whose default estimator is the newest thing in the tree is

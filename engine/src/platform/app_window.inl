@@ -84,6 +84,23 @@
     // a restored one.
     static constexpr long kLaunchNudgeUpPx = 20;
 
+    // The visible frame `want`, made to fit the monitor's WORK AREA (the screen
+    // less the taskbar). Too big in either direction and it becomes the work
+    // area -- the window then fills the screen, still a window, title bar and
+    // all. Otherwise it keeps its size and is only slid back on-screen if an
+    // edge hangs off it (the launch nudge, or a rect saved on another layout).
+    static RECT fitToWorkArea(RECT want, const RECT &work) {
+        const long ww = work.right - work.left, wh = work.bottom - work.top;
+        const long w = want.right - want.left, h = want.bottom - want.top;
+        if (w > ww || h > wh) return work;
+        long dx = 0, dy = 0;
+        if (want.left < work.left) dx = work.left - want.left;
+        if (want.right + dx > work.right) dx = work.right - want.right;
+        if (want.top < work.top) dy = work.top - want.top;
+        if (want.bottom + dy > work.bottom) dy = work.bottom - want.bottom;
+        return RECT{want.left + dx, want.top + dy, want.right + dx, want.bottom + dy};
+    }
+
     void restoreWindowPlacement() {
         // NO WINDOW, NO WINDOW WORK. --out renders offline and there is no
         // window to ask; without this the null deref took the whole flag out.
@@ -132,6 +149,21 @@
             // the window is moved by hand that placement is what comes back.
             want.top -= kLaunchNudgeUpPx;
             want.bottom -= kLaunchNudgeUpPx;
+        }
+
+        // -- FIT THE SCREEN IT IS ON ---------------------------------------
+        //
+        // (user 2026-09-24, a friend's laptop: "the window of the game is too
+        // big when it appears" -- "make the game recognize the size of the
+        // screen the player is using and autoadjust".) The default size is
+        // defaults::kWidth x kHeight, 3820 x 1990, picked on a 7680 x 2160
+        // monitor; on a 1080p laptop that is bigger than the screen. A saved
+        // placement from a bigger monitor has the same problem.
+        {
+            MONITORINFO mi{};
+            mi.cbSize = sizeof(mi);
+            if (::GetMonitorInfoA(::MonitorFromRect(&want, MONITOR_DEFAULTTOPRIMARY), &mi))
+                want = fitToWorkArea(want, mi.rcWork);
         }
 
         const FrameMargin m = frameMargin(hwnd);
@@ -887,6 +919,9 @@
     // made only when they actually change -- see the note where it is issued.
     uint2 slFgDim_{0, 0};
     uint2 slFgOut_{0, 0};
+    // ...and the MODE last asked for, so the settings dropdown's change is
+    // applied once, on the frame. See app_frame.inl.
+    FrameGen slFgAsked_ = FrameGen::Off;
     Neural neural_;
     Nrc nrc_;
     VolFog volfog_;

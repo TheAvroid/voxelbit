@@ -338,6 +338,11 @@ class Dlss {
         ep.pInSpecularAlbedo = native(in.specularAlbedo);
         ep.pInNormals = native(in.normalRoughness);
         ep.pInRoughness = nullptr;  // packed in normals.w; see InRoughnessMode
+        // pInDisocclusionMask IS read, but a mask of 1 over the whole screen
+        // moved the output by under 1/255 and left the creature smear intact.
+        // NOT pInResponsivityMask: tried 2026-09-24 against the creatures' pose
+        // ghost, and a mask of 1 over the WHOLE screen left presets E and D
+        // byte-identical. RR 310.7 ignores it.
         ep.InJitterOffsetX = in.jitterX;
         ep.InJitterOffsetY = in.jitterY;
         ep.InRenderSubrectDimensions.Width = renderSize_.x;

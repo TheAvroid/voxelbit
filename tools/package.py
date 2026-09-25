@@ -145,9 +145,19 @@ SKIP_EXES = {
     'MultiSampling.exe', 'RenderGraphEditor.exe', 'SampleAppTemplate.exe', 'ShaderToy.exe',
     'Visualization2D.exe',
 }
-# NOTHING. Kept as the seam for a measured trim -- see the note above on why
-# the obvious candidate was not one.
-SKIP_DIRS = set()
+# THE MEASURED TRIM (2026-09-24, "downloads are very slow"). The installer was
+# 551 MB, over the 512 MiB (536,870,912 bytes) Cloudflare's free plan will
+# cache, so voxelbit.net served every download from the origin. Both files
+# below are imported by nothing (dumpbin /dependents over every exe, dll and
+# pyd in the build) and a run with them hidden came up with Ray Reconstruction
+# ready, frame generation 2x and a normal frame:
+#   nvngx_dlss.dll  56 MB  DLSS SUPER RESOLUTION. The game upscales with Ray
+#                          Reconstruction (nvngx_dlssd.dll); streamline.h only
+#                          ASKS whether SR is supported, for a report line.
+#   usd_ms.dll      14 MB  Falcor's USD runtime; no USD importer is built.
+SKIP_FILES = {'nvngx_dlss.dll', 'usd_ms.dll'}
+# ...and usd/ is that runtime's plugin data.
+SKIP_DIRS = {'usd'}
 
 
 def human(n):
@@ -178,7 +188,17 @@ def stage():
             dirnames[:] = []
             continue
         for name in filenames:
-            if name.endswith('.pdb') or name in SKIP_EXES:
+            if name.endswith('.pdb') or name in SKIP_EXES or name in SKIP_FILES:
+                continue
+            # WHAT THE ENGINE WRITES BESIDE ITSELF WHEN IT RUNS, never ship it.
+            # (2026-09-24, "downloads are very slow".) The build folder is also
+            # where every dev run leaves its crash minidumps (v2-crash-*.dmp,
+            # 8-11 MB each) and Falcor its per-run v1.exe.N.log: 97 MB of dumps
+            # and 651 logs were going into the installer. That pushed it past
+            # 512 MiB, the largest file Cloudflare's free plan will cache, so
+            # every download came from the origin server instead of an edge
+            # near the player -- and a minidump is this machine's memory.
+            if name.endswith('.dmp') or name.endswith('.log'):
                 continue
             if name.endswith('.exe.manifest') and name[:-9] in SKIP_EXES:
                 continue

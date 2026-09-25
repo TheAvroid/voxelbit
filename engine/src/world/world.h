@@ -3326,11 +3326,16 @@ class World {
         const size_t idx = size_t(flyerBase_ + slot);
         if (idx >= instanceDescs_.size()) return;
         static const float kI[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        // Read BEFORE place() overwrites it: was this slot drawn last frame.
+        const bool had = idx < wasShown_.size() && wasShown_[idx] != 0;
+        // V2_FREEZE_POSE=1 (a diagnostic): a drawn creature keeps the mesh it
+        // had, so it moves with no pose swaps at all.
+        static const bool kFreeze = std::getenv("V2_FREEZE_POSE") != nullptr;
+        if (kFreeze && had && show && model >= 0 && flyerModel_[size_t(slot)] >= 0)
+            model = flyerModel_[size_t(slot)];
         const bool ok = show && m && model >= 0 && model < int(flyers_.size());
 
         const size_t mi = size_t(ok ? model : 0);
-        // Read BEFORE place() overwrites it: was this slot drawn last frame.
-        const bool had = idx < wasShown_.size() && wasShown_[idx] != 0;
         // METRES here, not voxels: a flyer is meshed at VOXEL_M so its object
         // space already is metres and its transform is a turn and a fade. See
         // addFlyerModel for why, and place() for what the half-box is for.
@@ -3425,6 +3430,7 @@ class World {
                 instanceInfos_[idx].treeFlags |= 2u;
             }
         }
+
         if (ok)
             for (int k = 0; k < 9; ++k) flyerWasM_[size_t(slot)][size_t(k)] = m[k];
         // -- ...AND WHAT THIS SLOT IS, WHICH NOTHING USED TO ASK ------------

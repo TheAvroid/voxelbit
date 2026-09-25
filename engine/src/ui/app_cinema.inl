@@ -455,9 +455,14 @@ void tickCinemaTest(Falcor::RenderContext *ctx) {
     }
     const int a = cineTestArrive_ < 0 ? -1 : f - cineTestArrive_;
     cineTestKeys_ = (a >= 40 && a < 80) ? 2u : (a >= 80 && a < 120) ? 4u : 0u;
-    if (a == 120)
+    // V2_CINEMA_FAR=1 follows from the zoom's far stop (~20 m on a rabbit) and
+    // holds it -- the creature ghost is worst at a distance (user 2026-09-24).
+    static const bool kFar = std::getenv("V2_CINEMA_FAR") != nullptr;
+    if (kFar) {
+        if (a == 0) cineZoom_ = kCineZoomMax;
+    } else if (a == 120)
         for (int k = 0; k < 3; ++k) cinemaZoom(-1.0f);
-    if (a == 170)
+    if (!kFar && a == 170)
         for (int k = 0; k < 3; ++k) cinemaZoom(1.0f);
     if (a >= 0 && a <= 220 && a % 10 == 0 && cineSlot_ >= 0) {
         Vec3 mid{0, 0, 0};
@@ -473,6 +478,14 @@ void tickCinemaTest(Falcor::RenderContext *ctx) {
             char name[512];
             std::snprintf(name, sizeof(name), "%s/follow_A%03d.png", dir.c_str(), a);
             tracer_.writePng(ctx, name);
+            // V2_CINEMA_RAW=1: also what Ray Reconstruction was HANDED this
+            // frame, at render resolution -- is a smear in the input or made
+            // by the history?
+            static const bool kRaw = std::getenv("V2_CINEMA_RAW") != nullptr;
+            if (kRaw) {
+                std::snprintf(name, sizeof(name), "%s/raw_A%03d.pfm", dir.c_str(), a);
+                tracer_.writePfm(ctx, name);
+            }
         }
     }
     if (a == 220) cinemaRelease();

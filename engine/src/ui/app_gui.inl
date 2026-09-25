@@ -2200,13 +2200,39 @@
                 w.text(fmt("DLSS unavailable: %s", dlss_.status().c_str()));
             }
 
-            // FRAME GENERATION IS NOT IN THIS MENU. It is on at 2x and stays there;
-            // --fg 2x|3x|4x|off still works and the capability probes in
-            // streamline.h still run, so a card that cannot do it still declines
-            // quietly. Its diagnostics -- what DLSS-G says about itself, the
-            // generated-frame counts, whether the device reached Streamline before
-            // the swapchain -- are printed at start-up and under --stats, which is
-            // where a diagnostic belongs.
+            // ---- frame generation -----------------------------------------
+            //
+            // (user 2026-09-24: "under the mode under visuals, add a frame
+            //  generation drop down. I want to see 2x and 4x. obviously only
+            //  let the appropriate gpu select which one is applicable".)
+            //
+            // WHAT THE CARD CAN DO, ASKED OF THE DRIVER, not of the GPU's name:
+            // maxGeneratedFrames() is DLSS-G's own answer -- 1 on an RTX 40
+            // (2x only), 3 on an RTX 50 (multi-frame, 4x). So 4x appears only
+            // where it can run. No row at all where DLSS-G cannot run -- no
+            // Streamline (a hybrid laptop), or a card without it -- just a
+            // line saying so, because a dropdown with one choice is not a
+            // choice.
+            //
+            // The pick is applied on the FRAME, not here: app_frame.inl sees
+            // opt_.frameGen move and re-declares DLSS-G at the one point that
+            // call is known not to race the present thread.
+            if (sl_.hasFrameGeneration()) {
+                Falcor::Gui::DropdownList fg = {{uint32_t(FrameGen::Off), "Off"},
+                                                {uint32_t(FrameGen::On2x), "2x"}};
+                if (sl_.maxGeneratedFrames() >= 3) fg.push_back({uint32_t(FrameGen::On4x), "4x"});
+                // A live mode the list does not offer (--fg 3x) is shown
+                // anyway -- see the same guard on the mode dropdown above.
+                const uint32_t liveFg = uint32_t(opt_.frameGen);
+                bool fgListed = false;
+                for (const auto &e : fg) fgListed = fgListed || e.value == liveFg;
+                if (!fgListed) fg.push_back({liveFg, frameGenName(opt_.frameGen)});
+                uint32_t pick = liveFg;
+                if (w.dropdown("Frame generation", fg, pick)) opt_.frameGen = FrameGen(pick);
+            } else {
+                w.text(sl_.available() ? "Frame generation: not supported on this GPU"
+                                       : "Frame generation: unavailable on this machine");
+            }
             cardRule();
 
             // -- AND NOTHING ELSE IN THIS CARD (user 2026-09-21: "remove all of

@@ -22,6 +22,19 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+// NAMED ZERO, NOT LEFT UNDEFINED. The SDK tests these with #if, where undefined
+// already means 0 -- but Slang prints a warning per test, forty of them, and
+// they buried the one line a player's console needed to show (2026-09-24).
+#ifndef SHARC_UPDATE
+#define SHARC_UPDATE 0
+#endif
+#ifndef SHARC_QUERY
+#define SHARC_QUERY 0
+#endif
+#ifndef SHARC_ENABLE_GLSL
+#define SHARC_ENABLE_GLSL 0
+#endif
+
 #include "Shared.slang"
 #include "Vecmath.slang"
 #include "VoxelKey.slang"

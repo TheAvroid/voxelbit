@@ -619,8 +619,13 @@ h1 .tver {
          wrapper was. This is built by tools/package.py --installer and
          passes a clean Defender scan.
          STILL UNSIGNED, so first run shows SmartScreen's "unrecognized app"
-         -- a click-through, not a deletion. A certificate removes that. -->
-    <a class="btn dl" href="voxelbit.exe" download="voxelbit.exe">download</a>
+         -- a click-through, not a deletion. A certificate removes that.
+         ?v= IS THE RELEASE NUMBER, AND IT GOES UP WITH EVERY UPLOAD. Cloudflare
+         sits in front of this site and keeps a copy of the exe for hours; a new
+         query string is a new copy, so bumping it is the purge. Upload the exe
+         FIRST, then this page -- a link opened before its file exists gets the
+         404 cached for four hours. -->
+    <a class="btn dl" href="voxelbit.exe?v=8" download="voxelbit.exe">download</a>
 
   </div>
 

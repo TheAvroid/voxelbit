@@ -21,6 +21,10 @@
         if (!placedTwice_ && !opt_.background) {
             placedTwice_ = true;
             restoreWindowPlacement();
+            // ...AND ONLY THEN FULLSCREEN, if this launch wants it (the
+            // installed game -- see Options::fullscreen). After the last
+            // placement, so nothing moves the window back out of it.
+            if (opt_.fullscreen) applyFullscreen(true);
         }
         if (opt_.outGiven) return;
 
@@ -1823,7 +1827,10 @@
         // interpolate between. It reported itself available the whole time.
         segEnd(kSegRecord);
         sl_.markRenderSubmitStart();
-        if (sl_.frameGeneration() != FrameGen::Off) {
+        // ...OR ASKED FOR: the settings dropdown can turn it on from Off, and
+        // the block below is where that request is applied (see slFgAsked_).
+        if (sl_.frameGeneration() != FrameGen::Off ||
+            (opt_.frameGen != FrameGen::Off && sl_.hasFrameGeneration())) {
             const Falcor::uint2 renderDim{uint32_t(tracer_.width()), uint32_t(tracer_.height())};
             const Falcor::uint2 outDim{uint32_t(tracer_.displayWidth()),
                                        uint32_t(tracer_.displayHeight())};
@@ -1844,10 +1851,18 @@
             // call or a race condition with Present()", and it means it: this
             // call races the present thread, so issuing it every frame is not
             // merely wasteful.
+            //
+            // ...OR WHEN THE PLAYER PICKS ANOTHER MODE in the settings. Applied
+            // here, on the frame, rather than from the dropdown: this is the
+            // point in the frame the call was already known to be safe at.
+            // slFgAsked_ records the REQUEST, not the result, so a mode the
+            // driver refuses is asked for once and not every frame.
             if (slFgDim_.x != renderDim.x || slFgDim_.y != renderDim.y ||
-                slFgOut_.x != outDim.x || slFgOut_.y != outDim.y) {
+                slFgOut_.x != outDim.x || slFgOut_.y != outDim.y ||
+                slFgAsked_ != opt_.frameGen) {
                 slFgDim_ = renderDim;
                 slFgOut_ = outDim;
+                slFgAsked_ = opt_.frameGen;
                 sl_.setFrameGeneration(opt_.frameGen, renderDim, outDim);
             }
             slReset_ = false;
